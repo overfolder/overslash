@@ -55,7 +55,37 @@ impl OrgScope {
         .await
     }
 
-    /// Find active subscriptions in this org listening for the given event.
+    /// Fetch one subscription in this org, or `None` for another tenant's id.
+    pub async fn get_webhook_subscription(
+        &self,
+        id: Uuid,
+    ) -> Result<Option<WebhookSubscriptionRow>, sqlx::Error> {
+        crate::repos::webhook::get_subscription(self.db(), id, self.org_id()).await
+    }
+
+    /// Mark a subscription verified after its endpoint echoed the challenge
+    /// sent to `url`, and release the deliveries held while it was pending.
+    /// `None` if it is gone or its URL no longer matches.
+    pub async fn mark_webhook_verified(
+        &self,
+        id: Uuid,
+        url: &str,
+    ) -> Result<Option<WebhookSubscriptionRow>, sqlx::Error> {
+        crate::repos::webhook::mark_verified(self.db(), id, self.org_id(), url).await
+    }
+
+    /// Record why a verification handshake failed; the status is unchanged.
+    pub async fn record_webhook_verification_failure(
+        &self,
+        id: Uuid,
+        error: &str,
+    ) -> Result<Option<WebhookSubscriptionRow>, sqlx::Error> {
+        crate::repos::webhook::record_verification_failure(self.db(), id, self.org_id(), error)
+            .await
+    }
+
+    /// Find active subscriptions in this org listening for the given event —
+    /// verified or not; the dispatcher holds events for a pending one.
     pub async fn find_matching_webhook_subscriptions(
         &self,
         event: &str,

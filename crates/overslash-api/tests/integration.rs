@@ -193,7 +193,12 @@ async fn start_mock() -> SocketAddr {
         State(s): State<S>,
         headers: HeaderMap,
         Json(p): Json<Value>,
-    ) -> &'static str {
+    ) -> axum::response::Response {
+        use axum::response::IntoResponse;
+        // Pass the endpoint-ownership handshake; record events only.
+        if let Some(echo) = overslash_fakes::openapi::verification_echo(&p) {
+            return echo.into_response();
+        }
         let h: serde_json::Map<String, Value> = headers
             .iter()
             .map(|(k, v)| (k.as_str().to_string(), json!(v.to_str().unwrap_or(""))))
@@ -201,7 +206,7 @@ async fn start_mock() -> SocketAddr {
         let mut state = s.lock().await;
         state.webhooks.push(p);
         state.webhook_headers.push(json!(h));
-        "ok"
+        "ok".into_response()
     }
 
     async fn list_webhooks(State(s): State<S>) -> Json<Value> {

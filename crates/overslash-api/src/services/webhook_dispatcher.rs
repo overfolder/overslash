@@ -6,6 +6,7 @@ use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 use uuid::Uuid;
 
+use overslash_db::repos::webhook::{HELD_PENDING_VERIFICATION, VERIFIED};
 use overslash_db::{OrgScope, SystemScope};
 
 use crate::error::AppError;
@@ -30,8 +31,13 @@ pub async fn dispatch(pool: &PgPool, org_id: Uuid, event: &str, payload: serde_j
     };
 
     for sub in subs {
+        // CASA 7.1.2: nothing is sent to an endpoint that has not proven
+        // ownership. The event is not dropped either — it is recorded as a
+        // held delivery (visible in the delivery history) and released to the
+        // retry sweep when the subscription verifies.
+        let held = (sub.verification_status != VERIFIED).then_some(HELD_PENDING_VERIFICATION);
         let delivery = match system
-            .create_webhook_delivery(sub.id, event, payload.clone())
+            .create_webhook_delivery(sub.id, event, payload.clone(), held)
             .await
         {
             Ok(d) => d,
@@ -40,6 +46,10 @@ pub async fn dispatch(pool: &PgPool, org_id: Uuid, event: &str, payload: serde_j
                 continue;
             }
         };
+        if held.is_some() {
+            overslash_metrics::webhooks::record_delivery(event, "held", false);
+            continue;
+        }
 
         // Use the JSONB-roundtripped payload from the row (not the original
         // in-memory `payload`) so the first attempt and any retries serialize
@@ -49,6 +59,7 @@ pub async fn dispatch(pool: &PgPool, org_id: Uuid, event: &str, payload: serde_j
 
         deliver(
             pool,
+            org_id,
             delivery.id,
             &sub.url,
             &sub.secret,
@@ -104,6 +115,7 @@ fn build_envelope(
 #[allow(clippy::too_many_arguments)]
 async fn deliver(
     pool: &PgPool,
+    org_id: Uuid,
     delivery_id: Uuid,
     url: &str,
     secret: &str,
@@ -112,64 +124,36 @@ async fn deliver(
     attempt: u32,
 ) {
     let body = serde_json::to_string(envelope).unwrap_or_default();
-
-    // HMAC-SHA256 signature over the raw body bytes (the envelope JSON).
-    let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC key");
-    mac.update(body.as_bytes());
-    let signature = hex::encode(mac.finalize().into_bytes());
-
     let system = SystemScope::new_internal(pool.clone());
-
-    // One deadline over resolution *and* the request. The guard looks the host
-    // up before a client with a timeout exists, so a `RequestBuilder::timeout`
-    // alone would leave the lookup outside the 10s this function promises.
-    let attempt_deadline = std::time::Duration::from_secs(10);
-    let sent = tokio::time::timeout(attempt_deadline, async {
-        // CASA 7.1.1: never sign a payload onto the wire in the clear.
-        // Registration already refuses `http://`, so this only fires for a
-        // row that predates that check or was written around it — checked
-        // twice: from the string before any lookup, then against the address
-        // the guard actually pinned, so `localhost` resolving elsewhere
-        // cannot slip through either.
-        HttpsUrl::parse(url)
-            .map_err(|e| AppError::BadRequest(format!("webhook delivery refused: {e}")))?;
-        let (http_client, parsed, ip) =
-            crate::services::ssrf_guard::outbound_client_validated(url).await?;
-        if !https_policy::scheme_allowed(parsed.scheme(), &ip) {
-            return Err(AppError::BadRequest(format!(
-                "webhook delivery refused: plain http is only accepted to loopback (resolved {ip})"
-            )));
+    // One deadline over the request *and* the response body: the pinned
+    // client has no total timeout, so an endpoint that sent its headers and
+    // then stalled would otherwise hold this attempt — and the sequential
+    // retry sweep behind it — forever.
+    let result = tokio::time::timeout(ATTEMPT_DEADLINE, async {
+        let mut resp = send_signed(url, secret, org_id, event_type, delivery_id, body).await?;
+        let status = resp.status().as_u16() as i32;
+        let mut kept = Vec::new();
+        // Keep what fits in the cap and stop reading; the rest is the
+        // receiver's business, not ours to store.
+        while kept.len() < DELIVERY_BODY_CAP {
+            match resp.chunk().await {
+                Ok(Some(chunk)) => kept.extend_from_slice(&chunk),
+                Ok(None) | Err(_) => break,
+            }
         }
-        http_client
-            .post(url)
-            .header("Content-Type", "application/json")
-            .header("X-Overslash-Event", event_type)
-            .header("X-Overslash-Delivery", delivery_id.to_string())
-            .header("X-Overslash-Signature", format!("sha256={signature}"))
-            .body(body)
-            .send()
-            .await
-            .map_err(|e| AppError::BadGateway(e.to_string()))
+        kept.truncate(DELIVERY_BODY_CAP);
+        Ok::<_, String>((status, String::from_utf8_lossy(&kept).into_owned()))
     })
-    .await;
-
-    let result = match sent {
-        Ok(Ok(resp)) => Ok(resp),
-        // A refusal by the guard and a transport failure land on the same row
-        // the same way: no status, the reason as the body. The distinction
-        // that matters to a registrant — "we would not dial this" versus "it
-        // did not answer" — is in the text.
-        Ok(Err(e)) => Err(e.to_string()),
-        Err(_elapsed) => Err(format!(
+    .await
+    .unwrap_or_else(|_elapsed| {
+        Err(format!(
             "webhook delivery did not complete within {}s",
-            attempt_deadline.as_secs()
-        )),
-    };
+            ATTEMPT_DEADLINE.as_secs()
+        ))
+    });
 
     match result {
-        Ok(resp) => {
-            let status = resp.status().as_u16() as i32;
-            let body = resp.text().await.unwrap_or_default();
+        Ok((status, body)) => {
             if (200..300).contains(&(status as u16).into()) {
                 let _ = system
                     .mark_webhook_delivered(delivery_id, status, &body)
@@ -190,6 +174,83 @@ async fn deliver(
     }
 }
 
+/// How long one outbound webhook exchange — delivery or verification — may
+/// take, host resolution and the response body included.
+const ATTEMPT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// The most of a delivery's response body we keep on the delivery row.
+const DELIVERY_BODY_CAP: usize = 16 * 1024;
+
+/// Sign `body` with the subscription secret and POST it to `url`: HTTPS-only
+/// (CASA 7.1.1), through the SSRF guard (7.3.1), one deadline over resolution
+/// and request. Shared by event delivery and the ownership handshake, so the
+/// handshake can never reach an address a delivery could not.
+///
+/// `Err` carries the reason as text — a guard refusal, a transport failure or
+/// the deadline — ready to be recorded where the registrant can read it.
+async fn send_signed(
+    url: &str,
+    secret: &str,
+    org_id: Uuid,
+    event_type: &str,
+    delivery_id: Uuid,
+    body: String,
+) -> Result<reqwest::Response, String> {
+    // HMAC-SHA256 signature over the raw body bytes (the envelope JSON).
+    let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC key");
+    mac.update(body.as_bytes());
+    let signature = hex::encode(mac.finalize().into_bytes());
+
+    // One deadline over resolution *and* the request. The guard looks the host
+    // up before a client with a timeout exists, so a `RequestBuilder::timeout`
+    // alone would leave the lookup outside the deadline this promises.
+    let sent = tokio::time::timeout(ATTEMPT_DEADLINE, async {
+        // CASA 7.1.1: never sign a payload onto the wire in the clear.
+        // Registration already refuses `http://`, so this only fires for a
+        // row that predates that check or was written around it — checked
+        // twice: from the string before any lookup, then against the address
+        // the guard actually pinned, so `localhost` resolving elsewhere
+        // cannot slip through either.
+        HttpsUrl::parse(url)
+            .map_err(|e| AppError::BadRequest(format!("webhook delivery refused: {e}")))?;
+        let (http_client, parsed, ip) =
+            crate::services::ssrf_guard::outbound_client_validated(url).await?;
+        if !https_policy::scheme_allowed(parsed.scheme(), &ip) {
+            return Err(AppError::BadRequest(format!(
+                "webhook delivery refused: plain http is only accepted to loopback (resolved {ip})"
+            )));
+        }
+        http_client
+            .post(url)
+            .header("Content-Type", "application/json")
+            // The org that registered the subscription, so a receiver serving
+            // several orgs can pick the secret to check before verifying, and
+            // one serving only its own can refuse a stranger's challenge.
+            .header("X-Overslash-Org", org_id.to_string())
+            .header("X-Overslash-Event", event_type)
+            .header("X-Overslash-Delivery", delivery_id.to_string())
+            .header("X-Overslash-Signature", format!("sha256={signature}"))
+            .body(body)
+            .send()
+            .await
+            .map_err(|e| AppError::BadGateway(e.to_string()))
+    })
+    .await;
+
+    match sent {
+        Ok(Ok(resp)) => Ok(resp),
+        // A refusal by the guard and a transport failure land the same way:
+        // no status, the reason as text. The distinction that matters to a
+        // registrant — "we would not dial this" versus "it did not answer" —
+        // is in the text.
+        Ok(Err(e)) => Err(e.to_string()),
+        Err(_elapsed) => Err(format!(
+            "webhook request did not complete within {}s",
+            ATTEMPT_DEADLINE.as_secs()
+        )),
+    }
+}
+
 /// Metrics for one delivery attempt that did not succeed — refused by the
 /// guard, refused by the network, or answered with a non-2xx. One place, so
 /// the three failure shapes can't drift into labelling themselves differently.
@@ -207,37 +268,190 @@ fn record_failed_attempt(event_type: &str, attempt: u32) {
 /// picking the row up; further delivery attempts are also terminal.
 const MAX_DELIVERY_ATTEMPTS: u32 = 5;
 
-/// Background task: retry failed webhook deliveries.
+/// Background task: retry failed webhook deliveries, and send the ones held
+/// while their subscription awaited verification once it has verified.
 pub async fn spawn_retry_loop(pool: PgPool) {
-    let system = SystemScope::new_internal(pool.clone());
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(30)).await;
 
         let start = std::time::Instant::now();
-        let pending = match system.get_pending_webhook_deliveries(20).await {
-            Ok(p) => p,
+        match retry_pending_once(&pool).await {
+            Ok(attempted) => {
+                let status = if attempted == 0 { "noop" } else { "ok" };
+                overslash_metrics::background::record_tick(
+                    "webhook_retry",
+                    status,
+                    start.elapsed(),
+                );
+                overslash_metrics::background::set_last_success("webhook_retry");
+            }
             Err(e) => {
                 tracing::error!("Webhook retry query failed: {e}");
                 overslash_metrics::background::record_tick("webhook_retry", "err", start.elapsed());
-                continue;
             }
-        };
-
-        let status = if pending.is_empty() { "noop" } else { "ok" };
-        for row in pending {
-            let envelope = build_envelope(row.id, &row.event, row.created_at, &row.payload);
-            deliver(
-                &pool,
-                row.id,
-                &row.url,
-                &row.secret,
-                &envelope,
-                &row.event,
-                (row.attempts as u32).saturating_add(1),
-            )
-            .await;
         }
-        overslash_metrics::background::record_tick("webhook_retry", status, start.elapsed());
-        overslash_metrics::background::set_last_success("webhook_retry");
+    }
+}
+
+/// One sweep of the retry loop: attempt up to 20 due deliveries on verified
+/// subscriptions. Returns how many were attempted. Public so tests can drive
+/// a sweep without waiting on the loop's timer.
+pub async fn retry_pending_once(pool: &PgPool) -> Result<usize, sqlx::Error> {
+    let system = SystemScope::new_internal(pool.clone());
+    let pending = system.get_pending_webhook_deliveries(20).await?;
+    let attempted = pending.len();
+    for row in pending {
+        let envelope = build_envelope(row.id, &row.event, row.created_at, &row.payload);
+        deliver(
+            pool,
+            row.org_id,
+            row.id,
+            &row.url,
+            &row.secret,
+            &envelope,
+            &row.event,
+            (row.attempts as u32).saturating_add(1),
+        )
+        .await;
+    }
+    Ok(attempted)
+}
+
+// ── Endpoint-ownership handshake (CASA 7.1.2) ───────────────────────
+
+/// Event type of the ownership challenge. Never a subscribable event: it is
+/// sent once per handshake, to one endpoint, outside the delivery tables.
+pub const VERIFICATION_EVENT: &str = "webhook.verification";
+
+/// The most of a verification response we read. A correct echo is a
+/// 64-character challenge, bare or in a small JSON object.
+const VERIFICATION_BODY_CAP: usize = 4096;
+
+/// Prove the registrant controls `url` before anything is delivered to it.
+///
+/// POSTs a signed `webhook.verification` envelope — the same shape, headers
+/// and signature as every event — whose `data.challenge` is 32 fresh random
+/// bytes, hex, next to the `org_id` and `subscription_id` that registered the
+/// URL. The endpoint passes by answering 2xx with the challenge echoed back,
+/// either as the whole body (`text/plain`, surrounding whitespace ignored) or
+/// as `{"challenge": "<value>"}`. Anything else fails. A receiver that serves
+/// only known orgs should echo only challenges carrying one of them — that is
+/// what stops a stranger's org from verifying a subscription to it.
+///
+/// The request goes through [`send_signed`] — HTTPS-only, SSRF-guarded — so a
+/// handshake reaches nothing a delivery could not, and one 10s deadline covers
+/// the whole exchange, body included. The `Err` text is shown to the
+/// registrant and never includes the response body, so a failed handshake
+/// cannot be used to read what an address says.
+///
+/// Like [`deliver`], this takes no DB connection: the caller records the
+/// outcome after the round trip.
+pub async fn verify_endpoint(
+    url: &str,
+    secret: &str,
+    org_id: Uuid,
+    subscription_id: Uuid,
+) -> Result<(), String> {
+    // One deadline over the whole handshake — send, headers *and* body — so a
+    // slow endpoint cannot stretch it past 10s by trickling its answer in
+    // after `send_signed`'s own deadline has been met.
+    tokio::time::timeout(
+        ATTEMPT_DEADLINE,
+        challenge_endpoint(url, secret, org_id, subscription_id),
+    )
+    .await
+    .unwrap_or_else(|_elapsed| {
+        Err(format!(
+            "the endpoint did not answer the challenge within {}s",
+            ATTEMPT_DEADLINE.as_secs()
+        ))
+    })
+}
+
+async fn challenge_endpoint(
+    url: &str,
+    secret: &str,
+    org_id: Uuid,
+    subscription_id: Uuid,
+) -> Result<(), String> {
+    use rand::RngExt;
+    let mut challenge = [0u8; 32];
+    rand::rng().fill(&mut challenge);
+    let challenge = hex::encode(challenge);
+
+    let id = Uuid::new_v4();
+    let envelope = build_envelope(
+        id,
+        VERIFICATION_EVENT,
+        OffsetDateTime::now_utc(),
+        // Who is asking: set from the subscription row, never from anything
+        // the registrant sent, so a receiver can refuse to echo a challenge
+        // for an org it does not belong to.
+        &json!({
+            "challenge": challenge,
+            "org_id": org_id,
+            "subscription_id": subscription_id,
+        }),
+    );
+    let body = serde_json::to_string(&envelope).unwrap_or_default();
+
+    let mut resp = send_signed(url, secret, org_id, VERIFICATION_EVENT, id, body).await?;
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(format!(
+            "endpoint answered HTTP {} — expected a 2xx echoing the challenge",
+            status.as_u16()
+        ));
+    }
+
+    let mut received = Vec::new();
+    while let Some(chunk) = resp
+        .chunk()
+        .await
+        .map_err(|e| format!("reading the endpoint's answer failed: {e}"))?
+    {
+        received.extend_from_slice(&chunk);
+        if received.len() > VERIFICATION_BODY_CAP {
+            return Err(format!(
+                "endpoint answered with more than {VERIFICATION_BODY_CAP} bytes — expected only the challenge"
+            ));
+        }
+    }
+
+    if echoed_challenge(&received).is_some_and(|echo| echo == challenge) {
+        Ok(())
+    } else {
+        Err("endpoint answered 2xx but did not echo the challenge".to_string())
+    }
+}
+
+/// The challenge a verification response carries: `{"challenge": "..."}`, or
+/// else the whole body as text with surrounding whitespace trimmed.
+fn echoed_challenge(body: &[u8]) -> Option<String> {
+    let text = std::str::from_utf8(body).ok()?.trim();
+    if let Ok(serde_json::Value::Object(obj)) = serde_json::from_str::<serde_json::Value>(text) {
+        return obj
+            .get("challenge")
+            .and_then(|c| c.as_str())
+            .map(str::to_string);
+    }
+    Some(text.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::echoed_challenge;
+
+    #[test]
+    fn echo_is_read_from_json_or_plain_text() {
+        assert_eq!(
+            echoed_challenge(br#"{"challenge":"abc"}"#).as_deref(),
+            Some("abc")
+        );
+        assert_eq!(echoed_challenge(b"  abc\n").as_deref(), Some("abc"));
+        // A JSON object without the key is not a plain-text echo of itself.
+        assert_eq!(echoed_challenge(br#"{"ok":true}"#), None);
+        assert_eq!(echoed_challenge(br#"{"challenge":42}"#), None);
+        assert_eq!(echoed_challenge(&[0xff, 0xfe]), None);
     }
 }

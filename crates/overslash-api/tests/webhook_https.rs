@@ -46,7 +46,9 @@ async fn list(base: &str, key: &str) -> Vec<Value> {
 }
 
 /// A subscription row written straight to the table, the way a pre-7.1.1
-/// registration left it — the API no longer lets one be created.
+/// registration left it — the API no longer lets one be created. Marked
+/// verified (as migration 125 grandfathered every existing row), so what is
+/// under test is the scheme check, not the ownership handshake.
 async fn insert_raw_subscription(
     pool: &sqlx::PgPool,
     org_id: uuid::Uuid,
@@ -56,8 +58,9 @@ async fn insert_raw_subscription(
 ) -> uuid::Uuid {
     let events = vec!["tls.probe".to_string()];
     sqlx::query_scalar!(
-        "INSERT INTO webhook_subscriptions (org_id, url, events, secret, active, disabled_reason)
-         VALUES ($1, $2, $3, 'test-secret', $4, $5) RETURNING id",
+        "INSERT INTO webhook_subscriptions
+             (org_id, url, events, secret, active, disabled_reason, verification_status, grandfathered)
+         VALUES ($1, $2, $3, 'test-secret', $4, $5, 'verified', true) RETURNING id",
         org_id,
         url,
         &events,
@@ -124,6 +127,8 @@ async fn https_is_accepted_at_registration() {
     assert_eq!(body["url"], "https://hooks.example.com/receive");
     assert_eq!(body["active"], true);
     assert!(body["secret"].as_str().is_some_and(|s| !s.is_empty()));
+    // Nothing on the internet answers the ownership challenge for this host.
+    assert_eq!(body["verification_status"], "pending_verification");
 }
 
 /// The operator escape hatch: loopback is on the SSRF allow-list in this

@@ -169,5 +169,6 @@ mod version;
 mod wait_mode;
 mod webhook_digest;
 mod webhook_https;
+mod webhook_verification;
 mod welcome_unsubscribe;
 mod whatsapp;

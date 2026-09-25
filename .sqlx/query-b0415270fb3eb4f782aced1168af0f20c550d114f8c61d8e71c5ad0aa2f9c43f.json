@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "INSERT INTO webhook_subscriptions (org_id, url, events, secret)\n         VALUES ($1, $2, $3, $4)\n         RETURNING id, org_id, url, events, secret, active, disabled_reason, created_at",
+  "query": "UPDATE webhook_subscriptions\n            SET verification_status = 'verified', verified_at = now(), grandfathered = false,\n                verification_attempted_at = now(), verification_error = NULL\n          WHERE id = $1 AND org_id = $2 AND url = $3\n          RETURNING id, org_id, url, events, secret, active, disabled_reason,\n                    verification_status, verified_at, grandfathered,\n                    verification_attempted_at, verification_error, created_at",
   "describe": {
     "columns": [
       {
@@ -82,6 +82,61 @@
       },
       {
         "ordinal": 7,
+        "name": "verification_status",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "webhook_subscriptions",
+            "name": "verification_status"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "verified_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "webhook_subscriptions",
+            "name": "verified_at"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "grandfathered",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "webhook_subscriptions",
+            "name": "grandfathered"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "verification_attempted_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "webhook_subscriptions",
+            "name": "verification_attempted_at"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "verification_error",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "webhook_subscriptions",
+            "name": "verification_error"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -95,8 +150,7 @@
     "parameters": {
       "Left": [
         "Uuid",
-        "Text",
-        "TextArray",
+        "Uuid",
         "Text"
       ]
     },
@@ -108,8 +162,13 @@
       false,
       false,
       true,
+      false,
+      true,
+      false,
+      true,
+      true,
       false
     ]
   },
-  "hash": "7d46752ccc0c4a06cc716eca94bc9a700bd225381e4714828b31a94d80b6db3e"
+  "hash": "b0415270fb3eb4f782aced1168af0f20c550d114f8c61d8e71c5ad0aa2f9c43f"
 }

@@ -1472,9 +1472,20 @@ The same event payload is delivered regardless of transport. Agents may use any 
 }
 ```
 
-The `id` and `created_at` are stable across retries, so receivers can dedupe by `id` and reject stale replays by `created_at`. Routing headers mirror the envelope: `X-Overslash-Event` (event name), `X-Overslash-Delivery` (delivery id). `X-Overslash-Signature: sha256=<hex>` is HMAC-SHA256 over the raw body bytes (the envelope JSON), keyed with the subscription secret.
+The `id` and `created_at` are stable across retries, so receivers can dedupe by `id` and reject stale replays by `created_at`. Routing headers mirror the envelope: `X-Overslash-Event` (event name), `X-Overslash-Delivery` (delivery id), `X-Overslash-Org` (the org that registered the subscription — so a receiver serving several orgs can pick the secret to check). `X-Overslash-Signature: sha256=<hex>` is HMAC-SHA256 over the raw body bytes (the envelope JSON), keyed with the subscription secret.
 
 **Webhook endpoints are HTTPS-only.** `POST /v1/webhooks` refuses an `http://` (or any non-`https`) URL with a 400, and the dispatcher refuses to deliver to one, recording the attempt as a failed delivery. The only exception is plain `http` to loopback when the operator allow-lists loopback in `OVERSLASH_SSRF_ALLOWED_CIDRS` (tests, a receiver on the same host). A subscription registered over `http://` before this rule is listed with `active: false` and `disabled_reason: "needs_https"`; nothing is delivered to it until it is recreated with an `https://` URL.
+
+**Webhook endpoints prove ownership before anything is delivered.** A new subscription starts `verification_status: "pending_verification"`. `POST /v1/webhooks` stores it, then — before answering — POSTs a verification event to the URL: the normal envelope, headers and signature, with `type` / `X-Overslash-Event` = `webhook.verification`, `data.challenge` = 64 random hex characters, and `data.org_id` / `data.subscription_id` naming the registration.
+
+```json
+{ "id": "<uuid>", "type": "webhook.verification", "created_at": "…",
+  "data": { "challenge": "3f9c…e1", "org_id": "<uuid>", "subscription_id": "<uuid>" } }
+```
+
+The endpoint passes by answering **2xx within 10 seconds** with the challenge echoed back, either as the whole body (`text/plain`; surrounding whitespace ignored) or as `{"challenge": "<value>"}` — at most 4 KiB. The subscription then becomes `verified` (`verified_at` set). Any other answer — a non-2xx, a different value, a timeout, an address the SSRF guard refuses — leaves it pending, and the reason is returned as `verification_error` (the response body is never echoed back). The challenge is signed with the subscription secret like every event, but since that secret is only returned by the same `POST`, a receiver should answer `webhook.verification` without requiring a valid signature, or re-run the handshake once it has stored the secret. The org and subscription ids are set by Overslash from the subscription, never taken from the registrant, so **a receiver that serves known orgs should echo only challenges whose `data.org_id` it recognises**. That is what stops another tenant from pointing a subscription at it and getting it verified; a forged challenge sent straight to the receiver verifies nothing, because only one Overslash sent can. `POST /v1/webhooks/{id}/verify` re-runs it at any time; a failed re-check never downgrades a subscription that is already verified.
+
+Nothing is sent to a pending subscription. An event raised meanwhile is recorded as a delivery with `held_reason: "pending_verification"` and no attempt, and the retry sweep sends it once the subscription verifies. The handshake goes through the same HTTPS-only, SSRF-guarded path as every delivery. Subscriptions created before verification existed were marked `verified` with `grandfathered: true`, so existing consumers kept receiving events; a successful `/verify` clears the flag. There is no endpoint to change a subscription's URL — a new URL is a new subscription, and is verified from scratch.
 
 When `notifications.managed_by_platform` is set (§5), Overslash's user-facing notifications (bell, email, 1-minute delayed webhook) are suppressed — but the event-stream transports above still fire normally, because the platform is the consumer.
 

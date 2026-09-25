@@ -1025,3 +1025,24 @@ Flow B (task-augmented `tools/call`) stays rejected with its revisit condition u
 **Template `servers[]` are not checked.** They reduce to bare hosts that `effective_base` always dials over `https`, so an `http://` server entry never produces a plaintext request.
 
 **Out of scope, tracked in TODO §1.6:** the MCP OAuth upstream discovery/token endpoints. Webhook delivery is HTTPS-only separately (#664, `services/https_policy.rs`), with a stricter exception — plain `http` to loopback only, not to any allow-listed range. The two rules should converge on one module; which exception wins is a review question.
+
+## D-NEXT: A webhook endpoint proves ownership by echoing a challenge, events wait for it, and existing subscriptions are grandfathered
+
+**Date**: 2026-09-23
+**Decision**: A new webhook subscription starts `pending_verification`. Registration POSTs a signed `webhook.verification` envelope carrying a random `data.challenge` and waits for the answer (10s); a 2xx with the challenge echoed, as the whole body or as `{"challenge": …}`, makes it `verified`. `POST /v1/webhooks/{id}/verify` re-runs the handshake. Only verified subscriptions are dialed. An event for a pending one is written as a delivery with `held_reason = pending_verification` and released to the retry sweep when it verifies. Every subscription that existed before this was marked `verified` with `grandfathered = true`.
+
+**Rationale**: CASA 7.1.2 — a registrant must not be able to point signed events at an endpoint it does not control.
+
+**Echo, Slack/Dropbox style, not a token the receiver posts back.** An echo in the response needs no second channel and no state on our side between two requests, and it is what receivers already know how to write. The challenge travels in the normal envelope with the normal signature, so a receiver routes it like any other event type.
+
+**The handshake runs inline at registration.** The registrant gets the outcome — and the reason, if it failed — in the same response, and the dashboard can show it without polling. The cost is up to 10s on `POST /v1/webhooks`; the request holds no DB connection across it, the same rule as `deliver`.
+
+**The signature cannot be checked on the first challenge.** The secret is minted by the same `POST` that sends the challenge, so a receiver that insists on a valid signature fails the first handshake; it stores the secret and calls `/verify`. We did not mint the secret in a separate step, or sign the challenge with a key the receiver cannot hold: the echo proves control of the URL, which is the requirement, and the signature is still there for receivers that verify later.
+
+**The challenge names who is asking.** It carries `data.org_id` and `data.subscription_id`, and every request (challenges and events) carries `X-Overslash-Org`. Without that, a receiver answering the challenge unsigned — the path the previous paragraph leaves strict receivers — would verify a subscription any tenant pointed at it; the events that followed would fail its signature check, but Overslash would still be relaying traffic to a site that never agreed to it. With the org id, a receiver echoes only for orgs it knows. This beat a registrant-chosen verify token (Meta's `hub.verify_token`): the receiver already knows its org id, so it needs no new secret, and the value cannot be spoofed in a way that matters, since only a challenge Overslash sends can verify anything.
+
+**Held, not dropped.** The alternatives were to skip the event (it vanishes silently, which a registrant debugging a new endpoint cannot see) or to refuse to enqueue (same thing). A held row shows up in the delivery history, and a receiver that verifies a minute late gets what it missed. Held rows keep `next_retry_at = now()` and the sweep filters on the subscription's status, so a row written in the instant a verification lands is picked up by the next sweep instead of being stranded.
+
+**A failed re-check does not downgrade a verified subscription.** Re-verification is a confirmation, not a probe; a deploy blip on the receiver while someone clicks Verify must not cut a working consumer off. The error is recorded and shown.
+
+**Grandfathering is the compensating control for the existing rows.** Forcing every live consumer to re-verify on deploy would be a flag day for integrations we do not operate. Every grandfathered row was created by an org admin, and the flag is visible in the API and the dashboard until a real handshake clears it. There is no update endpoint, so a URL can never change under a verified row; a new URL is a new subscription and starts pending.

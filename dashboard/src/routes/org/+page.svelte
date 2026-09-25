@@ -312,6 +312,7 @@
 	let whError = $state<string | null>(null);
 	let whSubmitting = $state(false);
 	let createdWebhook = $state<WebhookCreated | null>(null);
+	let verifyingWebhook = $state<string | null>(null);
 
 	// Deliveries panel state — keyed by webhook id
 	let openDeliveriesFor = $state<string | null>(null);
@@ -823,6 +824,23 @@
 				}
 			}
 		);
+	}
+
+	async function verifyWebhook(wh: Webhook) {
+		verifyingWebhook = wh.id;
+		try {
+			await session.post(`/v1/webhooks/${wh.id}/verify`, {});
+			await refetchWebhooks();
+			// Held deliveries were released — drop the cached rows.
+			if (openDeliveriesFor === wh.id) {
+				openDeliveriesFor = null;
+				delete deliveries[wh.id];
+			}
+		} catch (err) {
+			alert(asMessage(err));
+		} finally {
+			verifyingWebhook = null;
+		}
 	}
 
 	async function toggleDeliveries(wh: Webhook) {
@@ -1874,6 +1892,13 @@
 				Webhook URLs must use <code>https://</code>. Editing is not supported — to change a
 				webhook, delete it and create a new one.
 			</p>
+			<p class="muted small">
+				Before any event is sent, the endpoint must prove it is yours: it receives a
+				<code>webhook.verification</code> event and has to answer 2xx with its
+				<code>data.challenge</code> echoed back, as the body or as
+				<code>{'{"challenge": "…"}'}</code>. Events raised before then are held and sent once it
+				verifies.
+			</p>
 
 			{#if createdWebhook}
 				<div class="secret-banner">
@@ -1885,6 +1910,14 @@
 						<button type="button" class="btn-link" onclick={copySecret}>Copy</button>
 						<button type="button" class="btn-link" onclick={dismissCreatedWebhook}>Dismiss</button>
 					</div>
+					{#if createdWebhook.verification_status === 'pending_verification'}
+						<p class="small wh-hint">
+							Not verified yet{createdWebhook.verification_error
+								? ` — ${createdWebhook.verification_error}`
+								: ''}. Nothing is delivered until the endpoint echoes the challenge; use
+							<strong>Verify</strong> once it does.
+						</p>
+					{/if}
 				</div>
 			{/if}
 
@@ -1910,11 +1943,28 @@
 											Not delivered: plain http:// is not allowed. Delete it and create it again
 											with an https:// URL.
 										</p>
+									{:else if wh.verification_status === 'pending_verification'}
+										<p class="muted small wh-hint">
+											Not delivered until the endpoint echoes the verification challenge.
+											{#if wh.verification_error}
+												Last attempt: {wh.verification_error}.
+											{/if}
+										</p>
+									{:else if wh.grandfathered}
+										<p class="muted small wh-hint">
+											Registered before endpoint verification existed, so it was kept verified.
+											Verify it to confirm ownership.
+											{#if wh.verification_error}
+												Last attempt: {wh.verification_error}.
+											{/if}
+										</p>
 									{/if}
 								</td>
 								<td class="small">{wh.events.join(', ')}</td>
 								<td>
-									{#if wh.active}
+									{#if wh.active && wh.verification_status === 'pending_verification'}
+										<span class="badge badge-pending">unverified</span>
+									{:else if wh.active}
 										<span class="badge badge-on">active</span>
 									{:else if wh.disabled_reason === 'needs_https'}
 										<span class="badge badge-off nowrap">needs HTTPS</span>
@@ -1923,6 +1973,16 @@
 									{/if}
 								</td>
 								<td class="actions-col">
+									{#if wh.active && (wh.verification_status === 'pending_verification' || wh.grandfathered)}
+										<button
+											type="button"
+											class="btn-link"
+											disabled={verifyingWebhook === wh.id}
+											onclick={() => verifyWebhook(wh)}
+										>
+											{verifyingWebhook === wh.id ? 'Verifying…' : 'Verify'}
+										</button>
+									{/if}
 									<button type="button" class="btn-link" onclick={() => toggleDeliveries(wh)}>
 										{openDeliveriesFor === wh.id ? 'Hide' : 'View'} deliveries
 									</button>
@@ -1957,7 +2017,13 @@
 													{#each deliveries[wh.id] as WebhookDelivery[] as d (d.id)}
 														<tr>
 															<td class="mono small">{d.event}</td>
-															<td class="small">{d.status_code ?? '—'}</td>
+															<td class="small">
+																{#if d.held_reason}
+																	<span class="badge badge-pending">held</span>
+																{:else}
+																	{d.status_code ?? '—'}
+																{/if}
+															</td>
 															<td class="small">{d.attempts}</td>
 															<td class="small">{fmtDate(d.created_at)}</td>
 															<td class="small">{fmtDate(d.delivered_at)}</td>
@@ -2305,6 +2371,10 @@
 	.badge-off {
 		background: #fbe9e9;
 		color: #b42318;
+	}
+	.badge-pending {
+		background: #fdf4dc;
+		color: #8a5a00;
 	}
 	.badge-svc {
 		background: #eef0ff;

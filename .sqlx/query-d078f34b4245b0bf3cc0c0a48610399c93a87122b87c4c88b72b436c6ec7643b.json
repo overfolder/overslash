@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, subscription_id, event, payload, status_code, response_body, attempts,\n                next_retry_at, delivered_at, created_at\n         FROM webhook_deliveries WHERE subscription_id = $1\n         ORDER BY created_at DESC LIMIT $2",
+  "query": "SELECT id, subscription_id, event, payload, status_code, response_body, attempts,\n                next_retry_at, delivered_at, created_at, held_reason\n         FROM webhook_deliveries WHERE subscription_id = $1\n         ORDER BY created_at DESC LIMIT $2",
   "describe": {
     "columns": [
       {
@@ -112,6 +112,17 @@
             "name": "created_at"
           }
         }
+      },
+      {
+        "ordinal": 10,
+        "name": "held_reason",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "webhook_deliveries",
+            "name": "held_reason"
+          }
+        }
       }
     ],
     "parameters": {
@@ -130,8 +141,9 @@
       false,
       true,
       true,
-      false
+      false,
+      true
     ]
   },
-  "hash": "6117b33efbb5f6893d1e377d9e876655e70daf6489d7d8e37505e0d63569f0c8"
+  "hash": "d078f34b4245b0bf3cc0c0a48610399c93a87122b87c4c88b72b436c6ec7643b"
 }

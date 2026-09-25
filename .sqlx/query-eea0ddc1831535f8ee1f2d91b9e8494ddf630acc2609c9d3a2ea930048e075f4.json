@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "INSERT INTO webhook_subscriptions (org_id, url, events, secret, active, disabled_reason)\n         VALUES ($1, $2, $3, 'test-secret', $4, $5) RETURNING id",
+  "query": "INSERT INTO webhook_subscriptions\n             (org_id, url, events, secret, active, disabled_reason, verification_status, grandfathered)\n         VALUES ($1, $2, $3, 'test-secret', $4, $5, 'verified', true) RETURNING id",
   "describe": {
     "columns": [
       {
@@ -28,5 +28,5 @@
       false
     ]
   },
-  "hash": "25d37be88cc9ffc5693014834f852fde91f3a31f1164ad74734f738cadaa292f"
+  "hash": "eea0ddc1831535f8ee1f2d91b9e8494ddf630acc2609c9d3a2ea930048e075f4"
 }

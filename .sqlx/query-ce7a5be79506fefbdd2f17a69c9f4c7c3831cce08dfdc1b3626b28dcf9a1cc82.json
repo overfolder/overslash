@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, org_id, url, events, secret, active, disabled_reason, created_at\n         FROM webhook_subscriptions WHERE org_id = $1 AND active = true AND $2 = ANY(events)",
+  "query": "SELECT id, org_id, url, events, secret, active, disabled_reason,\n                verification_status, verified_at, grandfathered,\n                verification_attempted_at, verification_error, created_at\n         FROM webhook_subscriptions WHERE id = $1 AND org_id = $2",
   "describe": {
     "columns": [
       {
@@ -82,6 +82,61 @@
       },
       {
         "ordinal": 7,
+        "name": "verification_status",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "webhook_subscriptions",
+            "name": "verification_status"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "verified_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "webhook_subscriptions",
+            "name": "verified_at"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "grandfathered",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "webhook_subscriptions",
+            "name": "grandfathered"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "verification_attempted_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "webhook_subscriptions",
+            "name": "verification_attempted_at"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "verification_error",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "webhook_subscriptions",
+            "name": "verification_error"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -95,7 +150,7 @@
     "parameters": {
       "Left": [
         "Uuid",
-        "Text"
+        "Uuid"
       ]
     },
     "nullable": [
@@ -106,8 +161,13 @@
       false,
       false,
       true,
+      false,
+      true,
+      false,
+      true,
+      true,
       false
     ]
   },
-  "hash": "60b9b739f4d3af532c1068b31e275d11de9b6b48acf91e29aef6007c1c96a9df"
+  "hash": "ce7a5be79506fefbdd2f17a69c9f4c7c3831cce08dfdc1b3626b28dcf9a1cc82"
 }
