@@ -23,7 +23,7 @@ const ALLOWED_HOST: &str = "allowed.preview.test";
 /// allowlist set) so we can exercise the success path.
 async fn start_with_handoff_enabled(pool: PgPool) -> (SocketAddr, reqwest::Client) {
     common::start_api_with(pool, |cfg| {
-        cfg.overslash_env = Some("dev".into());
+        cfg.deployment_env = overslash_api::config::DeploymentEnv::Dev;
         cfg.preview_origin_allowlist =
             Some(regex::Regex::new(ALLOWLIST_PATTERN).expect("valid regex"));
     })
@@ -79,7 +79,7 @@ async fn handoff_endpoint_returns_404_when_feature_disabled() {
 async fn handoff_endpoint_404_when_env_dev_but_no_allowlist() {
     let pool = common::test_pool().await;
     let (addr, client) = common::start_api_with(pool, |cfg| {
-        cfg.overslash_env = Some("dev".into());
+        cfg.deployment_env = overslash_api::config::DeploymentEnv::Dev;
         cfg.preview_origin_allowlist = None;
     })
     .await;
@@ -98,7 +98,7 @@ async fn handoff_endpoint_404_when_env_dev_but_no_allowlist() {
 async fn handoff_endpoint_404_when_allowlist_set_but_env_is_prod() {
     let pool = common::test_pool().await;
     let (addr, client) = common::start_api_with(pool, |cfg| {
-        cfg.overslash_env = Some("prod".into());
+        cfg.deployment_env = overslash_api::config::DeploymentEnv::Prod;
         cfg.preview_origin_allowlist = Some(regex::Regex::new(ALLOWLIST_PATTERN).unwrap());
     })
     .await;
@@ -301,7 +301,7 @@ async fn handoff_endpoint_rejects_when_origin_falls_off_allowlist() {
 
     // Boot with a *different* allowlist that excludes ALLOWED_ORIGIN.
     let (addr, _) = common::start_api_with(pool, |cfg| {
-        cfg.overslash_env = Some("dev".into());
+        cfg.deployment_env = overslash_api::config::DeploymentEnv::Dev;
         cfg.preview_origin_allowlist =
             Some(regex::Regex::new(r"^https://other\.preview\.test$").unwrap());
     })

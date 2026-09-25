@@ -2,12 +2,16 @@ use std::time::Duration;
 
 use anyhow::Context;
 use axum::Router;
-use overslash_api::config::{Config, default_public_url};
+use overslash_api::config::{Config, DeploymentEnv, default_public_url, log_filter};
 use overslash_mcp::config::McpConfig;
-use tracing_subscriber::EnvFilter;
 
 fn init_tracing(to_stderr: bool) {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    // Production refuses a debug/trace `RUST_LOG` and runs at info instead;
+    // the warning can only be logged once the subscriber is up.
+    let (filter, filter_warning) = log_filter(
+        overslash_env::optional("RUST_LOG").as_deref(),
+        &DeploymentEnv::from_env(),
+    );
     // Prod (Cloud Run) sets `LOG_FORMAT=json` so logs land in Cloud Logging
     // as structured JSON; locally we default to the human-readable text
     // formatter so `make local` stays grep-friendly.
@@ -19,6 +23,9 @@ fn init_tracing(to_stderr: bool) {
         (true, false) => builder.with_writer(std::io::stderr).init(),
         (false, true) => builder.json().init(),
         (false, false) => builder.init(),
+    }
+    if let Some(warning) = filter_warning {
+        tracing::warn!("{warning}");
     }
 }
 
@@ -47,7 +54,9 @@ pub fn bootstrap_cli() {
 }
 
 /// Load and validate config from env, overriding host/port from CLI args.
-/// Exits the process if required env vars are missing.
+/// Exits the process if required env vars are missing, or if the config
+/// fails a boot interlock (`Config::boot_policy`: DEV_AUTH in production, a
+/// weak key outside a local checkout, …).
 pub fn load_config(host: String, port: u16) -> Config {
     let missing = Config::validate_env();
     if !missing.is_empty() {
@@ -55,6 +64,23 @@ pub fn load_config(host: String, port: u16) -> Config {
         std::process::exit(1);
     }
     let mut config = Config::from_env();
+    let report = config.boot_policy();
+    for warning in &report.warnings {
+        tracing::warn!(
+            deployment_env = %config.deployment_env,
+            "{warning} (allowed only because OVERSLASH_ENV is unset or local)"
+        );
+    }
+    if !report.errors.is_empty() {
+        for error in &report.errors {
+            tracing::error!(deployment_env = %config.deployment_env, "{error}");
+        }
+        tracing::error!(
+            "Refusing to start: {} boot check(s) failed",
+            report.errors.len()
+        );
+        std::process::exit(1);
+    }
     config.host = host;
     config.port = port;
     // If PUBLIC_URL wasn't set explicitly, re-derive it from the final

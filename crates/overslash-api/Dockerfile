@@ -80,6 +80,10 @@ USER overslash
 
 ENV HOST=0.0.0.0
 ENV PORT=8080
+# The shipped image is a production artifact, so it gets the production boot
+# interlocks (no DEV_AUTH, no weak keys, no debug RUST_LOG) unless the
+# deployment says otherwise. The dev Cloud Run service sets OVERSLASH_ENV=dev.
+ENV OVERSLASH_ENV=prod
 EXPOSE 8080
 
 ENTRYPOINT ["/app/entrypoint.sh"]

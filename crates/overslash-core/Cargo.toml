@@ -23,6 +23,11 @@ embeddings = ["dep:fastembed"]
 # Every shipping build opts in — see the feature comment in
 # crates/overslash-cli/Cargo.toml for the full list of places that must.
 sql_policy = ["dep:pg_query"]
+# Test-only helpers with hardcoded key material (`Keyring::test()`). Enabled
+# from `[dev-dependencies]` only, so it can never reach a shipping binary: a
+# normal dependency that turned it on would put a known encryption key in the
+# production library (CASA 6.2.1).
+test-support = []
 
 [dependencies]
 overslash-env = { path = "../overslash-env" }

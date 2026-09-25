@@ -74,8 +74,8 @@ the binary. The API auto-applies migrations on first start.
 
 ```bash
 export DATABASE_URL=postgres://postgres:overslash@localhost:5432/overslash
-export SECRETS_ENCRYPTION_KEY=$(openssl rand -base64 32)
-export SIGNING_KEY=$(openssl rand -base64 32)
+export SECRETS_ENCRYPTION_KEY=$(openssl rand -hex 32)
+export SIGNING_KEY=$(openssl rand -hex 32)
 ./overslash web
 ```
 
@@ -107,8 +107,19 @@ unset or empty.
 | Variable | Purpose |
 |---|---|
 | `DATABASE_URL` | Postgres connection string. Migrations are applied on first start. |
-| `SECRETS_ENCRYPTION_KEY` | AES-256-GCM key for the secret vault. 32 bytes. |
-| `SIGNING_KEY` | Signs sessions, approval links and download/upload tokens. |
+| `SECRETS_ENCRYPTION_KEY` | AES-256-GCM key for the secret vault. 32 bytes, as 64 hex chars (`openssl rand -hex 32`). |
+| `SIGNING_KEY` | Signs sessions, approval links and download/upload tokens. At least 32 bytes (`openssl rand -hex 32`). |
+
+### Boot interlocks
+
+`OVERSLASH_ENV` names the deployment: unset or `local` for a checkout on your
+machine, otherwise `dev`, `staging`, `prod` or any marker of your own. The
+container image defaults it to `prod`. Outside `local`, the API refuses to
+start with a weak `SECRETS_ENCRYPTION_KEY` or `SIGNING_KEY` — a placeholder,
+one repeated byte, fewer than 32 bytes, or a near-constant pattern (locally
+these only warn). In `prod` it also refuses `DEV_AUTH` on, and replaces a
+`RUST_LOG` that enables `debug` or `trace` with `info`. `DEV_AUTH` set to
+anything other than a recognised boolean stops the boot everywhere.
 
 ### Required in context
 

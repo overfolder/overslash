@@ -43,6 +43,9 @@ services:
       HOST: "0.0.0.0"
       PORT: "8080"
       RUST_LOG: ${RUST_LOG:-info}
+      # Production boot interlocks: DEV_AUTH refused, weak keys refused, a
+      # debug RUST_LOG clamped to info. The image defaults to this too.
+      OVERSLASH_ENV: ${OVERSLASH_ENV:-prod}
       APPROVAL_EXPIRY_SECS: ${APPROVAL_EXPIRY_SECS:-1800}
       PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8080}
       # No `:-` default. Compose renders `${FOO:-}` as the *empty string*, so

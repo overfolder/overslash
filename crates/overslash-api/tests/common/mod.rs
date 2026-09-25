@@ -707,7 +707,7 @@ where
         email_reply_to: None,
         email_api_key: None,
         preview_origin_allowlist: None,
-        overslash_env: None,
+        deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
     };
     customize(&mut config);
@@ -931,7 +931,7 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         email_reply_to: None,
         email_api_key: None,
         preview_origin_allowlist: None,
-        overslash_env: None,
+        deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
     };
 
@@ -1099,7 +1099,7 @@ pub async fn start_api_with_auth_providers(
         email_reply_to: None,
         email_api_key: None,
         preview_origin_allowlist: None,
-        overslash_env: None,
+        deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
     };
 
@@ -1787,7 +1787,7 @@ where
         email_reply_to: None,
         email_api_key: None,
         preview_origin_allowlist: None,
-        overslash_env: None,
+        deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
     };
     customize(&mut config);
@@ -1962,7 +1962,7 @@ pub async fn start_api_for_search(pool: PgPool) -> (String, Client) {
         email_reply_to: None,
         email_api_key: None,
         preview_origin_allowlist: None,
-        overslash_env: None,
+        deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
     };
 
@@ -2108,7 +2108,7 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         email_reply_to: None,
         email_api_key: None,
         preview_origin_allowlist: None,
-        overslash_env: None,
+        deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
     };
 
@@ -2441,7 +2441,7 @@ pub async fn make_app_state(pool: PgPool) -> overslash_api::AppState {
         email_reply_to: None,
         email_api_key: None,
         preview_origin_allowlist: None,
-        overslash_env: None,
+        deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
     };
     // Hand out a 1ms TTL so each test can flip the DB column and immediately

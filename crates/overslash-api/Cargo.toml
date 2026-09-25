@@ -64,6 +64,10 @@ jaq-std = "=3.0.3"
 jaq-json = { version = "=2.0.3", features = ["serde"] }
 
 [dev-dependencies]
+# `test-support` exposes `Keyring::test()` to the integration tests. Dev-only:
+# feature unification never carries a dev-dependency's features into the
+# release binary.
+overslash-core = { path = "../overslash-core", default-features = false, features = ["yaml", "test-support"] }
 overslash-fakes = { path = "../overslash-fakes" }
 sqlx = { workspace = true }
 reqwest = { workspace = true }
