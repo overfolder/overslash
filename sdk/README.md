@@ -82,13 +82,15 @@ if (final.execution?.status === 'executed') {
 ### Webhooks
 
 ```ts
-import { parseWebhookEvent, verifyWebhookSignature } from '@overslash/sdk/node';
+import { parseWebhookEvent, verifyWebhook } from '@overslash/sdk/node';
 
 app.post('/webhooks/overslash', express.raw({ type: '*/*' }), async (req, res) => {
-  const ok = await verifyWebhookSignature({
-    payload: req.body,                              // the RAW bytes
-    signature: req.get('x-overslash-signature')!,
+  const ok = await verifyWebhook({
+    payload: req.body,                                  // the RAW bytes
+    timestamp: req.get('x-overslash-timestamp'),
+    signature: req.get('x-overslash-signature-v1'),
     secret: process.env.OVERSLASH_WEBHOOK_SECRET!,
+    // toleranceSeconds: 300 (default) — a delivery older or newer than this fails
   });
   if (!ok) return res.sendStatus(401);
 
@@ -100,9 +102,15 @@ app.post('/webhooks/overslash', express.raw({ type: '*/*' }), async (req, res) =
 });
 ```
 
-The signature is over the **raw body bytes**. Re-serialising a parsed body
-changes the whitespace and the check fails — mount this route before any JSON
-middleware.
+The signature is HMAC-SHA256 over `"<X-Overslash-Timestamp>.<raw body>"`. It
+is over the **raw body bytes**: re-serialising a parsed body changes the
+whitespace and the check fails — mount this route before any JSON middleware.
+The timestamp is inside the signature, so a captured delivery stops verifying
+once it is older than the tolerance; dedupe on the envelope `id` within it.
+
+`verifyWebhookSignature` checks the legacy `X-Overslash-Signature: sha256=<hex>`
+(body only, no timestamp). It still works — the header is still sent — but it
+is deprecated: that signature replays forever, and the header will be dropped.
 
 ## Browser-side
 

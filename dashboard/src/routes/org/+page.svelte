@@ -1910,6 +1910,11 @@
 						<button type="button" class="btn-link" onclick={copySecret}>Copy</button>
 						<button type="button" class="btn-link" onclick={dismissCreatedWebhook}>Dismiss</button>
 					</div>
+					<p class="small wh-hint">
+						Verify each delivery against <code>X-Overslash-Signature-V1</code>: HMAC-SHA256 of
+						<code>&lt;X-Overslash-Timestamp&gt;.&lt;raw body&gt;</code>, rejecting timestamps more than
+						5 minutes old. The body-only <code>X-Overslash-Signature</code> is deprecated.
+					</p>
 					{#if createdWebhook.verification_status === 'pending_verification'}
 						<p class="small wh-hint">
 							Not verified yet{createdWebhook.verification_error

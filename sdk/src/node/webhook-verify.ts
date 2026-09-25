@@ -1,15 +1,76 @@
 /**
  * Webhook verification.
  *
- * Mirrors `crates/overslash-api/src/services/webhook_dispatcher.rs`: HMAC-SHA256
- * over the **raw body bytes**, hex-encoded, sent as
- * `X-Overslash-Signature: sha256=<hex>`.
+ * Mirrors `crates/overslash-api/src/services/webhook_dispatcher.rs`. Every
+ * attempt carries two signatures, both HMAC-SHA256 with the subscription
+ * secret, hex-encoded:
+ *
+ * - `X-Overslash-Timestamp: <unix seconds>` and
+ *   `X-Overslash-Signature-V1: v1=<hex>` over `"<timestamp>.<raw body>"` —
+ *   what {@link verifyWebhook} checks. The timestamp is inside the MAC, so a
+ *   captured delivery stops verifying once it falls outside the tolerance.
+ * - `X-Overslash-Signature: sha256=<hex>` over the raw body alone — the
+ *   legacy scheme, deprecated: it replays forever. {@link verifyWebhookSignature}
+ *   still checks it for integrations that have not moved yet.
  *
  * WebCrypto rather than `node:crypto`, so the same code verifies in a Worker or
  * an edge runtime — and so the package keeps its "no Node built-ins" property.
  */
 
 import type { EventEnvelope, WireEventType } from '../types/events.js';
+
+/** Stripe's default, and what Overslash's own Stripe consumer uses. */
+export const DEFAULT_WEBHOOK_TOLERANCE_SECONDS = 5 * 60;
+
+export interface VerifyWebhookV1Options {
+  /**
+   * The **raw** body, exactly as received — see {@link VerifyWebhookOptions.payload}.
+   */
+  payload: string | Uint8Array;
+  /** The `X-Overslash-Timestamp` header. A missing one fails verification. */
+  timestamp: string | null | undefined;
+  /** The `X-Overslash-Signature-V1` header: `v1=<hex>`, possibly several, comma-separated. */
+  signature: string | null | undefined;
+  /** The subscription secret, returned once when the webhook was created. */
+  secret: string;
+  /** How far the timestamp may be from `now`, either way. Default 300. */
+  toleranceSeconds?: number;
+  /** Current unix time in seconds; injectable for tests. */
+  now?: number;
+}
+
+/**
+ * Verify a delivery's timestamped `v1` signature. `false` when the timestamp
+ * is missing, malformed or outside the tolerance, or no `v1` entry matches.
+ */
+export async function verifyWebhook(opts: VerifyWebhookV1Options): Promise<boolean> {
+  const ts = opts.timestamp?.trim();
+  if (!ts || !/^\d+$/.test(ts)) return false;
+  const now = opts.now ?? Math.floor(Date.now() / 1000);
+  const tolerance = opts.toleranceSeconds ?? DEFAULT_WEBHOOK_TOLERANCE_SECONDS;
+  if (Math.abs(now - Number(ts)) > tolerance) return false;
+
+  const candidates = (opts.signature ?? '')
+    .split(',')
+    .map((part) => part.trim())
+    .filter((part) => part.startsWith('v1='))
+    .map((part) => part.slice('v1='.length))
+    .filter((hex) => /^[0-9a-f]+$/i.test(hex))
+    .map((hex) => hex.toLowerCase());
+  if (candidates.length === 0) return false;
+
+  const body = typeof opts.payload === 'string' ? new TextEncoder().encode(opts.payload) : opts.payload;
+  const prefix = new TextEncoder().encode(`${ts}.`);
+  const signed = new Uint8Array(prefix.length + body.length);
+  signed.set(prefix);
+  signed.set(body, prefix.length);
+  const expected = await hmacHex(opts.secret, signed);
+
+  // Compare against every candidate, no early exit.
+  let ok = false;
+  for (const candidate of candidates) ok = timingSafeEqual(expected, candidate) || ok;
+  return ok;
+}
 
 export interface VerifyWebhookOptions {
   /**
@@ -26,25 +87,34 @@ export interface VerifyWebhookOptions {
   secret: string;
 }
 
+/**
+ * Verify the legacy body-only `X-Overslash-Signature: sha256=<hex>`.
+ *
+ * @deprecated It has no time component, so a captured delivery verifies
+ * forever. Use {@link verifyWebhook}; this header will stop being sent.
+ */
 export async function verifyWebhookSignature(opts: VerifyWebhookOptions): Promise<boolean> {
   const expected = stripPrefix(opts.signature);
   if (!expected) return false;
 
+  const body = typeof opts.payload === 'string' ? new TextEncoder().encode(opts.payload) : opts.payload;
+  return timingSafeEqual(await hmacHex(opts.secret, body), expected);
+}
+
+async function hmacHex(secret: string, message: Uint8Array): Promise<string> {
   const key = await crypto.subtle.importKey(
     'raw',
-    new TextEncoder().encode(opts.secret),
+    new TextEncoder().encode(secret),
     { name: 'HMAC', hash: 'SHA-256' },
     false,
     ['sign'],
   );
-  const body = typeof opts.payload === 'string' ? new TextEncoder().encode(opts.payload) : opts.payload;
-  const mac = await crypto.subtle.sign('HMAC', key, body as BufferSource);
-
-  return timingSafeEqual(toHex(new Uint8Array(mac)), expected);
+  const mac = await crypto.subtle.sign('HMAC', key, message as BufferSource);
+  return toHex(new Uint8Array(mac));
 }
 
 /**
- * Parse an envelope. Does **not** verify — call `verifyWebhookSignature` first,
+ * Parse an envelope. Does **not** verify — call `verifyWebhook` first,
  * on the raw bytes, and only then parse.
  */
 export function parseWebhookEvent<T = Record<string, unknown>>(

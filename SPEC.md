@@ -1472,7 +1472,19 @@ The same event payload is delivered regardless of transport. Agents may use any 
 }
 ```
 
-The `id` and `created_at` are stable across retries, so receivers can dedupe by `id` and reject stale replays by `created_at`. Routing headers mirror the envelope: `X-Overslash-Event` (event name), `X-Overslash-Delivery` (delivery id), `X-Overslash-Org` (the org that registered the subscription — so a receiver serving several orgs can pick the secret to check). `X-Overslash-Signature: sha256=<hex>` is HMAC-SHA256 over the raw body bytes (the envelope JSON), keyed with the subscription secret.
+The `id` and `created_at` are stable across retries, so receivers can dedupe by `id`. Routing headers mirror the envelope: `X-Overslash-Event` (event name), `X-Overslash-Delivery` (delivery id), `X-Overslash-Org` (the org that registered the subscription — so a receiver serving several orgs can pick the secret to check).
+
+**Webhook signatures.** Every attempt — first delivery, each retry, and the verification challenge — is signed with the subscription secret (HMAC-SHA256, lowercase hex):
+
+| Header | Value | Covers |
+|---|---|---|
+| `X-Overslash-Timestamp` | unix seconds when this attempt was signed | — |
+| `X-Overslash-Signature-V1` | `v1=<hex>` | `"<timestamp>.<raw body>"` |
+| `X-Overslash-Signature` | `sha256=<hex>` — **deprecated** | the raw body only |
+
+Verify `v1`: read the raw body bytes (never a re-serialised object), reject a missing or non-integer `X-Overslash-Timestamp`, reject a timestamp more than **5 minutes** from your clock in either direction, compute HMAC-SHA256 over `"<timestamp>." + body`, and compare in constant time against each comma-separated `v1=` entry in `X-Overslash-Signature-V1` (accept if any matches; more than one appears only during a secret rotation). A retry is re-signed with a fresh timestamp over the same body, so a slow retry still verifies while a delivery captured earlier does not. Dedupe on `id` inside the window. `@overslash/sdk/node` ships `verifyWebhook` doing exactly this.
+
+`X-Overslash-Signature` is the pre-timestamp scheme, still sent unchanged so verifiers written against it keep working. It has no time component — a captured delivery verifies forever — and will stop being sent; move to `v1`. Deprecation plan in TECH_DEBT.md.
 
 **Webhook endpoints are HTTPS-only.** `POST /v1/webhooks` refuses an `http://` (or any non-`https`) URL with a 400, and the dispatcher refuses to deliver to one, recording the attempt as a failed delivery. The only exception is plain `http` to loopback when the operator allow-lists loopback in `OVERSLASH_SSRF_ALLOWED_CIDRS` (tests, a receiver on the same host). A subscription registered over `http://` before this rule is listed with `active: false` and `disabled_reason: "needs_https"`; nothing is delivered to it until it is recreated with an `https://` URL.
 

@@ -4,6 +4,32 @@ Known workarounds and deferred improvements.
 
 ---
 
+## Webhooks still send the replayable legacy signature
+
+Every webhook attempt carries the timestamped `X-Overslash-Signature-V1`
+(CASA 7.2.3) **and** the pre-existing `X-Overslash-Signature: sha256=<hex>`,
+an HMAC over the body alone. The legacy header is kept so receivers written
+against it — including anyone on `@overslash/sdk`'s `verifyWebhookSignature` —
+did not break on deploy. But as long as it is sent, a receiver that checks only
+it accepts a captured delivery forever; the replay protection is opt-in until
+the header is gone.
+
+Deprecation plan:
+
+1. **Now.** Both headers sent. SPEC, the SDK README and `verifyWebhookSignature`'s
+   `@deprecated` tag point at `v1` / `verifyWebhook`.
+2. **Announce.** The overslash-docs webhook guide gets the `v1` verification
+   section and a removal date; org admins with active subscriptions are told by
+   email. Target: no earlier than 90 days after this ships.
+3. **Remove.** Delete `LEGACY_SIGNATURE_HEADER` from `send_signed`
+   (`services/webhook_dispatcher.rs`) and `verifyWebhookSignature` from the SDK
+   (a major version). The `v1` header name stays as is — no second migration.
+
+We have no signal for which receivers still read the legacy header (it is
+their code, not ours), so the date is a policy call, not a measurement.
+
+---
+
 ## A Langfuse instance cannot be re-pointed to another region from the dashboard
 
 `services/langfuse.yaml` resolves its host from
