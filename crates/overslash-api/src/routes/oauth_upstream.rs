@@ -12,6 +12,17 @@
 //! - `GET  /oauth/upstream/callback?code=…&state=F` — public-facing callback.
 //!   Re-checks session vs flow identity (the security boundary), atomically
 //!   consumes the row, exchanges the code, stores token in vault.
+//!
+//! Every server-side hop — resource metadata, AS metadata, registration,
+//! token — goes over `https` (CASA 4.1.1), by the same rule
+//! [`outbound_tls`] applies to the action transport: checked against the
+//! address the SSRF guard pinned, with plain `http` let through only to an
+//! operator-allowed range (`OVERSLASH_SSRF_ALLOWED_CIDRS`). The pinned clients
+//! never follow a redirect, so the hop that was checked is the only hop. The
+//! endpoint URLs the AS metadata hands back are checked as strings before the
+//! flow is minted, so an `http` `token_endpoint` fails `initiate` with a 400
+//! instead of the user finishing consent into a callback that cannot exchange
+//! the code.
 
 use std::time::Duration as StdDuration;
 
@@ -35,7 +46,7 @@ use crate::{
         ParsedSession, SessionError, gone_html, html_escape, mismatch_html, read_session,
         session_authorized_for_org_identity,
     },
-    services::{oauth_upstream as svc, short_url, ssrf_guard},
+    services::{oauth_upstream as svc, outbound_tls, short_url, ssrf_guard},
 };
 use overslash_core::crypto;
 use overslash_db::repos::{
@@ -284,12 +295,12 @@ async fn initiate(
         }));
     }
 
-    // Discover the AS through SSRF-guarded clients. Each discovery URL is
-    // validated, host-pinned, and re-fetched once — cooperative redirects
-    // are disabled by `build_pinned_client`.
+    // Discover the AS through SSRF-guarded, TLS-checked clients. Each
+    // discovery URL is validated, host-pinned, and re-fetched once —
+    // cooperative redirects are disabled by the pinned client.
     let as_issuer = match (&req.resource_metadata_url, &req.as_issuer) {
         (Some(url), _) => {
-            let (client, _) = ssrf_guard::build_pinned_client(url, HTTP_TIMEOUT).await?;
+            let client = upstream_client("resource_metadata_url", url).await?;
             let prm = svc::discover_protected_resource(&client, url)
                 .await
                 .map_err(|e| AppError::BadGateway(e.to_string()))?;
@@ -304,7 +315,7 @@ async fn initiate(
         (None, None) => unreachable!("checked above"),
     };
 
-    let (as_client, _) = ssrf_guard::build_pinned_client(&as_issuer, HTTP_TIMEOUT).await?;
+    let as_client = upstream_client("issuer", &as_issuer).await?;
     let as_meta = svc::discover_authorization_server(&as_client, &as_issuer)
         .await
         .map_err(|e| AppError::BadGateway(e.to_string()))?;
@@ -313,8 +324,13 @@ async fn initiate(
             "upstream AS does not advertise registration_endpoint (RFC 7591 DCR)".into(),
         )
     })?;
-    let (reg_client, _) =
-        ssrf_guard::build_pinned_client(registration_endpoint, HTTP_TIMEOUT).await?;
+    // The metadata document is upstream-controlled: refuse an `http` endpoint
+    // before anything is registered or minted. The token endpoint is dialed
+    // later, from the callback, and is checked again there against the pinned
+    // address; the authorize endpoint is where the user's browser logs in.
+    check_endpoint_url("authorization_endpoint", &as_meta.authorization_endpoint)?;
+    check_endpoint_url("token_endpoint", &as_meta.token_endpoint)?;
+    let reg_client = upstream_client("registration_endpoint", registration_endpoint).await?;
 
     // Register Overslash as a public client at the upstream AS.
     let redirect_uri = callback_redirect_uri(&state.config.public_url);
@@ -398,6 +414,30 @@ async fn initiate(
             raw,
         },
     }))
+}
+
+/// A single-use client for one upstream OAuth hop: SSRF-guarded, pinned to the
+/// validated address, redirects off, and `https` required unless that address
+/// is inside an operator-allowed range (CASA 4.1.1).
+async fn upstream_client(field: &str, url: &str) -> Result<reqwest::Client, AppError> {
+    let (client, parsed, ip) = ssrf_guard::build_pinned_client_validated(url, HTTP_TIMEOUT).await?;
+    outbound_tls::check_resolved(&parsed, &ip).map_err(|e| name_endpoint(field, e))?;
+    Ok(client)
+}
+
+/// [`outbound_tls::check_url`] on an upstream endpoint URL that is stored or
+/// handed on rather than dialed right away.
+fn check_endpoint_url(field: &str, url: &str) -> Result<(), AppError> {
+    outbound_tls::check_url(url).map_err(|e| name_endpoint(field, e))
+}
+
+fn name_endpoint(field: &str, e: AppError) -> AppError {
+    match e {
+        AppError::BadRequest(msg) => {
+            AppError::BadRequest(format!("upstream OAuth `{field}`: {msg}"))
+        }
+        other => other,
+    }
 }
 
 fn callback_redirect_uri(public_url: &str) -> String {
@@ -540,6 +580,11 @@ async fn callback(
         ));
     }
 
+    // A flow minted before https was required can carry an `http` token
+    // endpoint. Refuse it before consuming, so the row isn't burned on a
+    // request that was never going to be sent.
+    check_endpoint_url("token_endpoint", &flow_preview.upstream_token_endpoint)?;
+
     // Now that the session is authorized, atomically claim the row.
     // Concurrent racing callbacks: the first transaction wins; the second
     // gets None and we 410.
@@ -551,11 +596,11 @@ async fn callback(
     };
 
     // Exchange the code at the upstream token endpoint we resolved at mint
-    // time. SSRF-guard the connection. No re-discovery — the endpoint was
-    // validated and persisted on the flow row, so a path-based multi-tenant
-    // AS keeps working without round-tripping its metadata document again.
-    let (token_client, _) =
-        ssrf_guard::build_pinned_client(&flow.upstream_token_endpoint, HTTP_TIMEOUT).await?;
+    // time. SSRF-guard and TLS-check the connection. No re-discovery — the
+    // endpoint was validated and persisted on the flow row, so a path-based
+    // multi-tenant AS keeps working without round-tripping its metadata
+    // document again.
+    let token_client = upstream_client("token_endpoint", &flow.upstream_token_endpoint).await?;
     let redirect_uri = callback_redirect_uri(&state.config.public_url);
     let tokens = svc::exchange_code(
         &token_client,

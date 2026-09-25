@@ -23,7 +23,9 @@
 //! # Two checks, one rule
 //!
 //! [`check_resolved`] is the enforcement: the transport runs it on every hop,
-//! against the address the guard actually pinned, so it is exact.
+//! against the address the guard actually pinned, so it is exact. The MCP
+//! caller and the upstream OAuth hops (discovery, registration, token exchange
+//! — [`crate::routes::oauth_upstream`]) run it the same way.
 //!
 //! [`check_url`] is the same rule applied to a string, before anything is
 //! resolved — at the boundary where an instance `url`, an org layer's
