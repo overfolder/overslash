@@ -1047,7 +1047,7 @@ Flow B (task-augmented `tools/call`) stays rejected with its revisit condition u
 
 **Grandfathering is the compensating control for the existing rows.** Forcing every live consumer to re-verify on deploy would be a flag day for integrations we do not operate. Every grandfathered row was created by an org admin, and the flag is visible in the API and the dashboard until a real handshake clears it. There is no update endpoint, so a URL can never change under a verified row; a new URL is a new subscription and starts pending.
 
-## D-NEXT: Webhook signatures cover a per-attempt timestamp, in a new header next to the unchanged legacy one
+## D98: Webhook signatures cover a per-attempt timestamp, in a new header next to the unchanged legacy one
 
 **Date**: 2026-09-25
 **Decision**: Every outbound webhook attempt — first delivery, each retry, the verification challenge — carries `X-Overslash-Timestamp: <unix seconds>` and `X-Overslash-Signature-V1: v1=<hex>`, HMAC-SHA256 with the subscription secret over `"<timestamp>.<raw body>"`. The existing `X-Overslash-Signature: sha256=<hex>` (body only) is still sent, byte-for-byte as before, and is deprecated. Consumers verify `v1`: reject a missing timestamp, reject one more than 5 minutes off, compare in constant time.
