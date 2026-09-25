@@ -258,10 +258,11 @@ Available on Claude Code 2.1.76+, Codex v2 post-merge.
 ```
 1. Claude → POST /mcp  tools/call  service_x.action_y(args)
 2. Overslash determines a permission gap. Instead of returning "approval pending",
-   it sends elicitation/create back to the client with mode="form":
+   it sends elicitation/create back to the client with mode="form". The form
+   asks for the decision only:
 
    {
-     "message": "Allow agent <name> to call <service.action> on <resource>?",
+     "message": "Allow this agent to: <action description>?",
      "requestedSchema": {
        "type": "object",
        "properties": {
@@ -269,28 +270,56 @@ Available on Claude Code 2.1.76+, Codex v2 post-merge.
            "type": "string",
            "title": "Decision",
            "oneOf": [
-             { "const": "allow_once",        "title": "Allow once" },
-             { "const": "allow_remember_1h", "title": "Allow for 1 hour" },
-             { "const": "allow_remember_perm","title": "Allow & remember (this resource)" },
-             { "const": "deny" ,             "title": "Deny" }
+             { "const": "allow",          "title": "Allow once" },
+             { "const": "allow_remember", "title": "Allow & remember" },
+             { "const": "deny",           "title": "Deny" },
+             { "const": "bubble_up",      "title": "Ask my parent" }
            ],
-           "default": "allow_once"
+           "default": "allow"
          }
        },
        "required": ["decision"]
-     }
+     },
+     "_meta": { "io.overslash/suggested_tiers": ..., "io.overslash/disclosed_fields": ...,
+                "io.overslash/risk": ... }
    }
 
 3. Claude Code shows a dialog. User picks one of the four options.
-4. Client returns { action: "accept", content: { decision: "allow_remember_1h" } }.
+4. Client returns { action: "accept", content: { decision: "allow_remember" } }.
 5. Overslash:
-     - "allow_once"        → execute the call, do not modify rules
-     - "allow_remember_*"  → upsert a permission rule scoped to the chosen TTL,
-                             then execute
-     - "deny"              → return tool error, log denial
+     - "allow"           → resolve, execute the call, do not modify rules
+     - "deny"            → return tool error
+     - "bubble_up"       → hand the approval to the next resolver up, tool error
+     - "allow_remember"  → do NOT resolve yet. Open a follow-up row
+                           (`elicit_remember_<uuid>`), mark this row
+                           `follow_up`, and the originator's stream emits a
+                           second elicitation/create on the same SSE response:
+
+       {
+         "message": "Remember permission to: <action description>",
+         "requestedSchema": { "type": "object", "properties": {
+           "scope": { "type": "string", "title": "Remember for",
+                      "oneOf": [ { "const": "[\"<tier 0 keys>\"]", "title": "<tier 0 description>" },
+                                 ... one per suggested tier, narrowest first ... ],
+                      "default": "[\"<tier 0 keys>\"]" },
+           "ttl":   { "type": "string", "title": "For how long",
+                      "oneOf": [ forever | 1h | 24h | 7d | 30d ], "default": "forever" } } }
+       }
+
+       Accepting it resolves `allow_remember` with `remember_keys` = the picked
+       tier (a JSON-encoded key array, validated by /resolve like any
+       dashboard pick) and the TTL, then executes.
 6. Tool result flows back to the model, Claude continues.
 
-action == "decline"  → tool error "denied by user", same as decision="deny"
+Why two dialogs: MCP forms are flat — every field renders at once and none can
+depend on another — so a single form had to show "for how long" next to Deny
+and Allow once, where it means nothing, and had no room for a scope choice at
+all. Only "Allow & remember" needs scope and duration, so only it asks.
+
+action == "decline"  → tool error "denied by user", same as decision="deny".
+                       On the *remember* dialog it is instead treated like
+                       cancel: the user already said allow and backed out of
+                       the details, which is not a denial.
 action == "cancel"   → NOT a denial. Retire the elicitation row, leave the
                        approval pending, and close the tools/call with the
                        same pending_approval envelope the no-elicitation path

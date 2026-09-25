@@ -27,6 +27,10 @@ pub enum ElicitOutcome {
     /// loopback resolve/call returned an error envelope). Emit `value` as a
     /// JSON-RPC `result` payload that lets the model see what happened.
     Failed(Value),
+    /// The user picked "Allow & remember" in the decision dialog. The
+    /// originator should emit the scope + duration follow-up dialog under
+    /// this elicit id and keep polling that row instead.
+    FollowUp(String),
     /// Nobody answered. The dialog was cancelled or dismissed, the client
     /// replied with a JSON-RPC error, the originator's poll timed out, the
     /// session disconnected, or the sweeper retired the row. The approval is
@@ -122,6 +126,19 @@ pub async fn await_completion_with_timeout(
                     return ElicitOutcome::Failed(row.final_response.unwrap_or(json!({})));
                 }
                 repo::STATUS_CANCELLED => return ElicitOutcome::Abandoned,
+                repo::STATUS_FOLLOW_UP => {
+                    // A follow_up row without a next id cannot be continued;
+                    // treat it like any other dialog nobody finished.
+                    return match row
+                        .final_response
+                        .as_ref()
+                        .and_then(|v| v.get("next_elicit_id"))
+                        .and_then(Value::as_str)
+                    {
+                        Some(next) => ElicitOutcome::FollowUp(next.to_string()),
+                        None => ElicitOutcome::Abandoned,
+                    };
+                }
                 // pending or claimed → keep polling
                 _ => {}
             },
@@ -160,12 +177,18 @@ pub async fn await_completion_with_timeout(
     }
 }
 
+/// Id prefix of the second ("remember") dialog. Still starts with `elicit_`,
+/// so `post_mcp` routes and owner-checks its answer exactly like the first.
+pub const REMEMBER_ID_PREFIX: &str = "elicit_remember_";
+
 /// Drive the resolve + call HTTP loopback for a freshly-answered elicitation,
 /// then write the final action result into the row. Idempotent: if the row
 /// is already non-pending, returns Ok(()) silently.
 ///
 /// `elicit_response` is the full client-supplied object:
-///   { action: "accept"|"decline"|"cancel", content?: { decision, ttl, ... } }
+///   { action: "accept"|"decline"|"cancel", content?: { decision } }
+/// or, for the follow-up dialog (`REMEMBER_ID_PREFIX`):
+///   { action, content?: { scope, ttl } }
 pub async fn complete_from_elicitation(
     state: &AppState,
     ext: &axum::http::Extensions,
@@ -216,9 +239,23 @@ pub async fn complete_from_elicitation(
         return Ok(());
     }
 
+    let is_remember_dialog = elicit_id.starts_with(REMEMBER_ID_PREFIX);
+
+    // The remember dialog only exists because the user already said "allow"
+    // in the first one. Declining it is backing out of the details, not a
+    // denial, so it retires like a dismissal: the approval stays pending and
+    // the model gets the ordinary envelope.
+    if is_remember_dialog && action == "decline" {
+        repo::cancel(state.db(ext), elicit_id).await?;
+        return Ok(());
+    }
+
     // `decision` is *our* per-form choice the user picked when they accepted
     // the dialog. A `decline` carries no form content, so it is a flat deny.
-    let decision = if action == "accept" {
+    // An accepted remember dialog is `allow_remember` by construction.
+    let decision = if is_remember_dialog {
+        "allow_remember"
+    } else if action == "accept" {
         content
             .get("decision")
             .and_then(Value::as_str)
@@ -227,30 +264,34 @@ pub async fn complete_from_elicitation(
         "deny"
     };
 
+    // "Allow & remember" in the decision dialog does not resolve yet: MCP
+    // forms are flat, so scope and duration are asked in a second dialog
+    // that only this choice raises. Open its row *before* retiring this one,
+    // so `has_active_for_approval` never reads false in between and an
+    // auto-call cannot slip into the gap.
+    if decision == "allow_remember" && !is_remember_dialog {
+        let next_id = format!("{REMEMBER_ID_PREFIX}{}", Uuid::new_v4());
+        repo::insert(
+            state.db(ext),
+            &next_id,
+            row.session_id,
+            row.agent_identity_id,
+            row.approval_id,
+        )
+        .await?;
+        if repo::follow_up(state.db(ext), elicit_id, &next_id).await? == 0 {
+            // The originator already gave up on this row; nobody will
+            // render the follow-up.
+            repo::cancel(state.db(ext), &next_id).await?;
+        }
+        return Ok(());
+    }
+
     let resolve_body = match decision {
         "allow" => json!({ "resolution": "allow" }),
         "deny" => json!({ "resolution": "deny" }),
         "bubble_up" => json!({ "resolution": "bubble_up" }),
-        "allow_remember" => {
-            // Only forward `remember_keys` when the client actually picked a
-            // non-empty subset. The resolve endpoint rejects an empty array
-            // but treats a missing field as "remember every key on the
-            // approval" — that's the right default for an MCP form that
-            // doesn't expose per-key checkboxes.
-            let mut body = json!({ "resolution": "allow_remember" });
-            if let Some(keys) = content.get("remember_keys").and_then(Value::as_array) {
-                let cleaned: Vec<&str> = keys.iter().filter_map(Value::as_str).collect();
-                if !cleaned.is_empty() {
-                    body["remember_keys"] = json!(cleaned);
-                }
-            }
-            if let Some(ttl) = content.get("ttl").and_then(Value::as_str)
-                && ttl != "forever"
-            {
-                body["ttl"] = json!(ttl);
-            }
-            body
-        }
+        "allow_remember" => remember_resolve_body(&content),
         other => {
             let err = json!({ "error": format!("unknown decision: {other}") });
             repo::fail(state.db(ext), elicit_id, &err).await?;
@@ -391,6 +432,35 @@ pub async fn complete_from_elicitation(
     Ok(())
 }
 
+/// Translate the remember dialog's answer into an `allow_remember` resolve
+/// body.
+///
+/// `scope` carries a suggested tier's keys as a JSON-encoded array (MCP enum
+/// values must be strings). A missing or unparseable scope omits
+/// `remember_keys`, which the resolver reads as "the approval's own keys" —
+/// the narrowest safe default. No trust is placed in the value: `/resolve`
+/// refuses any key that is neither a suggested tier nor covers a requested
+/// key, so a forged `scope` fails there.
+fn remember_resolve_body(content: &Value) -> Value {
+    let mut body = json!({ "resolution": "allow_remember" });
+    let keys: Vec<String> = content
+        .get("scope")
+        .and_then(Value::as_str)
+        .and_then(|s| serde_json::from_str::<Vec<String>>(s).ok())
+        .unwrap_or_default();
+    // The resolver rejects an empty array but treats a missing field as the
+    // approval's keys, so only forward a non-empty pick.
+    if !keys.is_empty() {
+        body["remember_keys"] = json!(keys);
+    }
+    if let Some(ttl) = content.get("ttl").and_then(Value::as_str)
+        && ttl != "forever"
+    {
+        body["ttl"] = json!(ttl);
+    }
+    body
+}
+
 fn mint_user_session(
     signing_key: &[u8],
     user_identity_id: Uuid,
@@ -413,4 +483,43 @@ fn mint_user_session(
         mcp_client_id: None,
     };
     Ok(crate::services::jwt::mint(signing_key, &claims)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remember_body_forwards_the_picked_tier_and_a_finite_ttl() {
+        let body = remember_resolve_body(&json!({
+            "scope": r#"["svc:send:*","svc:read:*"]"#,
+            "ttl": "1h",
+        }));
+        assert_eq!(
+            body,
+            json!({
+                "resolution": "allow_remember",
+                "remember_keys": ["svc:send:*", "svc:read:*"],
+                "ttl": "1h",
+            })
+        );
+    }
+
+    /// No scope, an unparseable one, or an empty tier all mean "the
+    /// approval's own keys" — the resolver's default when the field is
+    /// absent, and a 400 if we forwarded `[]` instead.
+    #[test]
+    fn remember_body_omits_keys_it_cannot_use_and_forever_ttl() {
+        for content in [
+            json!({ "ttl": "forever" }),
+            json!({ "scope": "not json" }),
+            json!({ "scope": "[]" }),
+        ] {
+            assert_eq!(
+                remember_resolve_body(&content),
+                json!({ "resolution": "allow_remember" }),
+                "content: {content}"
+            );
+        }
+    }
 }
