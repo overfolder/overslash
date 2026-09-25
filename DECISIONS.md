@@ -1026,7 +1026,7 @@ Flow B (task-augmented `tools/call`) stays rejected with its revisit condition u
 
 **Out of scope, tracked in TODO §1.6:** the MCP OAuth upstream discovery/token endpoints. Webhook delivery is HTTPS-only separately (#664, `services/https_policy.rs`), with a stricter exception — plain `http` to loopback only, not to any allow-listed range. The two rules should converge on one module; which exception wins is a review question.
 
-## D-NEXT: A webhook endpoint proves ownership by echoing a challenge, events wait for it, and existing subscriptions are grandfathered
+## D97: A webhook endpoint proves ownership by echoing a challenge, events wait for it, and existing subscriptions are grandfathered
 
 **Date**: 2026-09-23
 **Decision**: A new webhook subscription starts `pending_verification`. Registration POSTs a signed `webhook.verification` envelope carrying a random `data.challenge` and waits for the answer (10s); a 2xx with the challenge echoed, as the whole body or as `{"challenge": …}`, makes it `verified`. `POST /v1/webhooks/{id}/verify` re-runs the handshake. Only verified subscriptions are dialed. An event for a pending one is written as a delivery with `held_reason = pending_verification` and released to the retry sweep when it verifies. Every subscription that existed before this was marked `verified` with `grandfathered = true`.
