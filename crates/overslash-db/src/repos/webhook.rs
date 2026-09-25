@@ -316,6 +316,7 @@ pub struct PendingDeliveryRow {
     pub payload: serde_json::Value,
     pub attempts: i32,
     pub created_at: OffsetDateTime,
+    pub org_id: Uuid,
     pub url: String,
     pub secret: String,
 }
@@ -327,7 +328,7 @@ pub(crate) async fn get_pending_deliveries(
     sqlx::query_as!(
         PendingDeliveryRow,
         "SELECT d.id, d.subscription_id, d.event, d.payload, d.attempts, d.created_at,
-                s.url, s.secret
+                s.org_id, s.url, s.secret
          FROM webhook_deliveries d
          JOIN webhook_subscriptions s ON d.subscription_id = s.id
          WHERE d.delivered_at IS NULL AND d.attempts < 5 AND d.next_retry_at <= now()

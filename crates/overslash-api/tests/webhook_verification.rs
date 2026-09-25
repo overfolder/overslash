@@ -46,6 +46,9 @@ enum Answer {
     Wrong,
     /// Refuses the request.
     Unauthorized,
+    /// Echo only a challenge from this org, and refuse any other with 403 —
+    /// what a single-tenant receiver like a platform backend should do.
+    EchoOnlyFor(Uuid),
     /// The headers after 6s and the correct echo 6s later: each half fits
     /// inside 10s on its own, the whole exchange does not.
     EchoTooSlowly,
@@ -53,6 +56,7 @@ enum Answer {
 
 struct Received {
     event: String,
+    org: String,
     signature: String,
     raw: String,
     body: Value,
@@ -101,6 +105,7 @@ async fn receive(State(r): State<Receiver>, headers: HeaderMap, raw: String) -> 
         .to_string();
     r.received.lock().unwrap().push(Received {
         event: header("x-overslash-event"),
+        org: header("x-overslash-org"),
         signature: header("x-overslash-signature"),
         raw,
         body: body.clone(),
@@ -121,6 +126,13 @@ async fn receive(State(r): State<Receiver>, headers: HeaderMap, raw: String) -> 
         Answer::EchoPlain => format!("{challenge}\n").into_response(),
         Answer::Wrong => Json(json!({ "challenge": "not-the-challenge" })).into_response(),
         Answer::Unauthorized => StatusCode::UNAUTHORIZED.into_response(),
+        Answer::EchoOnlyFor(org) => {
+            if body["data"]["org_id"] == org.to_string() {
+                Json(json!({ "challenge": challenge })).into_response()
+            } else {
+                StatusCode::FORBIDDEN.into_response()
+            }
+        }
         Answer::EchoTooSlowly => {
             tokio::time::sleep(std::time::Duration::from_secs(6)).await;
             let late = futures_util::stream::once(async move {
@@ -151,6 +163,7 @@ async fn start_receiver(answer: Answer) -> (String, Receiver) {
 // ── API helpers ─────────────────────────────────────────────────────
 
 struct Api {
+    client: reqwest::Client,
     base: String,
     key: String,
     org_id: Uuid,
@@ -164,6 +177,7 @@ async fn boot() -> Api {
     let base = format!("http://{addr}");
     let (org_id, _ident, _agent_key, key) = common::bootstrap_org_identity(&base, &client).await;
     Api {
+        client,
         base,
         key,
         org_id,
@@ -350,6 +364,52 @@ async fn a_delivery_whose_body_never_finishes_fails_at_the_deadline() {
     assert!(rows[0]["next_retry_at"].is_string(), "left for a retry");
 }
 
+/// The org id in the challenge is what lets a receiver tell its own
+/// registration from someone else pointing a subscription at it: another org
+/// registering the same URL is refused by the receiver and stays pending, so
+/// Overslash never sends it anything.
+#[tokio::test]
+async fn a_receiver_can_refuse_a_challenge_from_another_org() {
+    let api = boot().await;
+    let (url, rx) = start_receiver(Answer::EchoOnlyFor(api.org_id)).await;
+
+    let own = api.register(&url).await;
+    assert_eq!(own["verification_status"], "verified", "{own}");
+
+    // A stranger's org, on the same Overslash, registers the same URL.
+    let (stranger_org, _i, _a, stranger_key) =
+        common::bootstrap_org_identity(&api.base, &api.client).await;
+    let theirs: Value = api
+        .client
+        .post(format!("{}/v1/webhooks", api.base))
+        .header("Authorization", format!("Bearer {stranger_key}"))
+        .json(&json!({ "url": url, "events": ["probe.fired"] }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(theirs["verification_status"], "pending_verification");
+    assert!(
+        theirs["verification_error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("HTTP 403")
+    );
+
+    // The stranger's events are held, never sent; the receiver only ever saw
+    // the two challenges.
+    webhook_dispatcher::dispatch(&api.pool, stranger_org, "probe.fired", json!({ "n": 1 })).await;
+    webhook_dispatcher::retry_pending_once(&api.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        rx.events(),
+        vec!["webhook.verification", "webhook.verification"]
+    );
+}
+
 #[tokio::test]
 async fn a_correct_echo_verifies_and_events_flow() {
     let api = boot().await;
@@ -371,6 +431,11 @@ async fn a_correct_echo_verifies_and_events_flow() {
         assert_eq!(hs.event, "webhook.verification");
         assert_eq!(hs.body["type"], "webhook.verification");
         assert_eq!(hs.body["data"]["challenge"].as_str().unwrap().len(), 64);
+        // Who is asking, set by Overslash from the subscription row: what a
+        // receiver checks before echoing, so a stranger's org cannot verify.
+        assert_eq!(hs.body["data"]["org_id"], api.org_id.to_string());
+        assert_eq!(hs.body["data"]["subscription_id"], id);
+        assert_eq!(hs.org, api.org_id.to_string());
         assert_eq!(
             hs.signature,
             format!("sha256={}", hmac_hex(secret, &hs.raw))
@@ -379,6 +444,15 @@ async fn a_correct_echo_verifies_and_events_flow() {
 
     api.fire().await;
     assert_eq!(rx.deliveries_of("probe.fired"), 1);
+    {
+        let got = rx.received.lock().unwrap();
+        let ev = got.iter().find(|r| r.event == "probe.fired").unwrap();
+        assert_eq!(
+            ev.org,
+            api.org_id.to_string(),
+            "events carry X-Overslash-Org too"
+        );
+    }
     let rows = api.deliveries(id).await;
     assert_eq!(rows[0]["status_code"], 200);
     assert!(rows[0].get("held_reason").is_none());
@@ -408,6 +482,12 @@ async fn held_events_are_released_once_the_endpoint_verifies() {
         .await
         .unwrap();
     assert_eq!(rx.deliveries_of("probe.fired"), 1, "{:?}", rx.events());
+    {
+        // The retry sweep sends the header as well as the first attempt.
+        let got = rx.received.lock().unwrap();
+        let ev = got.iter().find(|r| r.event == "probe.fired").unwrap();
+        assert_eq!(ev.org, api.org_id.to_string());
+    }
     let rows = api.deliveries(id).await;
     assert_eq!(rows[0]["status_code"], 200);
     assert!(rows[0]["delivered_at"].is_string());

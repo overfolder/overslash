@@ -197,7 +197,8 @@ async fn run_verification(
     ip: &ClientIp,
     row: &WebhookSubscriptionRow,
 ) -> Result<Option<WebhookSubscriptionRow>> {
-    let outcome = webhook_dispatcher::verify_endpoint(&row.url, &row.secret).await;
+    let outcome =
+        webhook_dispatcher::verify_endpoint(&row.url, &row.secret, row.org_id, row.id).await;
     let was_grandfathered = row.grandfathered;
     let (updated, action, detail) = match &outcome {
         Ok(()) => (

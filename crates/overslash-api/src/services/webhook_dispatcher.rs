@@ -59,6 +59,7 @@ pub async fn dispatch(pool: &PgPool, org_id: Uuid, event: &str, payload: serde_j
 
         deliver(
             pool,
+            org_id,
             delivery.id,
             &sub.url,
             &sub.secret,
@@ -114,6 +115,7 @@ fn build_envelope(
 #[allow(clippy::too_many_arguments)]
 async fn deliver(
     pool: &PgPool,
+    org_id: Uuid,
     delivery_id: Uuid,
     url: &str,
     secret: &str,
@@ -128,7 +130,7 @@ async fn deliver(
     // then stalled would otherwise hold this attempt — and the sequential
     // retry sweep behind it — forever.
     let result = tokio::time::timeout(ATTEMPT_DEADLINE, async {
-        let mut resp = send_signed(url, secret, event_type, delivery_id, body).await?;
+        let mut resp = send_signed(url, secret, org_id, event_type, delivery_id, body).await?;
         let status = resp.status().as_u16() as i32;
         let mut kept = Vec::new();
         // Keep what fits in the cap and stop reading; the rest is the
@@ -189,6 +191,7 @@ const DELIVERY_BODY_CAP: usize = 16 * 1024;
 async fn send_signed(
     url: &str,
     secret: &str,
+    org_id: Uuid,
     event_type: &str,
     delivery_id: Uuid,
     body: String,
@@ -220,6 +223,10 @@ async fn send_signed(
         http_client
             .post(url)
             .header("Content-Type", "application/json")
+            // The org that registered the subscription, so a receiver serving
+            // several orgs can pick the secret to check before verifying, and
+            // one serving only its own can refuse a stranger's challenge.
+            .header("X-Overslash-Org", org_id.to_string())
             .header("X-Overslash-Event", event_type)
             .header("X-Overslash-Delivery", delivery_id.to_string())
             .header("X-Overslash-Signature", format!("sha256={signature}"))
@@ -297,6 +304,7 @@ pub async fn retry_pending_once(pool: &PgPool) -> Result<usize, sqlx::Error> {
         let envelope = build_envelope(row.id, &row.event, row.created_at, &row.payload);
         deliver(
             pool,
+            row.org_id,
             row.id,
             &row.url,
             &row.secret,
@@ -323,9 +331,12 @@ const VERIFICATION_BODY_CAP: usize = 4096;
 ///
 /// POSTs a signed `webhook.verification` envelope — the same shape, headers
 /// and signature as every event — whose `data.challenge` is 32 fresh random
-/// bytes, hex. The endpoint passes by answering 2xx with the challenge echoed
-/// back, either as the whole body (`text/plain`, surrounding whitespace
-/// ignored) or as `{"challenge": "<value>"}`. Anything else fails.
+/// bytes, hex, next to the `org_id` and `subscription_id` that registered the
+/// URL. The endpoint passes by answering 2xx with the challenge echoed back,
+/// either as the whole body (`text/plain`, surrounding whitespace ignored) or
+/// as `{"challenge": "<value>"}`. Anything else fails. A receiver that serves
+/// only known orgs should echo only challenges carrying one of them — that is
+/// what stops a stranger's org from verifying a subscription to it.
 ///
 /// The request goes through [`send_signed`] — HTTPS-only, SSRF-guarded — so a
 /// handshake reaches nothing a delivery could not, and one 10s deadline covers
@@ -335,21 +346,34 @@ const VERIFICATION_BODY_CAP: usize = 4096;
 ///
 /// Like [`deliver`], this takes no DB connection: the caller records the
 /// outcome after the round trip.
-pub async fn verify_endpoint(url: &str, secret: &str) -> Result<(), String> {
+pub async fn verify_endpoint(
+    url: &str,
+    secret: &str,
+    org_id: Uuid,
+    subscription_id: Uuid,
+) -> Result<(), String> {
     // One deadline over the whole handshake — send, headers *and* body — so a
     // slow endpoint cannot stretch it past 10s by trickling its answer in
     // after `send_signed`'s own deadline has been met.
-    tokio::time::timeout(ATTEMPT_DEADLINE, challenge_endpoint(url, secret))
-        .await
-        .unwrap_or_else(|_elapsed| {
-            Err(format!(
-                "the endpoint did not answer the challenge within {}s",
-                ATTEMPT_DEADLINE.as_secs()
-            ))
-        })
+    tokio::time::timeout(
+        ATTEMPT_DEADLINE,
+        challenge_endpoint(url, secret, org_id, subscription_id),
+    )
+    .await
+    .unwrap_or_else(|_elapsed| {
+        Err(format!(
+            "the endpoint did not answer the challenge within {}s",
+            ATTEMPT_DEADLINE.as_secs()
+        ))
+    })
 }
 
-async fn challenge_endpoint(url: &str, secret: &str) -> Result<(), String> {
+async fn challenge_endpoint(
+    url: &str,
+    secret: &str,
+    org_id: Uuid,
+    subscription_id: Uuid,
+) -> Result<(), String> {
     use rand::RngExt;
     let mut challenge = [0u8; 32];
     rand::rng().fill(&mut challenge);
@@ -360,11 +384,18 @@ async fn challenge_endpoint(url: &str, secret: &str) -> Result<(), String> {
         id,
         VERIFICATION_EVENT,
         OffsetDateTime::now_utc(),
-        &json!({ "challenge": challenge }),
+        // Who is asking: set from the subscription row, never from anything
+        // the registrant sent, so a receiver can refuse to echo a challenge
+        // for an org it does not belong to.
+        &json!({
+            "challenge": challenge,
+            "org_id": org_id,
+            "subscription_id": subscription_id,
+        }),
     );
     let body = serde_json::to_string(&envelope).unwrap_or_default();
 
-    let mut resp = send_signed(url, secret, VERIFICATION_EVENT, id, body).await?;
+    let mut resp = send_signed(url, secret, org_id, VERIFICATION_EVENT, id, body).await?;
     let status = resp.status();
     if !status.is_success() {
         return Err(format!(

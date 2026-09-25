@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT d.id, d.subscription_id, d.event, d.payload, d.attempts, d.created_at,\n                s.url, s.secret\n         FROM webhook_deliveries d\n         JOIN webhook_subscriptions s ON d.subscription_id = s.id\n         WHERE d.delivered_at IS NULL AND d.attempts < 5 AND d.next_retry_at <= now()\n           AND s.active = true AND s.verification_status = 'verified'\n         ORDER BY d.next_retry_at\n         LIMIT $1",
+  "query": "SELECT d.id, d.subscription_id, d.event, d.payload, d.attempts, d.created_at,\n                s.org_id, s.url, s.secret\n         FROM webhook_deliveries d\n         JOIN webhook_subscriptions s ON d.subscription_id = s.id\n         WHERE d.delivered_at IS NULL AND d.attempts < 5 AND d.next_retry_at <= now()\n           AND s.active = true AND s.verification_status = 'verified'\n         ORDER BY d.next_retry_at\n         LIMIT $1",
   "describe": {
     "columns": [
       {
@@ -71,6 +71,17 @@
       },
       {
         "ordinal": 6,
+        "name": "org_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "webhook_subscriptions",
+            "name": "org_id"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
         "name": "url",
         "type_info": "Text",
         "origin": {
@@ -81,7 +92,7 @@
         }
       },
       {
-        "ordinal": 7,
+        "ordinal": 8,
         "name": "secret",
         "type_info": "Text",
         "origin": {
@@ -105,8 +116,9 @@
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "9d6d7a1beb7bb570ea2c351936c0f21a74c1b2911318b2ede59c872a8483728e"
+  "hash": "71582be6069cfec47227704fe4ceac11b524a1cdee09422d69567ef9c9598946"
 }
