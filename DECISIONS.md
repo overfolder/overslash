@@ -1062,7 +1062,7 @@ Flow B (task-augmented `tools/call`) stays rejected with its revisit condition u
 
 **Grandfathering by keeping the old header, not by a per-subscription flag.** Every receiver keeps working with no migration and no state on our side; the cost is that replay protection is opt-in for a receiver until the legacy header is removed. That removal — announced date, then one deleted line in `send_signed` and a major SDK version — is tracked in TECH_DEBT.md.
 
-## D-NEXT: "Allow & remember" over MCP elicitation asks scope and duration in a second dialog
+## D99: "Allow & remember" over MCP elicitation asks scope and duration in a second dialog
 
 **Date**: 2026-09
 **Decision**: The approval elicitation form asks only for the decision (Allow once / Allow & remember / Deny / Ask my parent). Choosing "Allow & remember" raises a follow-up `elicitation/create` on the same SSE response, under an `elicit_remember_<uuid>` id, asking which suggested tier to remember (narrowest by default) and for how long. The first row moves to a new `follow_up` status naming the second; the second row is inserted first so the approval never stops reading as mid-elicitation. Accepting the follow-up resolves `allow_remember` with the picked tier's keys and TTL. Declining or dismissing it retires the row as `withdrawn` and leaves the approval `pending`, as D95 does for an unanswered dialog, but it does not start D95's per-agent cooldown: that cooldown is evidence that a client cannot render dialogs, and a human reaching the second dialog proves this one can.
