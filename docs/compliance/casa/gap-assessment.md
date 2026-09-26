@@ -315,7 +315,8 @@ a `headers` block in `dashboard/vercel.json` (4.x/6.x adjacency)~~ — done: HST
 in `script-src` (`kit.csp`, with the rest of the baseline in `vercel.json`); ~~**webhook section 7**~~ — done: delivery through `ssrf_guard`, HTTPS-only endpoints,
 the ownership handshake and signed timestamps (7.3.1, 7.1.1, 7.1.2, 7.2.3); ~~dependency vulnerability scanning in CI plus clearing the four
 fixable advisories (6.1.1)~~ — done; ~~require TLS on outbound calls (4.1.1)~~ — done for action
-traffic and the MCP OAuth upstream hops; `SECURITY.md` with a disclosure policy. (The `redirect_uri` allowlist on DCR, 3.2.2, is done.)
+traffic (MCP OAuth upstream remains); ~~`SECURITY.md` with a disclosure policy~~ — done,
+with an RFC 9116 `security.txt` on the dashboard. (The `redirect_uri` allowlist on DCR, 3.2.2, is done.)
 
 **P2 — will be raised.** MFA or step-up for admin-class operations (3.3.1); ~~`DEV_AUTH`
 parsed as a boolean with an `OVERSLASH_ENV` interlock, weak-key rejection at boot, and

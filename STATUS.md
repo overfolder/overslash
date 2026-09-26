@@ -298,7 +298,7 @@
 - Transactional email subsystem (billing receipts + welcome + webhook DLQ digest; approvals and secret-requests stay in dashboard/webhook only).
 - Corp-org invite flow (D12-compatible) and corp-subdomain login empty-state.
 - Human-facing documentation site (concepts + REST reference + per-template quickstarts).
-- DPA, security.txt, vulnerability disclosure policy, subprocessor list.
+- DPA.
 - Documented manual GDPR request process (export + hard-delete handled by hand at launch; automation deferred).
 - Master-key rotation runbook + tested rotation; Postgres PITR restore drill.
 - **CASA readiness** — the annual assessment Google requires for the restricted Gmail/Drive/Keep scopes the system OAuth client requests. Gap assessment against CASA Specification v2.1.1 is in [docs/compliance/casa/](docs/compliance/casa/README.md): 6 of 55 requirements are gaps, and **neither of the two live vulnerabilities it found is still open**. Cross-tenant API-key minting is closed (the org comes from the credential, and migration 121 enforces the pair); unrestricted SSRF on the action-execution path is closed (action execution and webhook delivery resolve, check and pin every target through `ssrf_guard`, re-running it on each redirect hop). Outbound action traffic requires TLS (4.1.1, D96): `services/outbound_tls.rs` refuses plain `http` for Mode A, instance/org endpoints and MCP `url`s — at write time, at resolve and on every transport hop — except to an `OVERSLASH_SSRF_ALLOWED_CIDRS` range; the MCP OAuth upstream endpoints are still to follow. Boot interlocks (6.2.1, 1.2.1; `config/boot_policy.rs`) refuse to start with `DEV_AUTH` in production, a non-boolean `DEV_AUTH` anywhere, or a weak `SECRETS_ENCRYPTION_KEY` / `SIGNING_KEY` outside a local checkout (`OVERSLASH_ENV`, which the container image defaults to `prod`); production clamps a debug `RUST_LOG` to `info`, and `/health` / `/ready` no longer return the database error. Remediation is tracked in [TODO.md §1.6](TODO.md).
@@ -358,6 +358,7 @@
 - **Repository**: `overfolder/overslash` (private, will be open-sourced)
 - **Default branch**: `master`
 - **CI**: GitHub Actions with coverage reporting, real OAuth provider tests
+- **Vulnerability disclosure**: [SECURITY.md](SECURITY.md) (contact `security@overslash.com`, response and fix SLAs, scope, safe harbor) and an RFC 9116 `security.txt` served by the dashboard at `/.well-known/security.txt`; `scripts/check-security-txt.sh` fails the daily Dependency audit a month before its `Expires`.
 - **Dependency scanning**: `cargo-deny` + `npm audit` + OSV over every lockfile (`.github/workflows/deps-audit.yml`), gating PRs that change dependencies and running daily on `dev` + `master`; scheduled failures file a `needs-triage` issue. Policy and exception register: [docs/compliance/casa/dependency-vulnerability-policy.md](docs/compliance/casa/dependency-vulnerability-policy.md) (D95)
 - **PR flow**: feature branches → `dev` → `master`
 - **IaC**: OpenTofu under `/infra` — deploys to GCP Cloud Run with Cloud SQL, Artifact Registry, Secret Manager, Cloud Build, and optional Memorystore/DNS
