@@ -23,7 +23,9 @@
 //! # Two checks, one rule
 //!
 //! [`check_resolved`] is the enforcement: the transport runs it on every hop,
-//! against the address the guard actually pinned, so it is exact.
+//! against the address the guard actually pinned, so it is exact. The MCP
+//! caller and the upstream OAuth hops (discovery, registration, token exchange
+//! — [`crate::routes::oauth_upstream`]) run it the same way.
 //!
 //! [`check_url`] is the same rule applied to a string, before anything is
 //! resolved — at the boundary where an instance `url`, an org layer's
@@ -32,8 +34,15 @@
 //! creating an approval nobody can ever execute. Without DNS it can only be
 //! decisive for an IP literal or `localhost`; a hostname under an allow-list is
 //! let through and left to [`check_resolved`].
+//!
+//! [`check_url_resolving`] is for a URL Overslash hands on but never dials
+//! itself — the upstream OAuth `authorization_endpoint`, which only the user's
+//! browser visits. There is no dial-time check behind it to defer to, so it
+//! resolves the hostname and decides.
 
+use std::future::Future;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::time::Duration;
 
 use url::Url;
 
@@ -52,6 +61,15 @@ pub fn check_resolved(url: &Url, ip: &IpAddr) -> Result<(), AppError> {
 /// can and cannot decide.
 pub fn check_url(raw: &str) -> Result<(), AppError> {
     check_url_with(raw, ssrf_guard::operator_allowed_ranges())
+}
+
+/// [`check_url`] without the deferral: a plain-`http` hostname that the string
+/// check had to let through is resolved, and passes only if *every* address it
+/// answers with is inside an operator-allowed range — the same all-or-nothing
+/// the SSRF guard applies, since which answer a client ends up using is not
+/// ours to pick.
+pub async fn check_url_resolving(raw: &str) -> Result<(), AppError> {
+    check_url_resolving_with(raw, ssrf_guard::operator_allowed_ranges(), resolve_host).await
 }
 
 /// [`check_url`] for an endpoint being written — an instance `url`, a layer's
@@ -80,6 +98,53 @@ fn check_url_with(raw: &str, allowed: &[ipnet::IpNet]) -> Result<(), AppError> {
         "http" if plaintext_may_reach(&url, allowed) => Ok(()),
         "http" => Err(plaintext_refused(url.host_str().unwrap_or(""))),
         other => Err(unsupported_scheme(other)),
+    }
+}
+
+async fn check_url_resolving_with<R, Fut>(
+    raw: &str,
+    allowed: &[ipnet::IpNet],
+    resolve: R,
+) -> Result<(), AppError>
+where
+    R: FnOnce(String, u16) -> Fut,
+    Fut: Future<Output = Result<Vec<IpAddr>, AppError>>,
+{
+    check_url_with(raw, allowed)?;
+    let url = Url::parse(raw).map_err(|e| AppError::BadRequest(format!("invalid URL: {e}")))?;
+    // Only a plain-`http` hostname other than `localhost` was deferred;
+    // everything else `check_url_with` already decided.
+    let Some(url::Host::Domain(host)) = url.host() else {
+        return Ok(());
+    };
+    if url.scheme() != "http" || host.eq_ignore_ascii_case("localhost") {
+        return Ok(());
+    }
+    let port = url.port_or_known_default().unwrap_or(80);
+    let addrs = resolve(host.to_string(), port).await?;
+    if addrs.is_empty()
+        || !addrs
+            .iter()
+            .all(|ip| allowed.iter().any(|n| n.contains(ip)))
+    {
+        return Err(plaintext_refused(host));
+    }
+    Ok(())
+}
+
+/// Bounded like the SSRF guard's own lookup: `getaddrinfo` has no deadline.
+async fn resolve_host(host: String, port: u16) -> Result<Vec<IpAddr>, AppError> {
+    const DNS_TIMEOUT: Duration = Duration::from_secs(5);
+    let lookup = tokio::net::lookup_host((host.as_str(), port));
+    match tokio::time::timeout(DNS_TIMEOUT, lookup).await {
+        Ok(Ok(addrs)) => Ok(addrs.map(|a| a.ip()).collect()),
+        Ok(Err(e)) => Err(AppError::BadRequest(format!(
+            "could not resolve host {host:?}: {e}"
+        ))),
+        Err(_) => Err(AppError::BadRequest(format!(
+            "could not resolve host {host:?} within {}s",
+            DNS_TIMEOUT.as_secs()
+        ))),
     }
 }
 
@@ -211,6 +276,61 @@ mod tests {
             &nets(&["::1/128"])
         )));
         assert!(check_url_with("http://localhost:1", &nets(&["127.0.0.0/8", "::1/128"])).is_ok());
+    }
+
+    fn resolves_to(
+        list: &'static [&'static str],
+    ) -> impl FnOnce(String, u16) -> std::future::Ready<Result<Vec<IpAddr>, AppError>> {
+        move |_, _| std::future::ready(Ok(list.iter().map(|s| ip(s)).collect()))
+    }
+
+    fn never_resolves(_: String, _: u16) -> std::future::Ready<Result<Vec<IpAddr>, AppError>> {
+        panic!("must not resolve")
+    }
+
+    /// The deferral `check_url` makes for a hostname is settled by resolving:
+    /// every answer inside the range, or refused.
+    #[tokio::test]
+    async fn resolving_settles_a_deferred_hostname() {
+        let allowed = nets(&["10.42.0.0/16"]);
+        let raw = "http://gitlab.internal/authorize";
+        assert!(
+            check_url_resolving_with(raw, &allowed, resolves_to(&["10.42.0.7"]))
+                .await
+                .is_ok()
+        );
+        assert!(refused(
+            check_url_resolving_with(raw, &allowed, resolves_to(&["93.184.216.34"])).await
+        ));
+        // One answer outside is enough to refuse.
+        assert!(refused(
+            check_url_resolving_with(raw, &allowed, resolves_to(&["10.42.0.7", "93.184.216.34"]))
+                .await
+        ));
+        assert!(refused(
+            check_url_resolving_with(raw, &allowed, resolves_to(&[])).await
+        ));
+    }
+
+    /// Nothing that the string check already decided goes to DNS.
+    #[tokio::test]
+    async fn resolving_only_looks_up_a_plain_http_hostname() {
+        let allowed = nets(&["127.0.0.0/8", "::1/128"]);
+        for raw in [
+            "https://as.example.com/authorize",
+            "http://127.0.0.1:9/authorize",
+            "http://localhost:9/authorize",
+        ] {
+            assert!(
+                check_url_resolving_with(raw, &allowed, never_resolves)
+                    .await
+                    .is_ok(),
+                "{raw}"
+            );
+        }
+        assert!(refused(
+            check_url_resolving_with("http://as.example.com", &nets(&[]), never_resolves).await
+        ));
     }
 
     #[test]
