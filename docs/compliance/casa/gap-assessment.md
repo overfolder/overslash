@@ -328,8 +328,9 @@ secrets access policy (6.7.1); a subdomain inventory (6.4.1); `deletion_protecti
 LB; `INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER`; least-privilege IAM in place of the
 project-wide `secretmanager.secretAccessor` and `cloudsql.admin` bindings; Memorystore
 `auth_enabled` + `transit_encryption_mode`; ~~move `Keyring::test()` behind `#[cfg(test)]`~~ — done;
-trusted-proxy configuration so `X-Forwarded-For` is not attacker-controlled
-(`extractors.rs:102-111`); ~~`Cache-Control: no-store` on `secrets/reveal` and other
+~~trusted-proxy configuration so `X-Forwarded-For` is not attacker-controlled~~
+— done: rightmost-untrusted resolution against `OVERSLASH_TRUSTED_PROXY_*`
+(`services/client_ip.rs`); ~~`Cache-Control: no-store` on `secrets/reveal` and other
 sensitive responses~~ — done, as the default on every API response that does not set its own.
 
 **P3 — document rather than fix.** CMEK; SBOM, artifact signing and build provenance

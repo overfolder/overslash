@@ -399,6 +399,7 @@ async fn test_resolve_user_budget_falls_back_to_org_default() {
         preview_origin_allowlist: None,
         deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
+        trusted_proxies: Default::default(),
     };
     let resolved = cache
         .resolve_user_budget(&pool, &config, org_id, user_id)
@@ -676,6 +677,7 @@ async fn test_resolve_user_budget_per_user_override_wins() {
         preview_origin_allowlist: None,
         deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
+        trusted_proxies: Default::default(),
     };
     let resolved = cache
         .resolve_user_budget(&pool, &config, org_id, user_id)
@@ -771,6 +773,7 @@ async fn make_app_state(pool: PgPool) -> overslash_api::AppState {
         preview_origin_allowlist: None,
         deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
+        trusted_proxies: Default::default(),
     };
     overslash_api::AppState {
         db: pool,
@@ -1190,6 +1193,7 @@ async fn test_cache_invalidation_user_budget() {
         preview_origin_allowlist: None,
         deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
+        trusted_proxies: Default::default(),
     };
 
     // Prime the cache
@@ -1382,6 +1386,7 @@ async fn test_cache_invalidation_org_flushes_all() {
         preview_origin_allowlist: None,
         deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
+        trusted_proxies: Default::default(),
     };
 
     let r1 = cache
