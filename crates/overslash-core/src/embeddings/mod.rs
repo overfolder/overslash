@@ -150,7 +150,7 @@ impl FastembedEmbedder {
     /// where ONNX weights are downloaded/read; pass `None` to use the
     /// crate's default (a platform-appropriate cache path).
     pub fn new(cache_dir: Option<std::path::PathBuf>) -> Result<Self, EmbedError> {
-        let mut opts = fastembed::InitOptions::new(fastembed::EmbeddingModel::BGESmallENV15);
+        let mut opts = fastembed::TextInitOptions::new(fastembed::EmbeddingModel::BGESmallENV15);
         if let Some(dir) = cache_dir {
             opts = opts.with_cache_dir(dir);
         }
