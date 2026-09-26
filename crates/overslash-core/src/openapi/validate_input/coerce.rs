@@ -113,7 +113,8 @@ pub fn apply_defaults(params: &HashMap<String, ActionParam>, args: &mut HashMap<
 ///
 /// The scalar nudge covers one case that is a repair rather than a convenience:
 /// a string that opens a JSON literal, sent to an `object` or `array` param, is
-/// parsed rather than passed through or split. See [`parse_json_literal`].
+/// parsed rather than passed through or split — for an `object` param, only when
+/// it parses to an object. See [`parse_json_literal`].
 ///
 /// Params with an unspecified (empty) `param_type` are never scalar-coerced —
 /// they are the `anyOf`/`oneOf`/untyped case, where guessing a target type
@@ -210,8 +211,14 @@ fn coerce_scalar(param_type: &str, v: &Value) -> Option<Value> {
         // blinded the action's own `disclose` filters on the way, since
         // `.arguments.createRequest.objectType` yields nothing against a
         // string. Parse it back into the value the template says the wire wants.
+        //
+        // Only an object literal qualifies. A serialized list is a different
+        // value, not a spelling of this one, and nothing downstream type-checks
+        // a top-level param — so parsing `"[1,2,3]"` here would hand the
+        // upstream an array where the template declares an object. Left as a
+        // string, it fails the way any other mistyped value does.
         "object" => match v {
-            Value::String(s) => parse_json_literal(s),
+            Value::String(s) => parse_json_literal(s).filter(Value::is_object),
             _ => None,
         },
         _ => None,
@@ -462,6 +469,18 @@ mod tests {
             a.get("createRequest"),
             Some(&json!({"objectType": "contacts", "objects": [{"properties": {}}]}))
         );
+    }
+
+    #[test]
+    fn coerce_serialized_array_for_object_param_is_left_alone() {
+        // A list is not a spelling of an object. Parsing it would put an array
+        // on the wire where the template declares an object, and no later pass
+        // rejects a top-level value for its JSON type.
+        let s = schema(&[("blob", p("object", false)), ("other", p("object", false))]);
+        let mut a = args(&[("blob", json!("[1,2,3]")), ("other", json!(r#"{"a":1}"#))]);
+        coerce_args(&s, &mut a);
+        assert_eq!(a.get("blob"), Some(&json!("[1,2,3]")));
+        assert_eq!(a.get("other"), Some(&json!({"a": 1})));
     }
 
     #[test]
