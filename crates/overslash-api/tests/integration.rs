@@ -94,7 +94,7 @@ async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         email_reply_to: None,
         email_api_key: None,
         preview_origin_allowlist: None,
-        overslash_env: None,
+        deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
     };
 
@@ -1841,7 +1841,7 @@ async fn test_service_registry_api() {
         email_reply_to: None,
         email_api_key: None,
         preview_origin_allowlist: None,
-        overslash_env: None,
+        deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
     };
 
@@ -2876,7 +2876,7 @@ async fn start_api_with_registry(
         email_reply_to: None,
         email_api_key: None,
         preview_origin_allowlist: None,
-        overslash_env: None,
+        deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
     };
 

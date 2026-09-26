@@ -184,6 +184,20 @@ fn flag_or_respects_an_explicit_falsey_value_over_an_on_default() {
     assert!(env::flag_or("OVS_TEST_FLAG_DEFAULT_ON", true));
 }
 
+#[test]
+fn parse_bool_is_the_same_rule_without_the_fallback() {
+    for raw in ["true", "1", "YES", " On "] {
+        assert_eq!(env::parse_bool(raw), Some(true), "{raw:?}");
+    }
+    for raw in ["false", "0", "No", "OFF\n"] {
+        assert_eq!(env::parse_bool(raw), Some(false), "{raw:?}");
+    }
+    // What `flag_or` would silently turn into its default is surfaced here.
+    for raw in ["", "maybe", "ture", "2", "enabled"] {
+        assert_eq!(env::parse_bool(raw), None, "{raw:?}");
+    }
+}
+
 // ── lists ───────────────────────────────────────────────────────────────────
 
 #[test]

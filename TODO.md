@@ -68,7 +68,7 @@ Monitoring is deployed; paging and recovery procedures are not yet exercised.
 The annual security assessment Google requires of apps holding restricted OAuth scopes —
 we ship `gmail.*`, `drive` and `keep` templates, so the system OAuth client needs it.
 Full assessment in [docs/compliance/casa/](docs/compliance/casa/README.md); the gap list
-is [gap-assessment.md](docs/compliance/casa/gap-assessment.md). 12 of 55 requirements
+is [gap-assessment.md](docs/compliance/casa/gap-assessment.md). 6 of 55 requirements
 are gaps today.
 
 **P0 — live vulnerabilities, not compliance items. Decide on a security timeline.**
@@ -97,7 +97,7 @@ are gaps today.
 **P2 — will be raised by a lab.**
 
 - [ ] MFA or step-up for admin-class operations, or restrict magic-link login for admin identities so the IdP's MFA is the only path. (3.3.1, 2.4.1)
-- [ ] `DEV_AUTH` parsed as a boolean with an `OVERSLASH_ENV != prod` interlock; weak-key rejection at boot so a copied `.env.example` cannot start; `RUST_LOG` off `debug` in production; drop `db_error` from the unauthenticated `/health`. (6.2.1, 1.2.1)
+- [x] **Boot interlocks** — `config/boot_policy.rs`, enforced in `load_config`, over a parsed `DeploymentEnv` (`OVERSLASH_ENV`; the container image defaults it to `prod`). `DEV_AUTH` that is not a recognised boolean stops the boot everywhere, and `DEV_AUTH` on with `OVERSLASH_ENV=prod` stops it too. Weak `SECRETS_ENCRYPTION_KEY` / `SIGNING_KEY` (placeholder, one repeated byte, < 32 bytes, < 8 distinct bytes) stop the boot outside a local checkout and warn on one; `.env.example` ships no key values. A `debug`/`trace` `RUST_LOG` is clamped to `info` in production with a warning, and `prod.tfvars` now says `info` (not auto-applied — the clamp holds either way). `/health` and `/ready` drop `db_error`; the error is logged instead. (6.2.1, 1.2.1 — both now `pass`)
 - [ ] Extend rate limiting to session-cookie and MCP-bearer traffic, and to the `/oauth/*` subrouter — unauthenticated DCR is currently unthrottled. (1.1.1, 3.1.5)
 - [ ] Secret Manager Data Access audit logs + a log sink with locked retention + a documented secrets access-control policy. (6.7.1)
 - [ ] Subdomain inventory and dangling-CNAME check across all ten `overslash.com` hostnames. (6.4.1)
@@ -117,7 +117,7 @@ are gaps today.
 - [ ] **Production has 0 uptime checks and no `[P0] API Down` alert** — 8 alert policies are deployed, which is exactly 12 declared minus 3 disabled in tfvars minus the API-down policy `count`-gated on `api_domain != ""`. The only deployed P0 is `API High 5xx Rate`, which cannot fire when the service returns nothing at all.
 - [ ] **No SSL policy and no Cloud Armor on the production LB** — both `gcloud compute ssl-policies list` and `security-policies list` are empty. TLS 1.2/1.3-only is currently true but unpinned and uncitable. (CASA 4.1.1)
 - [ ] Set the org-policy baseline that would make the above guardrails rather than conventions: `sql.restrictPublicIp`, `iam.disableServiceAccountKeyCreation`, `run.allowedIngress`, `storage.publicAccessPrevention`. None is currently set.
-- [ ] Move `Keyring::test()` behind `#[cfg(test)]` — it is `pub` and returns a hardcoded `[0xAB; 32]` key in the production library.
+- [x] `Keyring::test()` is compiled only under `cfg(test)` or overslash-core's `test-support` feature, which only `overslash-api`'s `[dev-dependencies]` enable — the hardcoded `[0xAB; 32]` key is no longer in the production library.
 - [ ] Trusted-proxy configuration so `X-Forwarded-For` is not attacker-controlled; every per-IP throttle and every audit `ip_address` currently trusts it.
 - [x] `Cache-Control: no-store` on `secrets/reveal` and other sensitive authenticated responses — the default on every API response that does not set its own (`/icons/*` keeps `public, max-age=86400`; streamed and deferred-download passthrough keeps the upstream's).
 - [x] **`ci-ok` is a real gate** — `.github/workflows/ci.yml`. It used to accept `cancelled` as success, and its paths-filter left out `services/**`, `scripts/**`, `.githooks/**` and the other workflows, so a PR touching only those skipped every substantive job and the one required check went green. Now `failure` and `cancelled` fail it, and so does a job that was *skipped* while its paths filter said the PR needed it; a job missing from the needed-map counts as always required. The `rust` filter adds `services/**`, `assets/**`, `SKILL.md`, `tests/mock-target/**`, `scripts/**`, `Makefile`, `.github/actions/**` and `codecov.yml`. A new `tooling` filter and job (actionlint over every workflow, plus bash/python/JSON parses of hooks, scripts and release-please config) covers `.github/**`, `.githooks/**`, `bin/**`, `docker/**` and the release-please files. Only prose, the generated `SCHEMA.sql`, ignore files and agent/editor config sit in no filter, and no CI job reads any of them.

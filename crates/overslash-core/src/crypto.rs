@@ -142,6 +142,12 @@ impl Keyring {
     /// Fixed test keyring (active id = 1, key = `[0xAB; 32]`). Mirrors the
     /// historical `"ab".repeat(32)` value that test fixtures across the
     /// workspace expect.
+    ///
+    /// Compiled only into tests and the `test-support` feature, which only
+    /// `[dev-dependencies]` enable — a hardcoded key has no business in the
+    /// production library. The API's boot interlock refuses this key as
+    /// `SECRETS_ENCRYPTION_KEY` outside a local checkout regardless.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn test() -> Self {
         Self {
             active_id: 1,

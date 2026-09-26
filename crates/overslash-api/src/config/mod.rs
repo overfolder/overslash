@@ -8,10 +8,14 @@
 
 use std::collections::HashMap;
 
+mod boot_policy;
 mod from_env;
 mod parse;
 mod sweeps;
 
+pub use boot_policy::{
+    BootReport, BootViolation, DeploymentEnv, KeyWeakness, assess_key, log_filter,
+};
 pub use parse::default_public_url;
 
 #[derive(Clone, Debug)]
@@ -321,10 +325,11 @@ pub struct Config {
     /// non-dev `OVERSLASH_ENV` disables it; an empty value disables it. The
     /// production deployment must never set this.
     pub preview_origin_allowlist: Option<regex::Regex>,
-    /// Deployment environment marker (`dev`, `staging`, `prod`, …). Used as
-    /// a defense-in-depth gate alongside `preview_origin_allowlist`: the
-    /// preview-handoff feature is off unless this is exactly `dev`.
-    pub overslash_env: Option<String>,
+    /// `OVERSLASH_ENV`, parsed. Gates the boot interlocks (see
+    /// `boot_policy`) and, as defense in depth alongside
+    /// `preview_origin_allowlist`, the preview handoff, which is off unless
+    /// this is `Dev`.
+    pub deployment_env: DeploymentEnv,
     /// Hosts the OAuth callback is willing to 302 to when the create-flow
     /// caller supplied a `return_url`. Operator-owned allow-list — without
     /// it, an attacker who can fabricate a state could fish OAuth completion
@@ -553,7 +558,7 @@ impl Config {
     /// the allowlist, the env mismatch keeps the endpoint 404 and the
     /// callback rejects 4-segment state params.
     pub fn is_preview_handoff_enabled(&self) -> bool {
-        self.overslash_env.as_deref() == Some("dev") && self.preview_origin_allowlist.is_some()
+        self.deployment_env == DeploymentEnv::Dev && self.preview_origin_allowlist.is_some()
     }
 
     /// Test the candidate origin against the allowlist regex. Returns false
@@ -812,10 +817,10 @@ pub(crate) mod tests {
         cfg.preview_origin_allowlist = Some(regex::Regex::new("^https://x$").unwrap());
         assert!(!cfg.is_preview_handoff_enabled());
         // Wrong env value → disabled.
-        cfg.overslash_env = Some("staging".into());
+        cfg.deployment_env = DeploymentEnv::Staging;
         assert!(!cfg.is_preview_handoff_enabled());
         // Both on → enabled.
-        cfg.overslash_env = Some("dev".into());
+        cfg.deployment_env = DeploymentEnv::Dev;
         assert!(cfg.is_preview_handoff_enabled());
         // Drop allowlist → disabled again.
         cfg.preview_origin_allowlist = None;
@@ -826,7 +831,7 @@ pub(crate) mod tests {
     fn preview_origin_allowed_returns_false_when_disabled() {
         let mut cfg = empty_test_config();
         cfg.preview_origin_allowlist = Some(regex::Regex::new("^https://ok$").unwrap());
-        // overslash_env not set → feature off → never allowed even when match.
+        // deployment_env is Local → feature off → never allowed even when match.
         assert!(!cfg.preview_origin_allowed("https://ok"));
     }
 
@@ -954,7 +959,7 @@ pub(crate) mod tests {
             email_reply_to: None,
             email_api_key: None,
             preview_origin_allowlist: None,
-            overslash_env: None,
+            deployment_env: DeploymentEnv::Local,
             connection_return_url_allowed_hosts: Vec::new(),
         }
     }

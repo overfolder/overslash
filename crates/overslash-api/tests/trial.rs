@@ -181,7 +181,7 @@ async fn make_app_state(pool: PgPool) -> overslash_api::AppState {
         email_reply_to: None,
         email_api_key: None,
         preview_origin_allowlist: None,
-        overslash_env: None,
+        deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
     };
     let free_unlimited_cache = Arc::new(

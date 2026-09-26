@@ -186,7 +186,7 @@ impl Config {
             preview_origin_allowlist: parse_preview_origin_allowlist(
                 env::optional("PREVIEW_ORIGIN_ALLOWLIST").as_deref(),
             ),
-            overslash_env: env::optional("OVERSLASH_ENV"),
+            deployment_env: DeploymentEnv::from_env(),
             connection_return_url_allowed_hosts: parse_connection_return_url_allowed_hosts(
                 env::optional("OVERSLASH_CONNECTION_RETURN_URL_HOSTS").as_deref(),
             ),

@@ -176,16 +176,32 @@ pub fn flag_or(name: &str, default: bool) -> bool {
     let Some(raw) = read(name) else {
         return default;
     };
-    match raw.to_ascii_lowercase().as_str() {
-        "true" | "1" | "yes" | "on" => true,
-        "false" | "0" | "no" | "off" => false,
-        _ => {
+    match parse_bool(&raw) {
+        Some(b) => b,
+        None => {
             tracing::warn!(
                 "{name}: {raw:?} is not a recognised boolean — using the default ({default}). \
                  Set one of true/1/yes/on or false/0/no/off."
             );
             default
         }
+    }
+}
+
+/// The truthiness rule itself, for a caller that must *refuse* an
+/// unrecognised value rather than fall back: `Some(bool)` for one of
+/// true/1/yes/on or false/0/no/off (case-insensitive, trimmed), `None` for
+/// anything else.
+///
+/// [`flag_or`] is this plus a fallback. A security gate whose misspelling
+/// should stop the boot — `DEV_AUTH=ture` on a box that was meant to have it
+/// off *or* on — reads the raw value with [`optional`] and parses it here, so
+/// there is still exactly one list of spellings.
+pub fn parse_bool(raw: &str) -> Option<bool> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" | "on" => Some(true),
+        "false" | "0" | "no" | "off" => Some(false),
+        _ => None,
     }
 }
 
@@ -239,6 +255,10 @@ mod guard {
         (
             "overslash-api/config/mod.rs",
             include_str!("../../overslash-api/src/config/mod.rs"),
+        ),
+        (
+            "overslash-api/config/boot_policy.rs",
+            include_str!("../../overslash-api/src/config/boot_policy.rs"),
         ),
         (
             "overslash-api/services/client_credentials.rs",
