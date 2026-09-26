@@ -56,7 +56,7 @@ jobs:
       - name: Advisory-ignore review dates (deny.toml)
         run: bash scripts/check-deny-reviews.sh
       # Prebuilt binary; never `cargo install` (a from-source build is minutes).
-      - uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af # v2.87.11
+      - uses: taiki-e/install-action@4076c08d76dba979c11a7285295b0716c1d67908 # v2.87.15
         with:
           tool: cargo-deny@0.20.2
       # advisories (RustSec), licenses, bans, sources — config in deny.toml.
