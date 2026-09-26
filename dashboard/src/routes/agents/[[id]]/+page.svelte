@@ -993,13 +993,18 @@
 							<div class="mcp-options-head">Connection Options</div>
 							<div class="mcp-option">
 								<div class="mcp-option-text">
-									<div class="opt-title" id="opt-elicitation-label">Elicitation approvals</div>
+									<div class="opt-title" id="opt-elicitation-label">Approve in your client</div>
 									<div class="opt-desc">
-										Elicitation allows approving in line but stops the approval from being async.
+										On by default. When this agent needs approval, your MCP client asks you
+										right there instead of sending you to the dashboard. Clients that can't
+										show a prompt &mdash; headless or <code>--print</code> sessions &mdash;
+										fall back to the approval link automatically; nothing is denied on your
+										behalf.
 									</div>
 									{#if !detail.mcp.elicitation_supported}
-										<div class="opt-warn">
-											This MCP client did not declare elicitation support at connect time.
+										<div class="opt-desc">
+											This client hasn't told us yet whether it can show a prompt &mdash; it does
+											that on its first connection. Until then, approvals use the link.
 										</div>
 									{/if}
 									{#if detail.elicitationError}
@@ -1008,7 +1013,7 @@
 								</div>
 								<ToggleSwitch
 									checked={detail.mcp.elicitation_enabled}
-									disabled={!detail.mcp.elicitation_supported || detail.togglingElicitation}
+									disabled={detail.togglingElicitation}
 									labelledby="opt-elicitation-label"
 									onchange={(v) => setElicitation(v)}
 								/>

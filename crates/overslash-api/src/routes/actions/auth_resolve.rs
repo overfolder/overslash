@@ -385,6 +385,22 @@ pub(crate) async fn resolve_instance_auth(
     }
 
     let org_id = scope.org_id();
+
+    // The credential kinds *this instance* authenticates with.
+    //
+    // On a template offering OAuth or a token against the same host, the two
+    // are alternatives, and the instance picked one at creation. Narrowing here
+    // is what makes that real: without it a token-mode instance carrying a
+    // connection_id left over from a previous mode would authenticate with the
+    // connection, and a token-mode instance with neither would fall through to
+    // whatever ambient connection the owner happens to hold for the provider.
+    // A template declaring no modes yields every entry, so nothing changes for
+    // the single-mode templates.
+    let mode_auth = svc.auth_for_mode(instance.auth_mode.as_deref());
+    let mode_has_oauth = mode_auth
+        .iter()
+        .any(|a| matches!(a, overslash_core::types::ServiceAuth::OAuth { .. }));
+
     // If instance has a bound connection, use it directly. Errors here
     // (encryption-key parse, client-credentials resolve) are server-side
     // problems on the *specific* connection the instance is bound to —
@@ -393,7 +409,7 @@ pub(crate) async fn resolve_instance_auth(
     // that the operator never asked us to use. Propagate Internal so the
     // operator can see the real cause; mirror what resolve_service_auth
     // does for its access_token errors.
-    if let Some(conn_id) = instance.connection_id {
+    if let Some(conn_id) = instance.connection_id.filter(|_| mode_has_oauth) {
         // Explicit `match` (rather than `if let Ok(Some(...))`) so a DB
         // error doesn't get silently treated as "no connection bound" and
         // misrouted to a `needs_authentication` 401. Ok(None) — the
@@ -521,7 +537,7 @@ pub(crate) async fn resolve_instance_auth(
     // URL actually dialled. Only consulted for the platform rung.
     let platform_base =
         crate::routes::actions::service_resolve::effective_base(Some(instance), svc);
-    for service_auth in &svc.auth {
+    for service_auth in &mode_auth {
         let overslash_core::types::ServiceAuth::Secret {
             scheme,
             injection,
@@ -693,13 +709,17 @@ pub(crate) async fn resolve_instance_auth(
     // OAuth-backed templates (the only ones that resolve a default connection);
     // ApiKey/env resolution below is unaffected because such templates declare
     // no OAuth provider.
-    if !instance.use_default_connection
-        && svc
-            .auth
-            .iter()
-            .any(|a| matches!(a, overslash_core::types::ServiceAuth::OAuth { .. }))
-    {
+    if !instance.use_default_connection && mode_has_oauth {
         return Ok(ResolvedAuth::none());
+    }
+
+    // Rung 4 resolves the identity's default connection for the template's
+    // provider, which is only ever the right answer for a mode that uses one.
+    // In a token mode a missing secret is a *missing credential*, reported as
+    // such; borrowing an ambient OAuth connection would silently authenticate
+    // the call as an account the operator never pointed this instance at.
+    if !mode_has_oauth && !missing.is_empty() {
+        return Ok(ResolvedAuth::none().with_missing(missing));
     }
 
     let fallback = resolve_service_auth(

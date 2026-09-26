@@ -94,7 +94,7 @@ async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         email_reply_to: None,
         email_api_key: None,
         preview_origin_allowlist: None,
-        overslash_env: None,
+        deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
     };
 
@@ -193,7 +193,12 @@ async fn start_mock() -> SocketAddr {
         State(s): State<S>,
         headers: HeaderMap,
         Json(p): Json<Value>,
-    ) -> &'static str {
+    ) -> axum::response::Response {
+        use axum::response::IntoResponse;
+        // Pass the endpoint-ownership handshake; record events only.
+        if let Some(echo) = overslash_fakes::openapi::verification_echo(&p) {
+            return echo.into_response();
+        }
         let h: serde_json::Map<String, Value> = headers
             .iter()
             .map(|(k, v)| (k.as_str().to_string(), json!(v.to_str().unwrap_or(""))))
@@ -201,7 +206,7 @@ async fn start_mock() -> SocketAddr {
         let mut state = s.lock().await;
         state.webhooks.push(p);
         state.webhook_headers.push(json!(h));
-        "ok"
+        "ok".into_response()
     }
 
     async fn list_webhooks(State(s): State<S>) -> Json<Value> {
@@ -306,16 +311,7 @@ async fn setup(pool: PgPool) -> (String, String, Uuid, Uuid, String) {
     let org_id: Uuid = org["id"].as_str().unwrap().parse().unwrap();
 
     // Create API key (org-level bootstrap)
-    let key: Value = client
-        .post(format!("{base}/v1/api-keys"))
-        .json(&json!({"org_id": org_id, "name": "bootstrap"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let raw_key = key["key"].as_str().unwrap().to_string();
+    let raw_key = org["api_key"].as_str().unwrap().to_string();
 
     // Create user identity (agents require a parent)
     let user: Value = client
@@ -1845,7 +1841,7 @@ async fn test_service_registry_api() {
         email_reply_to: None,
         email_api_key: None,
         preview_origin_allowlist: None,
-        overslash_env: None,
+        deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
     };
 
@@ -1919,17 +1915,7 @@ async fn test_service_registry_api() {
         .json()
         .await
         .unwrap();
-    let org_id: Uuid = org["id"].as_str().unwrap().parse().unwrap();
-    let key_resp: Value = client
-        .post(format!("{base}/v1/api-keys"))
-        .json(&json!({"org_id": org_id, "name": "test"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let api_key = key_resp["key"].as_str().unwrap();
+    let api_key = org["api_key"].as_str().unwrap();
 
     // List templates — should have at least github, stripe, slack (global tier)
     let resp: Vec<Value> = client
@@ -2108,7 +2094,7 @@ async fn test_list_webhook_deliveries_empty_for_new_subscription() {
         .post(format!("{base}/v1/webhooks"))
         .header(auth(&admin_key).0, auth(&admin_key).1)
         .json(&json!({
-            "url": "http://example.invalid/hook",
+            "url": "https://example.invalid/hook",
             "events": ["approval.resolved"]
         }))
         .send()
@@ -2184,16 +2170,7 @@ async fn test_oauth_callback_exchanges_code_and_stores_connection() {
         .unwrap();
     let org_id: Uuid = org["id"].as_str().unwrap().parse().unwrap();
 
-    let key_resp: Value = client
-        .post(format!("{base}/v1/api-keys"))
-        .json(&json!({"org_id": org_id, "name": "test"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let api_key = key_resp["key"].as_str().unwrap().to_string();
+    let api_key = org["api_key"].as_str().unwrap().to_string();
 
     let user: Value = client
         .post(format!("{base}/v1/identities"))
@@ -2899,7 +2876,7 @@ async fn start_api_with_registry(
         email_reply_to: None,
         email_api_key: None,
         preview_origin_allowlist: None,
-        overslash_env: None,
+        deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
     };
 

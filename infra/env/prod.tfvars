@@ -1,7 +1,7 @@
 project_id = "overslash"
 region     = "europe-west1"
 env        = "prod"
-rust_log   = "overslash=debug,info"
+rust_log   = "info"
 
 # Empty `domain` skips the single-host google_cloud_run_domain_mapping in
 # favor of the wildcard GCLB stack (see `enable_api_lb`).

@@ -1,6 +1,6 @@
 // Real-stack screenshots for `x-overslash-hidden` template badging.
 //
-// The shipped `github_legacy_oauth` template carries the flag, so no
+// The shipped `test_email` template carries the flag, so no
 // seeding is needed: the catalog tab, the Create Service picker, and the
 // template editor all render a "hidden" badge straight from /v1/templates.
 //
@@ -24,7 +24,7 @@ try {
 		{
 			viewport: { width: 1280, height: 800 },
 			waitFor: async (p) => {
-				await p.locator('text=GitHub (Legacy OAuth)').first().waitFor({ timeout: 15_000 });
+				await p.locator('text=Test Mail').first().waitFor({ timeout: 15_000 });
 				const search = p.getByPlaceholder(/search templates/i);
 				await search.fill('github');
 				await p.waitForTimeout(300);
@@ -62,7 +62,7 @@ try {
 	// 4. Template editor header badge.
 	const editor = await snap.navigateAndSnap(
 		'hidden-templates-editor',
-		'/services/templates/github_legacy_oauth',
+		'/services/templates/test_email',
 		{
 			viewport: { width: 1280, height: 800 },
 			waitFor: async (p) => {

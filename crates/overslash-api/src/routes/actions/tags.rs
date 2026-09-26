@@ -194,6 +194,7 @@ mod tests {
             risk: None,
             disclose: Vec::new(),
             redact: Vec::new(),
+            json_string_params: Default::default(),
             oauth_injected: false,
             download: None,
             upload: None,

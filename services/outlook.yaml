@@ -141,12 +141,48 @@ paths:
                 toRecipients:
                   type: array
                   description: "Primary recipients, each {emailAddress: {address: 'user@example.com', name: 'Optional Name'}}"
+                  items:
+                    type: object
+                    required: [emailAddress]
+                    properties:
+                      emailAddress:
+                        type: object
+                        required: [address]
+                        properties:
+                          address:
+                            type: string
+                          name:
+                            type: string
                 ccRecipients:
                   type: array
                   description: "Cc recipients, same shape as toRecipients"
+                  items:
+                    type: object
+                    required: [emailAddress]
+                    properties:
+                      emailAddress:
+                        type: object
+                        required: [address]
+                        properties:
+                          address:
+                            type: string
+                          name:
+                            type: string
                 bccRecipients:
                   type: array
                   description: "Bcc recipients, same shape as toRecipients"
+                  items:
+                    type: object
+                    required: [emailAddress]
+                    properties:
+                      emailAddress:
+                        type: object
+                        required: [address]
+                        properties:
+                          address:
+                            type: string
+                          name:
+                            type: string
   /v1.0/me/messages/{id}:
     get:
       operationId: get_message
@@ -208,10 +244,28 @@ paths:
                   description: New subject (drafts only)
                 body:
                   type: object
-                  description: "New body (drafts only): {contentType, content}"
+                  description: "New body (drafts only)."
+                  properties:
+                    contentType:
+                      type: string
+                      enum: [Text, HTML]
+                    content:
+                      type: string
                 toRecipients:
                   type: array
                   description: "New recipients (drafts only)"
+                  items:
+                    type: object
+                    required: [emailAddress]
+                    properties:
+                      emailAddress:
+                        type: object
+                        required: [address]
+                        properties:
+                          address:
+                            type: string
+                          name:
+                            type: string
                 isRead:
                   type: boolean
                   description: Mark the message read (true) or unread (false)
@@ -221,6 +275,8 @@ paths:
                 categories:
                   type: array
                   description: "Category names to assign (Outlook's label equivalent, e.g. ['Red category'])"
+                  items:
+                    type: string
     delete:
       operationId: delete_message
       summary: Permanently delete a message
@@ -250,6 +306,20 @@ paths:
       operationId: send_mail
       summary: Send an email via Outlook
       risk: write
+      # Graph's recipients are `[{emailAddress: {address, name}}]`, so a bare
+      # `scope_param` would file the whole JSON object as the key's value —
+      # nothing a rule can match and nothing a human can read, which is why
+      # this action was unscoped until extractors existed. One key per address
+      # across all three headers, under the same `recipient` label
+      # `services/email.yaml` uses, so a grant written for one template reads
+      # the same way here. In jq `|` binds looser than `,`, so the three
+      # streams are collected first and mapped once.
+      scope_param:
+        - param: message
+          label: recipient
+          extract: >-
+            .toRecipients[]?, .ccRecipients[]?, .bccRecipients[]?
+            | .emailAddress.address
       security:
         - oauth:
             - https://graph.microsoft.com/Mail.Send
@@ -293,12 +363,48 @@ paths:
                     toRecipients:
                       type: array
                       description: "Primary recipients, each {emailAddress: {address: 'user@example.com', name: 'Optional Name'}}"
+                      items:
+                        type: object
+                        required: [emailAddress]
+                        properties:
+                          emailAddress:
+                            type: object
+                            required: [address]
+                            properties:
+                              address:
+                                type: string
+                              name:
+                                type: string
                     ccRecipients:
                       type: array
                       description: "Cc recipients, same shape as toRecipients"
+                      items:
+                        type: object
+                        required: [emailAddress]
+                        properties:
+                          emailAddress:
+                            type: object
+                            required: [address]
+                            properties:
+                              address:
+                                type: string
+                              name:
+                                type: string
                     bccRecipients:
                       type: array
                       description: "Bcc recipients, same shape as toRecipients"
+                      items:
+                        type: object
+                        required: [emailAddress]
+                        properties:
+                          emailAddress:
+                            type: object
+                            required: [address]
+                            properties:
+                              address:
+                                type: string
+                              name:
+                                type: string
                 saveToSentItems:
                   type: boolean
                   description: Whether to save the sent message to Sent Items (default true)

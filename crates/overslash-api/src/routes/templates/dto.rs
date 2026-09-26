@@ -56,6 +56,15 @@ pub(super) struct TemplateDetail {
     /// slots, so this is NOT derivable from `auth` on the client.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub(super) secrets: Vec<overslash_core::types::SecretSlot>,
+    /// The alternative credential kinds this template accepts, of which an
+    /// instance picks one at creation (`auth_mode`).
+    ///
+    /// Always at least one entry — a template declaring no
+    /// `x-overslash-auth-modes` has a single implicit mode holding every
+    /// scheme, which is the "all of these, together" reading. The dashboard
+    /// renders a picker only when there is more than one, and cannot derive
+    /// these from `auth`: the labels and the default live here.
+    pub(super) auth_modes: Vec<overslash_core::types::AuthMode>,
     /// Canonical OpenAPI 3.1 YAML source — the editable document. For DB
     /// templates this is the stored, alias-normalized text. For global
     /// templates it's the shipped YAML verbatim.
@@ -325,6 +334,14 @@ pub(super) struct ActionDetail {
     /// unscoped.
     #[serde(skip_serializing_if = "<[_]>::is_empty")]
     pub(super) scope_param: Vec<ScopeParamRef>,
+    /// Whether `params` above is a floor rather than a fence
+    /// (`x-overslash-additional-properties`). The Explorer reads this to decide
+    /// two things: whether to offer the free-form "additional arguments" rows,
+    /// and whether an `enum` param renders as a closed `<select>` or an
+    /// open combobox. Without it the form would keep enforcing client-side
+    /// exactly the constraint the server stopped enforcing.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub(super) additional_properties: bool,
 }
 
 // -- Request types --

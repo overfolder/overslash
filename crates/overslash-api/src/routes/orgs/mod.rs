@@ -119,6 +119,18 @@ pub(super) struct OrgResponse {
     /// bootstrap-admin session rather than bouncing through the switcher.
     #[serde(skip_serializing_if = "Option::is_none")]
     redirect_to: Option<String>,
+    /// The org's bootstrap admin identity — the creator's own identity when
+    /// they came in with a session, or the `admin` User minted for them when
+    /// they did not.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    identity_id: Option<Uuid>,
+    /// Plaintext `osk_…` for the org's first admin key. Present **only** on
+    /// the credential-less creation path, where the caller has no other way
+    /// into the org they just made, and returned exactly once — no endpoint
+    /// reads a key back. A caller who created the org from a session gets
+    /// `None` here and uses that session.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    api_key: Option<String>,
 }
 
 impl From<overslash_db::repos::org::OrgRow> for OrgResponse {
@@ -132,6 +144,8 @@ impl From<overslash_db::repos::org::OrgRow> for OrgResponse {
             is_personal: o.is_personal,
             allow_overslash_managed_signin: o.allow_overslash_managed_signin,
             redirect_to: None,
+            identity_id: None,
+            api_key: None,
         }
     }
 }

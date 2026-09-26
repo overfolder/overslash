@@ -20,7 +20,9 @@ pub fn init() {
     .increment(0);
 }
 
-/// `status` ∈ {`success`, `retry`, `failed`}.
+/// `status` ∈ {`success`, `retry`, `failed`, `held`}. `held` is an event
+/// recorded for a subscription still pending ownership verification — not
+/// dialed, and never `final`, so it stays out of the failure-ratio alert.
 /// `final` is `"true"` once the delivery is terminal (success or exhausted).
 pub fn record_delivery(event_type: &str, status: &str, terminal: bool) {
     counter!(
@@ -52,6 +54,7 @@ mod tests {
         record_delivery("approval.created", "success", true);
         record_delivery("approval.resolved", "retry", false);
         record_delivery("approval.resolved", "failed", true);
+        record_delivery("approval.resolved", "held", false);
         record_attempts("approval.created", "success", 1);
         record_attempts("approval.resolved", "exhausted", 5);
     }

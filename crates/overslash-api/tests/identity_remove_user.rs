@@ -33,7 +33,10 @@ fn session_cookie(org_id: Uuid, identity_id: Uuid, user_id: Uuid) -> String {
         user_id: Some(user_id),
         mcp_client_id: None,
     };
-    format!("oss_session={}", jwt::mint(&secret, &claims).expect("mint"))
+    format!(
+        "__Host-oss_session={}",
+        jwt::mint(&secret, &claims).expect("mint")
+    )
 }
 
 /// Seed a member user: `users` row + `user`-kind identity (linked via user_id)

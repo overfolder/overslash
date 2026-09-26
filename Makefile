@@ -1,4 +1,4 @@
-.PHONY: local local-db local-down dev dev-api dev-dashboard down net test require-services check line-count check-decisions diff-stats allocate-decision fmt clippy migrate new-migration schema sqlx-prepare check-sqlx mock-target install-hooks \
+.PHONY: local local-db local-down dev dev-api dev-dashboard down net test require-services check line-count check-rust-version check-decisions diff-stats allocate-decision fmt clippy migrate new-migration schema sqlx-prepare check-sqlx mock-target install-hooks \
        tofu-init tofu-fmt tofu-validate tofu-plan tofu-apply tofu-destroy \
        infra-shutdown infra-resume worktree-clean \
        dashboard-static web-build web build install \
@@ -270,8 +270,8 @@ require-services:
 	@bash bin/worktree-env.sh >/dev/null
 	@bash scripts/check-test-services.sh
 
-# CI check: line counts + decision numbering + fmt + clippy + test
-check: line-count check-decisions require-services
+# CI check: line counts + rust version + decision numbering + fmt + clippy + test
+check: line-count check-rust-version check-decisions require-services
 	cargo fmt --check
 	cargo clippy --workspace -- -D warnings
 	@$(MAKE) --no-print-directory test
@@ -279,6 +279,11 @@ check: line-count check-decisions require-services
 # Every .rs under crates/*/src must stay under 1000 lines (mirrors CI).
 line-count:
 	bash scripts/check-line-counts.sh
+
+# Dockerfile `FROM rust:<ver>` tags must match rust-toolchain.toml (mirrors CI).
+# The toml is .dockerignore'd, so nothing else links the two.
+check-rust-version:
+	bash scripts/check-rust-version.sh
 
 # Decision numbers are unique, contiguous, and allocated at merge (mirrors CI).
 check-decisions:

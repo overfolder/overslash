@@ -5,7 +5,37 @@ use serde::{Deserialize, Serialize};
 use crate::service_icon::ServiceIcon;
 
 use super::action::ServiceAction;
-use super::auth::{ConfigVar, SecretSlot, ServiceAuth};
+use super::auth::{AuthMode, ConfigVar, SecretSlot, ServiceAuth};
+
+/// The key of the implicit mode a template that declares none still has.
+pub const DEFAULT_AUTH_MODE: &str = "default";
+
+/// A mode key that names nothing this template declares, carrying the keys
+/// that would have worked.
+#[derive(Debug, Clone)]
+pub struct UnknownAuthMode {
+    pub requested: String,
+    pub available: Vec<String>,
+}
+
+impl std::fmt::Display for UnknownAuthMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "unknown auth_mode `{}`; this template accepts {}",
+            self.requested,
+            self.available.join(", ")
+        )
+    }
+}
+
+/// The `securitySchemes` key an auth entry was compiled from, for both
+/// variants.
+fn auth_scheme(auth: &ServiceAuth) -> &str {
+    match auth {
+        ServiceAuth::OAuth { scheme, .. } | ServiceAuth::Secret { scheme, .. } => scheme,
+    }
+}
 
 /// Execution runtime for a service definition.
 ///
@@ -70,6 +100,16 @@ pub struct ServiceDefinition {
     /// and never vaulted — see [`ConfigVar`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub config: Vec<ConfigVar>,
+    /// The alternative credential kinds this template accepts
+    /// (`components.x-overslash-auth-modes`), of which an instance picks one
+    /// at creation and records on `service_instances.auth_mode`.
+    ///
+    /// Empty — the overwhelmingly common case — means no alternation: every
+    /// entry in `auth` applies at once. Read it through
+    /// [`ServiceDefinition::auth_modes`], which synthesizes that implicit mode
+    /// so callers need not special-case it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub declared_auth_modes: Vec<AuthMode>,
     #[serde(default)]
     pub actions: HashMap<String, ServiceAction>,
     /// `info.x-overslash-default_timeout_ms`: the timeout every action of this
@@ -79,6 +119,19 @@ pub struct ServiceDefinition {
     /// maxima still clamp the result.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_timeout_ms: Option<u64>,
+    /// `info.x-overslash-additional-properties`: the service-wide default for
+    /// [`ServiceAction::additional_properties`].
+    ///
+    /// Already folded into every action this template compiled, so the runtime
+    /// never reads it — the per-action field is the single source at call
+    /// time. It is carried here for the one path that lowers an action *after*
+    /// compile: `overlay_discovered_tools`, which adds tools from a live
+    /// `tools/list` at instance scope. Without it, a service that relaxed
+    /// globally would relax every authored tool and none of the discovered
+    /// ones — the wrong way round, since a discovered tool's `input_schema` is
+    /// exactly the one nobody hand-checked.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub default_additional_properties: bool,
     /// Execution runtime. Defaults to `Http` for backwards compat with every
     /// existing template. MCP templates set this to `Mcp` and populate `mcp`.
     #[serde(default, skip_serializing_if = "Runtime::is_default")]
@@ -235,6 +288,10 @@ impl ServiceDefinition {
 
     /// Every credential slot the template needs, deduped, in `auth` order.
     /// The set the dashboard renders and an instance binds.
+    ///
+    /// Template-wide: on a template declaring alternative auth modes this spans
+    /// *all* of them, so an instance-facing caller wants
+    /// [`Self::all_slots_for_mode`] instead.
     pub fn all_slots(&self) -> Vec<SecretSlot> {
         let mut out: Vec<SecretSlot> = Vec::new();
         for auth in &self.auth {
@@ -245,6 +302,113 @@ impl ServiceDefinition {
             }
         }
         out
+    }
+
+    /// The alternative credential kinds this template accepts.
+    ///
+    /// A template that declares none still has exactly one mode — the implicit
+    /// one holding every scheme, which is the pre-existing "all of these
+    /// together" reading. Synthesizing it here rather than returning empty is
+    /// what lets every caller treat "no modes" and "one mode" alike.
+    pub fn auth_modes(&self) -> Vec<AuthMode> {
+        if !self.declared_auth_modes.is_empty() {
+            return self.declared_auth_modes.clone();
+        }
+        vec![AuthMode {
+            key: DEFAULT_AUTH_MODE.to_string(),
+            label: String::new(),
+            description: String::new(),
+            schemes: self
+                .auth
+                .iter()
+                .map(|a| auth_scheme(a).to_string())
+                .collect(),
+            default: true,
+        }]
+    }
+
+    /// The mode a create that names none resolves to: the one marked
+    /// `default: true`, else the first declared.
+    pub fn default_auth_mode(&self) -> String {
+        let modes = self.auth_modes();
+        modes
+            .iter()
+            .find(|m| m.default)
+            .or_else(|| modes.first())
+            .map(|m| m.key.clone())
+            .unwrap_or_else(|| DEFAULT_AUTH_MODE.to_string())
+    }
+
+    /// Resolve a requested mode key against this template.
+    ///
+    /// `None` means "whatever the template defaults to" and always succeeds.
+    /// A named mode this template does not declare is an error carrying the
+    /// valid keys, because the only useful thing to tell a caller that picked
+    /// a mode wrongly is which ones exist.
+    pub fn resolve_auth_mode(&self, requested: Option<&str>) -> Result<AuthMode, UnknownAuthMode> {
+        let modes = self.auth_modes();
+        let Some(want) = requested.map(str::trim).filter(|s| !s.is_empty()) else {
+            let default = self.default_auth_mode();
+            return Ok(modes
+                .into_iter()
+                .find(|m| m.key == default)
+                .expect("default_auth_mode names a mode auth_modes returned"));
+        };
+        modes
+            .iter()
+            .find(|m| m.key == want)
+            .cloned()
+            .ok_or_else(|| UnknownAuthMode {
+                requested: want.to_string(),
+                available: modes.into_iter().map(|m| m.key).collect(),
+            })
+    }
+
+    /// The auth entries active under one mode.
+    ///
+    /// An instance authenticates with these and nothing else — which is what
+    /// makes "OAuth **or** a token" real rather than "whichever happens to be
+    /// bound". A stored definition predating auth modes carries no `scheme` on
+    /// its OAuth entry; such a template declares no modes either, so the
+    /// implicit mode returns every entry and the empty key is never consulted.
+    pub fn auth_for_mode(&self, mode: Option<&str>) -> Vec<&ServiceAuth> {
+        if self.declared_auth_modes.is_empty() {
+            return self.auth.iter().collect();
+        }
+        let Ok(resolved) = self.resolve_auth_mode(mode) else {
+            // An instance pinned to a mode the template has since dropped
+            // authenticates with nothing, rather than silently falling back to
+            // a credential its operator never chose.
+            return Vec::new();
+        };
+        self.auth
+            .iter()
+            .filter(|a| resolved.schemes.iter().any(|s| s == auth_scheme(a)))
+            .collect()
+    }
+
+    /// [`Self::all_slots`] narrowed to one mode: the slots this instance must
+    /// actually bind.
+    pub fn all_slots_for_mode(&self, mode: Option<&str>) -> Vec<SecretSlot> {
+        let mut out: Vec<SecretSlot> = Vec::new();
+        for auth in self.auth_for_mode(mode) {
+            for slot in self.slots_for(auth) {
+                if !out.iter().any(|s| s.key == slot.key) {
+                    out.push(slot);
+                }
+            }
+        }
+        out
+    }
+
+    /// The OAuth provider one mode authenticates through, if it has one.
+    /// `None` is the whole point of a token mode: no connection is wanted, so
+    /// none should be minted, demanded, or fallen back to.
+    pub fn oauth_provider_for_mode(&self, mode: Option<&str>) -> Option<&str> {
+        self.auth_for_mode(mode).into_iter().find_map(|a| match a {
+            ServiceAuth::OAuth { provider, .. } => Some(provider.as_str()),
+            ServiceAuth::Secret { .. } => None,
+        })
     }
 
     /// The action this template nominates as its credential probe — what the
@@ -405,6 +569,8 @@ mod tests {
     fn service_definition_http_defaults_keep_mcp_absent() {
         // Existing Http templates must serialize without runtime/mcp keys.
         let svc = ServiceDefinition {
+            declared_auth_modes: Vec::new(),
+            default_additional_properties: false,
             default_timeout_ms: None,
             secrets: Vec::new(),
             config: Vec::new(),
@@ -435,6 +601,7 @@ mod tests {
         actions.insert(
             "search_issues".into(),
             ServiceAction {
+                additional_properties: false,
                 wait_mode: None,
                 handoff_after_ms: None,
                 pagination: None,
@@ -461,6 +628,8 @@ mod tests {
             },
         );
         let svc = ServiceDefinition {
+            declared_auth_modes: Vec::new(),
+            default_additional_properties: false,
             default_timeout_ms: None,
             secrets: Vec::new(),
             config: Vec::new(),
@@ -506,6 +675,7 @@ mod tests {
     #[test]
     fn service_action_disabled_elided_when_false() {
         let a = ServiceAction {
+            additional_properties: false,
             wait_mode: None,
             handoff_after_ms: None,
             pagination: None,

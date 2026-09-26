@@ -298,7 +298,6 @@ pub async fn open_upstream(
     // replaced; wiring the full cascade through token minting is tracked in
     // TECH_DEBT.md.
     http_caller::call_streaming(
-        &state.http_client,
         &request.method,
         &url,
         &headers,
@@ -306,7 +305,13 @@ pub async fn open_upstream(
         std::time::Duration::from_millis(state.config.call_timeout_ms),
     )
     .await
-    .map_err(|e| AppError::BadGateway(format!("download upstream request failed: {e}")))
+    .map_err(|e| match e {
+        // Nothing was dialed — the stored request names an address the guard
+        // refuses. A 502 would blame an upstream that was never contacted.
+        http_caller::CallError::Blocked(reason) => AppError::BadRequest(reason),
+        http_caller::CallError::GuardFailed(reason) => AppError::Internal(reason),
+        e => AppError::BadGateway(format!("download upstream request failed: {e}")),
+    })
 }
 
 /// A stored request with its credentials resolved as they stand right now.

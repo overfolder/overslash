@@ -88,6 +88,7 @@ async fn make_agent_under(scope: &OrgScope, name: &str, parent: &IdentityRow) ->
 async fn make_instance(scope: &OrgScope, name: &str, owner: Option<Uuid>) -> ServiceInstanceRow {
     let row = scope
         .create_service_instance(CreateServiceInstance {
+            auth_mode: None,
             org_id: scope.org_id(),
             owner_identity_id: owner,
             name,

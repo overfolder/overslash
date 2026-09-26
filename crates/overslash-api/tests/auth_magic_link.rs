@@ -87,7 +87,9 @@ async fn verify_provisions_email_user_and_sets_session_cookie() {
     let resp = nr.get(verify_url).send().await.unwrap();
     assert_eq!(resp.status(), 303);
     assert!(
-        cookies(&resp).iter().any(|c| c.starts_with("oss_session=")),
+        cookies(&resp)
+            .iter()
+            .any(|c| c.starts_with("__Host-oss_session=")),
         "expected oss_session cookie on verify, got {:?}",
         cookies(&resp)
     );
@@ -152,7 +154,7 @@ async fn verify_is_single_use() {
     assert!(
         cookies(&first)
             .iter()
-            .any(|c| c.starts_with("oss_session="))
+            .any(|c| c.starts_with("__Host-oss_session="))
     );
 
     // Second redemption of the same token is rejected — bounced to /login with
@@ -166,7 +168,7 @@ async fn verify_is_single_use() {
     assert!(
         !cookies(&second)
             .iter()
-            .any(|c| c.starts_with("oss_session=")),
+            .any(|c| c.starts_with("__Host-oss_session=")),
         "second verify must not mint a session"
     );
 }
@@ -198,7 +200,11 @@ async fn expired_token_is_rejected() {
         resp.headers().get("location").unwrap(),
         "/login?reason=magic_link_invalid"
     );
-    assert!(!cookies(&resp).iter().any(|c| c.starts_with("oss_session=")));
+    assert!(
+        !cookies(&resp)
+            .iter()
+            .any(|c| c.starts_with("__Host-oss_session="))
+    );
 }
 
 #[tokio::test]

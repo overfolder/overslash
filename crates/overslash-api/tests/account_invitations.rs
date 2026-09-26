@@ -121,7 +121,7 @@ async fn invite(base: &str, client: &reqwest::Client, admin_key: &str, email: &s
 async fn list_invitations(base: &str, client: &reqwest::Client, cookie: &str) -> Vec<Value> {
     let resp = client
         .get(format!("{base}/v1/account/invitations"))
-        .header("cookie", format!("oss_session={cookie}"))
+        .header("cookie", format!("__Host-oss_session={cookie}"))
         .send()
         .await
         .unwrap();
@@ -154,7 +154,7 @@ async fn lists_pending_invitations_from_another_org() {
     // The shell reads the same list off its universal auth call.
     let me: Value = client
         .get(format!("{base}/auth/me/identity"))
-        .header("cookie", format!("oss_session={}", caller.cookie))
+        .header("cookie", format!("__Host-oss_session={}", caller.cookie))
         .send()
         .await
         .unwrap()
@@ -288,7 +288,7 @@ async fn accept_joins_the_org_and_clears_the_invite_everywhere() {
         .post(format!(
             "{base}/v1/account/invitations/{invitation_id}/accept"
         ))
-        .header("cookie", format!("oss_session={}", caller.cookie))
+        .header("cookie", format!("__Host-oss_session={}", caller.cookie))
         .send()
         .await
         .unwrap();
@@ -357,7 +357,7 @@ async fn accept_joins_the_org_and_clears_the_invite_everywhere() {
         .post(format!(
             "{base}/v1/account/invitations/{invitation_id}/accept"
         ))
-        .header("cookie", format!("oss_session={}", caller.cookie))
+        .header("cookie", format!("__Host-oss_session={}", caller.cookie))
         .send()
         .await
         .unwrap();
@@ -392,7 +392,7 @@ async fn accept_by_a_different_user_is_not_found() {
             .post(format!(
                 "{base}/v1/account/invitations/{invitation_id}/{verb}"
             ))
-            .header("cookie", format!("oss_session={}", attacker.cookie))
+            .header("cookie", format!("__Host-oss_session={}", attacker.cookie))
             .send()
             .await
             .unwrap();
@@ -452,7 +452,7 @@ async fn org_with_its_own_idp_cannot_be_accepted_in_place() {
         .post(format!(
             "{base}/v1/account/invitations/{invitation_id}/accept"
         ))
-        .header("cookie", format!("oss_session={}", caller.cookie))
+        .header("cookie", format!("__Host-oss_session={}", caller.cookie))
         .send()
         .await
         .unwrap();
@@ -486,7 +486,7 @@ async fn decline_archives_the_invite_and_frees_the_email() {
         .post(format!(
             "{base}/v1/account/invitations/{invitation_id}/decline"
         ))
-        .header("cookie", format!("oss_session={}", caller.cookie))
+        .header("cookie", format!("__Host-oss_session={}", caller.cookie))
         .send()
         .await
         .unwrap();

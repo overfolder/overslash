@@ -5,7 +5,7 @@
 //! directly — which is why they stay `pub(super)` rather than private.
 
 use super::*;
-use std::env;
+use overslash_env as env;
 
 /// Parse the `PREVIEW_ORIGIN_ALLOWLIST` env var into a compiled regex.
 /// Fail-closed: any error (empty string, invalid regex syntax) returns
@@ -40,6 +40,8 @@ pub(super) fn parse_connection_return_url_allowed_hosts(raw: Option<&str>) -> Ve
     let Some(s) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
         return Vec::new();
     };
+    // Lowercased because the callback lowercases the URL's `host_str()` before
+    // comparing; a `Cloud.Example.COM` entry would otherwise never match.
     s.split(',')
         .map(|h| h.trim().to_ascii_lowercase())
         .filter(|h| !h.is_empty())
@@ -88,19 +90,20 @@ pub(super) fn parse_service_base_overrides(raw: Option<&str>) -> HashMap<String,
     out
 }
 
-/// Returns true if the override target is loopback or
-/// `OVERSLASH_SSRF_ALLOW_PRIVATE` is set to a truthy value. Mirrors the SSRF
-/// guard so production deploys can leave `OVERSLASH_SERVICE_BASE_OVERRIDES`
-/// set harmlessly: a public override target is silently dropped.
+/// Whether a `OVERSLASH_SERVICE_BASE_OVERRIDES` target is one this deployment
+/// could dial anyway.
+///
+/// Mirrors the SSRF guard so a production deploy can leave the variable set
+/// harmlessly: a target the guard would refuse is silently dropped here rather
+/// than rewriting a host into a request that then fails at the transport.
+///
+/// Loopback, or inside a range the operator listed in
+/// `OVERSLASH_SSRF_ALLOWED_CIDRS` — the same allow-list
+/// [`crate::services::ssrf_guard`] consults, and the only way past the
+/// deny-list there. A hostname target resolves to `false`: this check is
+/// synchronous and a name is not an address, and the guard will make the real
+/// decision at call time either way.
 pub(super) fn ssrf_allowed_for(base_url: &str) -> bool {
-    if let Ok(v) = env::var("OVERSLASH_SSRF_ALLOW_PRIVATE") {
-        // Accept the same truthy spellings as `CLOUD_BILLING` etc. above so a
-        // stray `OVERSLASH_SSRF_ALLOW_PRIVATE=0` doesn't accidentally enable
-        // the bypass.
-        if matches!(v.as_str(), "true" | "1" | "yes") {
-            return true;
-        }
-    }
     let Ok(parsed) = url::Url::parse(base_url) else {
         return false;
     };
@@ -110,10 +113,19 @@ pub(super) fn ssrf_allowed_for(base_url: &str) -> bool {
     if matches!(host, "localhost" | "127.0.0.1" | "::1") {
         return true;
     }
-    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
-        return ip.is_loopback();
+    // `host_str` brackets an IPv6 literal; `Host` hands back the bare form.
+    let ip = match parsed.host() {
+        Some(url::Host::Ipv4(v4)) => std::net::IpAddr::V4(v4),
+        Some(url::Host::Ipv6(v6)) => std::net::IpAddr::V6(v6),
+        _ => return false,
+    };
+    if ip.is_loopback() {
+        return true;
     }
-    false
+    let allowed = env::optional("OVERSLASH_SSRF_ALLOWED_CIDRS")
+        .map(|raw| crate::services::ssrf_guard::parse_allowed_cidrs(&raw))
+        .unwrap_or_default();
+    allowed.iter().any(|net| net.contains(&ip))
 }
 
 /// Build the default `public_url` from the bind host/port. We map
@@ -132,26 +144,17 @@ pub(super) fn ssrf_allowed_for(base_url: &str) -> bool {
 /// boot, in the same `from_env` panic-on-misconfig path the required env
 /// vars use.
 pub(super) fn secrets_encryption_key_active_id_from_env() -> u8 {
-    match env::var("SECRETS_ENCRYPTION_KEY_ACTIVE_ID") {
-        Err(_) => 1,
-        Ok(s) if s.is_empty() => 1,
-        Ok(s) => s.parse::<u8>().unwrap_or_else(|_| {
-            panic!("SECRETS_ENCRYPTION_KEY_ACTIVE_ID must be a u8 (1..=255), got {s:?}")
-        }),
-    }
+    env::parse_or_die("SECRETS_ENCRYPTION_KEY_ACTIVE_ID", 1)
 }
 
 /// Parse `SECRETS_ENCRYPTION_KEY_PREVIOUS_ID` from the env. Defaults to
 /// `active_id - 1` (the only legal rotation shape) when unset. Same
 /// fail-fast posture as the active-id helper.
 pub(super) fn secrets_encryption_key_previous_id_from_env(active_id: u8) -> u8 {
-    match env::var("SECRETS_ENCRYPTION_KEY_PREVIOUS_ID") {
-        Err(_) => active_id.saturating_sub(1),
-        Ok(s) if s.is_empty() => active_id.saturating_sub(1),
-        Ok(s) => s.parse::<u8>().unwrap_or_else(|_| {
-            panic!("SECRETS_ENCRYPTION_KEY_PREVIOUS_ID must be a u8 (1..=255), got {s:?}")
-        }),
-    }
+    env::parse_or_die(
+        "SECRETS_ENCRYPTION_KEY_PREVIOUS_ID",
+        active_id.saturating_sub(1),
+    )
 }
 
 pub fn default_public_url(host: &str, port: u16) -> String {
@@ -312,9 +315,7 @@ mod tests {
             );
         }
         let hosts = parse_connection_return_url_allowed_hosts(
-            std::env::var("OVERSLASH_CONNECTION_RETURN_URL_HOSTS")
-                .ok()
-                .as_deref(),
+            env::optional("OVERSLASH_CONNECTION_RETURN_URL_HOSTS").as_deref(),
         );
         unsafe {
             std::env::remove_var("OVERSLASH_CONNECTION_RETURN_URL_HOSTS");
@@ -332,9 +333,7 @@ mod tests {
             std::env::remove_var("OVERSLASH_CONNECTION_RETURN_URL_HOSTS");
         }
         let hosts = parse_connection_return_url_allowed_hosts(
-            std::env::var("OVERSLASH_CONNECTION_RETURN_URL_HOSTS")
-                .ok()
-                .as_deref(),
+            env::optional("OVERSLASH_CONNECTION_RETURN_URL_HOSTS").as_deref(),
         );
         assert!(hosts.is_empty());
     }

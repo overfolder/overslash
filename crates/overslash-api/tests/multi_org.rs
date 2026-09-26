@@ -112,7 +112,7 @@ async fn post_v1_orgs_attaches_admin_membership_when_session_present() {
     let slug = format!("acme-{}", Uuid::new_v4().simple());
     let resp = client
         .post(format!("{base}/v1/orgs"))
-        .header("cookie", format!("oss_session={cookie}"))
+        .header("cookie", format!("__Host-oss_session={cookie}"))
         .json(&json!({ "name": "Acme", "slug": slug }))
         .send()
         .await
@@ -146,7 +146,7 @@ async fn post_v1_orgs_attaches_admin_membership_when_session_present() {
     let token = raw_cookie
         .split(';')
         .next()
-        .and_then(|kv| kv.trim().strip_prefix("oss_session="))
+        .and_then(|kv| kv.trim().strip_prefix("__Host-oss_session="))
         .expect("Set-Cookie carries an oss_session token");
     let secret = hex::decode("cd".repeat(32)).unwrap();
     let claims = overslash_api::services::jwt::verify(
@@ -297,7 +297,7 @@ async fn allow_org_creation_false_returns_403() {
     let cookie = mint_session_cookie_with_user(primary_org, identity_id, Some(user_id));
     let resp = client
         .post(format!("{base}/v1/orgs"))
-        .header("cookie", format!("oss_session={cookie}"))
+        .header("cookie", format!("__Host-oss_session={cookie}"))
         .json(&json!({ "name": "Blocked", "slug": format!("blk-{}", Uuid::new_v4().simple()) }))
         .send()
         .await
@@ -334,7 +334,7 @@ async fn switch_org_requires_membership() {
     let cookie = mint_session_cookie_with_user(org_a, identity_id, Some(user_id));
     let resp = client
         .post(format!("{base}/auth/switch-org"))
-        .header("cookie", format!("oss_session={cookie}"))
+        .header("cookie", format!("__Host-oss_session={cookie}"))
         .json(&json!({ "org_id": org_b }))
         .send()
         .await
@@ -373,7 +373,7 @@ async fn list_and_drop_memberships_round_trip() {
     // LIST shows both
     let resp = client
         .get(format!("{base}/v1/account/memberships"))
-        .header("cookie", format!("oss_session={cookie}"))
+        .header("cookie", format!("__Host-oss_session={cookie}"))
         .send()
         .await
         .unwrap();
@@ -385,7 +385,7 @@ async fn list_and_drop_memberships_round_trip() {
     // DELETE the second org's membership — should succeed (another admin exists).
     let del = client
         .delete(format!("{base}/v1/account/memberships/{org_b}"))
-        .header("cookie", format!("oss_session={cookie}"))
+        .header("cookie", format!("__Host-oss_session={cookie}"))
         .send()
         .await
         .unwrap();
@@ -394,7 +394,7 @@ async fn list_and_drop_memberships_round_trip() {
     // And now only one membership remains.
     let after: Value = client
         .get(format!("{base}/v1/account/memberships"))
-        .header("cookie", format!("oss_session={cookie}"))
+        .header("cookie", format!("__Host-oss_session={cookie}"))
         .send()
         .await
         .unwrap()
@@ -415,7 +415,7 @@ async fn cannot_drop_last_admin() {
     let cookie = mint_session_cookie_with_user(org_id, identity_id, Some(user_id));
     let resp = client
         .delete(format!("{base}/v1/account/memberships/{org_id}"))
-        .header("cookie", format!("oss_session={cookie}"))
+        .header("cookie", format!("__Host-oss_session={cookie}"))
         .send()
         .await
         .unwrap();
@@ -453,7 +453,7 @@ async fn cannot_drop_personal_org_membership() {
     let cookie = mint_session_cookie_with_user(primary_org, identity_id, Some(user_id));
     let resp = client
         .delete(format!("{base}/v1/account/memberships/{primary_org}"))
-        .header("cookie", format!("oss_session={cookie}"))
+        .header("cookie", format!("__Host-oss_session={cookie}"))
         .send()
         .await
         .unwrap();
@@ -484,7 +484,7 @@ async fn subdomain_mismatch_returns_401() {
     let resp = client
         .get(format!("{base}/v1/account/memberships"))
         .header("host", format!("{other_slug}.app.test"))
-        .header("cookie", format!("oss_session={cookie}"))
+        .header("cookie", format!("__Host-oss_session={cookie}"))
         .send()
         .await
         .unwrap();
@@ -517,7 +517,7 @@ async fn single_org_mode_pins_every_request_to_one_org() {
     let resp = client
         .get(format!("{base}/v1/account/memberships"))
         .header("host", "anything.app.invalid")
-        .header("cookie", format!("oss_session={cookie}"))
+        .header("cookie", format!("__Host-oss_session={cookie}"))
         .send()
         .await
         .unwrap();
@@ -684,11 +684,11 @@ async fn concurrent_drops_do_not_deadlock_and_preserve_last_admin() {
 
     let fut_a = client
         .delete(format!("{base}/v1/account/memberships/{org_id}"))
-        .header("cookie", format!("oss_session={cookie_a}"))
+        .header("cookie", format!("__Host-oss_session={cookie_a}"))
         .send();
     let fut_b = client
         .delete(format!("{base}/v1/account/memberships/{org_id}"))
-        .header("cookie", format!("oss_session={cookie_b}"))
+        .header("cookie", format!("__Host-oss_session={cookie_b}"))
         .send();
 
     let (resp_a, resp_b) = tokio::join!(fut_a, fut_b);
@@ -770,7 +770,7 @@ async fn post_v1_orgs_with_session_records_creator_and_emits_audit() {
     let slug = format!("creator-audit-{}", Uuid::new_v4().simple());
     let resp = client
         .post(format!("{base}/v1/orgs"))
-        .header("cookie", format!("oss_session={cookie}"))
+        .header("cookie", format!("__Host-oss_session={cookie}"))
         .json(&json!({ "name": "CreatorAudit", "slug": slug }))
         .send()
         .await
@@ -874,7 +874,7 @@ async fn drop_membership_emits_audit_with_creator_flag_true() {
     let slug = format!("founder-leave-{}", Uuid::new_v4().simple());
     let create = client
         .post(format!("{base}/v1/orgs"))
-        .header("cookie", format!("oss_session={cookie}"))
+        .header("cookie", format!("__Host-oss_session={cookie}"))
         .json(&json!({ "name": "FounderLeave", "slug": slug }))
         .send()
         .await
@@ -904,7 +904,7 @@ async fn drop_membership_emits_audit_with_creator_flag_true() {
     let cookie_in_new = mint_session_cookie_with_user(new_org_id, bootstrap_ident, Some(user_id));
     let drop = client
         .delete(format!("{base}/v1/account/memberships/{new_org_id}"))
-        .header("cookie", format!("oss_session={cookie_in_new}"))
+        .header("cookie", format!("__Host-oss_session={cookie_in_new}"))
         .send()
         .await
         .unwrap();
@@ -970,7 +970,7 @@ async fn drop_membership_emits_audit_with_creator_flag_false_for_non_creator() {
     let cookie = mint_session_cookie_with_user(org_id, identity_id, Some(user_id));
     let drop = client
         .delete(format!("{base}/v1/account/memberships/{org_id}"))
-        .header("cookie", format!("oss_session={cookie}"))
+        .header("cookie", format!("__Host-oss_session={cookie}"))
         .send()
         .await
         .unwrap();
@@ -1114,7 +1114,7 @@ async fn authorize_to_request_id(
     );
     let resp = no_redirect
         .get(&url)
-        .header("cookie", format!("oss_session={cookie}"))
+        .header("cookie", format!("__Host-oss_session={cookie}"))
         .send()
         .await
         .unwrap();
@@ -1149,7 +1149,7 @@ async fn consent_switch_org_rebinds_to_target_org() {
     // Switch to org B.
     let resp = client
         .post(format!("{base}/v1/oauth/consent/{request_id}/switch-org"))
-        .header("cookie", format!("oss_session={cookie_a}"))
+        .header("cookie", format!("__Host-oss_session={cookie_a}"))
         .json(&json!({ "org_id": org_b }))
         .send()
         .await
@@ -1160,7 +1160,7 @@ async fn consent_switch_org_rebinds_to_target_org() {
         .get("set-cookie")
         .and_then(|v| v.to_str().ok())
         .and_then(|c| c.split(';').next())
-        .and_then(|kv| kv.trim().strip_prefix("oss_session="))
+        .and_then(|kv| kv.trim().strip_prefix("__Host-oss_session="))
         .expect("switch-org must re-mint the session cookie")
         .to_string();
     let body: Value = resp.json().await.unwrap();
@@ -1183,7 +1183,7 @@ async fn consent_switch_org_rebinds_to_target_org() {
     // The fresh request, fetched with the new cookie, is bound to org B.
     let ctx: Value = client
         .get(format!("{base}/v1/oauth/consent/{new_request_id}"))
-        .header("cookie", format!("oss_session={new_cookie}"))
+        .header("cookie", format!("__Host-oss_session={new_cookie}"))
         .send()
         .await
         .unwrap()
@@ -1217,7 +1217,7 @@ async fn consent_switch_org_rejects_non_member() {
 
     let resp = client
         .post(format!("{base}/v1/oauth/consent/{request_id}/switch-org"))
-        .header("cookie", format!("oss_session={cookie_a}"))
+        .header("cookie", format!("__Host-oss_session={cookie_a}"))
         .json(&json!({ "org_id": stranger_org }))
         .send()
         .await
@@ -1245,7 +1245,7 @@ async fn consent_switch_org_rejects_different_user() {
     let other_cookie = mint_session_cookie_with_user(org_a, Uuid::new_v4(), Some(user_id));
     let resp = client
         .post(format!("{base}/v1/oauth/consent/{request_id}/switch-org"))
-        .header("cookie", format!("oss_session={other_cookie}"))
+        .header("cookie", format!("__Host-oss_session={other_cookie}"))
         .json(&json!({ "org_id": org_b }))
         .send()
         .await
@@ -1355,7 +1355,7 @@ fn nr_client() -> reqwest::Client {
 async fn get_gate(base: &str, flow_id: &str, cookie: &str) -> reqwest::Response {
     nr_client()
         .get(format!("{base}/connect-authorize?id={flow_id}"))
-        .header("cookie", format!("oss_session={cookie}"))
+        .header("cookie", format!("__Host-oss_session={cookie}"))
         .send()
         .await
         .unwrap()
@@ -1364,7 +1364,7 @@ async fn get_gate(base: &str, flow_id: &str, cookie: &str) -> reqwest::Response 
 async fn post_confirm(base: &str, flow_id: &str, cookie: &str) -> reqwest::Response {
     nr_client()
         .post(format!("{base}/connect-authorize/confirm"))
-        .header("cookie", format!("oss_session={cookie}"))
+        .header("cookie", format!("__Host-oss_session={cookie}"))
         .form(&[("id", flow_id)])
         .send()
         .await
@@ -1416,7 +1416,7 @@ async fn connect_gate_cross_org_same_human_autoswitches() {
         .get("set-cookie")
         .and_then(|v| v.to_str().ok())
         .and_then(|c| c.split(';').next())
-        .and_then(|kv| kv.trim().strip_prefix("oss_session="))
+        .and_then(|kv| kv.trim().strip_prefix("__Host-oss_session="))
         .expect("cross-org gate must re-mint the session cookie")
         .to_string();
     let secret = hex::decode("cd".repeat(32)).unwrap();
@@ -1466,8 +1466,31 @@ async fn connect_gate_admin_override_shows_consent_then_confirm_redirects() {
     // GET → consent interstitial naming the owner; flow not consumed.
     let resp = get_gate(&base, &flow, &cookie).await;
     assert_eq!(resp.status(), StatusCode::OK);
+    let csp = resp.headers()["content-security-policy"]
+        .to_str()
+        .unwrap()
+        .to_owned();
     let body = resp.text().await.unwrap();
     assert!(body.contains("Bob"), "consent names the owner: {body}");
+    // The Cancel button's handler runs only because the CSP allows the
+    // page's one inline script by hash — assert the hash matches the body.
+    let script = body
+        .split_once("<script>")
+        .and_then(|(_, rest)| rest.split_once("</script>"))
+        .map(|(s, _)| s)
+        .expect("consent page carries its cancel script");
+    let hash = base64::Engine::encode(
+        &base64::engine::general_purpose::STANDARD,
+        <sha2::Sha256 as sha2::Digest>::digest(script.as_bytes()),
+    );
+    assert!(
+        csp.contains(&format!("script-src 'sha256-{hash}'")),
+        "{csp}"
+    );
+    assert!(
+        !body.contains("onclick="),
+        "inline handlers would be blocked"
+    );
     assert!(
         body.contains("Continue to google"),
         "consent has a confirm button"

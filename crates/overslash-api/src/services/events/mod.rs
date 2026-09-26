@@ -39,8 +39,8 @@ pub struct EventDraft {
 ///
 /// The two transports are independent: a failed log append still attempts
 /// webhook delivery, and vice versa.
-pub fn emit(pool: PgPool, http_client: reqwest::Client, draft: EventDraft) {
-    emit_all(pool, http_client, vec![draft]);
+pub fn emit(pool: PgPool, draft: EventDraft) {
+    emit_all(pool, vec![draft]);
 }
 
 /// Publish several events as one ordered unit.
@@ -55,7 +55,7 @@ pub fn emit(pool: PgPool, http_client: reqwest::Client, draft: EventDraft) {
 /// Interleaving them would put a webhook's HTTP call (up to 10s, to an endpoint
 /// we do not control) between two appends, delaying the second event on the
 /// stream by however long some third party takes to answer.
-pub fn emit_all(pool: PgPool, http_client: reqwest::Client, drafts: Vec<EventDraft>) {
+pub fn emit_all(pool: PgPool, drafts: Vec<EventDraft>) {
     if drafts.is_empty() {
         return;
     }
@@ -79,7 +79,6 @@ pub fn emit_all(pool: PgPool, http_client: reqwest::Client, drafts: Vec<EventDra
         for draft in drafts {
             super::webhook_dispatcher::dispatch(
                 &pool,
-                &http_client,
                 draft.org_id,
                 draft.event_type.as_str(),
                 draft.payload,

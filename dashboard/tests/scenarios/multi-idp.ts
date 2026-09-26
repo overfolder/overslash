@@ -48,7 +48,7 @@ export const SEEDED_PROFILES = {
  * production. The callback's final redirect lands on the API origin (the
  * harness sets DASHBOARD_URL=/), which 404s harmlessly — the only
  * post-condition that matters is the session cookie ending up on
- * `127.0.0.1`, which `page.request` then sees on follow-up calls.
+ * `localhost`, which `page.request` then sees on follow-up calls.
  */
 export async function loginViaOidcVariant(
 	page: Page,

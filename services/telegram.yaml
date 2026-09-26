@@ -16,7 +16,7 @@ paths: {}
 x-overslash-mcp:
   # url and secret_name are not set here — operators must provide both when
   # creating a service instance from this template:
-  #   url        — the hosted fast-mcp-telegram endpoint (e.g. http://host:8000/mcp)
+  #   url        — the hosted fast-mcp-telegram endpoint (e.g. https://host/mcp — plain http is refused)
   #   secret_name — vault key that holds the container's bearer AUTH_TOKEN
   auth:
     kind: bearer
@@ -294,7 +294,16 @@ x-overslash-mcp:
             description: 'Telegram API method, e.g. "messages.GetHistory" or "users.GetFullUser" (normalization applied).'
           params_json:
             type: string
-            description: 'JSON object string of TL parameters; nested TL uses "_": "typeName" discriminator.'
+            # The upstream tool takes the parameters as a *string*, so the
+            # string is the wire value and the gateway never re-encodes one it
+            # was handed. Declaring the media type lets a caller pass the
+            # object instead and have it serialized once, and lets a `redact`
+            # path reach a field inside it.
+            contentMediaType: application/json
+            description: >-
+              TL parameters as a JSON object — pass the object itself or its
+              serialized form. Nested TL values use a `"_": "typeName"`
+              discriminator.
           resolve:
             type: boolean
             default: true

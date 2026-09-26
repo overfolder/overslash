@@ -1,0 +1,135 @@
+# Dependency vulnerability scanning — CASA 6.1.1. Policy:
+# docs/compliance/casa/dependency-vulnerability-policy.md.
+#
+# Two entry points, one set of jobs:
+#
+#   * workflow_call — from ci.yml, on any PR / push / merge-group run that
+#     touches a manifest, a lockfile, or the scanner config (the `deps` paths
+#     filter there). Rolls up into `ci-ok`, so a PR that *introduces* a
+#     vulnerable dependency cannot merge.
+#   * schedule — daily, against both `dev` and `master`. Advisories are
+#     published against versions we already ship, and no PR touches those
+#     lockfiles on the day it happens. A scheduled failure opens (or bumps) a
+#     triage issue via deps-audit-report.yml.
+#
+# Gating PRs on changed paths rather than running this on every PR is
+# deliberate: a fresh advisory against an unchanged lockfile must not block
+# every unrelated merge — it gets the SLA from the policy, tracked in the
+# issue, not a repo-wide freeze.
+#
+# Everything here reads lockfiles (plus security.txt); nothing compiles, and
+# nothing runs an npm install script. The jobs run in parallel and each
+# finishes well under a minute.
+name: Dependency audit
+
+on:
+  workflow_call:
+  schedule:
+    # 06:17 UTC — off the top of the hour, when scheduled runs queue longest.
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cargo-deny:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # '' = the ref that triggered the run (the PR merge ref when called
+        # from ci.yml); the schedule scans both long-lived branches instead.
+        ref: ${{ github.event_name == 'schedule' && fromJSON('["dev","master"]') || fromJSON('[""]') }}
+    env:
+      # cargo-deny only needs `cargo metadata`, which works on any recent
+      # toolchain. Without this, rust-toolchain.toml makes rustup download the
+      # pinned 1.98 toolchain plus clippy/rustfmt (~40s) just to read
+      # manifests. The runner image's stable is used instead.
+      RUSTUP_TOOLCHAIN: stable
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ matrix.ref }}
+      # Before anything is installed, so an expired ignore fails in seconds.
+      - name: Advisory-ignore review dates (deny.toml)
+        run: bash scripts/check-deny-reviews.sh
+      # Prebuilt binary; never `cargo install` (a from-source build is minutes).
+      - uses: taiki-e/install-action@4076c08d76dba979c11a7285295b0716c1d67908 # v2.87.15
+        with:
+          tool: cargo-deny@0.20.2
+      # advisories (RustSec), licenses, bans, sources — config in deny.toml.
+      - name: cargo deny check
+        run: cargo deny --locked check
+
+  # Not a dependency scan, but the same shape of problem: a date in the repo
+  # that goes stale on its own. RFC 9116 clients ignore a security.txt past
+  # its Expires, so the daily schedule is what catches a renewal nobody made;
+  # the script fails a month early, opening the triage issue in time.
+  security-txt:
+    name: security.txt expiry
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ref: ${{ github.event_name == 'schedule' && fromJSON('["dev","master"]') || fromJSON('[""]') }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ matrix.ref }}
+      - name: security.txt fields and Expires
+        run: bash scripts/check-security-txt.sh
+
+  npm-audit:
+    name: npm audit (${{ matrix.dir }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        dir: [dashboard, sdk]
+        ref: ${{ github.event_name == 'schedule' && fromJSON('["dev","master"]') || fromJSON('[""]') }}
+    defaults:
+      run:
+        working-directory: ${{ matrix.dir }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ matrix.ref }}
+      # `npm audit` reads package-lock.json only — no `npm ci`, no setup-node
+      # (the runner's npm is enough). Full tree, dev dependencies included:
+      # the dashboard's "dev" deps are SvelteKit and Vite, whose code ends up
+      # in the shipped bundle, and all of them run in CI with repo access.
+      #
+      # --audit-level=high: npm audit has no per-advisory ignore list, so
+      # anything it fails on can only be fixed, never excepted. Moderate and
+      # low are still caught — by the OSV job below, which scans the same
+      # lockfiles at every severity and *does* support a justified,
+      # time-boxed ignore (osv-scanner.toml).
+      - name: npm audit
+        run: npm audit --audit-level=high
+
+  osv-scan:
+    name: OSV scan
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ref: ${{ github.event_name == 'schedule' && fromJSON('["dev","master"]') || fromJSON('[""]') }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ matrix.ref }}
+      # Every lockfile in the repo, any severity. Overlaps cargo-deny and npm
+      # audit on purpose: OSV aggregates RustSec, GHSA and more, and has
+      # caught advisories npm audit had not yet surfaced (devalue
+      # GHSA-9rgm-9g3h-6x36). services/ holds only YAML templates — no
+      # lockfile, nothing to scan. Listed explicitly rather than --recursive
+      # so a stray node_modules or fixture lockfile never joins the scan.
+      - uses: google/osv-scanner-action/osv-scanner-action@a345acffa64b0eaede81a3d9aae6141214d9c8fc # v2.6.0
+        with:
+          scan-args: |-
+            --config=osv-scanner.toml
+            --lockfile=Cargo.lock
+            --lockfile=dashboard/package-lock.json
+            --lockfile=sdk/package-lock.json

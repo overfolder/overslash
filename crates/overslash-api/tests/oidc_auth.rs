@@ -10,6 +10,8 @@
 
 use crate::common;
 
+use overslash_api::services::oidc_discovery::{self, OidcDiscoveryError};
+
 use serde_json::{Value, json};
 
 // ---------------------------------------------------------------------------
@@ -70,9 +72,20 @@ async fn provider_login_redirects_to_google_with_pkce() {
         .iter()
         .filter_map(|v| v.to_str().ok())
         .collect();
-    assert!(cookies.iter().any(|c| c.starts_with("oss_auth_nonce=")));
-    assert!(cookies.iter().any(|c| c.starts_with("oss_auth_verifier=")));
-    assert!(cookies.iter().any(|c| c.starts_with("oss_auth_org=")));
+    for name in [
+        "__Host-oss_auth_nonce=",
+        "__Host-oss_auth_verifier=",
+        "__Host-oss_auth_org=",
+    ] {
+        let c = cookies
+            .iter()
+            .find(|c| c.starts_with(name))
+            .unwrap_or_else(|| panic!("no {name} in {cookies:?}"));
+        // CASA 2.3.1: `__Host-` demands Secure, Path=/ and no Domain.
+        assert!(c.contains("; Secure"), "{c}");
+        assert!(c.contains("; Path=/;"), "{c}");
+        assert!(!c.contains("Domain="), "{c}");
+    }
 }
 
 #[tokio::test]
@@ -180,7 +193,7 @@ async fn google_callback_provisions_user_and_sets_session() {
         ))
         .header(
             "cookie",
-            format!("oss_auth_nonce={nonce}; oss_auth_verifier=test_verifier; oss_auth_org=none"),
+            format!("__Host-oss_auth_nonce={nonce}; __Host-oss_auth_verifier=test_verifier; __Host-oss_auth_org=none"),
         )
         .send()
         .await
@@ -198,7 +211,7 @@ async fn google_callback_provisions_user_and_sets_session() {
         ))
         .header(
             "cookie",
-            format!("oss_auth_nonce={nonce2}; oss_auth_verifier=test_verifier; oss_auth_org=none"),
+            format!("__Host-oss_auth_nonce={nonce2}; __Host-oss_auth_verifier=test_verifier; __Host-oss_auth_org=none"),
         )
         .send()
         .await
@@ -211,7 +224,7 @@ async fn google_callback_provisions_user_and_sets_session() {
         .filter_map(|v| v.to_str().ok())
         .collect();
     assert!(
-        cookies.iter().any(|c| c.starts_with("oss_session=")),
+        cookies.iter().any(|c| c.starts_with("__Host-oss_session=")),
         "expected oss_session cookie, got: {cookies:?}"
     );
 
@@ -256,7 +269,7 @@ async fn callback_rejects_nonce_mismatch() {
         ))
         .header(
             "cookie",
-            "oss_auth_nonce=wrong-nonce; oss_auth_verifier=v; oss_auth_org=none",
+            "__Host-oss_auth_nonce=wrong-nonce; __Host-oss_auth_verifier=v; __Host-oss_auth_org=none",
         )
         .send()
         .await
@@ -286,7 +299,7 @@ async fn callback_rejects_provider_mismatch_in_state() {
         ))
         .header(
             "cookie",
-            "oss_auth_nonce=nonce123; oss_auth_verifier=v; oss_auth_org=none",
+            "__Host-oss_auth_nonce=nonce123; __Host-oss_auth_verifier=v; __Host-oss_auth_org=none",
         )
         .send()
         .await
@@ -359,7 +372,7 @@ async fn google_compat_callback_handles_old_state_format() {
         ))
         .header(
             "cookie",
-            format!("oss_auth_nonce={nonce}; oss_auth_verifier=v; oss_auth_org=none"),
+            format!("__Host-oss_auth_nonce={nonce}; __Host-oss_auth_verifier=v; __Host-oss_auth_org=none"),
         )
         .send()
         .await
@@ -655,7 +668,7 @@ async fn subsequent_login_updates_profile() {
         ))
         .header(
             "cookie",
-            format!("oss_auth_nonce={nonce1}; oss_auth_verifier=v; oss_auth_org=none"),
+            format!("__Host-oss_auth_nonce={nonce1}; __Host-oss_auth_verifier=v; __Host-oss_auth_org=none"),
         )
         .send()
         .await
@@ -679,7 +692,7 @@ async fn subsequent_login_updates_profile() {
         ))
         .header(
             "cookie",
-            format!("oss_auth_nonce={nonce2}; oss_auth_verifier=v; oss_auth_org=none"),
+            format!("__Host-oss_auth_nonce={nonce2}; __Host-oss_auth_verifier=v; __Host-oss_auth_org=none"),
         )
         .send()
         .await
@@ -711,69 +724,52 @@ async fn subsequent_login_updates_profile() {
 #[tokio::test]
 async fn oidc_discovery_rejects_http_urls() {
     // Test the service directly — no need for a full API server
-    let http_client = reqwest::Client::new();
-    let result =
-        overslash_api::services::oidc_discovery::discover(&http_client, "http://example.com").await;
-    assert!(result.is_err());
-    let err = result.unwrap_err().to_string();
-    assert!(err.contains("HTTPS"), "expected HTTPS error, got: {err}");
-}
-
-#[tokio::test]
-async fn oidc_discovery_rejects_localhost() {
-    let http_client = reqwest::Client::new();
-    let result =
-        overslash_api::services::oidc_discovery::discover(&http_client, "https://localhost").await;
-    assert!(result.is_err());
-    let err = result.unwrap_err().to_string();
+    let err = oidc_discovery::discover("http://example.com")
+        .await
+        .unwrap_err();
     assert!(
-        err.contains("internal"),
-        "expected internal services error, got: {err}"
+        err.to_string().contains("HTTPS"),
+        "expected HTTPS error, got: {err}"
     );
 }
 
+/// Loopback over https: refused by the guard in production. The suite
+/// allow-lists loopback for its fakes, so here it may get as far as a refused
+/// connection instead — either way it fails, and says nothing about why.
 #[tokio::test]
-async fn oidc_discovery_rejects_private_ips() {
-    let http_client = reqwest::Client::new();
-    for addr in [
-        "https://10.0.0.1",
-        "https://192.168.1.1",
-        "https://172.16.0.1",
-    ] {
-        let result = overslash_api::services::oidc_discovery::discover(&http_client, addr).await;
-        assert!(result.is_err(), "should reject {addr}");
-        let err = result.unwrap_err().to_string();
+async fn oidc_discovery_rejects_localhost() {
+    for addr in ["https://localhost", "https://[::1]"] {
+        let err = oidc_discovery::discover(addr).await.unwrap_err();
         assert!(
-            err.contains("internal") || err.contains("private"),
-            "{addr}: expected private address error, got: {err}"
+            matches!(err, OidcDiscoveryError::Failed),
+            "{addr}: got {err}"
         );
     }
 }
 
+/// Private, link-local and metadata addresses are refused by the SSRF guard
+/// — and the error the caller sees names none of them.
 #[tokio::test]
-async fn oidc_discovery_rejects_metadata_endpoint() {
-    let http_client = reqwest::Client::new();
-    let result =
-        overslash_api::services::oidc_discovery::discover(&http_client, "https://169.254.169.254")
-            .await;
-    assert!(result.is_err());
-}
-
-#[tokio::test]
-async fn oidc_discovery_rejects_ipv6_private() {
-    let http_client = reqwest::Client::new();
-    // IPv6 loopback
-    let result =
-        overslash_api::services::oidc_discovery::discover(&http_client, "https://[::1]").await;
-    assert!(result.is_err(), "should reject IPv6 loopback");
-    // IPv6 ULA
-    let result =
-        overslash_api::services::oidc_discovery::discover(&http_client, "https://[fc00::1]").await;
-    assert!(result.is_err(), "should reject IPv6 ULA");
-    // IPv6 link-local
-    let result =
-        overslash_api::services::oidc_discovery::discover(&http_client, "https://[fe80::1]").await;
-    assert!(result.is_err(), "should reject IPv6 link-local");
+async fn oidc_discovery_rejects_private_ips() {
+    for addr in [
+        "https://10.0.0.1",
+        "https://192.168.1.1",
+        "https://172.16.0.1",
+        "https://169.254.169.254",
+        "https://[fc00::1]",
+        "https://[fe80::1]",
+    ] {
+        let err = oidc_discovery::discover(addr).await.unwrap_err();
+        assert!(
+            matches!(err, OidcDiscoveryError::Failed),
+            "{addr}: expected the generic failure, got: {err}"
+        );
+        let host = addr.trim_start_matches("https://");
+        assert!(
+            !err.to_string().contains(host),
+            "{addr}: error must not echo the target: {err}"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -788,8 +784,12 @@ async fn oidc_discovery_rejects_ipv6_private() {
 // Custom OIDC IdP creation via discovery (covers create_custom, discovery endpoint)
 // ---------------------------------------------------------------------------
 
+/// The success path, end to end: discovery through the SSRF guard against the
+/// loopback fake. Plain `http` is accepted here only because the target is
+/// loopback *and* the suite allow-lists loopback — production accepts neither.
 #[tokio::test]
 async fn create_custom_oidc_idp_via_discovery() {
+    common::allow_loopback_ssrf();
     let pool = common::test_pool().await;
     let mock_addr = common::start_mock().await;
 
@@ -797,10 +797,6 @@ async fn create_custom_oidc_idp_via_discovery() {
     let base = format!("http://{addr}");
     let (_org_id, _identity_id, api_key, _) = common::bootstrap_org_identity(&base, &client).await;
 
-    // The mock serves /.well-known/openid-configuration
-    // Note: issuer validation requires HTTPS, but our mock is HTTP.
-    // The discovery service validates HTTPS, so we test via the create endpoint
-    // which catches the error gracefully.
     let resp = client
         .post(format!("{base}/v1/org-idp-configs"))
         .header("authorization", format!("Bearer {api_key}"))
@@ -815,15 +811,19 @@ async fn create_custom_oidc_idp_via_discovery() {
         .await
         .unwrap();
 
-    // Should fail because mock uses HTTP, not HTTPS
-    assert_eq!(resp.status(), 400);
+    let status = resp.status();
     let body: Value = resp.json().await.unwrap();
+    assert_eq!(
+        status, 200,
+        "discovery against the fake should succeed: {body}"
+    );
+    assert_eq!(body["display_name"], "Test OIDC Provider");
     assert!(
-        body["error"]
+        body["provider_key"]
             .as_str()
             .unwrap()
-            .contains("OIDC discovery failed"),
-        "expected discovery error, got: {body}"
+            .starts_with("oidc-127-0-0-1-"),
+        "unexpected provider key: {body}"
     );
 }
 
@@ -1020,7 +1020,7 @@ async fn create_idp_config_coexists_with_env_var_creds() {
     // separately via `orgs.allow_overslash_managed_signin` + `org_invites`.
     let resp = client
         .post(format!("{base}/v1/org-idp-configs"))
-        .header("cookie", format!("oss_session={token}"))
+        .header("cookie", format!("__Host-oss_session={token}"))
         .json(&json!({
             "provider_key": "google",
             "client_id": "db_id",
@@ -1157,7 +1157,7 @@ async fn domain_provisioning_filters_by_provider_key() {
         ))
         .header(
             "cookie",
-            format!("oss_auth_nonce={nonce}; oss_auth_verifier=v; oss_auth_org=none"),
+            format!("__Host-oss_auth_nonce={nonce}; __Host-oss_auth_verifier=v; __Host-oss_auth_org=none"),
         )
         .send()
         .await
@@ -1286,7 +1286,7 @@ async fn list_idp_configs_shows_env_as_readonly() {
     // List IdP configs — should show env providers
     let configs: Vec<Value> = client
         .get(format!("{base}/v1/org-idp-configs"))
-        .header("cookie", format!("oss_session={token}"))
+        .header("cookie", format!("__Host-oss_session={token}"))
         .send()
         .await
         .unwrap()

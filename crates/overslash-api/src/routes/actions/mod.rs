@@ -233,7 +233,6 @@ struct CallActivity {
     service: Option<String>,
     action: Option<String>,
     pool: sqlx::PgPool,
-    http_client: reqwest::Client,
     audience: Vec<Uuid>,
 }
 
@@ -255,7 +254,6 @@ impl CallActivity {
         }
         crate::services::events::emit(
             self.pool.clone(),
-            self.http_client.clone(),
             crate::services::events::EventDraft {
                 org_id: self.org_id,
                 event_type,
@@ -315,7 +313,6 @@ async fn call_action(
             service: req.service.clone(),
             action: req.action.clone(),
             pool: state.db_pool(&ext),
-            http_client: state.http_client.clone(),
             // Resolved once, here, and reused by both events. The chain walk
             // is a query, so doing it per-event would double the cost of a
             // feature that is already the most expensive observer we have.
@@ -894,6 +891,45 @@ fn merge_sql_keys(
         }
     }
     perm_keys
+}
+
+/// Resolve an action's `scope_param` entries into the values its permission
+/// keys are built from, running any `extract` jq on the way.
+///
+/// The one place the plan/evaluate/finish sequence is written, so `/call` and
+/// `/validate` cannot drift on it — the same reason they share
+/// `resolve_action_metadata` and `merge_sql_keys`. `ScopePlan::finish` is
+/// infallible here *because* `evaluate` ran; the `expect` is the typestate
+/// paying off, not an assumption.
+///
+/// A failed extractor is logged and nothing more: the audit trail for it is the
+/// sentinel key on the approval, and the log line carries the class only — the
+/// operand is caller-supplied request data, so per D65 it never leaves.
+pub(super) async fn resolve_scope_values(
+    scope_param: &overslash_core::types::ScopeParams,
+    params: &std::collections::HashMap<String, serde_json::Value>,
+    filter_timeout: std::time::Duration,
+    service_key: &str,
+    action_key: &str,
+) -> overslash_core::permissions::ScopeValues {
+    let mut plan = overslash_core::permissions::ScopePlan::build(scope_param, params);
+    if !plan.pending().is_empty() {
+        crate::services::scope_extract::evaluate(&mut plan, filter_timeout).await;
+    }
+    let values = plan
+        .finish()
+        .expect("evaluate() fills every pending entry before finish()");
+    for (param, label, err) in values.failures() {
+        tracing::warn!(
+            service = %service_key,
+            action = %action_key,
+            param = %param,
+            label = %label,
+            class = %err.tag(),
+            "scope extractor failed; the call is gated by a scope_error sentinel key"
+        );
+    }
+    values
 }
 
 #[cfg(test)]

@@ -559,7 +559,6 @@ pub(crate) async fn fire_connection_deleted(
         crate::services::events::audience::for_connection(&scope, identity_id, identity_id).await;
     crate::services::events::emit(
         state.db_pool(ext),
-        state.http_client.clone(),
         crate::services::events::EventDraft {
             org_id,
             event_type: crate::services::events::EventType::ConnectionDeleted,

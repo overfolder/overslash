@@ -27,3 +27,6 @@ sha2 = "0.11"
 hex = "0.4"
 time = { workspace = true }
 uuid = { workspace = true }
+
+[lints]
+workspace = true

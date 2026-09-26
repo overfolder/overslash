@@ -11,6 +11,7 @@
 		ConnectionSummary,
 		CallRequest,
 		CallResponse,
+		ExtraArg,
 		SecretRef,
 		ServiceInstanceSummary,
 		Identity
@@ -71,6 +72,10 @@
 	let loadingDetail = $state(false);
 
 	let paramValues = $state<Record<string, string>>({});
+	/** Free-form rows for a relaxed action. Kept beside `paramValues` rather
+	 *  than inside it: an undeclared name has no `ActionParam` to coerce
+	 *  against, and the two are merged only at request-build time. */
+	let extraArgs = $state<ExtraArg[]>([]);
 
 	let rawMethod = $state('GET');
 	let rawUrl = $state('');
@@ -192,6 +197,7 @@
 			if (!actKey || !row) {
 				actionDetail = null;
 				paramValues = {};
+				extraArgs = [];
 				return;
 			}
 			loadingDetail = true;
@@ -205,6 +211,9 @@
 						}
 					}
 					paramValues = next;
+					// Rows named for the previous action mean nothing on this
+					// one, and would be forwarded verbatim if kept.
+					extraArgs = [];
 				})
 				.catch((e) => {
 					loadError =
@@ -299,6 +308,20 @@
 			const raw = paramValues[name];
 			if (raw === undefined || raw === '') continue;
 			params[name] = paramToValue(raw, p.type);
+		}
+		// Undeclared arguments, for an action whose template opted out of the
+		// closed world. Merged after the declared loop so a row that repeats a
+		// declared name loses to the typed field above rather than clobbering
+		// it with its string form. A blank name is a half-filled row, not an
+		// argument.
+		for (const { key, value } of extraArgs) {
+			const name = key.trim();
+			if (!name || name in params) continue;
+			// No declared type to coerce against, so the string form is the
+			// only honest reading — `paramToValue` with an unknown type returns
+			// exactly that.
+			const v = paramToValue(value, 'string');
+			if (v !== undefined) params[name] = v;
 		}
 		const row = selectedServiceRow;
 		return attachFilter({
@@ -420,6 +443,8 @@
 									detail={actionDetail}
 									values={paramValues}
 									onchange={(name, val) => (paramValues = { ...paramValues, [name]: val })}
+									extras={extraArgs}
+									onextraschange={(rows) => (extraArgs = rows)}
 								/>
 							{/if}
 						</div>

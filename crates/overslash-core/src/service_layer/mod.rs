@@ -157,6 +157,7 @@ pub(crate) mod fixtures {
 
     pub(crate) fn action(risk: Risk) -> ServiceAction {
         ServiceAction {
+            additional_properties: false,
             wait_mode: None,
             handoff_after_ms: None,
             pagination: None,
@@ -189,6 +190,8 @@ pub(crate) mod fixtures {
             actions.insert((*k).to_string(), action(*r));
         }
         ServiceDefinition {
+            declared_auth_modes: Vec::new(),
+            default_additional_properties: false,
             default_timeout_ms: None,
             secrets: Vec::new(),
             config: Vec::new(),
@@ -231,16 +234,9 @@ pub(crate) mod fixtures {
             name.to_string(),
             crate::types::ActionParam {
                 param_type: "string".into(),
-                required: false,
-                description: String::new(),
-                enum_values: None,
-                default: None,
-                resolve: None,
-                aliases: vec![],
                 location: crate::types::ParamLocation::Header,
                 instance_config: true,
-                sql_field: None,
-                sql_database: None,
+                ..Default::default()
             },
         );
         base

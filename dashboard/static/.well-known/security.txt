@@ -1,0 +1,7 @@
+# Overslash security contact (RFC 9116). The human-readable policy, including
+# scope, response times and safe harbor, is the Policy link below.
+Contact: mailto:security@overslash.com
+Expires: 2027-09-01T00:00:00.000Z
+Policy: https://github.com/overfolder/overslash/blob/master/SECURITY.md
+Preferred-Languages: en, es
+Canonical: https://app.overslash.com/.well-known/security.txt

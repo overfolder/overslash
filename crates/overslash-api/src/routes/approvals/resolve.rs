@@ -168,7 +168,6 @@ pub(super) async fn resolve_approval(
         // that gained it would not learn so until its next poll.
         crate::services::events::emit_all(
             state.db_pool(&ext),
-            state.http_client.clone(),
             vec![
                 crate::services::events::approvals::bubbled(
                     &scope,
@@ -196,12 +195,39 @@ pub(super) async fn resolve_approval(
         ));
     }
 
-    let (status, remember) = match req.resolution.as_str() {
+    let (status, mut remember) = match req.resolution.as_str() {
         "allow" => ("allowed", false),
         "deny" => ("denied", false),
         "allow_remember" => ("allowed", true),
         other => return Err(AppError::BadRequest(format!("invalid resolution: {other}"))),
     };
+
+    // A `scope_error=` key means "we could not tell what this call is about" —
+    // an extractor failed, so the gateway cannot state what the call is
+    // authorized against. That is approvable: a human looking at the disclosed
+    // payload can still decide, once, for this call. It is emphatically not
+    // *rememberable*: a standing rule covering it would durably authorize every
+    // future call whose extractor fails, which is every future call carrying
+    // the shape of data that broke this one.
+    //
+    // Handled by construction rather than by a UI convention — the rung is
+    // never offered (`suggest_tiers`), an explicit key covering only a sentinel
+    // is refused below, and a remember whose keys are *all* sentinels degrades
+    // to a plain one-shot allow rather than silently writing nothing.
+    if remember && req.remember_keys.is_none() {
+        let rememberable = approval_pre
+            .permission_keys
+            .iter()
+            .any(|k| !is_scope_error_key(k));
+        if !rememberable {
+            tracing::info!(
+                approval_id = %id,
+                "every requested key is a scope_error sentinel; \
+                 allowing this call without remembering it"
+            );
+            remember = false;
+        }
+    }
 
     // ── Validate + normalise remember_keys / ttl (actual rule creation moves
     // to /call on success).
@@ -248,6 +274,18 @@ pub(super) async fn resolve_approval(
                 .collect();
 
             for key in keys {
+                // A key whose only relevance is a sentinel is a standing grant
+                // for "whenever we cannot tell". Refused outright, and named
+                // as such — the approver is not being told the key is
+                // unrelated, which it is not.
+                if covers_only_scope_errors(key, &approval.permission_keys) {
+                    return Err(AppError::BadRequest(format!(
+                        "remember_key '{key}' would only cover a `scope_error` key. That key \
+                         means the gateway could not determine what this call is scoped to, \
+                         so remembering it would authorize every future call that fails the \
+                         same way. Allow this call without remembering it."
+                    )));
+                }
                 let relates = tier_keys.contains(key.as_str())
                     || approval
                         .permission_keys
@@ -267,7 +305,16 @@ pub(super) async fn resolve_approval(
                 .cloned()
                 .collect()
         } else {
-            approval.permission_keys.clone()
+            // The fallback remembers the keys the approval was raised for, so
+            // the sentinels are filtered out here. The all-sentinel case
+            // already degraded to a plain allow above, so this cannot leave an
+            // empty list.
+            approval
+                .permission_keys
+                .iter()
+                .filter(|k| !is_scope_error_key(k))
+                .cloned()
+                .collect()
         };
 
         // Validate keys don't exceed group ceiling (applies to both explicit and fallback keys)
@@ -498,7 +545,6 @@ pub(super) async fn resolve_approval(
         .await;
         crate::services::events::emit(
             state.db_pool(&ext),
-            state.http_client.clone(),
             crate::services::events::EventDraft {
                 org_id: auth.org_id,
                 event_type: crate::services::events::EventType::ApprovalResolved,
@@ -526,4 +572,31 @@ pub(super) async fn resolve_approval(
     );
     resp.decorate_relationship(&scope, auth.identity_id).await?;
     Ok(Json(resp))
+}
+
+/// Is `key` a `scope_error=` sentinel — the key minted when a `scope_param`
+/// extractor could not produce its values?
+fn is_scope_error_key(key: &str) -> bool {
+    parse_derived_key(key).label.as_deref() == Some(overslash_core::permissions::SCOPE_ERROR_LABEL)
+}
+
+/// Would remembering `candidate` buy nothing but coverage of a sentinel?
+///
+/// True when it covers at least one sentinel and no ordinary key. A rule that
+/// covers both is fine — it is a real grant that happens to be broad enough to
+/// span the sentinel too, and refusing it would refuse a legitimate `service:*`
+/// grant for an unrelated reason.
+fn covers_only_scope_errors(candidate: &str, requested: &[String]) -> bool {
+    let mut covers_sentinel = false;
+    for key in requested {
+        if !overslash_core::permissions::key_covers(candidate, key) {
+            continue;
+        }
+        if is_scope_error_key(key) {
+            covers_sentinel = true;
+        } else {
+            return false;
+        }
+    }
+    covers_sentinel
 }

@@ -1,0 +1,1601 @@
+# Langfuse (langfuse.com) over its public API v4 — LLM observability.
+#
+# ## Auth
+#
+# Langfuse authenticates with HTTP Basic: the username is the project's PUBLIC
+# key (`pk-lf-…`) and the password its SECRET key (`sk-lf-…`), both minted
+# together under Settings → API Keys. Overslash cannot model
+# `type: http, scheme: basic` — `extract_http_auth` accepts only `bearer` — so
+# the pair is joined into `Authorization: Basic base64(pk:sk)` by a jq
+# credential template, exactly as services/email.yaml joins a mailbox login.
+#
+# The public key is deliberately NOT vaulted. It is the public half of the
+# pair — Langfuse's own browser SDK ships it to end users — and vaulting it
+# would make it write-only, so an operator could never read back which project
+# an instance points at. It lives in the instance's `config` map; only the
+# secret key costs a vault entry, and it rotates on its own.
+#
+# ## v4, and what is deliberately missing
+#
+# Langfuse v4 sunsets a large part of the v1/v2 read surface on Langfuse Cloud
+# on 2026-11-16, and self-hosted v4 already refuses it in the default
+# `events_only` write mode. None of it is modelled here:
+#
+#   GET  /api/public/traces, /traces/{id}      → GET /api/public/v2/observations
+#   GET  /api/public/observations(+/{id})      → GET /api/public/v2/observations
+#   GET  /api/public/sessions(+/{id})          → v2/observations, filter sessionId
+#   GET  /api/public/metrics                   → GET /api/public/v2/metrics
+#   GET  /api/public/v2/scores(+/{id})         → GET /api/public/v3/scores
+#   POST /api/public/ingestion                 → OpenTelemetry, not this gateway
+#   /api/public/dataset-run-items              → /api/public/experiment-items
+#   /api/public/datasets/{name}/runs*          → /api/public/experiments
+#
+# A template built on the obvious spellings would ship already-dead, which is
+# why `tests/langfuse.rs` carries a guard asserting no action reaches one.
+#
+# Also excluded, for reasons that are not deprecation:
+#
+#   • /llm-connections and /integrations/blob-storage WRITE third-party
+#     provider secrets (an OpenAI key, S3 credentials) through the gateway. An
+#     agent should never be the transport for someone else's credential.
+#   • /organizations/*, POST/PUT/DELETE /projects*, /projects/{id}/apiKeys*
+#     and /scim/* need an ORGANIZATION-scoped key, not the project key this
+#     template takes — and minting API keys from an agent manufactures
+#     credentials.
+#   • POST /api/public/otel/v1/traces is OTLP protobuf ingestion; it belongs in
+#     the application's exporter, not behind an approval gate.
+#   • /api/public/media mints presigned upload URLs — SDK transport.
+#   • /api/public/unstable/* — the vendor says unstable in the path.
+#   • GET /api/public/health is UNAUTHENTICATED, so it succeeds with a wrong
+#     key pair. That is exactly what disqualifies it as the credential probe;
+#     `list_projects` is used instead.
+#
+# Annotation queues, comments, score configs, model pricing and the evaluator
+# / evaluation-rule surface are real and absent only for focus. They are the
+# next tranche; `create_score.configId` points at a score config an agent
+# cannot yet list.
+#
+# ## Regions
+#
+# Langfuse Cloud runs four regional deployments and is also self-hostable, so
+# the host is a deployment choice rather than a constant. `${LANGFUSE_URL}`
+# (D44) names it, and unlike MAILBOX_HOST it carries a literal default:
+# `cloud.langfuse.com` is the vendor's own EU cloud and is the right answer for
+# any deployment that does not say otherwise — which is the case D44 reserved a
+# default for. A deployment serving US, JP, HIPAA or a self-hosted Langfuse
+# sets OVERSLASH_TEMPLATE_VAR_LANGFUSE_URL; a single instance is re-pointed by
+# setting `url` on it.
+openapi: 3.1.0
+info:
+  title: Langfuse
+  key: langfuse
+  category: Analytics
+  # Folded into the text every action is scored against, so the wording is a
+  # retrieval decision. Leads with the nouns an agent actually asks for —
+  # traces, spans, token cost, prompt version — rather than the category word
+  # "observability", which nobody types.
+  description: >-
+    Langfuse LLM observability over its public API v4. Read traced observations
+    (spans, generations, tool and agent calls) with their inputs, outputs,
+    token usage and cost; aggregate latency, cost and token metrics over a
+    query DSL; read and write evaluation scores; manage versioned prompts and
+    the deployment labels that decide which version live SDKs serve; and curate
+    datasets, dataset items and experiment runs. Auth is a Langfuse project key
+    pair sent as HTTP Basic.
+servers:
+  - url: ${LANGFUSE_URL:https://cloud.langfuse.com}
+security:
+  - project_key: []
+components:
+  # The public half of the key pair. Not a secret, and stored where an operator
+  # can read it back — see the header comment.
+  x-overslash-config:
+    public_key:
+      label: Langfuse public key
+      description: >-
+        The project's public key, `pk-lf-…`, from Langfuse Settings → API Keys.
+        Paired with the secret key below; both halves belong to one project.
+      # Without it the header renders as base64(":sk-lf-…"), which Langfuse
+      # reads as a wrong key rather than as missing configuration — the same
+      # failure email.yaml's `mailbox_user` guards against.
+      required: true
+      # A key pair IS a project, so the public key is what tells two instances
+      # of this template apart in discovery. Without it an agent holding a
+      # staging and a production Langfuse has to call both to learn which is
+      # which — the template's display name belongs to the template.
+      identity: true
+  x-overslash-secrets:
+    secret_key:
+      label: Langfuse secret key
+      description: >-
+        The project's secret key, `sk-lf-…`, shown once at mint time under
+        Settings → API Keys. Rotating it here does not change the public key.
+      # Per instance, not per org: one org routinely runs a Langfuse project
+      # per environment, and an org-level secret would force them to share one.
+      source: instance
+  securitySchemes:
+    project_key:
+      type: apiKey
+      in: header
+      name: Authorization
+      x-overslash-label: Langfuse project key pair
+      description: >-
+        The project's public and secret keys, joined and sent as HTTP Basic.
+        Mint them in Langfuse under Settings → API Keys. A pair is scoped to
+        one project and cannot reach another, which is the containment this
+        template relies on — there is no per-action scope to narrow.
+      x-overslash-template:
+        lang: jq
+        expr: '"Basic " + (.public_key + ":" + .secret_key | @base64)'
+      x-overslash-secret_source: instance
+      # No `default_secret_name`: it is only consulted for `source: org`
+      # (types/service/auth.rs), and this slot is instance-sourced.
+paths:
+  /api/public/projects:
+    get:
+      operationId: list_projects
+      summary: Get the project this key pair belongs to
+      risk: read
+      # The credential probe. Not GET /api/public/health: that endpoint is
+      # unauthenticated, so it answers 200 for a key pair that does not work —
+      # a probe that cannot fail is not a probe. This one is project-scoped,
+      # side-effect free, and doubles as an identity read.
+      test: true
+      # No `pagination:` block, deliberately: a project-scoped key sees exactly
+      # its own project, and the endpoint declares no page size, no cursor and
+      # no filter to page with. The single-element `data` array is the shape of
+      # the answer, not a first page.
+      description: >-
+        The project behind the configured key pair — its id and name. Cheap and
+        side-effect free, so it doubles as the credential check. A Langfuse key
+        pair is scoped to one project, so this always returns exactly one.
+  /api/public/v2/observations:
+    get:
+      operationId: list_observations
+      summary: "List observations[ of type {type}][ on trace {traceId}]"
+      risk: read
+      pagination:
+        page_size:
+          param: limit
+          # Deliberately 25, where Langfuse's own default is 50. An observation
+          # carries `input` and `output` in the `io` field group, and a
+          # generation's io is a whole prompt plus a whole completion — a
+          # 50-row page with io on is routinely past the 5 MB transport cap and
+          # always past the 8 KB compact budget. 25 is the size at which a
+          # caller who turns io on still gets an answer rather than a 502 and a
+          # download URL.
+          default: 25
+          max: 1000
+        next:
+          style: cursor
+          param: cursor
+          from: meta.cursor
+        items: data
+      description: >-
+        One page of observations — spans, generations, events, tool and agent
+        calls — newest first. This and get_metrics are the only real-time read
+        paths; every other endpoint here can lag ingestion by about ten
+        minutes. This is also the v4 replacement for listing traces and
+        sessions, which no longer have endpoints of their own: filter by
+        `traceId` or `sessionId` instead.
+
+        `fields` is the most important argument. `core` (id, traceId,
+        startTime, endTime, parentObservationId, type) is always returned and
+        the default adds `basic` (name, level, statusMessage, version,
+        environment, userId, sessionId, isRootObservation). Add more with a
+        comma list: `time`, `io`, `metadata`, `model`, `usage`, `prompt`,
+        `metrics`, `trace_context`. **`io` returns whole prompts and
+        completions** and is the one group that will blow the response cap. To
+        read what an agent actually said, narrow to a single `traceId` on the
+        default fields first, then re-read that trace with `fields=core,io` and
+        a single-digit `limit`. For counts, costs and latencies across many
+        rows use get_metrics instead — it aggregates upstream and returns a
+        small table rather than the rows themselves.
+      parameters:
+        - name: fields
+          in: query
+          description: >-
+            Comma-separated field groups on top of the always-returned `core`:
+            basic, time, io, metadata, model, usage, prompt, metrics,
+            trace_context. Defaults to `core,basic`. `io` is the expensive one.
+          schema:
+            type: string
+        - name: limit
+          in: query
+          description: Observations per page. Maximum 1000; leave unset for 25.
+          schema:
+            type: integer
+        - name: cursor
+          in: query
+          description: >-
+            Base64 cursor from the previous response's `meta.cursor`. Omit for
+            the first page; `meta.cursor` absent means there is no next page.
+          schema:
+            type: string
+        - name: traceId
+          in: query
+          x-overslash-aliases: [trace_id]
+          description: Only observations belonging to this trace.
+          schema:
+            type: string
+        - name: sessionId
+          in: query
+          x-overslash-aliases: [session_id]
+          description: >-
+            Only observations in this session. Sessions have no endpoint of
+            their own in v4 — this is how you read one.
+          schema:
+            type: string
+        - name: userId
+          in: query
+          x-overslash-aliases: [user_id]
+          description: Only observations tagged with this end-user id.
+          schema:
+            type: string
+        - name: name
+          in: query
+          description: Only observations with this exact name.
+          schema:
+            type: string
+        - name: type
+          in: query
+          description: >-
+            Observation type. GENERATION is an LLM call, SPAN a unit of work,
+            TOOL a tool invocation, AGENT an agent step.
+          schema:
+            type: string
+            enum: [SPAN, GENERATION, EVENT, AGENT, TOOL, CHAIN, RETRIEVER, EVALUATOR, EMBEDDING, GUARDRAIL]
+        - name: level
+          in: query
+          description: Only observations logged at this level.
+          schema:
+            type: string
+            enum: [DEBUG, DEFAULT, WARNING, ERROR]
+        - name: parentObservationId
+          in: query
+          x-overslash-aliases: [parent_observation_id]
+          description: >-
+            Only children of this observation. An empty value matches only
+            observations with no physical parent.
+          schema:
+            type: string
+        - name: isRootObservation
+          in: query
+          x-overslash-aliases: [is_root_observation]
+          description: >-
+            Only logical roots — no physical parent, or marked an app root.
+            This is how you enumerate "one row per trace".
+          schema:
+            type: boolean
+        - name: environment
+          in: query
+          description: >-
+            One or more environments. Repeats on the wire, so pass a list.
+          schema:
+            type: array
+            items:
+              type: string
+        - name: version
+          in: query
+          description: Only observations carrying this version string.
+          schema:
+            type: string
+        - name: fromStartTime
+          in: query
+          x-overslash-aliases: [from_start_time, since]
+          description: Only observations starting at or after this ISO 8601 datetime.
+          schema:
+            type: string
+            format: date-time
+        - name: toStartTime
+          in: query
+          x-overslash-aliases: [to_start_time, until]
+          description: Only observations starting before this ISO 8601 datetime.
+          schema:
+            type: string
+            format: date-time
+        - name: expandMetadata
+          in: query
+          x-overslash-aliases: [expand_metadata]
+          description: >-
+            Comma-separated metadata keys to return in full. Metadata values
+            over 200 characters are truncated otherwise.
+          schema:
+            type: string
+        # `parseIoAsJson` is deliberately absent: the upstream documents that
+        # setting it `true` returns a 400, so exposing it would offer only a
+        # way to fail.
+        - name: filter
+          in: query
+          description: >-
+            Structured filter conditions, as a JSON array — pass the array
+            itself or its serialized form. Takes precedence over every scalar
+            filter above when present. Each condition is
+            {type, column, operator, value}, plus `key` for the stringObject
+            and numberObject types. Columns include id, type, name, traceId,
+            startTime, endTime, environment, level, statusMessage, version,
+            userId, sessionId, isRootObservation, latency, totalCost, metadata,
+            input and output.
+          schema:
+            type: string
+            # The wire value is a string, so that is what this declares —
+            # `contentSchema` says what the string spells, which is what lets
+            # validation reject a malformed filter here rather than at Langfuse
+            # after an approval was spent. A caller may pass the array and have
+            # it serialized once, or pass the serialized form untouched.
+            contentMediaType: application/json
+            contentSchema:
+              type: array
+              items:
+                type: object
+                required: [type, column, operator]
+                properties:
+                  type:
+                    type: string
+                    enum: [datetime, string, number, stringOptions, categoryOptions, arrayOptions, stringObject, numberObject, boolean, "null"]
+                  column:
+                    type: string
+                    description: Column to filter on.
+                  operator:
+                    type: string
+                    description: >-
+                      Operator for the column's type — datetime takes
+                      >, <, >=, <=; string takes =, contains, does not contain,
+                      starts with, ends with; stringOptions and arrayOptions
+                      take any of, none of, all of; number takes =, >, <, >=,
+                      <=; boolean takes = and <>; null takes is null and is not
+                      null.
+                  value: {}
+                  key:
+                    type: string
+                    description: Nested key, for stringObject and numberObject.
+  /api/public/v2/metrics:
+    get:
+      operationId: get_metrics
+      summary: Run an aggregate metrics query
+      risk: read
+      # No `pagination:` block, and none is missing. The query document carries
+      # its own bound (`config.row_limit`, 1-1000, default 100) and the
+      # endpoint offers no cursor, page or offset to walk — it returns one
+      # aggregate table, not a page of rows.
+      description: >-
+        Aggregate cost, latency, token usage and score statistics over a time
+        window, grouped by dimensions you choose. Reach for this instead of
+        list_observations whenever the question is "how much", "how slow" or
+        "how many" across more than a handful of rows: it aggregates upstream
+        and returns a small table, where listing the rows would blow the
+        response cap. Real-time, like list_observations.
+
+        The whole surface is the `query` document. High-cardinality columns
+        (id, traceId, userId, sessionId, observationId, parentObservationId)
+        may be filtered on but NOT grouped by — a grouping dimension naming one
+        returns 400.
+      parameters:
+        - name: query
+          in: query
+          required: true
+          # Same mechanism as the `filter` params: a serialized JSON document,
+          # declared as the string it is on the wire, with `contentSchema`
+          # carrying the contract. A typo'd `metric` for `metrics` is then a
+          # 400 from Overslash naming the field, rather than a 400 from
+          # Langfuse after the call was already authorized.
+          description: >-
+            The metrics query — pass the object itself or its serialized form.
+            `view` picks the table: `observations`, `scores-numeric`,
+            `scores-boolean` or `scores-categorical`. There is no traces view
+            in v2. Observation measures: count, latency, streamingLatency,
+            inputTokens, outputTokens, totalTokens, outputTokensPerSecond,
+            tokensPerSecond, inputCost, outputCost, totalCost,
+            timeToFirstToken, countScores. Score measures: count, value.
+            Observation dimensions: environment, type, name, level, version,
+            tags, release, traceName, traceRelease, traceVersion,
+            providedModelName, promptName, promptVersion, isRootObservation,
+            startTimeMonth. Score dimensions: name, source, dataType, configId,
+            value, stringValue, observationName, observationModelName.
+            Example — daily spend by model over a week:
+            {"view":"observations",
+            "dimensions":[{"field":"providedModelName"}],
+            "metrics":[{"measure":"totalCost","aggregation":"sum"}],
+            "timeDimension":{"granularity":"day"},
+            "fromTimestamp":"2026-09-01T00:00:00Z",
+            "toTimestamp":"2026-09-08T00:00:00Z"}
+          schema:
+            type: string
+            contentMediaType: application/json
+            contentSchema:
+              type: object
+              required: [view, metrics, fromTimestamp, toTimestamp]
+              properties:
+                view:
+                  type: string
+                  enum: [observations, scores-numeric, scores-boolean, scores-categorical]
+                metrics:
+                  type: array
+                  description: At least one measure/aggregation pair.
+                  items:
+                    type: object
+                    required: [measure, aggregation]
+                    properties:
+                      measure:
+                        type: string
+                      aggregation:
+                        type: string
+                        enum: [sum, avg, count, max, min, p50, p75, p90, p95, p99, histogram]
+                dimensions:
+                  type: array
+                  description: Group-by fields. High-cardinality columns are rejected here.
+                  items:
+                    type: object
+                    required: [field]
+                    properties:
+                      field:
+                        type: string
+                filters:
+                  type: array
+                  items:
+                    type: object
+                    required: [column, operator, type]
+                    properties:
+                      column:
+                        type: string
+                      operator:
+                        type: string
+                      value: {}
+                      type:
+                        type: string
+                        enum: [datetime, string, number, stringOptions, categoryOptions, arrayOptions, stringObject, numberObject, boolean, "null"]
+                      key:
+                        type: string
+                timeDimension:
+                  type: object
+                  description: Present to bucket results by time; omit for a single row per group.
+                  required: [granularity]
+                  properties:
+                    granularity:
+                      type: string
+                      enum: [auto, minute, hour, day, week, month]
+                fromTimestamp:
+                  type: string
+                  format: date-time
+                toTimestamp:
+                  type: string
+                  format: date-time
+                orderBy:
+                  type: array
+                  items:
+                    type: object
+                    required: [field, direction]
+                    properties:
+                      field:
+                        type: string
+                      direction:
+                        type: string
+                        enum: [asc, desc]
+                config:
+                  type: object
+                  properties:
+                    bins:
+                      type: number
+                      description: Histogram buckets, 1-100. Default 10.
+                    row_limit:
+                      type: number
+                      description: Maximum rows returned, 1-1000. Default 100.
+  /api/public/v3/scores:
+    get:
+      operationId: list_scores
+      summary: "List scores[ named {name}]"
+      risk: read
+      pagination:
+        page_size:
+          param: limit
+          default: 50
+          max: 100
+        next:
+          style: cursor
+          param: cursor
+          from: meta.cursor
+        items: data
+      description: >-
+        One page of evaluation scores. The v4 replacement for the sunset
+        /api/public/v2/scores. `value` is polymorphic and follows `dataType`:
+        a number for NUMERIC, a boolean for BOOLEAN, a string for CATEGORICAL,
+        TEXT and CORRECTION. Core fields always come back; `fields` adds
+        `details` (comment, configId, metadata), `subject` (what the score is
+        attached to — a trace, observation, session or experiment) and
+        `annotation` (authorUserId, queueId). The subject filters are mutually
+        exclusive: traceId, sessionId and experimentId cannot be combined, and
+        observationId requires traceId because observation ids are scoped to a
+        trace.
+      parameters:
+        - name: limit
+          in: query
+          description: Scores per page. Maximum 100 — a higher value is a 400.
+          schema:
+            type: integer
+        - name: cursor
+          in: query
+          description: >-
+            base64url cursor from the previous response's `meta.cursor`. Absent
+            on the final page.
+          schema:
+            type: string
+        - name: fields
+          in: query
+          description: >-
+            Comma-separated groups on top of the core fields: details, subject,
+            annotation. An unknown name is a 400.
+          schema:
+            type: string
+        - name: name
+          in: query
+          description: Comma-separated score names.
+          schema:
+            type: string
+        - name: source
+          in: query
+          # No `enum:` although the upstream names three values: this is a
+          # comma-separated list, so an enum would reject every multi-value
+          # filter the parameter exists to express.
+          description: >-
+            Comma-separated score sources — API, ANNOTATION, EVAL.
+            Case-insensitive.
+          schema:
+            type: string
+        - name: dataType
+          in: query
+          x-overslash-aliases: [data_type]
+          description: >-
+            Comma-separated data types — NUMERIC, BOOLEAN, CATEGORICAL, TEXT,
+            CORRECTION. Case-insensitive. Must be a single value when combined
+            with value, valueMin or valueMax.
+          schema:
+            type: string
+        - name: value
+          in: query
+          description: >-
+            Comma-separated exact values. Requires exactly one dataType of
+            NUMERIC, BOOLEAN or CATEGORICAL; anything else is a 400.
+          schema:
+            type: string
+        - name: valueMin
+          in: query
+          x-overslash-aliases: [value_min]
+          description: Inclusive lower bound. Requires dataType=NUMERIC alone.
+          schema:
+            type: number
+        - name: valueMax
+          in: query
+          x-overslash-aliases: [value_max]
+          description: Inclusive upper bound. Requires dataType=NUMERIC alone.
+          schema:
+            type: number
+        - name: traceId
+          in: query
+          x-overslash-aliases: [trace_id]
+          description: >-
+            Comma-separated trace ids. Mutually exclusive with sessionId and
+            experimentId.
+          schema:
+            type: string
+        - name: observationId
+          in: query
+          x-overslash-aliases: [observation_id]
+          description: >-
+            Comma-separated observation ids. Requires traceId, since
+            observation ids are scoped to a trace.
+          schema:
+            type: string
+        - name: sessionId
+          in: query
+          x-overslash-aliases: [session_id]
+          description: Comma-separated session ids. Mutually exclusive with the others.
+          schema:
+            type: string
+        - name: experimentId
+          in: query
+          x-overslash-aliases: [experiment_id, dataset_run_id]
+          description: >-
+            Comma-separated experiment (dataset run) ids. Mutually exclusive
+            with the others.
+          schema:
+            type: string
+        - name: environment
+          in: query
+          description: Comma-separated environments.
+          schema:
+            type: string
+        - name: configId
+          in: query
+          x-overslash-aliases: [config_id]
+          description: Comma-separated score config ids.
+          schema:
+            type: string
+        - name: queueId
+          in: query
+          x-overslash-aliases: [queue_id]
+          description: Comma-separated annotation queue ids.
+          schema:
+            type: string
+        - name: authorUserId
+          in: query
+          x-overslash-aliases: [author_user_id]
+          description: Comma-separated author user ids, for annotation scores.
+          schema:
+            type: string
+        - name: fromTimestamp
+          in: query
+          x-overslash-aliases: [from_timestamp, since]
+          description: Inclusive lower bound on the score timestamp.
+          schema:
+            type: string
+            format: date-time
+        - name: toTimestamp
+          in: query
+          x-overslash-aliases: [to_timestamp, until]
+          description: Exclusive upper bound on the score timestamp.
+          schema:
+            type: string
+            format: date-time
+  /api/public/scores:
+    post:
+      operationId: create_score
+      summary: "Score '{name}' on {traceId}"
+      risk: write
+      description: >-
+        Attach an evaluation score to a trace, an observation, a session or an
+        experiment run. Name exactly one subject: `traceId` (optionally with
+        `observationId` to land it on one step), `sessionId`, or
+        `datasetRunId`. `value` follows `dataType` — a number for NUMERIC and
+        BOOLEAN (1/0), a string for CATEGORICAL, TEXT and CORRECTION. Passing
+        `configId` populates `dataType` from the score config and constrains
+        the value to that config's range or categories.
+      disclose:
+        - label: Score
+          primary: true
+          filter: .body.name
+        # Test presence, not truthiness: a numeric 0 and a boolean false are
+        # both real scores and both the case a reviewer most needs to see, and
+        # `// empty` would render them as nothing.
+        - label: Value
+          primary: true
+          filter: 'if .body | has("value") then (.body.value | tostring) else empty end'
+        - label: Subject
+          primary: true
+          filter: >-
+            if .body.observationId then "observation " + .body.observationId + " on trace " + (.body.traceId // "?")
+            elif .body.traceId then "trace " + .body.traceId
+            elif .body.sessionId then "session " + .body.sessionId
+            elif .body.datasetRunId then "experiment " + .body.datasetRunId
+            else empty end
+        - label: Comment
+          filter: .body.comment // empty
+          max_chars: 2000
+        - label: Data type
+          filter: .body.dataType // empty
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, value]
+              properties:
+                name:
+                  type: string
+                  description: Score name, e.g. "accuracy" or "hallucination".
+                value:
+                  # Deliberately untyped. Upstream this is a oneOf over number
+                  # and string, which the loader does not resolve; an empty
+                  # `param_type` is the sentinel that means "do not coerce",
+                  # so the caller's JSON reaches Langfuse as sent. Typing it
+                  # either way would silently corrupt the other half.
+                  description: >-
+                    A number for NUMERIC and BOOLEAN scores (1 or 0 for
+                    boolean), a string for CATEGORICAL, TEXT and CORRECTION.
+                dataType:
+                  type: string
+                  x-overslash-aliases: [data_type]
+                  enum: [NUMERIC, BOOLEAN, CATEGORICAL, CORRECTION, TEXT]
+                  description: >-
+                    Inferred from the value when omitted. Populated
+                    automatically when configId is given.
+                traceId:
+                  type: string
+                  x-overslash-aliases: [trace_id]
+                  description: Trace to score.
+                observationId:
+                  type: string
+                  x-overslash-aliases: [observation_id]
+                  description: >-
+                    Observation to score. Requires traceId — observation ids
+                    are scoped to a trace.
+                sessionId:
+                  type: string
+                  x-overslash-aliases: [session_id]
+                  description: Session to score.
+                datasetRunId:
+                  type: string
+                  # `list_scores` calls this same thing `experimentId`, because
+                  # that is the name each endpoint puts on the wire. Rather
+                  # than rename either away from its upstream spelling, each
+                  # accepts the other, so one concept answers to one name
+                  # across the service.
+                  x-overslash-aliases: [dataset_run_id, experiment_id, experimentId]
+                  description: Experiment (dataset run) to score.
+                comment:
+                  type: string
+                  description: Free-text rationale, shown beside the score in the UI.
+                environment:
+                  type: string
+                  description: >-
+                    Lowercase alphanumeric with hyphens and underscores, not
+                    starting with "langfuse".
+                configId:
+                  type: string
+                  x-overslash-aliases: [config_id]
+                  description: >-
+                    Score config to validate against. Populates dataType and
+                    constrains the value.
+                queueId:
+                  type: string
+                  x-overslash-aliases: [queue_id]
+                  description: Annotation queue this score came from.
+                source:
+                  type: string
+                  enum: [API, ANNOTATION]
+                  description: Defaults to API.
+                id:
+                  type: string
+                  description: >-
+                    Client-supplied id. Scores upsert on it, so reusing one
+                    overwrites that score.
+                metadata:
+                  type: object
+                  description: Caller-owned free-form JSON attached to the score.
+  /api/public/scores/{scoreId}:
+    delete:
+      operationId: delete_score
+      summary: "Delete score {scoreId}"
+      risk: delete
+      # One score at a time, so a grant can name the score rather than the verb.
+      scope_param: scoreId
+      description: >-
+        Permanently delete one score. Works for trace, observation and session
+        scores. There is no undo; to correct a score's value, create_score with
+        the same `id` instead, which upserts.
+      disclose:
+        - label: Score
+          primary: true
+          filter: '.params.scoreId + (if .resolved.scoreId then " — " + .resolved.scoreId else "" end)'
+      parameters:
+        - name: scoreId
+          in: path
+          required: true
+          x-overslash-aliases: [score_id, id]
+          description: Score id, from list_scores.
+          schema:
+            type: string
+  /api/public/traces/{traceId}:
+    delete:
+      operationId: delete_trace
+      summary: "Delete trace {traceId}"
+      risk: delete
+      scope_param: traceId
+      description: >-
+        Permanently delete one trace and every observation and score beneath
+        it. Asynchronous — the response acknowledges the request and the rows
+        disappear shortly after. There is no undo and nothing is archived. Read
+        the trace with list_observations before deleting it.
+      disclose:
+        - label: Trace
+          primary: true
+          filter: .params.traceId
+      parameters:
+        - name: traceId
+          in: path
+          required: true
+          x-overslash-aliases: [trace_id, id]
+          description: Trace id, from an observation's `traceId`.
+          schema:
+            type: string
+  /api/public/traces:
+    delete:
+      operationId: delete_traces
+      # No interpolation: the only parameter is an array, and a label reading
+      # `Delete ["tr-a","tr-b"] traces` is worse than a plain one. The ids are
+      # not lost — `disclose` names every one of them plus the count.
+      summary: Delete several traces at once
+      risk: delete
+      # holded.yaml excludes bulk deletes on the grounds that they destroy many
+      # rows behind one approval. That objection is about rows a reviewer never
+      # sees — here the whole id list is disclosed, and an approver declining
+      # an id they do not recognise is exactly the control the objection asks
+      # for. The array is a top-level body key, so a dotted path reaches it.
+      description: >-
+        Permanently delete several traces and everything beneath them, in one
+        request. Asynchronous, irreversible, and nothing is archived — this is
+        the bulk-erasure path. Prefer delete_trace for a single trace: its
+        permission key names the one id, where this action's grant covers
+        whatever list the caller assembles. Every id is shown to the approver.
+      disclose:
+        - label: Traces
+          primary: true
+          filter: '.body.traceIds | join(", ")'
+        - label: Count
+          primary: true
+          filter: '.body.traceIds | length | tostring'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [traceIds]
+              properties:
+                traceIds:
+                  type: array
+                  x-overslash-aliases: [trace_ids, ids]
+                  description: Trace ids to delete. Every one is disclosed to the approver.
+                  items:
+                    type: string
+  /api/public/v2/prompts:
+    get:
+      operationId: list_prompts
+      summary: "List prompts[ labelled {label}][ tagged {tag}]"
+      risk: read
+      pagination:
+        page_size:
+          param: limit
+          default: 50
+          max: 100
+        next:
+          style: page
+          param: page
+        # Langfuse's `utilsMetaResponse` is {page, limit, totalItems,
+        # totalPages} — no boolean — so `has_more` is left unset and the
+        # gateway infers the end structurally: a full page has a successor, an
+        # underfull one is the last.
+        items: data
+      description: >-
+        One page of prompt names with their versions, labels and tags — the
+        index, not the prompt bodies. Read one body with get_prompt. `label`
+        filters to a deployment label; `production` is the one live SDKs
+        resolve by default.
+      parameters:
+        - name: page
+          in: query
+          description: Page number, 1-based.
+          schema:
+            type: integer
+            # Load-bearing rather than decoration: `page` style has no
+            # universal origin, and this is the only place the template says
+            # whether pages count from 0 or 1.
+            default: 1
+        - name: limit
+          in: query
+          description: Prompts per page. Maximum 100; leave unset for 50.
+          schema:
+            type: integer
+        - name: name
+          in: query
+          description: Exact prompt name. A prompt in a folder reads `folder/name`.
+          schema:
+            type: string
+        - name: label
+          in: query
+          description: >-
+            Only prompts carrying this deployment label. `production` is what
+            the SDKs fetch when they ask for no version.
+          schema:
+            type: string
+        - name: tag
+          in: query
+          description: Only prompts carrying this tag.
+          schema:
+            type: string
+        - name: fromUpdatedAt
+          in: query
+          x-overslash-aliases: [from_updated_at, since]
+          description: Only versions created or updated at or after this ISO 8601 datetime.
+          schema:
+            type: string
+            format: date-time
+        - name: toUpdatedAt
+          in: query
+          x-overslash-aliases: [to_updated_at, until]
+          description: Only versions created or updated before this ISO 8601 datetime.
+          schema:
+            type: string
+            format: date-time
+    post:
+      operationId: create_prompt
+      summary: "Create a version of prompt '{name}'"
+      risk: write
+      description: >-
+        Create a new version of a prompt, or the first version of a new one —
+        prompts are append-only, so this never edits a version in place.
+        `type` picks the shape `prompt` must take: `text` takes a string,
+        `chat` takes an array of {role, content} messages. Attaching
+        `labels: ["production"]` here deploys the new version immediately;
+        omit labels to stage it and promote later with update_prompt_labels.
+      disclose:
+        - label: Prompt
+          primary: true
+          filter: .body.name
+        - label: Type
+          filter: .body.type // empty
+        - label: Body
+          primary: true
+          filter: >-
+            if .body.prompt | type == "array"
+            then (.body.prompt | map((.role // "placeholder") + ": " + (.content // .name // "")) | join("\n"))
+            else (.body.prompt | tostring) end
+          max_chars: 2000
+        # Presence, not truthiness: `labels: []` means "stage this version,
+        # deploy nothing", which reads differently from no labels key at all.
+        - label: Labels
+          primary: true
+          filter: >-
+            if .body | has("labels")
+            then (.body.labels | if length == 0 then "none — staged, not deployed" else join(", ") end)
+            else empty end
+        - label: Deploys to production
+          filter: >-
+            if (.body.labels // []) | index("production")
+            then "yes — live SDK traffic moves to this version on its next fetch"
+            else empty end
+        - label: Commit message
+          filter: .body.commitMessage // empty
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, prompt, type]
+              properties:
+                name:
+                  type: string
+                  description: >-
+                    Prompt name. Reusing an existing name appends a version.
+                    A prompt in a folder reads `folder/name`.
+                type:
+                  type: string
+                  enum: [text, chat]
+                  description: Decides the shape of `prompt`.
+                prompt:
+                  # Deliberately untyped: upstream this is a oneOf over a
+                  # string (text prompts) and an array of messages (chat), and
+                  # the two cannot share a declared type. An empty
+                  # `param_type` is the "do not coerce" sentinel, so whichever
+                  # the caller sends reaches Langfuse intact. Splitting this
+                  # into two actions is not available — both would have to be
+                  # `post` on this one path.
+                  description: >-
+                    For type=text, the prompt string, with `{{variable}}`
+                    placeholders. For type=chat, an array of
+                    {role, content} messages — or {name} for a placeholder
+                    message.
+                labels:
+                  type: array
+                  description: >-
+                    Deployment labels for this version. `production` is the
+                    live one. `latest` is reserved by Langfuse.
+                  items:
+                    type: string
+                tags:
+                  type: array
+                  description: Tags applied to every version of this prompt.
+                  items:
+                    type: string
+                commitMessage:
+                  type: string
+                  x-overslash-aliases: [commit_message]
+                  description: Why this version exists, shown in the version history.
+                config:
+                  description: >-
+                    Free-form JSON shipped alongside the prompt — model name,
+                    temperature, and anything else the caller wants versioned
+                    with it.
+  /api/public/v2/prompts/{promptName}:
+    get:
+      operationId: get_prompt
+      summary: "Get prompt '{promptName}'"
+      risk: read
+      description: >-
+        One prompt version, with its body, config, labels and tags. With
+        neither `version` nor `label`, Langfuse returns the version labelled
+        `production` — the same one the SDKs serve, which is what makes this
+        the right way to ask "what is deployed right now".
+      parameters:
+        - name: promptName
+          in: path
+          required: true
+          x-overslash-aliases: [prompt_name, name]
+          description: >-
+            Prompt name. A prompt in a folder reads `folder/name`, URL-encoded.
+          schema:
+            type: string
+        - name: version
+          in: query
+          description: Exact version number. Mutually exclusive with label.
+          schema:
+            type: integer
+        - name: label
+          in: query
+          description: >-
+            Deployment label to resolve. Defaults to `production` when neither
+            this nor version is given.
+          schema:
+            type: string
+        # This parameter is named `resolve`, which is also the key an
+        # Overslash parameter object uses to declare a display resolver. There
+        # is no collision: `normalize_parameters_in` rewrites the `resolve`
+        # KEY on a parameter object, not a parameter whose `name:` is
+        # "resolve". Leave it alone.
+        - name: resolve
+          in: query
+          description: >-
+            Resolve prompt dependencies before returning. Defaults to true;
+            false returns the raw stored prompt with dependency tags intact.
+          schema:
+            type: boolean
+    delete:
+      operationId: delete_prompt
+      summary: "Delete prompt '{promptName}'"
+      risk: delete
+      scope_param: promptName
+      description: >-
+        Delete prompt versions. **With neither `version` nor `label`, this
+        deletes every version of the prompt** — the whole history, not just the
+        deployed one. Pass `version` to remove one, or `label` to remove the
+        versions carrying it. Irreversible; an SDK resolving a label you just
+        deleted starts failing.
+      disclose:
+        - label: Prompt
+          primary: true
+          filter: .params.promptName
+        - label: Scope
+          primary: true
+          filter: >-
+            if .params.version then "version " + (.params.version | tostring)
+            elif .params.label then "every version labelled " + .params.label
+            else "EVERY VERSION — the prompt's entire history" end
+      parameters:
+        - name: promptName
+          in: path
+          required: true
+          x-overslash-aliases: [prompt_name, name]
+          description: Prompt name.
+          schema:
+            type: string
+        - name: version
+          in: query
+          description: Delete only this version.
+          schema:
+            type: integer
+        - name: label
+          in: query
+          description: Delete every version carrying this label.
+          schema:
+            type: string
+  /api/public/v2/prompts/{name}/versions/{version}:
+    patch:
+      operationId: update_prompt_labels
+      summary: "Relabel prompt '{name}' v{version}"
+      risk: write
+      # Per prompt, so a grant for one prompt does not let the agent re-point
+      # every other one.
+      scope_param: name
+      description: >-
+        Replace the deployment labels on one prompt version. **This is a
+        deployment.** Labels are unique across versions, so moving `production`
+        onto this version silently moves it off whichever version held it, and
+        every SDK resolving `production` serves this one from its next fetch.
+        The list replaces rather than merges, so an omitted label is a removed
+        label. `latest` is reserved by Langfuse and cannot be set here. Read
+        list_prompts first to see which version currently holds the label.
+      disclose:
+        - label: Prompt
+          primary: true
+          filter: .params.name
+        - label: Version
+          primary: true
+          filter: '.params.version | tostring'
+        - label: New labels
+          primary: true
+          filter: >-
+            if .body | has("newLabels")
+            then (.body.newLabels | if length == 0 then "none — every label removed from this version" else join(", ") end)
+            else empty end
+        - label: Deploys to production
+          filter: >-
+            if (.body.newLabels // []) | index("production")
+            then "yes — live SDK traffic moves to this version on its next fetch"
+            else empty end
+      parameters:
+        - name: name
+          in: path
+          required: true
+          x-overslash-aliases: [promptName, prompt_name]
+          description: Prompt name. A prompt in a folder reads `folder/name`.
+          schema:
+            type: string
+        - name: version
+          in: path
+          required: true
+          description: Version number to relabel, from list_prompts.
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [newLabels]
+              properties:
+                newLabels:
+                  type: array
+                  x-overslash-aliases: [new_labels, labels]
+                  description: >-
+                    The complete label set for this version. Replaces, does not
+                    merge. `latest` is reserved by Langfuse.
+                  items:
+                    type: string
+  /api/public/v2/datasets:
+    get:
+      operationId: list_datasets
+      summary: List datasets
+      risk: read
+      pagination:
+        page_size:
+          param: limit
+          default: 50
+          max: 100
+        next:
+          style: page
+          param: page
+        items: data
+      description: >-
+        One page of evaluation datasets — name, description, metadata and any
+        input/expected-output schemas. The items themselves come from
+        list_dataset_items.
+      parameters:
+        - name: page
+          in: query
+          description: Page number, 1-based.
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          description: Datasets per page. Maximum 100; leave unset for 50.
+          schema:
+            type: integer
+    post:
+      operationId: create_dataset
+      summary: "Create dataset '{name}'"
+      risk: write
+      description: >-
+        Create an evaluation dataset, or update the description, metadata and
+        schemas of one that already exists — Langfuse upserts on `name`.
+        Setting `inputSchema` or `expectedOutputSchema` validates **existing**
+        items as well as new ones, so a schema that does not fit the data
+        already in the dataset will reject it.
+      disclose:
+        - label: Dataset
+          primary: true
+          filter: .body.name
+        - label: Description
+          filter: .body.description // empty
+          max_chars: 2000
+        - label: Adds a validation schema
+          filter: >-
+            if (.body | has("inputSchema")) or (.body | has("expectedOutputSchema"))
+            then "yes — existing items are validated against it too"
+            else empty end
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  description: Dataset name. Reusing one updates that dataset.
+                description:
+                  type: string
+                metadata:
+                  description: Caller-owned free-form JSON.
+                inputSchema:
+                  x-overslash-aliases: [input_schema]
+                  description: >-
+                    JSON Schema every item's `input` must satisfy. Applies to
+                    existing items as well as new ones.
+                expectedOutputSchema:
+                  x-overslash-aliases: [expected_output_schema]
+                  description: >-
+                    JSON Schema every item's `expectedOutput` must satisfy.
+                    Applies to existing items as well as new ones.
+  /api/public/v2/datasets/{datasetName}:
+    get:
+      operationId: get_dataset
+      summary: "Get dataset '{datasetName}'"
+      risk: read
+      description: >-
+        One dataset's metadata — description, schemas and timestamps. Its items
+        come from list_dataset_items.
+      parameters:
+        - name: datasetName
+          in: path
+          required: true
+          x-overslash-aliases: [dataset_name, name]
+          description: Dataset name, from list_datasets.
+          schema:
+            type: string
+  /api/public/dataset-items:
+    get:
+      operationId: list_dataset_items
+      summary: "List dataset items[ in '{datasetName}']"
+      risk: read
+      pagination:
+        page_size:
+          param: limit
+          default: 50
+          max: 100
+        next:
+          style: page
+          param: page
+        items: data
+      description: >-
+        One page of dataset items — the input/expectedOutput pairs an
+        experiment runs against. Pass `version` as an ISO 8601 timestamp to
+        read the dataset as it stood then, which is how you reproduce an old
+        experiment; it requires `datasetName`.
+      parameters:
+        - name: page
+          in: query
+          description: Page number, 1-based.
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          description: Items per page. Maximum 100; leave unset for 50.
+          schema:
+            type: integer
+        - name: datasetName
+          in: query
+          x-overslash-aliases: [dataset_name]
+          description: Only items in this dataset.
+          schema:
+            type: string
+        - name: sourceTraceId
+          in: query
+          x-overslash-aliases: [source_trace_id]
+          description: Only items created from this trace.
+          schema:
+            type: string
+        - name: sourceObservationId
+          in: query
+          x-overslash-aliases: [source_observation_id]
+          description: Only items created from this observation.
+          schema:
+            type: string
+        - name: version
+          in: query
+          description: >-
+            ISO 8601 timestamp (UTC). Returns the dataset as it stood at that
+            moment instead of now. Requires datasetName.
+          schema:
+            type: string
+            format: date-time
+    post:
+      operationId: create_dataset_item
+      summary: "Add an item to dataset '{datasetName}'"
+      risk: write
+      description: >-
+        Add an item to a dataset, or replace one. **Items upsert on `id`**, so
+        passing an `id` that already exists overwrites that item rather than
+        adding a second — which is why the approval calls that out. Ids are
+        unique per project and cannot be reused across datasets.
+      disclose:
+        - label: Dataset
+          primary: true
+          filter: .body.datasetName
+        # Presence, not truthiness: an id here is the difference between adding
+        # an item and silently replacing one, and it is the single thing a
+        # reviewer most needs to see.
+        - label: Overwrites existing item
+          primary: true
+          filter: 'if .body | has("id") then .body.id else empty end'
+        - label: Input
+          primary: true
+          filter: 'if .body | has("input") then (.body.input | tostring) else empty end'
+          max_chars: 2000
+        - label: Expected output
+          filter: 'if .body | has("expectedOutput") then (.body.expectedOutput | tostring) else empty end'
+          max_chars: 2000
+        - label: Status
+          filter: .body.status // empty
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [datasetName]
+              properties:
+                datasetName:
+                  type: string
+                  x-overslash-aliases: [dataset_name]
+                  description: Dataset to add to. Must already exist.
+                input:
+                  description: Caller-owned free-form JSON — what the system under test is given.
+                expectedOutput:
+                  x-overslash-aliases: [expected_output]
+                  description: Caller-owned free-form JSON — what it should produce.
+                metadata:
+                  description: Caller-owned free-form JSON.
+                sourceTraceId:
+                  type: string
+                  x-overslash-aliases: [source_trace_id]
+                  description: Trace this item was lifted from.
+                sourceObservationId:
+                  type: string
+                  x-overslash-aliases: [source_observation_id]
+                  description: Observation this item was lifted from.
+                id:
+                  type: string
+                  description: >-
+                    Item id, at most 255 characters. Supplying one that exists
+                    REPLACES that item. Unique per project and not reusable
+                    across datasets.
+                status:
+                  type: string
+                  enum: [ACTIVE, ARCHIVED]
+                  description: ARCHIVED items are skipped by experiment runs.
+  /api/public/dataset-items/{id}:
+    delete:
+      operationId: delete_dataset_item
+      summary: "Delete dataset item {id}"
+      risk: delete
+      scope_param: id
+      description: >-
+        Permanently delete one dataset item **and every experiment run item
+        that referenced it** — so this also erases past experiment results for
+        that row, not just the row. Irreversible. To take an item out of future
+        runs without losing history, create_dataset_item with the same id and
+        `status: ARCHIVED` instead.
+      disclose:
+        - label: Dataset item
+          primary: true
+          filter: .params.id
+        - label: Also deletes
+          primary: true
+          filter: '"every experiment run item referencing it"'
+      parameters:
+        - name: id
+          in: path
+          required: true
+          x-overslash-aliases: [item_id, dataset_item_id]
+          description: Dataset item id, from list_dataset_items.
+          schema:
+            type: string
+  /api/public/experiments:
+    get:
+      operationId: list_experiments
+      summary: List experiment runs
+      risk: read
+      pagination:
+        page_size:
+          param: limit
+          default: 50
+          max: 100
+        next:
+          style: cursor
+          param: cursor
+          from: meta.cursor
+        items: data
+      description: >-
+        One page of experiment runs (dataset runs), ordered by latest activity.
+        The v4 replacement for /api/public/datasets/{name}/runs.
+        `fromStartTime` is **required** — Langfuse demands a lower bound so the
+        query stays fast on large projects, and omitting it is a 400, not an
+        unbounded query. `fields=scores` adds each run's aggregate scores.
+      parameters:
+        - name: fromStartTime
+          in: query
+          required: true
+          x-overslash-aliases: [from_start_time, since]
+          description: >-
+            Required. Only experiments with activity at or after this ISO 8601
+            datetime.
+          schema:
+            type: string
+            format: date-time
+        - name: toStartTime
+          in: query
+          x-overslash-aliases: [to_start_time, until]
+          description: Only experiments before this ISO 8601 datetime.
+          schema:
+            type: string
+            format: date-time
+        - name: limit
+          in: query
+          description: Experiments per page. Maximum 100; leave unset for 50.
+          schema:
+            type: integer
+        - name: cursor
+          in: query
+          description: base64url cursor from the previous response's `meta.cursor`.
+          schema:
+            type: string
+        - name: fields
+          in: query
+          description: >-
+            Comma-separated field groups — core, metadata, scores. Defaults to
+            core.
+          schema:
+            type: string
+        - name: scoreLimit
+          in: query
+          x-overslash-aliases: [score_limit]
+          description: >-
+            Scores returned per experiment when fields includes scores.
+            Maximum 50.
+          schema:
+            type: integer
+        - name: id
+          in: query
+          description: Comma-separated experiment ids.
+          schema:
+            type: string
+        - name: name
+          in: query
+          description: Comma-separated experiment names.
+          schema:
+            type: string
+        - name: datasetId
+          in: query
+          x-overslash-aliases: [dataset_id]
+          description: Comma-separated dataset ids.
+          schema:
+            type: string
+        - name: filter
+          in: query
+          description: >-
+            Structured filter conditions, as a JSON array — pass the array or
+            its serialized form. Supported columns are id, name and datasetId.
+          schema:
+            type: string
+            contentMediaType: application/json
+            contentSchema:
+              type: array
+              items:
+                type: object
+                required: [type, column, operator]
+                properties:
+                  type:
+                    type: string
+                  column:
+                    type: string
+                  operator:
+                    type: string
+                  value: {}
+  /api/public/experiment-items:
+    get:
+      operationId: list_experiment_items
+      summary: List experiment items
+      risk: read
+      pagination:
+        page_size:
+          param: limit
+          # 25 rather than the upstream's 50 for the same reason
+          # list_observations uses it: `fields=io` returns each item's whole
+          # input and output, and 50 of those is past the response cap.
+          default: 25
+          max: 100
+        next:
+          style: cursor
+          param: cursor
+          from: meta.cursor
+        items: data
+      description: >-
+        One page of experiment items — the per-row results of an experiment
+        run, with inputs, outputs, expected outputs and optionally scores. This
+        is how you export an eval run. The v4 replacement for
+        /api/public/dataset-run-items. `fromStartTime` is **required**.
+        `fields` defaults to `core,dataset`; adding `io` returns whole inputs
+        and outputs, so lower `limit` when you ask for it.
+      parameters:
+        - name: fromStartTime
+          in: query
+          required: true
+          x-overslash-aliases: [from_start_time, since]
+          description: >-
+            Required. Only items started at or after this ISO 8601 datetime.
+          schema:
+            type: string
+            format: date-time
+        - name: toStartTime
+          in: query
+          x-overslash-aliases: [to_start_time, until]
+          description: Only items started before this ISO 8601 datetime.
+          schema:
+            type: string
+            format: date-time
+        - name: limit
+          in: query
+          description: Items per page. Maximum 100; leave unset for 25.
+          schema:
+            type: integer
+        - name: cursor
+          in: query
+          description: base64url cursor from the previous response's `meta.cursor`.
+          schema:
+            type: string
+        - name: fields
+          in: query
+          description: >-
+            Comma-separated field groups — core, dataset, io, metadata,
+            itemMetadata, experimentMetadata, scores. Defaults to
+            `core,dataset`. `io` is the expensive one.
+          schema:
+            type: string
+        - name: scoreLimit
+          in: query
+          x-overslash-aliases: [score_limit]
+          description: >-
+            Scores returned per item when fields includes scores. Maximum 50.
+          schema:
+            type: integer
+        - name: experimentId
+          in: query
+          x-overslash-aliases: [experiment_id]
+          description: Comma-separated experiment ids.
+          schema:
+            type: string
+        - name: experimentName
+          in: query
+          x-overslash-aliases: [experiment_name]
+          description: Comma-separated experiment names.
+          schema:
+            type: string
+        - name: experimentItemId
+          in: query
+          x-overslash-aliases: [experiment_item_id]
+          description: Comma-separated experiment item ids.
+          schema:
+            type: string
+        - name: datasetId
+          in: query
+          x-overslash-aliases: [dataset_id]
+          description: Comma-separated dataset ids.
+          schema:
+            type: string
+        - name: filter
+          in: query
+          description: >-
+            Structured filter conditions, as a JSON array — pass the array or
+            its serialized form. Supported columns are experimentId,
+            experimentName, experimentItemId and datasetId.
+          schema:
+            type: string
+            contentMediaType: application/json
+            contentSchema:
+              type: array
+              items:
+                type: object
+                required: [type, column, operator]
+                properties:
+                  type:
+                    type: string
+                  column:
+                    type: string
+                  operator:
+                    type: string
+                  value: {}

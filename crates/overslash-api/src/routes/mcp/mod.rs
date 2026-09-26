@@ -95,6 +95,61 @@ struct JsonRpcRequest {
 // Auth challenge (401 + WWW-Authenticate)
 // ---------------------------------------------------------------------------
 
+/// Drive an elicitation answer to completion, and make sure the row ends
+/// terminal whatever happens.
+///
+/// Extracted from `post_mcp`'s spawn so the retire-on-failure policy is one
+/// named thing rather than two arms of an inline match. `pub` for the same
+/// reason `router()` is: the integration suite drives it directly, because
+/// forcing the unexpected-`Err` path through a live handler would mean
+/// injecting a broken loopback into the running API's config.
+///
+/// Every exit leaves `pending_mcp_elicitations` in a terminal status. That is
+/// the property the originator depends on: it polls this row and gives up only
+/// at `mcp_session::DEFAULT_TIMEOUT` (300s), so a row stuck in `claimed` is a
+/// five-minute hang on a live `tools/call` — where the caller could have had
+/// the `pending_approval` envelope immediately.
+///
+/// `complete_from_elicitation` drives its *expected* failures to a terminal
+/// status itself (`repo::fail` on a denial or a rejected resolve). An `Err` out
+/// of it is the unexpected kind — a JWT mint, a loopback transport error, or
+/// the terminal write itself failing — so this retires the row on its behalf.
+///
+/// Retiring can race a resolve that already landed, leaving the model reading
+/// `pending_approval` for an approval that is really `allowed`. That is the
+/// benign race `elicitation::elicit_result_event` documents: the model's
+/// correct next move, `overslash_call` with the approval_id, is right for that
+/// state anyway. A stuck row has no such recovery.
+pub async fn complete_elicitation_and_retire(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    db: &sqlx::PgPool,
+    elicit_id: &str,
+    result: &Value,
+) {
+    // Bound the work: two loopback HTTP calls (resolve + call) shouldn't take
+    // more than a minute even under load. Without this an unresponsive
+    // upstream could pin a tokio task slot indefinitely.
+    let work = mcp_session::complete_from_elicitation(state, ext, elicit_id, result);
+    match tokio::time::timeout(Duration::from_secs(60), work).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            tracing::error!(
+                elicit_id,
+                "complete elicitation failed; cancelling row: {e}"
+            );
+            let _ = overslash_db::repos::mcp_elicitation::cancel(db, elicit_id).await;
+        }
+        Err(_) => {
+            tracing::error!(
+                elicit_id,
+                "complete elicitation timed out after 60s; cancelling row"
+            );
+            let _ = overslash_db::repos::mcp_elicitation::cancel(db, elicit_id).await;
+        }
+    }
+}
+
 fn challenge(state: &AppState, headers: &HeaderMap, ctx: &RequestOrgContext) -> Response {
     // The challenge URL must point at the same issuer the metadata
     // endpoint will return so the MCP client can complete the discovery
@@ -180,6 +235,18 @@ async fn post_mcp(
         .and_then(|v| v.to_str().ok())
         .and_then(|s| Uuid::parse_str(s).ok());
 
+    // A client that did not offer to read an event stream cannot be handed
+    // one. Streamable HTTP has POST carry `Accept: application/json,
+    // text/event-stream`; the absence of the stream type marks a
+    // `tools/call`-only bridge, and upgrading it to SSE would hang the call
+    // instead of answering it. Cheap to check, and it is the difference
+    // between "elicitation is off for you" and "your tool call never
+    // returns" — which matters now that elicitation is on by default.
+    let accepts_sse = headers
+        .get(header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.contains("text/event-stream"));
+
     // First try to parse as a request (has `method`). If that fails, try to
     // parse as a response — clients deliver elicitation answers as bare
     // `{ id, result }` / `{ id, error }` objects on POST /mcp.
@@ -191,7 +258,16 @@ async fn post_mcp(
             "initialize" => initialize_response(&state, &ext, &auth, &req).await,
             "tools/list" => tools_list_response(&state, &ext, &auth, req.id).await,
             "tools/call" => {
-                tools_call(&state, &ext, &auth, req, bearer.as_deref(), req_session_id).await
+                tools_call(
+                    &state,
+                    &ext,
+                    &auth,
+                    req,
+                    bearer.as_deref(),
+                    req_session_id,
+                    accepts_sse,
+                )
+                .await
             }
             "notifications/initialized" => (StatusCode::NO_CONTENT, "").into_response(),
             other => rpc_error_response(
@@ -236,28 +312,8 @@ async fn post_mcp(
         let ext_c = ext.clone();
         let db = state.db_pool(&ext);
         let id_owned = id.to_string();
-        // Bound the background task: two loopback HTTP calls
-        // (resolve + call) shouldn't take more than a minute even
-        // under load. Without this an unresponsive upstream could
-        // pin a tokio task slot indefinitely.
         tokio::spawn(async move {
-            let work = mcp_session::complete_from_elicitation(&st, &ext_c, &id_owned, &result);
-            match tokio::time::timeout(Duration::from_secs(60), work).await {
-                Ok(Ok(())) => {}
-                Ok(Err(e)) => {
-                    tracing::error!(
-                        elicit_id = %id_owned,
-                        "complete elicitation failed: {e}"
-                    );
-                }
-                Err(_) => {
-                    tracing::error!(
-                        elicit_id = %id_owned,
-                        "complete elicitation timed out after 60s; cancelling row"
-                    );
-                    let _ = overslash_db::repos::mcp_elicitation::cancel(&db, &id_owned).await;
-                }
-            }
+            complete_elicitation_and_retire(&st, &ext_c, &db, &id_owned, &result).await;
         });
         return (StatusCode::ACCEPTED, "").into_response();
     }

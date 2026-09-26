@@ -29,19 +29,9 @@ async fn bootstrap(pool: sqlx::PgPool) -> (String, Client, String) {
         .json()
         .await
         .unwrap();
-    let org_id: Uuid = org["id"].as_str().unwrap().parse().unwrap();
 
     // Bootstrap key (first call on a fresh org creates an admin identity).
-    let key_resp: Value = client
-        .post(format!("{base}/v1/api-keys"))
-        .json(&json!({"org_id": org_id, "name": "admin"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let admin_key = key_resp["key"].as_str().unwrap().to_string();
+    let admin_key = org["api_key"].as_str().unwrap().to_string();
 
     (base, client, admin_key)
 }

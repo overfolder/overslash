@@ -23,8 +23,14 @@ embeddings = ["dep:fastembed"]
 # Every shipping build opts in — see the feature comment in
 # crates/overslash-cli/Cargo.toml for the full list of places that must.
 sql_policy = ["dep:pg_query"]
+# Test-only helpers with hardcoded key material (`Keyring::test()`). Enabled
+# from `[dev-dependencies]` only, so it can never reach a shipping binary: a
+# normal dependency that turned it on would put a known encryption key in the
+# production library (CASA 6.2.1).
+test-support = []
 
 [dependencies]
+overslash-env = { path = "../overslash-env" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
@@ -42,10 +48,13 @@ serde_yaml = { version = "0.9", optional = true }
 tracing = { workspace = true }
 async-trait = { workspace = true }
 strsim = "0.11"
-fastembed = { version = "6", optional = true }
+fastembed = { version = "7", optional = true }
 # Builds vendored libpg_query (C toolchain + libclang for bindgen). Kept
 # behind `sql_policy` so the default build never pays for it.
 pg_query = { version = "6", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
+
+[lints]
+workspace = true

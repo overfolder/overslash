@@ -429,7 +429,6 @@ async fn oauth_callback_inner(
         .await;
         crate::services::events::emit(
             state.db_pool(ext),
-            state.http_client.clone(),
             crate::services::events::EventDraft {
                 org_id,
                 event_type,
@@ -479,6 +478,7 @@ async fn oauth_callback_inner(
             }
             Ok(Some(_)) => {
                 let bind_input = overslash_db::repos::service_instance::UpdateServiceInstance {
+                    auth_mode: None,
                     name: None,
                     connection_id: Some(Some(connection_id)),
                     secret_name: None,

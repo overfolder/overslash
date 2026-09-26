@@ -125,7 +125,7 @@ impl Keyring {
     ///   the only sane rotation shape (id strictly increases by one), so
     ///   operators rarely need to set it explicitly.
     pub fn from_env() -> Result<Self, CryptoError> {
-        let active_hex = std::env::var("SECRETS_ENCRYPTION_KEY")
+        let active_hex = overslash_env::required("SECRETS_ENCRYPTION_KEY")
             .map_err(|_| CryptoError::MissingEnv("SECRETS_ENCRYPTION_KEY"))?;
         let active_id = parse_id_env("SECRETS_ENCRYPTION_KEY_ACTIVE_ID", 1)?;
         // Default previous_id = active_id - 1 so the "operator set _PREVIOUS
@@ -135,13 +135,19 @@ impl Keyring {
         // boot — surfacing the misconfig, but only after the deploy.
         let previous_id_default = active_id.saturating_sub(1);
         let previous_id = parse_id_env("SECRETS_ENCRYPTION_KEY_PREVIOUS_ID", previous_id_default)?;
-        let previous_hex = std::env::var("SECRETS_ENCRYPTION_KEY_PREVIOUS").ok();
+        let previous_hex = overslash_env::optional("SECRETS_ENCRYPTION_KEY_PREVIOUS");
         Self::from_hex(&active_hex, active_id, previous_hex.as_deref(), previous_id)
     }
 
     /// Fixed test keyring (active id = 1, key = `[0xAB; 32]`). Mirrors the
     /// historical `"ab".repeat(32)` value that test fixtures across the
     /// workspace expect.
+    ///
+    /// Compiled only into tests and the `test-support` feature, which only
+    /// `[dev-dependencies]` enable — a hardcoded key has no business in the
+    /// production library. The API's boot interlock refuses this key as
+    /// `SECRETS_ENCRYPTION_KEY` outside a local checkout regardless.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn test() -> Self {
         Self {
             active_id: 1,
@@ -171,9 +177,9 @@ impl Keyring {
 }
 
 fn parse_id_env(var: &'static str, default: u8) -> Result<u8, CryptoError> {
-    match std::env::var(var).ok() {
-        Some(s) if !s.is_empty() => s.parse::<u8>().map_err(|_| CryptoError::InvalidKeyId),
-        _ => Ok(default),
+    match overslash_env::optional(var) {
+        Some(s) => s.parse::<u8>().map_err(|_| CryptoError::InvalidKeyId),
+        None => Ok(default),
     }
 }
 

@@ -31,8 +31,9 @@ pub struct BusinessMetrics {
     pub secret_versions_total: i64,
     /// Per-provider active OAuth connections.
     pub connections_by_provider: Vec<(String, i64)>,
-    /// Top-20 service templates by active instance count. Top-20 cap keeps
-    /// the time-series count bounded even as the catalog grows.
+    /// Top-20 *user-created* service templates by active instance count.
+    /// System instances are excluded; the top-20 cap keeps the time-series
+    /// count bounded even as the catalog grows.
     pub instances_by_template: Vec<(String, i64)>,
     pub approvals_pending: i64,
     /// Age in seconds of the oldest pending approval. 0 when none pending.
@@ -209,11 +210,19 @@ async fn instances_by_template(db: &PgPool) -> Result<Vec<(String, i64)>> {
     // Top-20 only: keeps the per-template series count bounded even when
     // an org loads dozens of niche templates. The long-tail can still be
     // reconstructed from the API's `overslash_action_executions_total`.
+    //
+    // `is_system = false` drops the `overslash` and `http` instances that
+    // `org_bootstrap` seeds into every org. Counting them measures how many
+    // orgs exist, not which templates anyone chose, and they would sit at the
+    // top of the ranking forever — burning two of the twenty slots on every
+    // sweep. Same reasoning, and the same flag, as the MCP roster's skip in
+    // `overslash-api/src/routes/mcp/roster.rs`.
     let rows = sqlx::query!(
         r#"
         SELECT template_key AS "template!", COUNT(*)::bigint AS "count!"
         FROM service_instances
         WHERE status = 'active'
+          AND is_system = false
         GROUP BY template_key
         ORDER BY COUNT(*) DESC
         LIMIT 20

@@ -12,6 +12,17 @@
 //! - `GET  /oauth/upstream/callback?code=…&state=F` — public-facing callback.
 //!   Re-checks session vs flow identity (the security boundary), atomically
 //!   consumes the row, exchanges the code, stores token in vault.
+//!
+//! Every server-side hop — resource metadata, AS metadata, registration,
+//! token — goes over `https` (CASA 4.1.1), by the same rule
+//! [`outbound_tls`] applies to the action transport: checked against the
+//! address the SSRF guard pinned, with plain `http` let through only to an
+//! operator-allowed range (`OVERSLASH_SSRF_ALLOWED_CIDRS`). The pinned clients
+//! never follow a redirect, so the hop that was checked is the only hop. The
+//! endpoint URLs the AS metadata hands back are checked (resolving a hostname
+//! when plain `http` is on the table) before the flow is minted, so an `http`
+//! `token_endpoint` fails `initiate` with a 400 instead of the user finishing
+//! consent into a callback that cannot exchange the code.
 
 use std::time::Duration as StdDuration;
 
@@ -30,11 +41,12 @@ use crate::{
     AppState,
     error::AppError,
     extractors::{ReqExt, SessionAuth},
+    middleware::security_headers,
     routes::connect_gate::{
         ParsedSession, SessionError, gone_html, html_escape, mismatch_html, read_session,
         session_authorized_for_org_identity,
     },
-    services::{oauth_upstream as svc, short_url, ssrf_guard},
+    services::{oauth_upstream as svc, outbound_tls, short_url, ssrf_guard},
 };
 use overslash_core::crypto;
 use overslash_db::repos::{
@@ -283,12 +295,12 @@ async fn initiate(
         }));
     }
 
-    // Discover the AS through SSRF-guarded clients. Each discovery URL is
-    // validated, host-pinned, and re-fetched once — cooperative redirects
-    // are disabled by `build_pinned_client`.
+    // Discover the AS through SSRF-guarded, TLS-checked clients. Each
+    // discovery URL is validated, host-pinned, and re-fetched once —
+    // cooperative redirects are disabled by the pinned client.
     let as_issuer = match (&req.resource_metadata_url, &req.as_issuer) {
         (Some(url), _) => {
-            let (client, _) = ssrf_guard::build_pinned_client(url, HTTP_TIMEOUT).await?;
+            let client = upstream_client("resource_metadata_url", url).await?;
             let prm = svc::discover_protected_resource(&client, url)
                 .await
                 .map_err(|e| AppError::BadGateway(e.to_string()))?;
@@ -303,7 +315,7 @@ async fn initiate(
         (None, None) => unreachable!("checked above"),
     };
 
-    let (as_client, _) = ssrf_guard::build_pinned_client(&as_issuer, HTTP_TIMEOUT).await?;
+    let as_client = upstream_client("issuer", &as_issuer).await?;
     let as_meta = svc::discover_authorization_server(&as_client, &as_issuer)
         .await
         .map_err(|e| AppError::BadGateway(e.to_string()))?;
@@ -312,8 +324,14 @@ async fn initiate(
             "upstream AS does not advertise registration_endpoint (RFC 7591 DCR)".into(),
         )
     })?;
-    let (reg_client, _) =
-        ssrf_guard::build_pinned_client(registration_endpoint, HTTP_TIMEOUT).await?;
+    // The metadata document is upstream-controlled: refuse an `http` endpoint
+    // before anything is registered or minted. Resolved, not just parsed: the
+    // authorize endpoint is only ever visited by the user's browser, so there
+    // is no dial-time check behind this one to defer a hostname to. The token
+    // endpoint is dialed from the callback and checked again there.
+    check_endpoint_url("authorization_endpoint", &as_meta.authorization_endpoint).await?;
+    check_endpoint_url("token_endpoint", &as_meta.token_endpoint).await?;
+    let reg_client = upstream_client("registration_endpoint", registration_endpoint).await?;
 
     // Register Overslash as a public client at the upstream AS.
     let redirect_uri = callback_redirect_uri(&state.config.public_url);
@@ -397,6 +415,32 @@ async fn initiate(
             raw,
         },
     }))
+}
+
+/// A single-use client for one upstream OAuth hop: SSRF-guarded, pinned to the
+/// validated address, redirects off, and `https` required unless that address
+/// is inside an operator-allowed range (CASA 4.1.1).
+async fn upstream_client(field: &str, url: &str) -> Result<reqwest::Client, AppError> {
+    let (client, parsed, ip) = ssrf_guard::build_pinned_client_validated(url, HTTP_TIMEOUT).await?;
+    outbound_tls::check_resolved(&parsed, &ip).map_err(|e| name_endpoint(field, e))?;
+    Ok(client)
+}
+
+/// [`outbound_tls::check_url_resolving`] on an upstream endpoint URL that is
+/// stored or handed on rather than dialed right away.
+async fn check_endpoint_url(field: &str, url: &str) -> Result<(), AppError> {
+    outbound_tls::check_url_resolving(url)
+        .await
+        .map_err(|e| name_endpoint(field, e))
+}
+
+fn name_endpoint(field: &str, e: AppError) -> AppError {
+    match e {
+        AppError::BadRequest(msg) => {
+            AppError::BadRequest(format!("upstream OAuth `{field}`: {msg}"))
+        }
+        other => other,
+    }
 }
 
 fn callback_redirect_uri(public_url: &str) -> String {
@@ -539,6 +583,17 @@ async fn callback(
         ));
     }
 
+    // Build the token client — SSRF guard, DNS pin, TLS rule — *before*
+    // claiming the row, so a refusal (a flow minted before https was
+    // required, or a host that now resolves outside the allowed range) leaves
+    // the flow intact instead of burning it on a request never sent. No
+    // re-discovery — the endpoint was validated and persisted on the flow row,
+    // so a path-based multi-tenant AS keeps working without round-tripping
+    // its metadata document again. The row can't change between here and the
+    // consume below: nothing updates a flow's token endpoint.
+    let token_client =
+        upstream_client("token_endpoint", &flow_preview.upstream_token_endpoint).await?;
+
     // Now that the session is authorized, atomically claim the row.
     // Concurrent racing callbacks: the first transaction wins; the second
     // gets None and we 410.
@@ -550,11 +605,7 @@ async fn callback(
     };
 
     // Exchange the code at the upstream token endpoint we resolved at mint
-    // time. SSRF-guard the connection. No re-discovery — the endpoint was
-    // validated and persisted on the flow row, so a path-based multi-tenant
-    // AS keeps working without round-tripping its metadata document again.
-    let (token_client, _) =
-        ssrf_guard::build_pinned_client(&flow.upstream_token_endpoint, HTTP_TIMEOUT).await?;
+    // time, on the client built above.
     let redirect_uri = callback_redirect_uri(&state.config.public_url);
     let tokens = svc::exchange_code(
         &token_client,
@@ -624,16 +675,8 @@ fn switch_org_html(public_url: &str, flow_id: &str, target_org: Uuid) -> Respons
     // via fetch and redirect on success. The button is the only interactive
     // element so the page works fine even if JS doesn't load (the user just
     // sees a static notice).
-    let body = format!(
-        "<!doctype html><meta charset=utf-8><title>Switch org</title>\
-         <body style='font-family:system-ui;max-width:480px;margin:4rem auto;padding:0 1rem'>\
-         <h1>Switch org to continue</h1>\
-         <p>This OAuth link was created in a different org you belong to. \
-         Switch to that org to complete the connection.</p>\
-         <button id=switch type=button>Switch and continue</button>\
-         <p id=err style='color:#b00;display:none'></p>\
-         <script>\
-         document.getElementById('switch').addEventListener('click', async () => {{\
+    let script = format!(
+        "document.getElementById('switch').addEventListener('click', async () => {{\
            try {{\
              const r = await fetch('/auth/switch-org', {{\
                method: 'POST',\
@@ -648,12 +691,21 @@ fn switch_org_html(public_url: &str, flow_id: &str, target_org: Uuid) -> Respons
              err.textContent = 'Could not switch org: ' + e.message;\
              err.style.display = 'block';\
            }}\
-         }});\
-         </script></body>",
+         }});",
         org = html_escape(&target_org.to_string()),
         return_to = html_escape(&return_to),
     );
-    (StatusCode::OK, Html(body)).into_response()
+    let body = format!(
+        "<!doctype html><meta charset=utf-8><title>Switch org</title>\
+         <body style='font-family:system-ui;max-width:480px;margin:4rem auto;padding:0 1rem'>\
+         <h1>Switch org to continue</h1>\
+         <p>This OAuth link was created in a different org you belong to. \
+         Switch to that org to complete the connection.</p>\
+         <button id=switch type=button>Switch and continue</button>\
+         <p id=err style='color:#b00;display:none'></p>\
+         <script>{script}</script></body>"
+    );
+    security_headers::html_with_inline_script(StatusCode::OK, body, &script)
 }
 
 fn error_html(msg: &str) -> Response {

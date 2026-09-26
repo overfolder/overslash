@@ -15,16 +15,16 @@ use crate::AppState;
 /// exactly what the always-200 `/health` below exists to prevent.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// Cap on the error text echoed into an unauthenticated response body, so a
-/// sqlx error can't spill a full connection string to the public internet.
-///
-/// Note this cap is about *accidental* disclosure. The `version` / `commit` /
-/// `sql_policy` fields below are deliberate: they identify the build to uptime
-/// monitors and to anyone diagnosing a deploy, and they reveal nothing an
-/// attacker couldn't infer from behaviour. `GET /v1/version` reports the same
-/// values (also unauthenticated, for the same reason) without the database
-/// probe.
-const MAX_ERROR_LEN: usize = 200;
+// The `version` / `commit` / `sql_policy` fields in both bodies are
+// deliberate: they identify the build to uptime monitors and to anyone
+// diagnosing a deploy, and they reveal nothing an attacker couldn't infer from
+// behaviour. `GET /v1/version` reports the same values (also unauthenticated,
+// for the same reason) without the database probe.
+//
+// What the bodies do *not* carry is the database error. Both endpoints are
+// unauthenticated, and a sqlx error names hosts, ports, database and role
+// names (CASA 6.2.1). The error goes to the log, where the on-call reads it;
+// the body says only `"db": "down"`.
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -32,10 +32,11 @@ pub fn router() -> Router<AppState> {
         .route("/ready", get(ready))
 }
 
-/// Result of a bounded `SELECT 1` against the pool.
+/// Result of a bounded `SELECT 1` against the pool. `Down` carries no detail
+/// on purpose — see the note above [`router`].
 enum DbProbe {
     Up { latency_ms: u128 },
-    Down { error: String },
+    Down,
 }
 
 impl DbProbe {
@@ -43,8 +44,8 @@ impl DbProbe {
         matches!(self, DbProbe::Up { .. })
     }
 
-    /// Merge the probe outcome into a response body under `db` / `db_latency_ms`
-    /// / `db_error`.
+    /// Merge the probe outcome into a response body under `db` /
+    /// `db_latency_ms`.
     fn extend(&self, body: &mut Value) {
         let obj = body.as_object_mut().expect("body is a JSON object");
         match self {
@@ -52,9 +53,8 @@ impl DbProbe {
                 obj.insert("db".into(), json!("up"));
                 obj.insert("db_latency_ms".into(), json!(latency_ms));
             }
-            DbProbe::Down { error } => {
+            DbProbe::Down => {
                 obj.insert("db".into(), json!("down"));
-                obj.insert("db_error".into(), json!(error));
             }
         }
     }
@@ -73,26 +73,18 @@ async fn probe_db(pool: &PgPool) -> DbProbe {
         Ok(Ok(_)) => DbProbe::Up {
             latency_ms: started.elapsed().as_millis(),
         },
-        Ok(Err(e)) => DbProbe::Down {
-            error: truncate(&e.to_string()),
-        },
-        Err(_) => DbProbe::Down {
-            error: "timeout".into(),
-        },
+        Ok(Err(e)) => {
+            tracing::warn!(error = %e, "health probe: database query failed");
+            DbProbe::Down
+        }
+        Err(_) => {
+            tracing::warn!(
+                timeout_ms = PROBE_TIMEOUT.as_millis(),
+                "health probe: database query timed out"
+            );
+            DbProbe::Down
+        }
     }
-}
-
-fn truncate(s: &str) -> String {
-    if s.len() <= MAX_ERROR_LEN {
-        return s.to_string();
-    }
-    // Walk down to a char boundary at or below the byte cap — slicing
-    // mid-codepoint would panic on a multi-byte error message.
-    let mut end = MAX_ERROR_LEN;
-    while !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    format!("{}…", &s[..end])
 }
 
 /// Liveness. **Always 200**, even when Postgres is unreachable.
@@ -103,7 +95,7 @@ fn truncate(s: &str) -> String {
 /// mid-outage and the startup probe would block redeploys until the database
 /// recovered — the probe would amplify the incident instead of reporting it.
 ///
-/// So DB state is reported in the body (`db`, `db_latency_ms` / `db_error`) and
+/// So DB state is reported in the body (`db`, plus `db_latency_ms` when up) and
 /// never in the status code. For a check that *fails* when the database is
 /// down, use [`ready`].
 async fn health(State(state): State<AppState>) -> Json<Value> {
@@ -147,35 +139,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn truncate_caps_long_errors() {
-        let long = "x".repeat(500);
-        let out = truncate(&long);
-        assert_eq!(out.chars().count(), MAX_ERROR_LEN + 1);
-        assert!(out.ends_with('…'));
-    }
-
-    /// A cut landing mid-codepoint must not panic.
-    #[test]
-    fn truncate_respects_char_boundaries() {
-        // '€' is 3 bytes and MAX_ERROR_LEN is not a multiple of 3, so the byte
-        // cap lands *inside* a codepoint — a raw `&s[..MAX_ERROR_LEN]` would
-        // panic here. Assert that precondition so the test can't silently stop
-        // covering the panic case if the cap changes.
-        assert_ne!(MAX_ERROR_LEN % 3, 0, "cap must not fall on a '€' boundary");
-
-        let long = "€".repeat(500);
-        let out = truncate(&long);
-
-        assert!(out.ends_with('…'));
-        assert_eq!(out.chars().count(), MAX_ERROR_LEN / 3 + 1);
-    }
-
-    #[test]
-    fn truncate_leaves_short_errors_alone() {
-        assert_eq!(truncate("connection refused"), "connection refused");
-    }
-
-    #[test]
     fn extend_reports_up_with_latency() {
         let mut body = json!({ "status": "ok" });
         DbProbe::Up { latency_ms: 7 }.extend(&mut body);
@@ -208,18 +171,18 @@ mod tests {
         let mut body = json!({ "status": "ok" });
         probe.extend(&mut body);
         assert_eq!(body["db"], "down");
-        assert!(body["db_error"].as_str().is_some_and(|s| !s.is_empty()));
+        assert!(
+            body.get("db_error").is_none(),
+            "the sqlx error must stay in the log, not the public body"
+        );
     }
 
     #[test]
-    fn extend_reports_down_with_error() {
+    fn extend_reports_down_without_detail() {
         let mut body = json!({ "status": "degraded" });
-        DbProbe::Down {
-            error: "timeout".into(),
-        }
-        .extend(&mut body);
+        DbProbe::Down.extend(&mut body);
         assert_eq!(body["db"], "down");
-        assert_eq!(body["db_error"], "timeout");
+        assert!(body.get("db_error").is_none());
         assert!(body.get("db_latency_ms").is_none());
     }
 }

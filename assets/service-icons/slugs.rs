@@ -14,6 +14,7 @@ pub const BUILTIN_ICON_SLUGS: &[&str] = &[
     "client_zed",
     "deepwiki",
     "email",
+    "figma",
     "github",
     "gmail",
     "google_calendar",

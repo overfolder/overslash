@@ -11,10 +11,11 @@ use crate::types::{
 };
 
 use super::super::ext::{self, Ext, Pos};
+use super::shape::{lower_content_media_type, lower_shape};
 use super::{
-    parse_aliases, parse_disclose, parse_download, parse_instance_config, parse_pagination,
-    parse_redact, parse_resolver, parse_scope_params, parse_sql_policy, parse_test,
-    parse_timeout_ms, parse_upload, parse_wait_mode,
+    parse_additional_properties, parse_aliases, parse_disclose, parse_download,
+    parse_instance_config, parse_pagination, parse_redact, parse_resolver, parse_scope_params,
+    parse_sql_policy, parse_test, parse_timeout_ms, parse_upload, parse_wait_mode,
 };
 
 // ── x-overslash-mcp → McpSpec + ServiceActions ───────────────────────
@@ -149,6 +150,7 @@ pub(crate) fn extract_mcp_spec(root: &Map<String, Value>) -> Result<McpSpec, Vec
 pub(crate) fn extract_mcp_actions(
     root: &Map<String, Value>,
     autodiscover: bool,
+    default_additional_properties: bool,
     sink: &mut HashMap<String, ServiceAction>,
     warnings: &mut Vec<ValidationIssue>,
 ) -> Result<(), Vec<ValidationIssue>> {
@@ -250,7 +252,13 @@ pub(crate) fn extract_mcp_actions(
 
     // Lower merged entries to ServiceAction.
     for (name, obj) in merged {
-        if let Some(action) = lower_mcp_tool(&name, &obj, autodiscover, &mut errors) {
+        if let Some(action) = lower_mcp_tool(
+            &name,
+            &obj,
+            autodiscover,
+            default_additional_properties,
+            &mut errors,
+        ) {
             sink.insert(name, action);
         }
     }
@@ -271,6 +279,7 @@ fn lower_mcp_tool(
     name: &str,
     obj: &Map<String, Value>,
     autodiscover: bool,
+    default_additional_properties: bool,
     errors: &mut Vec<ValidationIssue>,
 ) -> Option<ServiceAction> {
     let base = format!("x-overslash-mcp.tools[{name}]");
@@ -351,6 +360,16 @@ fn lower_mcp_tool(
         &base,
         errors,
     );
+    // Nearest wins over the service-wide `info` default, so a tool may write
+    // `false` to re-tighten. A discovered entry never authors the key, and
+    // takes the default — which is the point: its `input_schema` is the one
+    // nobody hand-checked.
+    let additional_properties = parse_additional_properties(
+        ext::get(obj, Pos::McpTool, Ext::AdditionalProperties),
+        &base,
+        errors,
+    )
+    .unwrap_or(default_additional_properties);
     let wait_mode = parse_wait_mode(
         ext::get(obj, Pos::McpTool, Ext::WaitMode),
         Ext::WaitMode.key(),
@@ -419,6 +438,7 @@ fn lower_mcp_tool(
         download,
         upload,
         test,
+        additional_properties,
         // Everything else defaults — notably `request_body`, since MCP tool
         // calls are framed by the MCP client (which sets its own JSON-RPC
         // content type) and never routed through `resolve`.
@@ -440,6 +460,9 @@ fn lower_mcp_tool(
 /// discovered entries are skipped silently (they came from a live server, not
 /// authored config, so there is no author to warn).
 pub fn overlay_discovered_tools(def: &mut ServiceDefinition, discovered: &[Value]) {
+    // The same `info` default the template's authored tools were compiled
+    // with — see `ServiceDefinition::default_additional_properties`.
+    let default_additional_properties = def.default_additional_properties;
     for entry in discovered {
         let Some(obj) = entry.as_object() else {
             continue;
@@ -454,7 +477,9 @@ pub fn overlay_discovered_tools(def: &mut ServiceDefinition, discovered: &[Value
         // Discovered tools come from a live tools/list, so autodiscover=true
         // semantics apply (input_schema optional). Errors are non-fatal here.
         let mut errors = Vec::new();
-        if let Some(action) = lower_mcp_tool(name, obj, true, &mut errors) {
+        if let Some(action) =
+            lower_mcp_tool(name, obj, true, default_additional_properties, &mut errors)
+        {
             def.actions.insert(name.to_string(), action);
         }
     }
@@ -502,6 +527,8 @@ pub(crate) fn lower_input_schema(
                 .collect()
         });
         let default = po.get("default").cloned();
+        let content_media_type = lower_content_media_type(Some(po));
+        let shape = lower_shape(Some(po), 0).map(Box::new);
         let aliases = parse_aliases(Some(po), name, Pos::McpToolProperty);
         let instance_config = parse_instance_config(Some(po), Pos::McpToolProperty);
         let (sql_field, sql_database) = parse_sql_policy(Some(po), Pos::McpToolProperty);
@@ -525,6 +552,8 @@ pub(crate) fn lower_input_schema(
                 instance_config,
                 sql_field,
                 sql_database,
+                content_media_type,
+                shape,
             },
         );
     }
@@ -565,6 +594,7 @@ mod download_tests {
             "download_media",
             tool.as_object().unwrap(),
             true,
+            false,
             &mut errors,
         );
         (action, errors)

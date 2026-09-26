@@ -49,12 +49,18 @@ fn http_pseudo_service() -> ServiceDefinition {
         // rather than a vendor mark — Mode A stands for "any URL you supply".
         icon: ServiceIcon::implicit_for_key(HTTP_PSEUDO_SERVICE),
         auth: Vec::new(),
+        // No credentials, so nothing to choose between.
+        declared_auth_modes: Vec::new(),
         secrets: Vec::new(),
         config: Vec::new(),
         actions: HashMap::new(),
         // No upstream of its own to be slow — Mode A's timeout comes entirely
         // from the caller, the org, or the deployment default.
         default_timeout_ms: None,
+        // Mode A has no declared param contract to relax: `validate_args`
+        // already short-circuits on the empty `validation_params` this path
+        // ships.
+        default_additional_properties: false,
         runtime: Runtime::Http,
         mcp: None,
         instance_defaults: None,
@@ -270,5 +276,7 @@ pub enum RegistryError {
     Parse { file: String, error: String },
 }
 
+#[cfg(all(test, feature = "yaml"))]
+mod corpus_tests;
 #[cfg(all(test, feature = "yaml"))]
 mod tests;

@@ -3,6 +3,7 @@ pub mod auth;
 pub mod definition;
 pub mod execution;
 pub mod pagination;
+pub mod param_shape;
 pub mod risk;
 pub mod scope;
 
@@ -11,5 +12,6 @@ pub use auth::*;
 pub use definition::*;
 pub use execution::*;
 pub use pagination::*;
+pub use param_shape::*;
 pub use risk::*;
 pub use scope::*;

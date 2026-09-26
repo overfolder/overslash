@@ -323,7 +323,6 @@ async fn push(
     );
 
     let response = crate::services::http_caller::call_streaming_upload(
-        &state.http_client,
         &request.method,
         &url,
         &out_headers,
@@ -334,8 +333,15 @@ async fn push(
         // The transfer aborted, and only the meter knows why: the abort reaches
         // us as a generic reqwest failure, so ask the meter rather than reading
         // the error's text. Over the ceiling is the caller's problem (413);
-        // anything else is the upstream's (502).
-        let status = if meter.exceeded() {
+        // anything else is the upstream's (502) — except an SSRF refusal, where
+        // nothing was dialed at all and calling it a bad gateway would name the
+        // wrong party.
+        use crate::services::http_caller::CallError;
+        let status = if matches!(e, CallError::Blocked(_)) {
+            StatusCode::BAD_REQUEST
+        } else if matches!(e, CallError::GuardFailed(_)) {
+            StatusCode::INTERNAL_SERVER_ERROR
+        } else if meter.exceeded() {
             StatusCode::PAYLOAD_TOO_LARGE
         } else {
             StatusCode::BAD_GATEWAY

@@ -82,6 +82,10 @@ pub(super) const MCP_TOOL_ALIASES: &[Alias] = &[
         alias: "test",
         canonical: "x-overslash-test",
     },
+    Alias {
+        alias: "additional-properties",
+        canonical: "x-overslash-additional-properties",
+    },
 ];
 
 pub(super) const INFO_ALIASES: &[Alias] = &[
@@ -104,6 +108,10 @@ pub(super) const INFO_ALIASES: &[Alias] = &[
     Alias {
         alias: "default_timeout_ms",
         canonical: "x-overslash-default_timeout_ms",
+    },
+    Alias {
+        alias: "additional-properties",
+        canonical: "x-overslash-additional-properties",
     },
 ];
 
@@ -143,6 +151,10 @@ pub(super) const OPERATION_ALIASES: &[Alias] = &[
     Alias {
         alias: "test",
         canonical: "x-overslash-test",
+    },
+    Alias {
+        alias: "additional-properties",
+        canonical: "x-overslash-additional-properties",
     },
 ];
 

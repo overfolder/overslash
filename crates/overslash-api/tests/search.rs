@@ -2114,9 +2114,9 @@ async fn exclude_param_hides_template_when_instance_exclude_empties_it_under_inc
 
 #[tokio::test]
 async fn hidden_template_excluded_from_agent_search() {
-    // `github_legacy_oauth` ships with `x-overslash-hidden: true`: it must
-    // not surface in agent-facing search — neither browse-the-catalog mode
-    // nor keyword mode — while the non-hidden `github` template does.
+    // `test_email` ships with `x-overslash-hidden: true`: it must not surface
+    // in agent-facing search — neither browse-the-catalog mode nor keyword
+    // mode — while the non-hidden `email` template does.
     let (base, client, _, admin_key, _) = bootstrap().await;
 
     let body: Value = client
@@ -2134,14 +2134,12 @@ async fn hidden_template_excluded_from_agent_search() {
         "github should appear in catalog browse"
     );
     assert!(
-        !results
-            .iter()
-            .any(|r| r["template"] == "github_legacy_oauth"),
+        !results.iter().any(|r| r["template"] == "test_email"),
         "hidden template leaked into catalog browse: {results:?}"
     );
 
     let body: Value = client
-        .get(format!("{base}/v1/search?q=github&include_catalog=true"))
+        .get(format!("{base}/v1/search?q=email&include_catalog=true"))
         .header(auth(&admin_key).0, auth(&admin_key).1)
         .send()
         .await
@@ -2151,9 +2149,7 @@ async fn hidden_template_excluded_from_agent_search() {
         .unwrap();
     let results = body["results"].as_array().unwrap();
     assert!(
-        !results
-            .iter()
-            .any(|r| r["template"] == "github_legacy_oauth"),
+        !results.iter().any(|r| r["template"] == "test_email"),
         "hidden template leaked into keyword search: {results:?}"
     );
 }
@@ -2163,22 +2159,14 @@ async fn hidden_template_with_connected_instance_still_surfaces() {
     // Hidden means "not advertised", not "unusable": instantiation by key
     // keeps working, and a connected instance surfaces in search so the
     // org that deliberately set it up can keep using it.
-    let (base, client, fixtures, pool) = bootstrap_full().await;
-    let conn = seed_oauth_connection(
-        &pool,
-        fixtures.org_id,
-        fixtures.user_ids[0],
-        "github",
-        "legacy@example.com",
-    )
-    .await;
-    create_oauth_service(
+    let (base, client, fixtures, _pool) = bootstrap_full().await;
+    create_api_key_service(
         &base,
         &client,
         &fixtures.admin_key,
-        "github_legacy_oauth",
-        "legacy-gh",
-        conn,
+        "test_email",
+        "hidden-mail",
+        "test_email_key",
     )
     .await;
 
@@ -2192,11 +2180,11 @@ async fn hidden_template_with_connected_instance_still_surfaces() {
         .await
         .unwrap();
     let results = body["results"].as_array().unwrap();
-    let legacy = results
+    let hidden = results
         .iter()
-        .find(|r| r["template"] == "github_legacy_oauth")
+        .find(|r| r["template"] == "test_email")
         .expect("connected hidden-template instance missing from search");
-    assert_eq!(legacy["service"], "legacy-gh");
+    assert_eq!(hidden["service"], "hidden-mail");
 }
 
 /// An action row carries its parameter contract.

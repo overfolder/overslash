@@ -63,7 +63,6 @@ pub(super) fn check_openapi_version(root: &Map<String, Value>, warnings: &mut Ve
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::openapi::import::tests::base_doc;
     use crate::openapi::import::*;
     use serde_json::json;

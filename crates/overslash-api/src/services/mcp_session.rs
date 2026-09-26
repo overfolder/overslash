@@ -27,9 +27,17 @@ pub enum ElicitOutcome {
     /// loopback resolve/call returned an error envelope). Emit `value` as a
     /// JSON-RPC `result` payload that lets the model see what happened.
     Failed(Value),
-    /// Row was cancelled (disconnect, expiry, or the receiver couldn't claim
-    /// it). Emit a JSON-RPC error to the model so it can fall back to URL.
-    Cancelled,
+    /// The user picked "Allow & remember" in the decision dialog. The
+    /// originator should emit the scope + duration follow-up dialog under
+    /// this elicit id and keep polling that row instead.
+    FollowUp(String),
+    /// Nobody answered. The dialog was cancelled or dismissed, the client
+    /// replied with a JSON-RPC error, the originator's poll timed out, the
+    /// session disconnected, or the sweeper retired the row. The approval is
+    /// untouched and still `pending`, so the caller re-emits the ordinary
+    /// `pending_approval` envelope and the agent keeps the URL-reject
+    /// fallback it would have had with elicitation switched off.
+    Abandoned,
 }
 
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
@@ -41,6 +49,32 @@ const POLL_INTERVAL: Duration = Duration::from_millis(500);
 /// no row older than this can still have anybody listening, and no reap window
 /// shorter than this is safe.
 pub(crate) const DEFAULT_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// The platform default for a binding that has never expressed a choice.
+///
+/// Storage records only the explicit opt-out
+/// (`mcp_client_agent_bindings.elicitation_opted_out`), so this is the other
+/// half of the answer and the one place to change if the default ever flips
+/// back. It is not AND-ed with the client's declared capability here on
+/// purpose: capabilities are unknown when a binding is created, and the
+/// capability check belongs at request time in `elicitation_eligible`.
+pub(crate) const ELICITATION_DEFAULT_ENABLED: bool = true;
+
+/// How long an unanswered elicitation suppresses further elicitation for the
+/// same agent.
+///
+/// A `cancelled` row is the only signal the protocol gives us that the peer
+/// could not, or would not, answer: a headless client auto-cancels in
+/// milliseconds, and a human who just dismissed a dialog does not want the
+/// model's immediate retry to raise another one. Keyed on the agent rather
+/// than the approval because every gated call mints a *fresh* approval row —
+/// a per-approval counter would never bind.
+///
+/// Long enough to swallow a model's retry burst, short enough that a human
+/// who dismissed one dialog and then asks again gets a fresh one. Comfortably
+/// inside `mcp_elicitation_retention_secs` (>= 720s), so the rows it reads are
+/// never purged out from under it.
+pub(crate) const CANCEL_COOLDOWN: Duration = Duration::from_secs(120);
 
 /// Insert a fresh `pending_mcp_elicitations` row. Called by the originator
 /// pod just before it emits `elicitation/create` on its SSE stream.
@@ -91,13 +125,29 @@ pub async fn await_completion_with_timeout(
                 repo::STATUS_FAILED => {
                     return ElicitOutcome::Failed(row.final_response.unwrap_or(json!({})));
                 }
-                repo::STATUS_CANCELLED => return ElicitOutcome::Cancelled,
+                repo::STATUS_CANCELLED | repo::STATUS_WITHDRAWN => {
+                    return ElicitOutcome::Abandoned;
+                }
+                repo::STATUS_FOLLOW_UP => {
+                    // A follow_up row without a next id cannot be continued;
+                    // treat it like any other dialog nobody finished.
+                    return match row
+                        .final_response
+                        .as_ref()
+                        .and_then(|v| v.get("next_elicit_id"))
+                        .and_then(Value::as_str)
+                    {
+                        Some(next) => ElicitOutcome::FollowUp(next.to_string()),
+                        None => ElicitOutcome::Abandoned,
+                    };
+                }
                 // pending or claimed → keep polling
                 _ => {}
             },
             Ok(None) => {
-                // Row vanished (manual cleanup or cascade). Treat as cancelled.
-                return ElicitOutcome::Cancelled;
+                // Row vanished (manual cleanup or cascade). Nobody is going
+                // to answer it now.
+                return ElicitOutcome::Abandoned;
             }
             Err(e) => {
                 tracing::error!(elicit_id, "poll mcp elicitation failed: {e}");
@@ -106,19 +156,41 @@ pub async fn await_completion_with_timeout(
         }
 
         if tokio::time::Instant::now() >= deadline {
-            let _ = repo::cancel(state.db(ext), elicit_id).await;
-            return ElicitOutcome::Cancelled;
+            // Retire the row so it stops suppressing auto-call on its
+            // approval and starts counting toward the post-cancel cooldown.
+            //
+            // A failure here is survivable but not silent: the caller still
+            // gets `Abandoned` and the model still gets its envelope, so the
+            // answer is right either way — what is lost is the cooldown and
+            // the auto-call unblock, until `mcp_elicitation_reap` catches the
+            // row. That backstop is deliberate, but it is
+            // `DEFAULT_TIMEOUT + SWEEP_GRACE_SECS` away (360s by default), so
+            // a transient DB error here is worth seeing rather than
+            // rediscovering from a stuck approval.
+            if let Err(e) = repo::cancel(state.db(ext), elicit_id).await {
+                tracing::warn!(
+                    elicit_id,
+                    "cancel timed-out mcp elicitation failed, leaving it for the sweeper: {e}"
+                );
+            }
+            return ElicitOutcome::Abandoned;
         }
         sleep(POLL_INTERVAL).await;
     }
 }
+
+/// Id prefix of the second ("remember") dialog. Still starts with `elicit_`,
+/// so `post_mcp` routes and owner-checks its answer exactly like the first.
+pub const REMEMBER_ID_PREFIX: &str = "elicit_remember_";
 
 /// Drive the resolve + call HTTP loopback for a freshly-answered elicitation,
 /// then write the final action result into the row. Idempotent: if the row
 /// is already non-pending, returns Ok(()) silently.
 ///
 /// `elicit_response` is the full client-supplied object:
-///   { action: "accept"|"decline"|"cancel", content?: { decision, ttl, ... } }
+///   { action: "accept"|"decline"|"cancel", content?: { decision } }
+/// or, for the follow-up dialog (`REMEMBER_ID_PREFIX`):
+///   { action, content?: { scope, ttl } }
 pub async fn complete_from_elicitation(
     state: &AppState,
     ext: &axum::http::Extensions,
@@ -140,14 +212,54 @@ pub async fn complete_from_elicitation(
         .cloned()
         .unwrap_or(Value::Null);
 
-    // `action` is the MCP-spec-level outcome (accept / decline / cancel).
-    // `decision` is *our* per-form choice the user picked when they did
-    // accept the dialog. A decline at the MCP level means "the user said
-    // no to this approval prompt" — that's a `deny` resolution as far as
-    // the approval row is concerned, not just a row-level cancel. Without
-    // this the approval stays `pending`, the elicitation re-fires on
-    // retry, and the user gets prompted in a loop.
-    let decision = if action == "accept" {
+    // MCP separates the two negative outcomes, and so do we.
+    //
+    // `decline` is a human saying no — resolved as `deny` below, so a retry
+    // does not re-prompt for something already refused.
+    //
+    // `cancel` is *no answer*. The dialog was dismissed, or the client never
+    // rendered one: headless / `--print` Claude Code auto-cancels within
+    // milliseconds because it has no UI (measured at 6ms against 2.1.278),
+    // and a `tools/call`-only bridge that declared `elicitation` never shows
+    // a dialog at all. Reading that as a denial silently kills an approval
+    // the human never saw, and takes the URL-reject fallback away with it.
+    // Retire the row instead and leave the approval `pending`: the
+    // originator's SSE tail then answers the original `tools/call` with the
+    // same `pending_approval` envelope the no-elicitation path returns.
+    //
+    // Anything that is neither `accept` nor `decline` lands here too,
+    // including the `{action:"cancel"}` that `post_mcp` synthesises when the
+    // client answers with a JSON-RPC error — which is exactly the "declared
+    // elicitation but can't actually do it" case, where falling back is the
+    // only correct answer.
+    //
+    // This runs after `claim` so only one replica retires the row, and uses
+    // `cancel` rather than `fail` because `cancel` stamps `completed_at`,
+    // which the post-cancel cooldown in `elicitation_eligible` reads.
+    let is_remember_dialog = elicit_id.starts_with(REMEMBER_ID_PREFIX);
+
+    // The remember dialog only exists because a human already answered the
+    // first one with "allow". Declining or dismissing it is backing out of
+    // the details: not a denial, and not evidence that this client cannot
+    // answer dialogs either. So it retires as `withdrawn`, which ends the
+    // call like a dismissal (approval pending, ordinary envelope) without
+    // starting the per-agent cooldown a `cancelled` row would.
+    if is_remember_dialog && action != "accept" {
+        repo::withdraw(state.db(ext), elicit_id).await?;
+        return Ok(());
+    }
+
+    if action != "accept" && action != "decline" {
+        repo::cancel(state.db(ext), elicit_id).await?;
+        return Ok(());
+    }
+
+    // `decision` is *our* per-form choice the user picked when they accepted
+    // the dialog. A `decline` carries no form content, so it is a flat deny.
+    // An accepted remember dialog is `allow_remember` by construction.
+    let decision = if is_remember_dialog {
+        "allow_remember"
+    } else if action == "accept" {
         content
             .get("decision")
             .and_then(Value::as_str)
@@ -156,30 +268,42 @@ pub async fn complete_from_elicitation(
         "deny"
     };
 
+    // "Allow & remember" in the decision dialog does not resolve yet: MCP
+    // forms are flat, so scope and duration are asked in a second dialog
+    // that only this choice raises. Open its row *before* retiring this one,
+    // so `has_active_for_approval` never reads false in between and an
+    // auto-call cannot slip into the gap.
+    if decision == "allow_remember" && !is_remember_dialog {
+        let next_id = format!("{REMEMBER_ID_PREFIX}{}", Uuid::new_v4());
+        repo::insert(
+            state.db(ext),
+            &next_id,
+            row.session_id,
+            row.agent_identity_id,
+            row.approval_id,
+        )
+        .await?;
+        match repo::follow_up(state.db(ext), elicit_id, &next_id).await {
+            // The originator already gave up on this row; nobody will
+            // render the follow-up.
+            Ok(0) => repo::cancel(state.db(ext), &next_id).await?,
+            Ok(_) => {}
+            Err(e) => {
+                // Our caller retires `elicit_id` on an `Err`, but it does not
+                // know about `next_id`: retire it here, or it would sit
+                // `pending` suppressing auto-call until the sweeper reaps it.
+                let _ = repo::cancel(state.db(ext), &next_id).await;
+                return Err(e.into());
+            }
+        }
+        return Ok(());
+    }
+
     let resolve_body = match decision {
         "allow" => json!({ "resolution": "allow" }),
         "deny" => json!({ "resolution": "deny" }),
         "bubble_up" => json!({ "resolution": "bubble_up" }),
-        "allow_remember" => {
-            // Only forward `remember_keys` when the client actually picked a
-            // non-empty subset. The resolve endpoint rejects an empty array
-            // but treats a missing field as "remember every key on the
-            // approval" — that's the right default for an MCP form that
-            // doesn't expose per-key checkboxes.
-            let mut body = json!({ "resolution": "allow_remember" });
-            if let Some(keys) = content.get("remember_keys").and_then(Value::as_array) {
-                let cleaned: Vec<&str> = keys.iter().filter_map(Value::as_str).collect();
-                if !cleaned.is_empty() {
-                    body["remember_keys"] = json!(cleaned);
-                }
-            }
-            if let Some(ttl) = content.get("ttl").and_then(Value::as_str)
-                && ttl != "forever"
-            {
-                body["ttl"] = json!(ttl);
-            }
-            body
-        }
+        "allow_remember" => remember_resolve_body(&content),
         other => {
             let err = json!({ "error": format!("unknown decision: {other}") });
             repo::fail(state.db(ext), elicit_id, &err).await?;
@@ -252,7 +376,13 @@ pub async fn complete_from_elicitation(
     let resolve_resp = state
         .http_client
         .post(&resolve_url)
-        .header("Cookie", format!("oss_session={}", user_session_jwt))
+        .header(
+            "Cookie",
+            format!(
+                "{}={user_session_jwt}",
+                crate::cookies::name_for(state, crate::cookies::SESSION)
+            ),
+        )
         .json(&resolve_body)
         .send()
         .await?;
@@ -314,6 +444,35 @@ pub async fn complete_from_elicitation(
     Ok(())
 }
 
+/// Translate the remember dialog's answer into an `allow_remember` resolve
+/// body.
+///
+/// `scope` carries a suggested tier's keys as a JSON-encoded array (MCP enum
+/// values must be strings). A missing or unparseable scope omits
+/// `remember_keys`, which the resolver reads as "the approval's own keys" —
+/// the narrowest safe default. No trust is placed in the value: `/resolve`
+/// refuses any key that is neither a suggested tier nor covers a requested
+/// key, so a forged `scope` fails there.
+fn remember_resolve_body(content: &Value) -> Value {
+    let mut body = json!({ "resolution": "allow_remember" });
+    let keys: Vec<String> = content
+        .get("scope")
+        .and_then(Value::as_str)
+        .and_then(|s| serde_json::from_str::<Vec<String>>(s).ok())
+        .unwrap_or_default();
+    // The resolver rejects an empty array but treats a missing field as the
+    // approval's keys, so only forward a non-empty pick.
+    if !keys.is_empty() {
+        body["remember_keys"] = json!(keys);
+    }
+    if let Some(ttl) = content.get("ttl").and_then(Value::as_str)
+        && ttl != "forever"
+    {
+        body["ttl"] = json!(ttl);
+    }
+    body
+}
+
 fn mint_user_session(
     signing_key: &[u8],
     user_identity_id: Uuid,
@@ -336,4 +495,43 @@ fn mint_user_session(
         mcp_client_id: None,
     };
     Ok(crate::services::jwt::mint(signing_key, &claims)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remember_body_forwards_the_picked_tier_and_a_finite_ttl() {
+        let body = remember_resolve_body(&json!({
+            "scope": r#"["svc:send:*","svc:read:*"]"#,
+            "ttl": "1h",
+        }));
+        assert_eq!(
+            body,
+            json!({
+                "resolution": "allow_remember",
+                "remember_keys": ["svc:send:*", "svc:read:*"],
+                "ttl": "1h",
+            })
+        );
+    }
+
+    /// No scope, an unparseable one, or an empty tier all mean "the
+    /// approval's own keys" — the resolver's default when the field is
+    /// absent, and a 400 if we forwarded `[]` instead.
+    #[test]
+    fn remember_body_omits_keys_it_cannot_use_and_forever_ttl() {
+        for content in [
+            json!({ "ttl": "forever" }),
+            json!({ "scope": "not json" }),
+            json!({ "scope": "[]" }),
+        ] {
+            assert_eq!(
+                remember_resolve_body(&content),
+                json!({ "resolution": "allow_remember" }),
+                "content: {content}"
+            );
+        }
+    }
 }

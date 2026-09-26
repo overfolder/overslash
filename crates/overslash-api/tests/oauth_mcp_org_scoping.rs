@@ -220,7 +220,7 @@ async fn authorize(
     );
     let mut req = nr.get(&url);
     if let Some(c) = cookie {
-        req = req.header("cookie", format!("oss_session={c}"));
+        req = req.header("cookie", format!("__Host-oss_session={c}"));
     }
     if let Some(h) = host {
         req = req.header("x-forwarded-host", h);
@@ -248,7 +248,7 @@ async fn consent_org(base: &str, request_id: &str, cookie: &str, host: Option<&s
     let client = reqwest::Client::new();
     let mut req = client
         .get(format!("{base}/v1/oauth/consent/{request_id}"))
-        .header("cookie", format!("oss_session={cookie}"));
+        .header("cookie", format!("__Host-oss_session={cookie}"));
     if let Some(h) = host {
         req = req.header("x-forwarded-host", h);
     }
@@ -573,7 +573,7 @@ async fn stamped_client_cannot_bind_in_switched_org() {
     let http = reqwest::Client::new();
     let sw = http
         .post(format!("{base}/v1/oauth/consent/{request_id}/switch-org"))
-        .header("cookie", format!("oss_session={acme_cookie}"))
+        .header("cookie", format!("__Host-oss_session={acme_cookie}"))
         .json(&json!({ "org_id": beta.org_id }))
         .send()
         .await
@@ -588,7 +588,7 @@ async fn stamped_client_cannot_bind_in_switched_org() {
         .get("set-cookie")
         .and_then(|v| v.to_str().ok())
         .and_then(|c| c.split(';').next())
-        .and_then(|kv| kv.trim().strip_prefix("oss_session="))
+        .and_then(|kv| kv.trim().strip_prefix("__Host-oss_session="))
         .expect("switch-org re-mints the session cookie")
         .to_string();
     let sw_body: Value = sw.json().await.unwrap();
@@ -598,7 +598,7 @@ async fn stamped_client_cannot_bind_in_switched_org() {
     // stamp binds the client to Acme even after an org switch.
     let fin = http
         .post(format!("{base}/v1/oauth/consent/{beta_request_id}/finish"))
-        .header("cookie", format!("oss_session={beta_cookie}"))
+        .header("cookie", format!("__Host-oss_session={beta_cookie}"))
         .header("content-type", "application/json")
         .body(
             json!({

@@ -1,30 +1,102 @@
 # MCP Elicitation as Approval Surface
 
-**Status:** Rejected for now (2026-04-24) — keep URL-reject as the universal approval surface; revisit if/when MCP clients add better support.
-**Date:** 2026-04-24
+**Status:** Adopted for Flow A, on by default (2026-09-22, D95). Flow B (tasks-augmented) still rejected — its revisit condition is unmet. URL mode is available client-side: Codex 0.157.0 offers it on `2025-06-18` (no work needed), Claude Code 2.1.282 only on `2026-07-28` (needs a protocol bump). Codex works interactively; **headless** Codex auto-declines, which D95 reads as a real denial — see the probed Codex section.
+**Date:** 2026-04-24, revised 2026-09-22 and 2026-09-25
 **Related:** [`overslash.md`](overslash.md), [`mcp-integration.md`](mcp-integration.md), [`mcp-oauth-transport.md`](mcp-oauth-transport.md), [`agent-self-management.md`](agent-self-management.md)
 
 ---
 
 ## Decision
 
-**Not adopting elicitation as the primary approval surface.** The existing URL-reject pattern (tool returns `{ status: "pending_approval", approval_url, approval_id }` as a normal tool result, model surfaces the URL to the user, dashboard handles the approval) stays as the universal flow.
+**Form-mode elicitation (Flow A) is the default approval surface for MCP clients that
+declare the capability.** URL-reject did not lose; it became the substrate. Every client
+still gets the `pending_approval` envelope whenever a dialog is not available or not
+answered, and elicitation is the fast path layered on top for the clients that can render
+one.
 
-Why:
+What changed since the original rejection is not client support — Claude Code has done
+form-mode elicitation since 2.1.76 — but the *failure mode*. The blocking objection was that
+elicitation's failure modes are heterogeneous and one of them is invisible. That was a fair
+description of a design in which a cancel meant a denial:
 
-1. **Universal client coverage.** URL-reject works in every MCP client, every transport, every mode (interactive *and* `--print` headless), every `mcp2cli`-style bridge that only forwards `tools/call`. Elicitation requires the client to (a) declare the right capability and (b) actually render the dialog — both fail silently or partially in important cases (see findings table below).
-2. **Failure modes of elicitation are heterogeneous and one is invisible.** URL mode → clean `-32602`, detectable. Form mode in headless → `cancel`, detectable. **Tasks → silently swallowed by Claude Code, no signal at all.** A universal flow that depends on capability detection per client and per mode is a maintenance and audit liability that the URL-reject path doesn't carry.
-3. **Sensitive flows need URL anyway.** Spec forbids form mode for credentials / OAuth, so any rich approval (TTL pickers, scope tier selection, secret entry) ends up in the dashboard regardless. Doing two surfaces buys nothing if one of them already covers everything.
-4. **No client supports the async path.** Form-mode elicitation collapses the round-trip to one keystroke *only when the user is at the keyboard*. Without `tasks.requests.tools.call` in the client (Claude Code 2.1.119: not declared; silent-swallow on attempt), the model still blocks waiting for the human, so there's no latency win versus URL-reject + "say go when ready".
+> a headless client auto-cancels within milliseconds because it has no UI, and the approval
+> is resolved `denied` without a human ever seeing it.
 
-**Revisit when**:
+So the rule is now two-sided, and it is the whole basis for turning this on by default:
+
+- **`decline` denies.** A human said no. The approval resolves `denied`, the model sees
+  `isError: true`, and a retry does not re-prompt for something already refused.
+- **Everything else falls back.** `cancel`, a dismissed dialog, a client that answers with
+  `-32601`/`-32602`, a poll timeout, a disconnect, a sweeper reap — the elicitation row is
+  retired, the approval is left `pending`, and the original `tools/call` is closed with the
+  *byte-identical* `pending_approval` envelope the non-elicitation path would have returned.
+  Nothing is lost; the agent is exactly where it would have been with elicitation off.
+
+Identical bytes is load-bearing. An "elicitation was skipped" marker on the envelope would
+let the two paths drift and would add a prompt-injection surface nothing reads, so the
+fallback and the synchronous path share one constructor
+(`routes/mcp/tools_call.rs::pending_approval_result`).
+
+Three supporting choices, each of which had a plausible alternative:
+
+1. **The re-prompt bound is per-agent and time-windowed, not per-approval.** Every gated call
+   mints a *fresh* approval row — there is no dedupe in `permission_gate` — so a per-approval
+   counter never binds, and the replay path 409s unless the approval is already `allowed`, so
+   it cannot re-promote either. A `cancelled` row is the only signal the protocol gives us
+   that this peer cannot answer dialogs, so it suppresses further elicitation for that agent
+   for `CANCEL_COOLDOWN` (120s), predicated on `completed_at` rather than `created_at`.
+2. **No fast-cancel heuristic.** Telling a headless auto-cancel from a human dismissal by
+   latency cannot work: a focused user dismisses in ~150ms, a loaded client takes longer, and
+   the measurement spans a network hop plus a 500ms poll interval. Both cases want the same
+   immediate behaviour anyway, and differ only in how long to back off — which the cooldown
+   expresses without guessing.
+3. **A caller that did not `Accept: text/event-stream` is never upgraded.** Streamable HTTP
+   puts both content types on the POST, so its absence marks a `tools/call`-only bridge.
+   Upgrading one to SSE would hang the call rather than answer it.
+
+**Default-on, and where the default lives.** Migration 123 replaces
+`mcp_client_agent_bindings.elicitation_enabled` with `elicitation_opted_out`, and the platform
+default moves into code (`ELICITATION_DEFAULT_ENABLED`). The old column could not express the
+thing that matters: it conflated "the user turned this off" with "nobody has said anything
+yet", and the second is overwhelmingly the common case.
+
+That distinction is not academic. `oauth_mcp_clients.capabilities` is written only by
+`initialize`, which needs a token, which is issued *after* consent — so a freshly-registered
+`client_id` **always** has NULL capabilities when the consent page renders and when
+`consent_finish` resolves. Re-registration does not help: consent reads the new `client_id`'s
+row. A default keyed on `elicitation_supported`, as the first cut of this change was, therefore
+pins every genuine first connect to off and fires only in tests. Removing the consent-time
+capability gate is what makes default-on real; it was never the gate doing the safety work.
+
+**The capability check now lives in exactly one place**, `elicitation_eligible`, at request
+time — by which point the client has actually told us what it can do. A client that never
+announced `elicitation` is still never elicited, whatever its binding says.
+
+Existing bindings carry over unchanged (`elicitation_opted_out = NOT elicitation_enabled`,
+which makes every one of them opted out, since none could have been true). That is the
+deliberate **no backfill** decision: a stored `false` under the old schema cannot be told apart
+from a considered opt-out, so the installed base opts in from the dashboard. An explicit
+opt-out survives reauth, including reauth under a re-registered `client_id`, because consent
+reads the prior binding before the upsert and a missing field inherits it.
+
+**Flow B (tasks-augmented `tools/call`) is still rejected**, and its revisit condition is
+unchanged and still unmet:
 
 - Claude Code (and ideally Codex) **declares `tasks.requests.tools.call`** at `initialize`, *and*
-- `CreateTaskResult` round-trips correctly (i.e. the client polls `tasks/get` / `tasks/result`, surfaces task status to the user, and resumes the model with the real result).
+- `CreateTaskResult` round-trips correctly (i.e. the client polls `tasks/get` / `tasks/result`,
+  surfaces task status to the user, and resumes the model with the real result).
 
-At that point the upgrade is additive: keep URL-reject as the fallback, optionally task-augment it so the model can keep working while the URL approval pends. URL mode and form-mode dialogs remain optional fast-paths — neither is required for the design to work.
+Re-probed at 2.1.278 (see findings below): still not declared. One thing did improve — forcing
+a `CreateTaskResult` is now rejected with a clear client-side validation error instead of being
+silently swallowed, so the worst failure mode in the original analysis is gone. When the
+condition is met the upgrade stays additive: URL-reject remains the fallback, and task
+augmentation lets the model keep working while the approval pends.
 
-The empirical investigation, design exploration, and mock implementation below remain useful as the reference for what we considered and why we decided against it. The mock under [`test-mcp-elicitation/`](../../test-mcp-elicitation/) stays in the repo as a probe for re-evaluating client support periodically.
+URL mode is a different story as of 2026-09-25: it shipped in Claude Code 2.1.282, on
+`2026-07-28` connections. Overslash cannot reach it yet, because `initialize` answers every
+handshake with a hardcoded `2025-06-18` — so sensitive flows (provider OAuth, credential entry)
+still live in the dashboard, but now for a reason on our side of the wire. See *Correction: URL
+mode is live* below.
 
 ---
 
@@ -91,14 +163,69 @@ So **Flow A works in interactive Claude Code today** (assuming a human is presen
 
 ### Does Codex support this?
 
-| Feature | Status in Codex | Source |
-|---|---|---|
-| `elicitation/create` form mode | **Yes (recent)** — [PR #13425](https://github.com/openai/codex/pull/13425) merged 2026-03-05, makes elicitation a first-class `mcpServer/elicitation/request` in the v2 app-server (previously elicitations were silently auto-declined) | issue #6992, PR #13425 |
-| URL mode | Not explicitly confirmed; PR scope is the request/response plumbing | same |
-| Boolean approval pattern for modify-tools | **Yes** — Codex itself wraps modify-tools in a boolean elicitation as its approval primitive | `developers.openai.com/codex/mcp` |
-| Tasks augmentation | **Not mentioned** | – |
+**Probed 2026-09-25** against `codex-cli` 0.157.0, authenticated, via the same
+`test-mcp-elicitation/` harness. These rows are measurements, not documentation.
 
-Both major coding agents now do elicitation; neither has publicly committed to client-side tasks support. **Tasks-augmented async is the right end-state, but not the safe assumption today.**
+```
+client = codex-mcp-client 0.157.0
+protocolVersion = 2025-06-18
+capabilities = { "experimental": { "codex/auth-change": {} },
+                 "elicitation": { "form": {}, "url": {} } }
+```
+
+| Feature | Status in Codex 0.157.0 | Evidence |
+|---|---|---|
+| `elicitation/create` form mode | **Declared and reached.** The server's `elicitation/create` arrives. | Probe: `sending elicitation/create mode=form` |
+| URL mode | **Declared and reached — on `2025-06-18`.** Forcing `mode: "url"` is *accepted*, not rejected: no `-32602`, the request goes through and comes back with an answer. | Probe with `--elicit-mode url`; contrast Claude Code, which needs `2026-07-28` for this |
+| Answer in **interactive** (`codex`) | **Works.** The form dialog renders and the answer reaches the server. | Verified by the maintainer at a real terminal, 2026-09-25 |
+| Answer in **headless** (`codex exec`) | **Auto-`decline`, ~1–2 ms.** Both modes. Not `cancel` — `decline`. | Probe: `elicit_form result: action=decline` at `12:00:09.222`, request sent `12:00:09.220` |
+| Codex's own MCP approval gate | Blocks the `tools/call` *before* the server is reached unless approvals are relaxed — `"MCP tool call requires approval, but approval policy is never"`. `codex exec` defaults to `never`. | Probe, first two runs |
+| Feature flags | `tool_call_mcp_elicitation` **stable, true**. `mcp_2026_07_28` and `codex_apps_mcp_2026_07_28` both **under development, false**. | `codex features list` |
+| Tasks augmentation | Not declared. | – |
+
+Two findings matter more than the rest.
+
+**URL mode is reachable today, on the protocol version Overslash already speaks.** Codex
+declares `elicitation: { form: {}, url: {} }` on `2025-06-18` — it does not gate URL mode behind
+the `2026-07-28` era the way Claude Code does. So the *Correction* block below is right about
+Claude Code and wrong as a general statement: a protocol bump is what unblocks URL mode **for
+Claude Code**, not what unblocks it at all. For Codex there is nothing in the way.
+
+**Headless Codex auto-declines, and `decline` is the one negative D95 treats as a real denial.**
+This is [openai/codex#45621](https://github.com/openai/codex/issues/45621) measured rather than
+cited: under `codex exec` the app-server answers `elicitation/create` itself instead of
+forwarding it. The answer it picks is `decline`, in about a millisecond, in both modes.
+
+**It is headless-only.** Interactive Codex renders the dialog and round-trips the answer — an
+earlier draft of this section inferred from #45621's wording ("the app-server", which backs both
+surfaces) that interactive would be affected too, and that inference was wrong. Form-mode
+elicitation on interactive Codex works today. The rest of this section is about `codex exec` and
+anything else driving Codex non-interactively.
+
+That is precisely the failure D95 removed for headless Claude Code, reintroduced through the
+other client — and the D95 fix does not reach it. Claude Code's headless path answers `cancel`,
+which D95 routes to the `pending_approval` fallback. Codex's answers `decline`, which D95 routes
+to `deny`, because a decline is a human saying no. **On the wire the two are indistinguishable,
+and Overslash should not try to tell them apart** — guessing which declines are real would break
+the guarantee that makes `decline` meaningful.
+
+So the practical position for a Codex-connected agent today:
+
+- **Nothing needs enabling, and interactive Codex works.** D95's gate is
+  `capabilities.get("elicitation").is_some()`, which is shape-agnostic, so
+  `{ form: {}, url: {} }` satisfies it exactly as `{}` does. Codex agents already default to
+  elicitation on, and for a human at a terminal that default is correct.
+- **The hazard is headless Codex only**, and it is narrow but real: every gated call is silently
+  denied, with no fallback to the approval URL.
+- **Suppressing elicitation for `codex-mcp-client` would be the wrong fix.** It would disable a
+  working feature for every interactive user to protect the headless case, and Overslash cannot
+  tell the two apart at `initialize` — the capability object and `clientInfo` are identical.
+  (There is precedent for client-specific handling — `dispatch.rs` carries a claude.ai
+  argument-stringification workaround — but it would not help here even if D95's eligibility path
+  were willing to sniff, which it deliberately is not.)
+- **What is left is the per-agent opt-out and waiting for the fix.** An operator running Codex
+  headlessly against Overslash should turn elicitation off for that agent; anyone else should
+  leave it on. Re-probe before acting on any of this, since a point release could close #45621.
 
 ### What about OpenClaw / `mcp2cli`-style bridges?
 
@@ -131,10 +258,11 @@ Available on Claude Code 2.1.76+, Codex v2 post-merge.
 ```
 1. Claude → POST /mcp  tools/call  service_x.action_y(args)
 2. Overslash determines a permission gap. Instead of returning "approval pending",
-   it sends elicitation/create back to the client with mode="form":
+   it sends elicitation/create back to the client with mode="form". The form
+   asks for the decision only:
 
    {
-     "message": "Allow agent <name> to call <service.action> on <resource>?",
+     "message": "Allow this agent to: <action description>?",
      "requestedSchema": {
        "type": "object",
        "properties": {
@@ -142,29 +270,63 @@ Available on Claude Code 2.1.76+, Codex v2 post-merge.
            "type": "string",
            "title": "Decision",
            "oneOf": [
-             { "const": "allow_once",        "title": "Allow once" },
-             { "const": "allow_remember_1h", "title": "Allow for 1 hour" },
-             { "const": "allow_remember_perm","title": "Allow & remember (this resource)" },
-             { "const": "deny" ,             "title": "Deny" }
+             { "const": "allow",          "title": "Allow once" },
+             { "const": "allow_remember", "title": "Allow & remember" },
+             { "const": "deny",           "title": "Deny" },
+             { "const": "bubble_up",      "title": "Ask my parent" }
            ],
-           "default": "allow_once"
+           "default": "allow"
          }
        },
        "required": ["decision"]
-     }
+     },
+     "_meta": { "io.overslash/suggested_tiers": ..., "io.overslash/disclosed_fields": ...,
+                "io.overslash/risk": ... }
    }
 
 3. Claude Code shows a dialog. User picks one of the four options.
-4. Client returns { action: "accept", content: { decision: "allow_remember_1h" } }.
+4. Client returns { action: "accept", content: { decision: "allow_remember" } }.
 5. Overslash:
-     - "allow_once"        → execute the call, do not modify rules
-     - "allow_remember_*"  → upsert a permission rule scoped to the chosen TTL,
-                             then execute
-     - "deny"              → return tool error, log denial
+     - "allow"           → resolve, execute the call, do not modify rules
+     - "deny"            → return tool error
+     - "bubble_up"       → hand the approval to the next resolver up, tool error
+     - "allow_remember"  → do NOT resolve yet. Open a follow-up row
+                           (`elicit_remember_<uuid>`), mark this row
+                           `follow_up`, and the originator's stream emits a
+                           second elicitation/create on the same SSE response:
+
+       {
+         "message": "Remember permission to: <action description>",
+         "requestedSchema": { "type": "object", "properties": {
+           "scope": { "type": "string", "title": "Remember for",
+                      "oneOf": [ { "const": "[\"<tier 0 keys>\"]", "title": "<tier 0 description>" },
+                                 ... one per suggested tier, narrowest first ... ],
+                      "default": "[\"<tier 0 keys>\"]" },
+           "ttl":   { "type": "string", "title": "For how long",
+                      "oneOf": [ forever | 1h | 24h | 7d | 30d ], "default": "forever" } } }
+       }
+
+       Accepting it resolves `allow_remember` with `remember_keys` = the picked
+       tier (a JSON-encoded key array, validated by /resolve like any
+       dashboard pick) and the TTL, then executes.
 6. Tool result flows back to the model, Claude continues.
 
-action == "decline"  → tool error "denied by user", same as decision="deny"
-action == "cancel"   → tool error "no decision", model can retry or move on
+Why two dialogs: MCP forms are flat — every field renders at once and none can
+depend on another — so a single form had to show "for how long" next to Deny
+and Allow once, where it means nothing, and had no room for a scope choice at
+all. Only "Allow & remember" needs scope and duration, so only it asks.
+
+action == "decline"  → tool error "denied by user", same as decision="deny".
+                       On the *remember* dialog, decline and cancel both
+                       retire the row as `withdrawn`: approval left pending
+                       like a cancel, but no cooldown, because a human
+                       already answered the first dialog.
+action == "cancel"   → NOT a denial. Retire the elicitation row, leave the
+                       approval pending, and close the tools/call with the
+                       same pending_approval envelope the no-elicitation path
+                       returns. Then suppress elicitation for this agent for
+                       CANCEL_COOLDOWN, because a cancel is the only evidence
+                       we get that this client cannot answer dialogs.
 ```
 
 Sensitive flows (provider OAuth, credential entry) take URL mode instead — return `URLElicitationRequiredError` pointing at `/dashboard/approvals/<id>`. The dashboard handles the approval, then sends `notifications/elicitation/complete` back to the client and Claude Code retries the original tool call.
@@ -229,7 +391,7 @@ The agent can never silently bypass an approval by answering the elicitation its
 1. **Does Claude Code 2.1.76 actually advertise `tasks` capability?** Inspect `initialize` from the mock server. If yes, Flow B works today.
 2. **Codex URL-mode support and notifications/elicitation/complete handling.** Probably yes, not confirmed.
 3. **`overslash_approve` semantics under Flow A.** Probably becomes redundant for the in-band case but remains useful for cross-identity approvals (a user resolving an approval raised by an agent in a different session).
-4. **Rate-limiting on elicitation prompts.** Spec says clients SHOULD; Overslash should also dedupe identical (subject, action, resource) prompts within a short window to avoid prompt-spam if an agent retries a forbidden call.
+4. ~~**Rate-limiting on elicitation prompts.**~~ **Answered.** Not a dedupe on (subject, action, resource) — that shape cannot work, because every gated call mints a fresh approval. Instead a per-agent cooldown keyed on the last *cancelled* elicitation (`CANCEL_COOLDOWN`, 120s). See Decision point 1.
 5. **Hook-based auto-answer policy disclosure.** Should Overslash audit-log when an elicitation is answered without a visible user dialog? The client doesn't tell the server, so this is fundamentally invisible — document the limitation rather than try to detect it.
 
 ## Mock implementation
@@ -243,5 +405,104 @@ Empirical findings from the mock (run 2026-04-24, `mcp` SDK 1.27.0, Claude Code 
 - **URL-mode elicitation rejected with `-32602` by Claude Code 2.1.119**, with the message "Client does not support URL-mode elicitation requests". Tested by running the mock with `--elicit-mode url --force --url https://example.com/overslash-approve`. This is the spec-prescribed rejection — clean and detectable. URL mode (and therefore the dashboard-redirect approval flow + `notifications/elicitation/complete` retry pattern) remains gated on Claude Code adopting `elicitation: { url: {} }`.
 - **`CreateTaskResult` silently swallowed by Claude Code 2.1.119** when the server returns one without the client task-augmenting the request. Tested with `--use-tasks --force --task-resolve-after-ms 500`: server declares full `tasks.requests.tools.call` capability, returns a `CreateTaskResult { task: { taskId, status: "working" } }` plus an `io.modelcontextprotocol/model-immediate-response` placeholder, spawns a background resolver that fires elicitation and completes the task. **Claude Code reports "tool completed with no output" to the model and never polls `tasks/get` or `tasks/result`.** No error is surfaced; the call is effectively dropped on the floor. This is *worse* than the URL-mode rejection, because it gives no signal Overslash could detect to fall back. Until Claude Code declares `tasks` support, Flow B must not be attempted.
 - **Tasks server-side support in the `mcp` SDK is sufficient.** `CreateTaskResult` can be returned from `@server.call_tool()`; `request_handlers[GetTaskRequest]` etc. accept hand-registered handlers. The mock implements the full lifecycle (working → completed) and a basic `tasks/cancel`. So the *server* side of Flow B is implementable today; what's missing is a client that participates.
+
+### Re-probe: Claude Code 2.1.278 (run 2026-09-22, `mcp` SDK 1.30.0)
+
+Same mock, same three scenarios, five months on. The 2.1.119 rows above are left
+untouched — the point of keeping both is the trend.
+
+```
+client = claude-code 2.1.278
+protocolVersion = 2025-11-25
+capabilities = { "elicitation": {}, "roots": { "listChanged": true } }
+```
+
+| Feature | 2.1.119 | 2.1.278 | Notes |
+|---|---|---|---|
+| Protocol version | `2025-11-25` | `2025-11-25` | The bundle also carries `2026-07-28` wire schemas, but stdio still negotiates `2025-11-25`. |
+| Form-mode elicitation | Yes | **Yes** | Unchanged. `oneOf` + `const` + `title` renders and round-trips. |
+| URL mode | `-32602` | **`-32602`** — but see the correction below | *"Client does not support URL-mode elicitation requests"*, and `elicitation: {}` is form-only. Both true as measured, and both an artifact of the negotiated era: this probe cannot reach `2026-07-28`, where the answer is different. |
+| `tasks.requests.tools.call` | Not declared; **silently swallowed** | Not declared; **rejected loudly** | *This is the one thing that changed.* Forcing a `CreateTaskResult` now fails client-side schema validation — *"content is required when the body carries 'task' — another result family cannot default into an empty tools/call success"* — and the model is told the call failed. The worst failure mode in the original table is gone. Flow B is still unreachable, but it is no longer invisible. |
+| `--print` / headless | auto-`cancel` | **auto-`cancel`, ~6 ms** | Measured: `elicitation/create` sent at `15:12:40.659`, `action=cancel` at `15:12:40.665`. `handleElicitation` opens with `if (!this.hostAnswersElicitations) return { action: "cancel" }`. An `Elicitation` hook still gets first refusal. |
+
+The headless number is the one that matters. With the mock's own `cancel → deny` mapping —
+the same mapping Overslash shipped — the run ended with Claude reporting to the user:
+
+> *"The call was denied — the elicitation prompt came back as a rejection, so the message was
+> not logged on the server."*
+
+Nobody denied anything. That is the failure this design has to rule out before elicitation can
+be a default, and it is why `cancel` no longer means `deny` (see the Decision section).
+
+**Flow B's revisit condition is still unmet.** `tasks.requests.tools.call` is not declared;
+the capability producer in the 2.1.278 bundle emits `{ roots: { listChanged: true },
+elicitation: {} }`, with a `tasks.requests.elicitation.create` branch sitting behind a function
+that hard-returns `false`. Flow B stays out of scope.
+
+### Correction: URL mode is live (2026-09-25)
+
+**The row above is a measurement, not a verdict, and the verdict drawn from it was wrong.**
+Claude Code **2.1.282** (2026-09-24) shipped URL-mode elicitation — two days after the probe
+run. From its changelog:
+
+> Added MCP URL-mode elicitation on 2026-07-28 protocol connections, so servers can ask Claude
+> Code to open a browser-based flow; no waiting dialog is left on screen when the server has no
+> way to confirm completion
+
+Confirmed in the 2.1.282 bundle. There are two capability producers, and which one runs depends
+on the negotiated era:
+
+```js
+function qfn(){ return { roots:{listChanged:true}, elicitation:{}, ... } }   // legacy
+function _dr(){ let e = B5(); if(!m3e()) return e;
+                return { ...e, elicitation:{ form:{}, url:{} } } }           // 2026-07-28
+function m3e(){ return x("tengu_mcp_url_elicitation", true) }                // flag, default on
+```
+
+So on a `2026-07-28` connection Claude Code declares `elicitation: { form: {}, url: {} }`, gated
+behind a remote flag that defaults **on**. (A per-server `bareElicitationCapability` option in
+`.mcp.json` forces the old bare shape back, for servers that choke on the richer one.)
+
+**Two compounding reasons the probe said otherwise**, both worth remembering before trusting a
+future negative result from it:
+
+1. The run was on 2.1.278, which predates the feature.
+2. The probe is pinned to `mcp>=1.10.0,<2`, and the 1.x Python SDK tops out at `2025-11-25`.
+   That pin was added *by this work*, to keep the low-level `Server` API the probe is built on.
+   It therefore guarantees a legacy negotiation — and a legacy negotiation guarantees
+   `elicitation: {}`. **A negative URL-mode result from this harness is currently unfalsifiable**
+   until the probe is ported to `mcp` 2.x. Treat the row above as "not reachable from here",
+   never as "not supported".
+
+**The blocker is ours, for Claude Code specifically.** `routes/mcp/initialize.rs` answers every
+handshake with a hardcoded `"protocolVersion": "2025-06-18"`, so an Overslash connection never
+reaches the era where *Claude Code* offers `url`. Supporting `2026-07-28` is real work — a
+different wire schema, not a constant bump — and is deliberately out of scope here. What changed
+is *why* URL mode is unavailable to that client: it is no longer "the client doesn't do it."
+
+**This does not generalise, and the first draft of this block wrongly implied it did.** Codex
+0.157.0 declares `elicitation: { form: {}, url: {} }` on `2025-06-18` — see the probed Codex
+section above — so for a Codex-connected agent URL mode needs no protocol work at all. The era
+gate is a Claude Code property, not a property of URL mode.
+
+What that would unlock, when someone picks it up — the URL-returning paths that form mode can
+never serve, because the spec forbids credentials and OAuth in a form and because a browser
+round trip needs `notifications/elicitation/complete` to report back:
+
+| Path | Envelope | Note |
+|---|---|---|
+| `auth_url` | `needs_authentication`, `reauth_required`, `missing_scopes` | The canonical case: authorize at the provider, `elicitation/complete`, client retries the original `tools/call`. |
+| `provide_url` | `request_secret` | Credential entry. Form mode is forbidden here even where it would work. |
+| `setup_url` | `create_service` setup bundle | Wrinkle: a multi-slot template hands over *several* links (`requests[]`), and elicitation is one request / one answer. Needs design even once URL mode is available. |
+| `download_url` | `_full_result` (D61) | **Not** a candidate — the agent fetches it, no human in the loop. Same for `hint_url`. |
+
+`approval_url` already moved, under D95. It was the only one of the set that is a pure
+structured decision with no secret in it, which is exactly why it was reachable in form mode.
+
+One line in the code reads differently in this light. `routes/mcp/tools_call.rs` says the typed
+envelopes bypass elicitation because *"the agent has structured branching info already, no
+human-in-the-loop dialog applies."* That is half true: no dialog applies **to the agent**, but
+every one of those envelopes ends with a human opening a URL. Worth rewording whenever URL mode
+is picked up, because as written it reads as a design decision rather than a client limitation.
 
 See the test directory's README for run instructions and the exact `claude mcp add` / `.mcp.json` setup to wire it into Claude Code.

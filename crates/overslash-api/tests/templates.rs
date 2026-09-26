@@ -569,11 +569,11 @@ async fn test_hidden_template_flagged_in_lists_and_reachable_by_key() {
         .await
         .unwrap();
     let templates: Vec<Value> = resp.json().await.unwrap();
-    let legacy = templates
+    let hidden = templates
         .iter()
-        .find(|t| t["key"] == "github_legacy_oauth")
-        .expect("github_legacy_oauth missing from /v1/templates");
-    assert_eq!(legacy["hidden"], true);
+        .find(|t| t["key"] == "test_email")
+        .expect("test_email missing from /v1/templates");
+    assert_eq!(hidden["hidden"], true);
     let gh = templates
         .iter()
         .find(|t| t["key"] == "github")
@@ -582,21 +582,21 @@ async fn test_hidden_template_flagged_in_lists_and_reachable_by_key() {
 
     // Dashboard search: same flagging.
     let resp = client
-        .get(format!("{base}/v1/templates/search?q=legacy"))
+        .get(format!("{base}/v1/templates/search?q=test mail"))
         .header(auth(&admin_key).0, auth(&admin_key).1)
         .send()
         .await
         .unwrap();
     let results: Vec<Value> = resp.json().await.unwrap();
-    let legacy = results
+    let hidden = results
         .iter()
-        .find(|t| t["key"] == "github_legacy_oauth")
-        .expect("github_legacy_oauth missing from /v1/templates/search");
-    assert_eq!(legacy["hidden"], true);
+        .find(|t| t["key"] == "test_email")
+        .expect("test_email missing from /v1/templates/search");
+    assert_eq!(hidden["hidden"], true);
 
     // Reachable by key, detail carries the flag.
     let resp = client
-        .get(format!("{base}/v1/templates/github_legacy_oauth"))
+        .get(format!("{base}/v1/templates/test_email"))
         .header(auth(&admin_key).0, auth(&admin_key).1)
         .send()
         .await
@@ -614,11 +614,11 @@ async fn test_hidden_template_flagged_in_lists_and_reachable_by_key() {
         .unwrap();
     assert_eq!(resp.status(), 200);
     let templates: Vec<Value> = resp.json().await.unwrap();
-    let legacy = templates
+    let hidden = templates
         .iter()
-        .find(|t| t["key"] == "github_legacy_oauth")
-        .expect("github_legacy_oauth missing from /v1/templates/admin");
-    assert_eq!(legacy["hidden"], true);
+        .find(|t| t["key"] == "test_email")
+        .expect("test_email missing from /v1/templates/admin");
+    assert_eq!(hidden["hidden"], true);
 }
 
 #[tokio::test]

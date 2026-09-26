@@ -267,15 +267,26 @@ pub async fn kernel_create_service(
         }
     }
 
+    // https only — this endpoint receives the instance's credentials (CASA
+    // 4.1.1). Refused here, where the user can fix it, not only at dial time.
     if let Some(url) = input.url.as_deref()
         && !url.is_empty()
-        && !url.starts_with("http://")
-        && !url.starts_with("https://")
     {
-        return Err(AppError::BadRequest(
-            "`url` must start with http:// or https://".into(),
-        ));
+        crate::services::outbound_tls::check_endpoint("url", url)?;
     }
+
+    // Which of the template's alternative credential kinds this instance uses.
+    //
+    // Resolved before anything reads the credential model, because on a
+    // dual-mode template every question below has a different answer per mode:
+    // which slots are owed, whether an OAuth flow should be started, and
+    // therefore whether the instance is gated on a probe. A template declaring
+    // no modes resolves to its single implicit one, so nothing changes for the
+    // other twenty-odd shipped templates.
+    let auth_mode = template_def
+        .resolve_auth_mode(input.auth_mode.as_deref())
+        .map_err(|e| AppError::BadRequest(e.to_string()))?;
+    let mode_key = Some(auth_mode.key.as_str());
 
     // Every per-instance slot the auto-mint below is about to claim.
     //
@@ -284,6 +295,7 @@ pub async fn kernel_create_service(
     // the verification gate (D86).
     let pending_slots = crate::services::service_setup::unbound_instance_slots(
         &template_def,
+        mode_key,
         &credentials,
         stored_secret_name.as_deref(),
     );
@@ -341,6 +353,7 @@ pub async fn kernel_create_service(
         config: &config,
         url: input.url.as_deref(),
         use_default_connection: input.use_default_connection.unwrap_or(true),
+        auth_mode: Some(auth_mode.key.as_str()),
         status: create_status,
     };
 
@@ -420,6 +433,7 @@ pub async fn kernel_create_service(
 
     let credentials_status = derive_credentials_status(
         &template_def,
+        row.auth_mode.as_deref(),
         // No connection bulk-fetch here; if pinned, look it up.
         ScopeKnowledge::NoConnection,
         &row.credentials,
@@ -435,6 +449,7 @@ pub async fn kernel_create_service(
             .and_then(|conn| {
                 derive_credentials_status(
                     &template_def,
+                    row.auth_mode.as_deref(),
                     scope_knowledge(conn.scopes.as_deref()),
                     &row.credentials,
                     row.secret_name.as_deref(),
@@ -477,12 +492,19 @@ pub async fn kernel_create_service(
     // bind would refuse anyway because connections are identity-bound.
     // Skip auto-connect for org-level services to keep the two paths
     // symmetric and avoid orchestrating a flow that can never bind.
+    //
+    // Read through the resolved auth mode rather than the template as a whole:
+    // a template that offers OAuth *or* a token still has an OAuth provider,
+    // and minting a connection for an instance whose operator chose the token
+    // would hand back an `auth_url` nobody asked for and leave the token slot
+    // unmentioned.
     let want_auto_connect = input.connection_id.is_none()
         && !input.skip_connect.unwrap_or(false)
         && owner_identity_id.is_some()
-        && template_oauth_provider(&template_def).is_some();
+        && template_def.oauth_provider_for_mode(mode_key).is_some();
     if want_auto_connect {
-        let provider = template_oauth_provider(&template_def)
+        let provider = template_def
+            .oauth_provider_for_mode(mode_key)
             .expect("checked above")
             .to_string();
         let scopes = template_action_scopes(&template_def);
@@ -587,7 +609,6 @@ pub async fn kernel_create_service(
     // the connection and the setup links this call wired up.
     super::fire_service_event(
         ctx.db.clone(),
-        ctx.http_client.clone(),
         super::ServiceEvent {
             org_id: ctx.org_id,
             event_type: crate::services::events::EventType::ServiceCreated,

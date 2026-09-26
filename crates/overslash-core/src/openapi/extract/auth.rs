@@ -5,15 +5,17 @@ use serde_json::{Map, Value};
 
 use crate::credential_template::TemplateReads;
 use crate::template_validation::ValidationIssue;
-use crate::types::{ConfigVar, CredentialTemplate, SecretSlot, ServiceAuth};
+use crate::types::{AuthMode, ConfigVar, CredentialTemplate, SecretSlot, ServiceAuth};
 
 use super::super::ext::{self, Ext, Pos, SchemeKind};
+use super::auth_modes::extract_auth_modes;
 use super::schemes::{extract_api_key, extract_http_auth, extract_oauth2};
 
 // ── securitySchemes → Vec<ServiceAuth> ───────────────────────────────
 
 /// A template's whole credential model: what an operator fills in, and the
 /// injections that read it.
+#[cfg_attr(test, derive(Debug))]
 pub(crate) struct CompiledCredentials {
     /// The injections — one per securityScheme.
     pub auth: Vec<ServiceAuth>,
@@ -21,6 +23,9 @@ pub(crate) struct CompiledCredentials {
     pub secrets: Vec<SecretSlot>,
     /// Non-secret values an instance sets.
     pub config: Vec<ConfigVar>,
+    /// The alternative credential kinds an instance picks between. Empty when
+    /// the template declares none, which reads as "every scheme, together".
+    pub auth_modes: Vec<AuthMode>,
 }
 
 /// Compile `components.x-overslash-secrets` + `components.x-overslash-config` +
@@ -77,6 +82,7 @@ pub(crate) fn extract_auth(
             auth: out,
             secrets: slots,
             config,
+            auth_modes: Vec::new(),
         });
     };
 
@@ -91,7 +97,7 @@ pub(crate) fn extract_auth(
         let base = format!("components.securitySchemes.{name}");
         let ty = obj.get("type").and_then(Value::as_str).unwrap_or("");
         match ty {
-            "oauth2" => match extract_oauth2(obj, &base) {
+            "oauth2" => match extract_oauth2(obj, &base, name) {
                 Ok(a) => out.push(a),
                 Err(mut es) => errors.append(&mut es),
             },
@@ -193,11 +199,20 @@ pub(crate) fn extract_auth(
 
     slots.sort_by(|a, b| a.key.cmp(&b.key));
 
+    let auth_modes = match extract_auth_modes(components, &out) {
+        Ok(m) => m,
+        Err(mut es) => {
+            errors.append(&mut es);
+            Vec::new()
+        }
+    };
+
     if errors.is_empty() {
         Ok(CompiledCredentials {
             auth: out,
             secrets: slots,
             config,
+            auth_modes,
         })
     } else {
         Err(errors)

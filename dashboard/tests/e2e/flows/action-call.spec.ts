@@ -11,7 +11,7 @@ import {
 // Real-stack Mode-C action call against the openapi fake, end-to-end:
 //   • OAuth-connect dance binds a real `connections` row to the service.
 //   • `OVERSLASH_SERVICE_BASE_OVERRIDES` rewrites api.github.com → openapi
-//     fake at request time. `OVERSLASH_SSRF_ALLOW_PRIVATE=1` opens the
+//     fake at request time. `OVERSLASH_SSRF_ALLOWED_CIDRS` opens the
 //     loopback bypass that allows it (production overrides to non-loopback
 //     targets are silently dropped — proven in the Rust-level test next to
 //     `Config::apply_base_overrides`).

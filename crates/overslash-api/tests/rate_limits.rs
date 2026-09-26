@@ -30,16 +30,7 @@ async fn bootstrap() -> (String, reqwest::Client, Uuid, String) {
         .unwrap();
     let org_id: Uuid = org["id"].as_str().unwrap().parse().unwrap();
 
-    let key: Value = client
-        .post(format!("{base}/v1/api-keys"))
-        .json(&json!({"org_id": org_id, "name": "org-admin"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let org_api_key = key["key"].as_str().unwrap().to_string();
+    let org_api_key = org["api_key"].as_str().unwrap().to_string();
 
     (base, client, org_id, org_api_key)
 }
@@ -406,7 +397,7 @@ async fn test_resolve_user_budget_falls_back_to_org_default() {
         email_reply_to: None,
         email_api_key: None,
         preview_origin_allowlist: None,
-        overslash_env: None,
+        deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
     };
     let resolved = cache
@@ -683,7 +674,7 @@ async fn test_resolve_user_budget_per_user_override_wins() {
         email_reply_to: None,
         email_api_key: None,
         preview_origin_allowlist: None,
-        overslash_env: None,
+        deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
     };
     let resolved = cache
@@ -778,7 +769,7 @@ async fn make_app_state(pool: PgPool) -> overslash_api::AppState {
         email_reply_to: None,
         email_api_key: None,
         preview_origin_allowlist: None,
-        overslash_env: None,
+        deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
     };
     overslash_api::AppState {
@@ -1197,7 +1188,7 @@ async fn test_cache_invalidation_user_budget() {
         email_reply_to: None,
         email_api_key: None,
         preview_origin_allowlist: None,
-        overslash_env: None,
+        deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
     };
 
@@ -1389,7 +1380,7 @@ async fn test_cache_invalidation_org_flushes_all() {
         email_reply_to: None,
         email_api_key: None,
         preview_origin_allowlist: None,
-        overslash_env: None,
+        deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
     };
 

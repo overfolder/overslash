@@ -1,0 +1,174 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE webhook_subscriptions\n            SET verification_status = 'verified', verified_at = now(), grandfathered = false,\n                verification_attempted_at = now(), verification_error = NULL\n          WHERE id = $1 AND org_id = $2 AND url = $3\n          RETURNING id, org_id, url, events, secret, active, disabled_reason,\n                    verification_status, verified_at, grandfathered,\n                    verification_attempted_at, verification_error, created_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "webhook_subscriptions",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "org_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "webhook_subscriptions",
+            "name": "org_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "url",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "webhook_subscriptions",
+            "name": "url"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "events",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "webhook_subscriptions",
+            "name": "events"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "secret",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "webhook_subscriptions",
+            "name": "secret"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "active",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "webhook_subscriptions",
+            "name": "active"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "disabled_reason",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "webhook_subscriptions",
+            "name": "disabled_reason"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "verification_status",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "webhook_subscriptions",
+            "name": "verification_status"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "verified_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "webhook_subscriptions",
+            "name": "verified_at"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "grandfathered",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "webhook_subscriptions",
+            "name": "grandfathered"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "verification_attempted_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "webhook_subscriptions",
+            "name": "verification_attempted_at"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "verification_error",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "webhook_subscriptions",
+            "name": "verification_error"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "webhook_subscriptions",
+            "name": "created_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      true,
+      false,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "b0415270fb3eb4f782aced1168af0f20c550d114f8c61d8e71c5ad0aa2f9c43f"
+}

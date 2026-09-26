@@ -235,7 +235,7 @@ fn mint_session_cookie(identity_id: Uuid, org_id: Uuid, email: &str) -> String {
         mcp_client_id: None,
     };
     let token = jwt::mint(&signing_bytes(), &claims).unwrap();
-    format!("oss_session={token}")
+    format!("__Host-oss_session={token}")
 }
 
 async fn create_user(base: &str, client: &reqwest::Client, admin_key: &str, name: &str) -> Uuid {

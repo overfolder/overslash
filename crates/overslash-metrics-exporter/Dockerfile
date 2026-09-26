@@ -2,7 +2,7 @@
 # Mirrors the API Dockerfile's cargo-chef layout — see it for why the
 # hand-maintained manifest/stub scaffold is gone.
 
-FROM rust:1.97-trixie AS chef
+FROM rust:1.98-trixie AS chef
 
 WORKDIR /app
 

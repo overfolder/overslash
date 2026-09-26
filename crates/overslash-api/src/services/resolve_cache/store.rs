@@ -420,7 +420,7 @@ mod tests {
     /// production.
     #[tokio::test]
     async fn redis_backend_round_trips_a_batch() {
-        let Ok(url) = std::env::var("REDIS_URL") else {
+        let Some(url) = overslash_env::optional("REDIS_URL") else {
             eprintln!("skipping: REDIS_URL not set");
             return;
         };

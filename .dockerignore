@@ -23,3 +23,13 @@ dashboard/playwright-report/
 docker-compose*.yml
 Makefile
 SCHEMA.sql
+
+# The toolchain inside an image comes from the `FROM rust:<ver>` tag, not from
+# here. Shipping the toml would make rustup sync a *second* toolchain: we pin a
+# `<major>.<minor>` channel and the base image ships an exact patch release
+# (`1.98` vs `1.98.1`), and rustup treats those as unrelated toolchain names
+# rather than normalising one onto the other. That cost 1.5G and ~15s in the
+# `planner` and `builder` stages of every build — both sit after `COPY . .`, so
+# no layer cache could ever absorb it.
+# scripts/check-rust-version.sh keeps the FROM tags and the toml in step.
+rust-toolchain.toml

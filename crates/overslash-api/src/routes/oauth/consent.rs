@@ -275,11 +275,16 @@ pub(super) async fn consent_context(
                 } else {
                     None
                 };
+                // Prefill from the stored choice; no binding yet means no
+                // choice, so the platform default. Deliberately *not* AND-ed
+                // with `elicitation_supported`: capabilities are unknown for
+                // a client that has not initialized yet, which is every
+                // freshly-registered client_id.
                 let existing_elicitation =
                     mcp_client_agent_binding::get_by_agent_identity(state.db(&ext), a.id)
                         .await?
-                        .map(|b| b.elicitation_enabled)
-                        .unwrap_or(false);
+                        .map(|b| b.elicitation_enabled())
+                        .unwrap_or(crate::services::mcp_session::ELICITATION_DEFAULT_ENABLED);
                 (
                     "reauth",
                     Some(ConsentReauthTarget {
@@ -656,10 +661,6 @@ pub(super) async fn consent_finish(
     // naturally preserved across reauth — no special handling needed.)
     let prior_binding =
         mcp_client_agent_binding::get_by_agent_identity(state.db(&ext), agent_identity_id).await?;
-    let prior_elicitation = prior_binding
-        .as_ref()
-        .map(|b| b.elicitation_enabled)
-        .unwrap_or(false);
 
     mcp_client_agent_binding::upsert(
         state.db(&ext),
@@ -670,21 +671,36 @@ pub(super) async fn consent_finish(
     )
     .await?;
 
-    // Resolve the per-agent value: an explicit choice from the consent page
-    // wins (gated by capability — a hand-crafted `true` against a client
-    // that didn't announce elicitation gets forced to `false`); a missing
-    // field inherits the agent's prior value so older dashboard builds /
-    // third-party POSTs don't destroy a previously-saved choice. Fan out
-    // unconditionally to keep every binding row in sync with the per-agent
-    // toggle (see `set_elicitation_enabled_for_agent`).
-    let resolved_elicitation = match body.elicitation_enabled {
-        Some(requested) => requested && client.elicitation_supported(),
-        None => prior_elicitation,
+    // Resolve the per-agent value. Elicitation is on by default as of
+    // migration 123, so:
+    //
+    //   * an explicit choice from the consent page wins;
+    //   * a missing field on a binding that already exists inherits that
+    //     binding's value. This is what makes an explicit opt-out survive
+    //     reauth, and it keeps older dashboard builds / third-party POSTs
+    //     from destroying a saved choice;
+    //   * a missing field with no prior binding — a first connect — takes
+    //     the platform default.
+    //
+    // Note what is deliberately absent: the old `&& client.elicitation_supported()`
+    // gate. `oauth_mcp_clients.capabilities` is written only by `initialize`,
+    // which needs a token, which is issued *after* this runs — so a
+    // freshly-registered client_id always looks incapable here and that gate
+    // would pin every first connect to "off". The capability check that
+    // matters lives in `elicitation_eligible`, at request time, where the
+    // client has actually told us what it can do.
+    //
+    // Fan out unconditionally to keep every binding row in sync with the
+    // per-agent toggle (see `set_elicitation_opted_out_for_agent`).
+    let resolved_elicitation = match (body.elicitation_enabled, prior_binding.as_ref()) {
+        (Some(requested), _) => requested,
+        (None, Some(prior)) => prior.elicitation_enabled(),
+        (None, None) => crate::services::mcp_session::ELICITATION_DEFAULT_ENABLED,
     };
-    mcp_client_agent_binding::set_elicitation_enabled_for_agent(
+    mcp_client_agent_binding::set_elicitation_opted_out_for_agent(
         state.db(&ext),
         agent_identity_id,
-        resolved_elicitation,
+        !resolved_elicitation,
     )
     .await?;
 

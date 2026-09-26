@@ -134,21 +134,15 @@ mod tests {
     fn param(instance_config: bool) -> ActionParam {
         ActionParam {
             param_type: "string".into(),
-            required: false,
-            description: String::new(),
-            enum_values: None,
-            default: None,
-            resolve: None,
-            aliases: vec![],
             location: ParamLocation::Header,
             instance_config,
-            sql_field: None,
-            sql_database: None,
+            ..Default::default()
         }
     }
 
     fn def_with(params: &[(&str, bool)]) -> ServiceDefinition {
         let mut action = ServiceAction {
+            additional_properties: false,
             wait_mode: None,
             handoff_after_ms: None,
             pagination: None,
@@ -179,6 +173,8 @@ mod tests {
                 .insert((*name).to_string(), param(*instance_config));
         }
         ServiceDefinition {
+            declared_auth_modes: Vec::new(),
+            default_additional_properties: false,
             default_timeout_ms: None,
             config: Vec::new(),
             key: "t".into(),

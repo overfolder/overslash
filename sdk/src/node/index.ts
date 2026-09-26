@@ -18,8 +18,13 @@
  * ```
  */
 
-export { parseWebhookEvent, verifyWebhookSignature } from './webhook-verify.js';
-export type { VerifyWebhookOptions } from './webhook-verify.js';
+export {
+  DEFAULT_WEBHOOK_TOLERANCE_SECONDS,
+  parseWebhookEvent,
+  verifyWebhook,
+  verifyWebhookSignature,
+} from './webhook-verify.js';
+export type { VerifyWebhookOptions, VerifyWebhookV1Options } from './webhook-verify.js';
 
 export { waitForApproval } from '../controllers/wait-for-approval.js';
 export type { WaitForApprovalOptions } from '../controllers/wait-for-approval.js';

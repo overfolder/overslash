@@ -181,7 +181,7 @@ async fn make_app_state(pool: PgPool) -> overslash_api::AppState {
         email_reply_to: None,
         email_api_key: None,
         preview_origin_allowlist: None,
-        overslash_env: None,
+        deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
     };
     let free_unlimited_cache = Arc::new(
@@ -324,7 +324,7 @@ async fn start_trial_sets_plan_and_audits() {
 
     let resp = client
         .post(format!("http://{addr}/v1/orgs/{}/trial", target.id))
-        .header("cookie", format!("oss_session={cookie}"))
+        .header("cookie", format!("__Host-oss_session={cookie}"))
         .json(&json!({ "duration_days": 14 }))
         .send()
         .await
@@ -363,7 +363,7 @@ async fn start_trial_defaults_to_config_duration() {
     // Empty body → config default (30d in the test config).
     let resp = client
         .post(format!("http://{addr}/v1/orgs/{admin_org}/trial"))
-        .header("cookie", format!("oss_session={cookie}"))
+        .header("cookie", format!("__Host-oss_session={cookie}"))
         .json(&json!({}))
         .send()
         .await
@@ -384,7 +384,7 @@ async fn start_trial_rejects_non_admin_session() {
     let cookie = mint_session_with_user(org_id, ident_id, user_id);
     let resp = client
         .post(format!("http://{addr}/v1/orgs/{org_id}/trial"))
-        .header("cookie", format!("oss_session={cookie}"))
+        .header("cookie", format!("__Host-oss_session={cookie}"))
         .json(&json!({}))
         .send()
         .await
@@ -438,7 +438,7 @@ async fn extend_trial_bumps_end_and_rejects_non_trial() {
     .unwrap();
     let resp = client
         .patch(format!("http://{addr}/v1/orgs/{}/trial", target.id))
-        .header("cookie", format!("oss_session={cookie}"))
+        .header("cookie", format!("__Host-oss_session={cookie}"))
         .json(&json!({ "extend_days": 10 }))
         .send()
         .await
@@ -450,7 +450,7 @@ async fn extend_trial_bumps_end_and_rejects_non_trial() {
     force_trial(&pool, target.id, start_end).await;
     let resp = client
         .patch(format!("http://{addr}/v1/orgs/{}/trial", target.id))
-        .header("cookie", format!("oss_session={cookie}"))
+        .header("cookie", format!("__Host-oss_session={cookie}"))
         .json(&json!({ "extend_days": 20 }))
         .send()
         .await
@@ -490,7 +490,7 @@ async fn set_plan_flips_trial_to_free_unlimited_and_rejects_trial_value() {
     // 'trial' is not a valid target here — starting a trial goes via POST.
     let resp = client
         .patch(format!("http://{addr}/v1/orgs/{}/plan", target.id))
-        .header("cookie", format!("oss_session={cookie}"))
+        .header("cookie", format!("__Host-oss_session={cookie}"))
         .json(&json!({ "plan": "trial" }))
         .send()
         .await
@@ -500,7 +500,7 @@ async fn set_plan_flips_trial_to_free_unlimited_and_rejects_trial_value() {
     // free_unlimited opt-out clears the trial window.
     let resp = client
         .patch(format!("http://{addr}/v1/orgs/{}/plan", target.id))
-        .header("cookie", format!("oss_session={cookie}"))
+        .header("cookie", format!("__Host-oss_session={cookie}"))
         .json(&json!({ "plan": "free_unlimited" }))
         .send()
         .await
@@ -600,7 +600,7 @@ async fn me_identity_surfaces_trial_and_clears_on_optout() {
 
     let body: Value = client
         .get(format!("http://{addr}/auth/me/identity"))
-        .header("cookie", format!("oss_session={cookie}"))
+        .header("cookie", format!("__Host-oss_session={cookie}"))
         .send()
         .await
         .unwrap()
@@ -617,7 +617,7 @@ async fn me_identity_surfaces_trial_and_clears_on_optout() {
         .unwrap();
     let body: Value = client
         .get(format!("http://{addr}/auth/me/identity"))
-        .header("cookie", format!("oss_session={cookie}"))
+        .header("cookie", format!("__Host-oss_session={cookie}"))
         .send()
         .await
         .unwrap()

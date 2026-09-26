@@ -822,6 +822,7 @@ Three access levels: **org-admin**, **user**, **agent**.
 | GET | `/v1/audit` | Query ALL audit (any identity) |
 | POST | `/v1/org/connections` | Org-level OAuth credentials |
 | POST | `/v1/webhooks` | Register org-level webhooks |
+| POST | `/v1/webhooks/:id/verify` | Re-run the endpoint-ownership handshake (SPEC §10) |
 | GET | `/v1/permissions` (any identity) | View/manage any identity's permissions |
 | POST | `/v1/permissions` (any identity) | Create rules for any identity |
 | DELETE | `/v1/secrets/:name/hard` | Permanently destroy secret versions |
