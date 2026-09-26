@@ -19,7 +19,7 @@
 //!   pinned — so `localhost` that resolves elsewhere, a row written before the
 //!   boundary check existed, or a redirect cannot get past it either.
 
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use url::Url;
 
@@ -44,19 +44,30 @@ fn is_loopback(ip: &IpAddr) -> bool {
 /// Whether the URL's host is written as loopback: `localhost` or a loopback
 /// literal. Only a pre-filter — the resolved address is what counts.
 pub fn names_loopback(url: &Url) -> bool {
-    loopback_address(url).is_some()
+    !loopback_addresses(url).is_empty()
 }
 
-/// The loopback address the URL's host spells, if it spells one. `localhost`
-/// stands for `127.0.0.1` — the address the guard would be asked about.
-fn loopback_address(url: &Url) -> Option<IpAddr> {
-    let ip = match url.host()? {
-        url::Host::Domain(d) if d.eq_ignore_ascii_case("localhost") => IpAddr::from([127, 0, 0, 1]),
-        url::Host::Domain(_) => return None,
-        url::Host::Ipv4(v4) => IpAddr::V4(v4),
-        url::Host::Ipv6(v6) => IpAddr::V6(v6),
+/// Every loopback address the URL's host could be dialed at, if it spells
+/// loopback at all. A literal is itself. `localhost` is **both** `127.0.0.1`
+/// and `::1`: the resolver may answer with either or both, and the guard
+/// refuses the call if *any* answer is blocked — so registration has to clear
+/// both, or an allow-list covering only one family accepts a URL that no
+/// delivery can reach.
+fn loopback_addresses(url: &Url) -> Vec<IpAddr> {
+    let ips = match url.host() {
+        Some(url::Host::Domain(d)) if d.eq_ignore_ascii_case("localhost") => vec![
+            IpAddr::from(Ipv4Addr::LOCALHOST),
+            IpAddr::from(Ipv6Addr::LOCALHOST),
+        ],
+        Some(url::Host::Ipv4(v4)) => vec![IpAddr::V4(v4)],
+        Some(url::Host::Ipv6(v6)) => vec![IpAddr::V6(v6)],
+        Some(url::Host::Domain(_)) | None => return Vec::new(),
     };
-    is_loopback(&ip).then_some(ip)
+    if ips.iter().all(is_loopback) {
+        ips
+    } else {
+        Vec::new()
+    }
 }
 
 /// A URL that is safe to send credentials or signed payloads to as far as
@@ -92,10 +103,12 @@ impl HttpsUrl {
         let url = Url::parse(raw.trim()).map_err(|e| HttpsUrlError::Invalid(e.to_string()))?;
         match url.scheme() {
             "https" => {}
-            "http" => match loopback_address(&url) {
-                Some(ip) if !is_blocked(&ip) => {}
-                _ => return Err(HttpsUrlError::NotHttps),
-            },
+            "http" => {
+                let ips = loopback_addresses(&url);
+                if ips.is_empty() || ips.iter().any(&is_blocked) {
+                    return Err(HttpsUrlError::NotHttps);
+                }
+            }
             _ => return Err(HttpsUrlError::NotHttps),
         }
         if url.host_str().is_none_or(str::is_empty) {
@@ -187,6 +200,27 @@ mod tests {
                 "{raw}"
             );
         }
+    }
+
+    /// An allow-list of `127.0.0.0/8` alone: IPv4 loopback reachable, `::1`
+    /// still on the deny-list.
+    const ONLY_V4_LOOPBACK_ALLOWED: fn(&IpAddr) -> bool =
+        |ip| !matches!(ip, IpAddr::V4(v4) if v4.is_loopback()) && is_loopback(ip);
+
+    /// Delivery refuses if *any* address `localhost` resolves to is blocked,
+    /// and the resolver may hand back `::1`. So `localhost` registers only when
+    /// both families are allowed; a literal needs only its own.
+    #[test]
+    fn plain_http_to_localhost_needs_both_loopback_families_allowed() {
+        assert_eq!(
+            HttpsUrl::parse_with("http://localhost:8080/x", ONLY_V4_LOOPBACK_ALLOWED),
+            Err(HttpsUrlError::NotHttps)
+        );
+        assert!(HttpsUrl::parse_with("http://127.0.0.1:8080/x", ONLY_V4_LOOPBACK_ALLOWED).is_ok());
+        assert_eq!(
+            HttpsUrl::parse_with("http://[::1]:8080/x", ONLY_V4_LOOPBACK_ALLOWED),
+            Err(HttpsUrlError::NotHttps)
+        );
     }
 
     #[test]
