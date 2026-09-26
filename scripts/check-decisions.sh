@@ -44,6 +44,16 @@ detail() { echo "$1" >&2; }
 
 max=$(max_decision)
 
+# 0. Headings start at column 0. An indented heading is still a heading to
+#    a Markdown renderer but invisible to every `^## D` pattern here and in
+#    the allocator. #657's merge indented #661's D95 that way, the allocator
+#    handed out D95 again, and rules 1 and 2 saw nothing.
+indented=$(grep -nE "^[[:space:]]+## (D[0-9]+|$DECISION_PLACEHOLDER):" "$DECISIONS_FILE" || true)
+if [ -n "$indented" ]; then
+    err "indented decision heading in $DECISIONS_FILE"
+    detail "$indented"
+fi
+
 # 1. No duplicate numbers.
 dupes=$(decision_numbers | sort -n | uniq -d)
 if [ -n "$dupes" ]; then
