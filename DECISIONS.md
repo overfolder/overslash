@@ -1077,7 +1077,7 @@ Flow B (task-augmented `tools/call`) stays rejected with its revisit condition u
 
 **`DEV_AUTH` typos are fatal everywhere.** `overslash_env::flag` already fails closed. The added check exists so that someone who typed `DEV_AUTH=ture` meaning to turn it on, or `DEV_AUTH=of` meaning to turn it off, finds out at boot, rather than getting whichever side the default picks.
 
-## D-NEXT: Dependency advisories gate the PRs that change dependencies, and a daily scan owns the rest
+## D101: Dependency advisories gate the PRs that change dependencies, and a daily scan owns the rest
 
 **Date**: 2026-09-23
 **Decision**: Three scanners run from `.github/workflows/deps-audit.yml` over every lockfile: `cargo-deny` with `deny.toml` (advisories, yanked, licenses, sources), `npm audit --audit-level=high` for `dashboard/` and `sdk/`, and OSV (`osv-scanner.toml`) at every severity. `ci.yml` calls the workflow only when a manifest, lockfile or scanner config changes, and the call rolls into `ci-ok`. A daily schedule runs the same jobs against `dev` and `master`, and a failure opens a `needs-triage` issue via `deps-audit-report.yml`. An advisory may be ignored only with a written reason and a review date at most 90 days out. For `deny.toml` the date sits inside the `reason` and `scripts/check-deny-reviews.sh` enforces it; for OSV it is the native `ignoreUntil`. Security fixes are bumped by hand to the oldest release that carries the fix, so D30's 7-day window still holds. Only a Critical whose sole fix is younger than that may skip it, and the PR must say so. SLAs, ownership and the exception register are in `docs/compliance/casa/dependency-vulnerability-policy.md`. CASA 6.1.1.
