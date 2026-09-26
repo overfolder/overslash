@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE oauth_mcp_clients\n            SET capabilities = $2,\n                client_info = $3,\n                protocol_version = $4,\n                last_seen_at = now()\n          WHERE client_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Jsonb",
+        "Jsonb",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "622951413544ac580a883cbd20b2e36c2023db6cf3182ba863f999a2d205b093"
+}

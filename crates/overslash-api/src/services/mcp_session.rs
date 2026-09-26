@@ -118,32 +118,12 @@ pub async fn await_completion_with_timeout(
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
         match repo::get(state.db(ext), elicit_id).await {
-            Ok(Some(row)) => match row.status.as_str() {
-                repo::STATUS_COMPLETED => {
-                    return ElicitOutcome::Completed(row.final_response.unwrap_or(json!({})));
-                }
-                repo::STATUS_FAILED => {
-                    return ElicitOutcome::Failed(row.final_response.unwrap_or(json!({})));
-                }
-                repo::STATUS_CANCELLED | repo::STATUS_WITHDRAWN => {
-                    return ElicitOutcome::Abandoned;
-                }
-                repo::STATUS_FOLLOW_UP => {
-                    // A follow_up row without a next id cannot be continued;
-                    // treat it like any other dialog nobody finished.
-                    return match row
-                        .final_response
-                        .as_ref()
-                        .and_then(|v| v.get("next_elicit_id"))
-                        .and_then(Value::as_str)
-                    {
-                        Some(next) => ElicitOutcome::FollowUp(next.to_string()),
-                        None => ElicitOutcome::Abandoned,
-                    };
+            Ok(Some(row)) => {
+                if let Some(outcome) = settled_outcome(row) {
+                    return outcome;
                 }
                 // pending or claimed → keep polling
-                _ => {}
-            },
+            }
             Ok(None) => {
                 // Row vanished (manual cleanup or cascade). Nobody is going
                 // to answer it now.
@@ -176,6 +156,37 @@ pub async fn await_completion_with_timeout(
             return ElicitOutcome::Abandoned;
         }
         sleep(POLL_INTERVAL).await;
+    }
+}
+
+/// What a row says about its dialog, or `None` while it is still `pending` /
+/// `claimed` and somebody may yet settle it.
+///
+/// Shared by the two ways an answer comes back: the legacy SSE originator
+/// polling its row, and a 2026-07-28 retry reading the row it just drove.
+fn settled_outcome(row: repo::PendingElicitationRow) -> Option<ElicitOutcome> {
+    match row.status.as_str() {
+        repo::STATUS_COMPLETED => Some(ElicitOutcome::Completed(
+            row.final_response.unwrap_or(json!({})),
+        )),
+        repo::STATUS_FAILED => Some(ElicitOutcome::Failed(
+            row.final_response.unwrap_or(json!({})),
+        )),
+        repo::STATUS_CANCELLED | repo::STATUS_WITHDRAWN => Some(ElicitOutcome::Abandoned),
+        // A follow_up row without a next id cannot be continued; treat it
+        // like any other dialog nobody finished.
+        repo::STATUS_FOLLOW_UP => Some(
+            match row
+                .final_response
+                .as_ref()
+                .and_then(|v| v.get("next_elicit_id"))
+                .and_then(Value::as_str)
+            {
+                Some(next) => ElicitOutcome::FollowUp(next.to_string()),
+                None => ElicitOutcome::Abandoned,
+            },
+        ),
+        _ => None,
     }
 }
 

@@ -173,6 +173,38 @@ pub async fn update_initialize_state(
     Ok(())
 }
 
+/// Persist the capabilities + clientInfo + protocolVersion a 2026-07-28
+/// (sessionless) client declared in a request's `_meta`.
+///
+/// The modern twin of [`update_initialize_state`]: there is no handshake and
+/// no session, so `last_session_id` is left exactly as it was. What this keeps
+/// current is what the dashboard reads — `elicitation_supported` and the
+/// client's declared version — since per-request capabilities are otherwise
+/// never written anywhere.
+pub async fn update_modern_client_state(
+    pool: &PgPool,
+    client_id: &str,
+    capabilities: &Value,
+    client_info: &Value,
+    protocol_version: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        "UPDATE oauth_mcp_clients
+            SET capabilities = $2,
+                client_info = $3,
+                protocol_version = $4,
+                last_seen_at = now()
+          WHERE client_id = $1",
+        client_id,
+        capabilities,
+        client_info,
+        protocol_version,
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 pub async fn revoke(pool: &PgPool, client_id: &str) -> Result<bool, sqlx::Error> {
     let result = sqlx::query!(
         "UPDATE oauth_mcp_clients SET is_revoked = true WHERE client_id = $1",
