@@ -117,6 +117,24 @@ variable "vercel_preview_origin_regex" {
   default     = ""
 }
 
+variable "trusted_proxy_hops" {
+  description = "Client-IP resolution: addresses, counting the socket peer, trusted by position (OVERSLASH_TRUSTED_PROXY_HOPS). 1 on Cloud Run. See infra/README.md \"Client IP & trusted proxies\"."
+  type        = number
+  default     = 0
+}
+
+variable "trusted_proxy_cidrs" {
+  description = "Client-IP resolution: CIDRs trusted anywhere in X-Forwarded-For (OVERSLASH_TRUSTED_PROXIES) — the GCLB address when enable_api_lb. Empty = none."
+  type        = string
+  default     = ""
+}
+
+variable "enable_trusted_proxy_secret" {
+  description = "Mount OVERSLASH_TRUSTED_PROXY_SECRET into Cloud Run. Set the secret's value first (>= 32 bytes); the API refuses to boot on REPLACE_ME."
+  type        = bool
+  default     = false
+}
+
 variable "connection_return_url_hosts" {
   description = "Comma-separated hostnames (no scheme, no path) allowed as OAuth return_url targets after the code exchange. E.g. `api-dev.overfolder.com` for the overfolder dev tenant. Empty = feature disabled (Overslash returns JSON; no redirect)."
   type        = string

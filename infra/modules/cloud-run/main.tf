@@ -261,6 +261,30 @@ variable "email_reply_to" {
   description = "Optional Reply-To address. Empty leaves the provider's default (usually From)."
 }
 
+variable "trusted_proxy_hops" {
+  type        = number
+  default     = 0
+  description = "OVERSLASH_TRUSTED_PROXY_HOPS: addresses, counting the socket peer, trusted by position when resolving the client IP. 1 on Cloud Run (the peer is Google's frontend, which appends the client)."
+}
+
+variable "trusted_proxy_cidrs" {
+  type        = string
+  default     = ""
+  description = "OVERSLASH_TRUSTED_PROXIES: comma-separated CIDRs trusted wherever they appear in X-Forwarded-For (the GCLB address). Empty = none."
+}
+
+variable "enable_trusted_proxy_secret" {
+  type        = bool
+  default     = false
+  description = "Mount OVERSLASH_TRUSTED_PROXY_SECRET from trusted_proxy_secret_secret_id. Turn on only after the secret holds a real value (>= 32 bytes) — the API refuses to boot otherwise."
+}
+
+variable "trusted_proxy_secret_secret_id" {
+  type        = string
+  default     = ""
+  description = "GSM secret ID holding the value the dashboard's Vercel middleware stamps in x-overslash-proxy-secret."
+}
+
 variable "email_api_key_secret_id" {
   type        = string
   default     = ""
@@ -423,6 +447,8 @@ locals {
       OVERSLASH_PLATFORM_GATEWAY_HOST        = var.platform_gateway_host
     } : {},
     { for k, v in var.template_vars : "OVERSLASH_TEMPLATE_VAR_${k}" => v if v != "" },
+    var.trusted_proxy_hops > 0 ? { OVERSLASH_TRUSTED_PROXY_HOPS = tostring(var.trusted_proxy_hops) } : {},
+    var.trusted_proxy_cidrs != "" ? { OVERSLASH_TRUSTED_PROXIES = var.trusted_proxy_cidrs } : {},
   )
 
   env_secrets = merge(
@@ -453,6 +479,9 @@ locals {
     } : {},
     var.platform_gateway_secret_name != "" && var.platform_gateway_host != "" && var.platform_gateway_key_secret_id != "" ? {
       OVERSLASH_PLATFORM_GATEWAY_KEY = var.platform_gateway_key_secret_id
+    } : {},
+    var.enable_trusted_proxy_secret && var.trusted_proxy_secret_secret_id != "" ? {
+      OVERSLASH_TRUSTED_PROXY_SECRET = var.trusted_proxy_secret_secret_id
     } : {},
   )
 }

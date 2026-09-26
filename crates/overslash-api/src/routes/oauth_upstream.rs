@@ -40,7 +40,7 @@ use uuid::Uuid;
 use crate::{
     AppState,
     error::AppError,
-    extractors::{ReqExt, SessionAuth},
+    extractors::{ClientIp, ReqExt, SessionAuth},
     middleware::security_headers,
     routes::connect_gate::{
         ParsedSession, SessionError, gone_html, html_escape, mismatch_html, read_session,
@@ -217,6 +217,7 @@ async fn initiate(
     State(state): State<AppState>,
     ReqExt(ext): ReqExt,
     session: SessionAuth,
+    ClientIp(created_ip): ClientIp,
     headers: HeaderMap,
     Json(req): Json<InitiateRequest>,
 ) -> Result<Json<InitiateResponse>, AppError> {
@@ -362,11 +363,6 @@ async fn initiate(
     let now = OffsetDateTime::now_utc();
     let expires_at = now + FLOW_TTL;
 
-    let created_ip = headers
-        .get("x-forwarded-for")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|raw| raw.split(',').next())
-        .map(|s| s.trim());
     let created_user_agent = headers
         .get(header::USER_AGENT)
         .and_then(|v| v.to_str().ok());
@@ -396,7 +392,7 @@ async fn initiate(
             upstream_authorize_url: &raw_authorize_url,
             pkce_code_verifier: &pkce.verifier,
             expires_at,
-            created_ip,
+            created_ip: created_ip.as_deref(),
             created_user_agent,
         },
     )

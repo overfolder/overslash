@@ -709,6 +709,7 @@ where
         preview_origin_allowlist: None,
         deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
+        trusted_proxies: Default::default(),
     };
     customize(&mut config);
 
@@ -822,7 +823,12 @@ where
         ));
 
     tokio::spawn(async move {
-        axum::serve(listener, app).await.unwrap();
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .unwrap();
     });
 
     (addr, Client::new())
@@ -933,6 +939,7 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         preview_origin_allowlist: None,
         deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
+        trusted_proxies: Default::default(),
     };
 
     let state = overslash_api::AppState {
@@ -1013,7 +1020,14 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
             overslash_api::middleware::security_headers::security_headers,
         ));
 
-    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    tokio::spawn(async move {
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .unwrap()
+    });
 
     (format!("http://{addr}"), Client::new())
 }
@@ -1101,6 +1115,7 @@ pub async fn start_api_with_auth_providers(
         preview_origin_allowlist: None,
         deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
+        trusted_proxies: Default::default(),
     };
 
     let state = overslash_api::AppState {
@@ -1173,7 +1188,14 @@ pub async fn start_api_with_auth_providers(
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    tokio::spawn(async move {
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .unwrap()
+    });
 
     // Non-redirecting client so tests can inspect 303 responses
     let client = Client::builder()
@@ -1789,6 +1811,7 @@ where
         preview_origin_allowlist: None,
         deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
+        trusted_proxies: Default::default(),
     };
     customize(&mut config);
 
@@ -1867,7 +1890,14 @@ where
             overslash_api::middleware::security_headers::security_headers,
         ));
 
-    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    tokio::spawn(async move {
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .unwrap()
+    });
 
     (format!("http://{addr}"), Client::new())
 }
@@ -1964,6 +1994,7 @@ pub async fn start_api_for_search(pool: PgPool) -> (String, Client) {
         preview_origin_allowlist: None,
         deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
+        trusted_proxies: Default::default(),
     };
 
     let state = overslash_api::AppState {
@@ -2023,7 +2054,14 @@ pub async fn start_api_for_search(pool: PgPool) -> (String, Client) {
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    tokio::spawn(async move {
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .unwrap()
+    });
 
     (format!("http://{addr}"), Client::new())
 }
@@ -2110,6 +2148,7 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         preview_origin_allowlist: None,
         deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
+        trusted_proxies: Default::default(),
     };
 
     let state = overslash_api::AppState {
@@ -2186,7 +2225,14 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
             overslash_api::middleware::security_headers::security_headers,
         ));
 
-    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    tokio::spawn(async move {
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .unwrap()
+    });
 
     (addr, Client::new())
 }
@@ -2443,6 +2489,7 @@ pub async fn make_app_state(pool: PgPool) -> overslash_api::AppState {
         preview_origin_allowlist: None,
         deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
+        trusted_proxies: Default::default(),
     };
     // Hand out a 1ms TTL so each test can flip the DB column and immediately
     // observe the new state without waiting on cache expiry. Tests that want

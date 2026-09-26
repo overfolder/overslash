@@ -168,6 +168,11 @@ module "cloud_run" {
 
   connection_return_url_hosts = var.connection_return_url_hosts
 
+  trusted_proxy_hops             = var.trusted_proxy_hops
+  trusted_proxy_cidrs            = var.trusted_proxy_cidrs
+  enable_trusted_proxy_secret    = var.enable_trusted_proxy_secret
+  trusted_proxy_secret_secret_id = module.secret_manager.trusted_proxy_secret_secret_id
+
   redis_host = var.enable_valkey && var.use_private_vpc ? module.memorystore[0].redis_host : ""
   redis_port = var.enable_valkey && var.use_private_vpc ? module.memorystore[0].redis_port : ""
 

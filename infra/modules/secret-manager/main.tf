@@ -364,6 +364,29 @@ resource "google_secret_manager_secret_version" "email_api_key" {
   }
 }
 
+# --- Trusted-proxy secret ---
+# Shared with the dashboard's Vercel middleware, which stamps it on the
+# requests it proxies so the API can trust that one extra hop when resolving
+# the client IP (crates/overslash-api/src/services/client_ip.rs). Only mounted
+# into Cloud Run once `enable_trusted_proxy_secret` is on — the API refuses to
+# boot on a value shorter than 32 bytes, REPLACE_ME included.
+resource "google_secret_manager_secret" "trusted_proxy_secret" {
+  secret_id = "${var.base_prefix}-trusted-proxy-secret"
+  project   = var.project_id
+  replication {
+    auto {}
+  }
+}
+
+resource "google_secret_manager_secret_version" "trusted_proxy_secret" {
+  secret      = google_secret_manager_secret.trusted_proxy_secret.id
+  secret_data = "REPLACE_ME"
+
+  lifecycle {
+    ignore_changes = [secret_data]
+  }
+}
+
 output "stripe_secret_key_secret_id" {
   value = google_secret_manager_secret.stripe_secret_key.secret_id
 }
@@ -423,6 +446,10 @@ output "google_services_client_secret_secret_id" {
 
 output "pagerduty_integration_key_secret_id" {
   value = google_secret_manager_secret.pagerduty_integration_key.secret_id
+}
+
+output "trusted_proxy_secret_secret_id" {
+  value = google_secret_manager_secret.trusted_proxy_secret.secret_id
 }
 
 output "email_api_key_secret_id" {

@@ -339,6 +339,11 @@ pub struct Config {
     /// empty list disables the redirect feature entirely (callback falls
     /// back to the historical JSON response).
     pub connection_return_url_allowed_hosts: Vec<String>,
+    /// Proxies whose `X-Forwarded-For` entries the `ClientIp` extractor
+    /// believes. `OVERSLASH_TRUSTED_PROXY_HOPS` / `_PROXIES` / `_SECRET`;
+    /// the default trusts nothing, so the socket peer is the client. See
+    /// [`crate::services::client_ip`].
+    pub trusted_proxies: crate::services::client_ip::TrustedProxies,
 }
 
 /// A credential the *platform* holds on every org's behalf, for a service the
@@ -961,6 +966,7 @@ pub(crate) mod tests {
             preview_origin_allowlist: None,
             deployment_env: DeploymentEnv::Local,
             connection_return_url_allowed_hosts: Vec::new(),
+            trusted_proxies: Default::default(),
         }
     }
 }

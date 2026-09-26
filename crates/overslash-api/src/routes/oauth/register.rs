@@ -24,6 +24,7 @@ pub(super) async fn register(
     ReqExt(ext): ReqExt,
     ctx: Option<Extension<RequestOrgContext>>,
     headers: HeaderMap,
+    crate::extractors::ClientIp(ip): crate::extractors::ClientIp,
     Json(req): Json<RegisterRequest>,
 ) -> Response {
     // Lock the client to the subdomain org it registered on: a corp-subdomain
@@ -62,15 +63,6 @@ pub(super) async fn register(
         .get(header::USER_AGENT)
         .and_then(|v| v.to_str().ok())
         .map(|s| s.chars().take(512).collect::<String>());
-    // Behind a reverse proxy, use X-Forwarded-For; direct calls don't
-    // expose the socket addr here (we intentionally keep ConnectInfo out
-    // of the handler signature so the route works in tests that don't
-    // attach ConnectInfo).
-    let ip = headers
-        .get("x-forwarded-for")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.split(',').next())
-        .map(|s| s.trim().to_string());
 
     let row = match oauth_mcp_client::create(
         state.db(&ext),

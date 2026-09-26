@@ -183,6 +183,7 @@ async fn make_app_state(pool: PgPool) -> overslash_api::AppState {
         preview_origin_allowlist: None,
         deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
+        trusted_proxies: Default::default(),
     };
     let free_unlimited_cache = Arc::new(
         overslash_api::services::billing_tier::FreeUnlimitedCache::new(Duration::from_millis(1)),
