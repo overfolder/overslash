@@ -91,6 +91,8 @@ jobs:
               - 'deny.toml'
               - 'osv-scanner.toml'
               - 'scripts/check-deny-reviews.sh'
+              - 'scripts/check-security-txt.sh'
+              - 'dashboard/static/.well-known/security.txt'
               - '.github/workflows/deps-audit.yml'
               - '.github/workflows/ci.yml'
             # CI and release plumbing no other job exercises: the other

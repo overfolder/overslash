@@ -17,9 +17,9 @@
 # every unrelated merge — it gets the SLA from the policy, tracked in the
 # issue, not a repo-wide freeze.
 #
-# Everything here reads lockfiles; nothing compiles, and nothing runs an npm
-# install script. The three jobs run in parallel and each finishes well under
-# a minute.
+# Everything here reads lockfiles (plus security.txt); nothing compiles, and
+# nothing runs an npm install script. The jobs run in parallel and each
+# finishes well under a minute.
 name: Dependency audit
 
 on:
@@ -62,6 +62,24 @@ jobs:
       # advisories (RustSec), licenses, bans, sources — config in deny.toml.
       - name: cargo deny check
         run: cargo deny --locked check
+
+  # Not a dependency scan, but the same shape of problem: a date in the repo
+  # that goes stale on its own. RFC 9116 clients ignore a security.txt past
+  # its Expires, so the daily schedule is what catches a renewal nobody made;
+  # the script fails a month early, opening the triage issue in time.
+  security-txt:
+    name: security.txt expiry
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ref: ${{ github.event_name == 'schedule' && fromJSON('["dev","master"]') || fromJSON('[""]') }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ matrix.ref }}
+      - name: security.txt fields and Expires
+        run: bash scripts/check-security-txt.sh
 
   npm-audit:
     name: npm audit (${{ matrix.dir }})

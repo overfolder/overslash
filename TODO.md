@@ -58,7 +58,7 @@ Monitoring is deployed; paging and recovery procedures are not yet exercised.
 
 ### 1.5 Legal / compliance
 
-- [ ] (later) `security.txt` at `https://www.overslash.com/.well-known/security.txt` + vuln disclosure policy page.
+- [x] `security.txt` + vuln disclosure policy page. RFC 9116 file served by the dashboard at `https://app.overslash.com/.well-known/security.txt` (`dashboard/static/.well-known/`; org subdomains redirect to it), pointing at [`SECURITY.md`](SECURITY.md). `scripts/check-security-txt.sh` fails the daily Dependency audit a month before `Expires`. The marketing site (`www.overslash.com`) does not serve one yet.
 - [ ] (later) DPA template + signing flow (DocuSign / PandaDoc / countersigned PDF). Procurement asks for this on every B2B deal.
 - [x] Subprocessor list page on the marketing site (Cloud Run, Cloud SQL, Stripe, Cloudflare, Resend, configured IdPs). On www.overslash.com/privacy
 - [ ] (later) **GDPR request handling** — document the manual process for data-export and hard-delete requests (intake → DPO ack → manual SQL → audit row). Automated endpoints are a post-launch backlog item; volume expected to be near zero at GA.
@@ -92,7 +92,7 @@ are gaps today.
 - [ ] TLS on the MCP OAuth upstream discovery / registration / token endpoints (`routes/oauth_upstream.rs`), which carry a client secret — same `outbound_tls` rule. (Webhook delivery is HTTPS-only since #664, via `services/https_policy.rs`.) (4.1.1)
 - [x] `redirect_uri` scheme allowlist + loopback-only rule + array cap on Dynamic Client Registration. https, loopback-only http, and reverse-DNS or named app schemes (cursor, vscode, windsurf); at most 10 URIs of 2048 bytes each (`services/oauth_redirect_uri.rs`). (3.2.2)
 - [ ] Per-IP registration cap on `POST /oauth/register` — the residual from 3.2.2, and the anti-automation half of 3.1.5.
-- [ ] `SECURITY.md` with a vulnerability disclosure policy and a security contact. Pairs with the `security.txt` item in §1.5.
+- [x] `SECURITY.md` with a vulnerability disclosure policy and a security contact (`security@overslash.com`): response and fix SLAs matching the dependency policy, 90-day coordinated disclosure, scope, safe harbor. Pairs with the `security.txt` item in §1.5.
 
 **P2 — will be raised by a lab.**
 
