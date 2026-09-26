@@ -133,5 +133,5 @@ enable_async_execution = false
 trusted_proxy_hops  = 1
 trusted_proxy_cidrs = "34.36.8.174/32,35.191.0.0/16,130.211.0.0/22"
 # Flip after `gcloud secrets versions add overslash-prod-trusted-proxy-secret`
-# and setting the same value as OVERSLASH_PROXY_SECRET in Vercel (Production).
+# and setting the same value as OVERSLASH_TRUSTED_PROXY_SECRET in Vercel (Production).
 enable_trusted_proxy_secret = false

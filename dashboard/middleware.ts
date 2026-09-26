@@ -5,8 +5,9 @@
 // X-Forwarded-For with the browser's address, but then connects to the API
 // from its own egress, which has no published range the API could trust. So
 // the API would record Vercel's address as the client. Instead, stamp a
-// shared secret the API is configured with (OVERSLASH_TRUSTED_PROXY_SECRET):
-// a match lets it trust exactly one more hop and read the browser's address.
+// shared secret: OVERSLASH_TRUSTED_PROXY_SECRET, the same variable name the
+// API reads, holding the same value. A match lets the API trust exactly one
+// more hop and read the browser's address.
 // See infra/README.md "Client IP & trusted proxies".
 //
 // Always *set* the header, never pass one through: a browser-supplied value
@@ -38,7 +39,7 @@ export const config = {
 
 export default function middleware(request: Request): Response {
 	const headers = new Headers(request.headers);
-	const secret = process.env.OVERSLASH_PROXY_SECRET;
+	const secret = process.env.OVERSLASH_TRUSTED_PROXY_SECRET;
 	if (secret) {
 		headers.set(SECRET_HEADER, secret);
 	} else {

@@ -181,15 +181,15 @@ The prod LB address is a literal because `module.api_lb` depends on
 
 **The Vercel hop.** Vercel overwrites `X-Forwarded-For` with the browser's
 address, then connects from egress IPs it does not publish, so nothing about
-the address can be trusted. `dashboard/middleware.ts` stamps
-`OVERSLASH_PROXY_SECRET` on every path `vercel.json` rewrites to the API (it
+the address can be trusted. `dashboard/middleware.ts` stamps the value of
+`OVERSLASH_TRUSTED_PROXY_SECRET` (the same variable name the API reads) on every path `vercel.json` rewrites to the API (it
 overwrites a client-supplied value, and strips the header when the variable
 is unset). A match trusts exactly that one extra hop. Enabling it, per env:
 
 ```bash
 SECRET=$(openssl rand -hex 32)
 printf %s "$SECRET" | gcloud secrets versions add overslash-<env>-trusted-proxy-secret --data-file=- --project <project>
-vercel env add OVERSLASH_PROXY_SECRET production   # prod value; `preview` for dev
+vercel env add OVERSLASH_TRUSTED_PROXY_SECRET production   # prod value; `preview` for dev
 # prod/dev.tfvars: enable_trusted_proxy_secret = true, then make tofu-apply ENV=<env>
 ```
 

@@ -320,6 +320,19 @@ mod tests {
     }
 
     #[test]
+    fn vouched_hop_with_nothing_behind_it_is_the_client() {
+        // Vercel always sets XFF, but if a vouched request ever arrives
+        // without one, fall back to the vouched hop itself. That address was
+        // seen, not claimed, so nothing forgeable is believed. The cost is
+        // that such requests share the egress IP's throttle bucket.
+        let t = tp("1", &format!("{LB}/32"), Some(SECRET));
+        let xff = format!("76.76.21.21, {LB}");
+        assert_eq!(resolve(&t, GFE, &[&xff], Some(SECRET)), "76.76.21.21");
+        let xff = format!("unknown, 76.76.21.21, {LB}");
+        assert_eq!(resolve(&t, GFE, &[&xff], Some(SECRET)), "76.76.21.21");
+    }
+
+    #[test]
     fn secret_vouches_for_an_untrusted_peer_too() {
         // Vercel talking to the API with no frontend in between.
         let t = tp("0", "", Some(SECRET));
