@@ -283,11 +283,9 @@ async fn a_redirect_to_plain_http_is_not_followed() {
     );
 }
 
-/// A flow minted before https was required can carry a plain-`http` token
-/// endpoint. The callback refuses to send the code (and the PKCE verifier)
-/// there, and leaves the row unconsumed.
-#[tokio::test]
-async fn the_callback_refuses_a_stored_plain_http_token_endpoint() {
+/// Store a flow with the given token endpoint, as `initiate` would have, and
+/// hit its callback as the owner. Returns `(status, body, consumed)`.
+async fn callback_on_stored_flow(token_endpoint: &str) -> (u16, String, bool) {
     let (base, client, session, identity, org, pool) = dev_session().await;
     let flow_id = format!("tlsflow{}", Uuid::new_v4().simple());
     mcp_upstream_flow::create(
@@ -299,7 +297,7 @@ async fn the_callback_refuses_a_stored_plain_http_token_endpoint() {
             upstream_resource: "https://mcp.example.com/mcp",
             upstream_client_id: "legacy_client",
             upstream_as_issuer: PLAINTEXT_PUBLIC,
-            upstream_token_endpoint: &format!("{PLAINTEXT_PUBLIC}/token"),
+            upstream_token_endpoint: token_endpoint,
             upstream_authorize_url: &format!("{PLAINTEXT_PUBLIC}/authorize"),
             pkce_code_verifier: "verifier",
             expires_at: time::OffsetDateTime::now_utc() + time::Duration::minutes(10),
@@ -320,14 +318,34 @@ async fn the_callback_refuses_a_stored_plain_http_token_endpoint() {
         .unwrap();
     let status = resp.status().as_u16();
     let body = resp.text().await.unwrap();
-    assert_tls_refusal(status, &body, "token_endpoint");
-
     let row = mcp_upstream_flow::get_by_id(&pool, &flow_id)
         .await
         .unwrap()
         .unwrap();
+    (status, body, row.consumed_at.is_some())
+}
+
+/// A flow minted before https was required can carry a plain-`http` token
+/// endpoint. The callback refuses to send the code (and the PKCE verifier)
+/// there, and leaves the row unconsumed.
+#[tokio::test]
+async fn the_callback_refuses_a_stored_plain_http_token_endpoint() {
+    let (status, body, consumed) =
+        callback_on_stored_flow(&format!("{PLAINTEXT_PUBLIC}/token")).await;
+    assert_tls_refusal(status, &body, "token_endpoint");
+    assert!(!consumed, "a refused callback must not burn the flow");
+}
+
+/// The dial-time checks (DNS, SSRF guard, TLS on the pinned address) run
+/// before the flow is claimed too, not only the string check — so an endpoint
+/// that passes as a string but is refused once resolved still leaves the flow
+/// intact. `10.0.0.1` is private and outside the suite's loopback allow-list.
+#[tokio::test]
+async fn the_callback_checks_the_resolved_token_endpoint_before_consuming() {
+    let (status, body, consumed) = callback_on_stored_flow("https://10.0.0.1/token").await;
+    assert_eq!(status, 400, "{body}");
     assert!(
-        row.consumed_at.is_none(),
-        "a refused callback must not burn the flow"
+        !consumed,
+        "a refused callback must not burn the flow: {body}"
     );
 }

@@ -19,10 +19,10 @@
 //! address the SSRF guard pinned, with plain `http` let through only to an
 //! operator-allowed range (`OVERSLASH_SSRF_ALLOWED_CIDRS`). The pinned clients
 //! never follow a redirect, so the hop that was checked is the only hop. The
-//! endpoint URLs the AS metadata hands back are checked as strings before the
-//! flow is minted, so an `http` `token_endpoint` fails `initiate` with a 400
-//! instead of the user finishing consent into a callback that cannot exchange
-//! the code.
+//! endpoint URLs the AS metadata hands back are checked (resolving a hostname
+//! when plain `http` is on the table) before the flow is minted, so an `http`
+//! `token_endpoint` fails `initiate` with a 400 instead of the user finishing
+//! consent into a callback that cannot exchange the code.
 
 use std::time::Duration as StdDuration;
 
@@ -325,11 +325,12 @@ async fn initiate(
         )
     })?;
     // The metadata document is upstream-controlled: refuse an `http` endpoint
-    // before anything is registered or minted. The token endpoint is dialed
-    // later, from the callback, and is checked again there against the pinned
-    // address; the authorize endpoint is where the user's browser logs in.
-    check_endpoint_url("authorization_endpoint", &as_meta.authorization_endpoint)?;
-    check_endpoint_url("token_endpoint", &as_meta.token_endpoint)?;
+    // before anything is registered or minted. Resolved, not just parsed: the
+    // authorize endpoint is only ever visited by the user's browser, so there
+    // is no dial-time check behind this one to defer a hostname to. The token
+    // endpoint is dialed from the callback and checked again there.
+    check_endpoint_url("authorization_endpoint", &as_meta.authorization_endpoint).await?;
+    check_endpoint_url("token_endpoint", &as_meta.token_endpoint).await?;
     let reg_client = upstream_client("registration_endpoint", registration_endpoint).await?;
 
     // Register Overslash as a public client at the upstream AS.
@@ -425,10 +426,12 @@ async fn upstream_client(field: &str, url: &str) -> Result<reqwest::Client, AppE
     Ok(client)
 }
 
-/// [`outbound_tls::check_url`] on an upstream endpoint URL that is stored or
-/// handed on rather than dialed right away.
-fn check_endpoint_url(field: &str, url: &str) -> Result<(), AppError> {
-    outbound_tls::check_url(url).map_err(|e| name_endpoint(field, e))
+/// [`outbound_tls::check_url_resolving`] on an upstream endpoint URL that is
+/// stored or handed on rather than dialed right away.
+async fn check_endpoint_url(field: &str, url: &str) -> Result<(), AppError> {
+    outbound_tls::check_url_resolving(url)
+        .await
+        .map_err(|e| name_endpoint(field, e))
 }
 
 fn name_endpoint(field: &str, e: AppError) -> AppError {
@@ -580,10 +583,16 @@ async fn callback(
         ));
     }
 
-    // A flow minted before https was required can carry an `http` token
-    // endpoint. Refuse it before consuming, so the row isn't burned on a
-    // request that was never going to be sent.
-    check_endpoint_url("token_endpoint", &flow_preview.upstream_token_endpoint)?;
+    // Build the token client — SSRF guard, DNS pin, TLS rule — *before*
+    // claiming the row, so a refusal (a flow minted before https was
+    // required, or a host that now resolves outside the allowed range) leaves
+    // the flow intact instead of burning it on a request never sent. No
+    // re-discovery — the endpoint was validated and persisted on the flow row,
+    // so a path-based multi-tenant AS keeps working without round-tripping
+    // its metadata document again. The row can't change between here and the
+    // consume below: nothing updates a flow's token endpoint.
+    let token_client =
+        upstream_client("token_endpoint", &flow_preview.upstream_token_endpoint).await?;
 
     // Now that the session is authorized, atomically claim the row.
     // Concurrent racing callbacks: the first transaction wins; the second
@@ -596,11 +605,7 @@ async fn callback(
     };
 
     // Exchange the code at the upstream token endpoint we resolved at mint
-    // time. SSRF-guard and TLS-check the connection. No re-discovery — the
-    // endpoint was validated and persisted on the flow row, so a path-based
-    // multi-tenant AS keeps working without round-tripping its metadata
-    // document again.
-    let token_client = upstream_client("token_endpoint", &flow.upstream_token_endpoint).await?;
+    // time, on the client built above.
     let redirect_uri = callback_redirect_uri(&state.config.public_url);
     let tokens = svc::exchange_code(
         &token_client,
