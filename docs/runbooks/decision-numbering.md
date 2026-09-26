@@ -113,6 +113,7 @@ the pre-commit hook) enforces:
 
 | | Rule |
 |---|---|
+| 0 | Decision headings start at column 0 (an indented one hides from every other rule and from the allocator) |
 | 1 | No duplicate `## D<n>` headings |
 | 2 | No gaps in the sequence |
 | 3 | Every entry keeps its Date / Decision / Rationale lines |
