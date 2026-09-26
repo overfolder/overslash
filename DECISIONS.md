@@ -1084,3 +1084,42 @@ Flow B (task-augmented `tools/call`) stays rejected with its revisit condition u
 **Rationale**: Path-gating keeps an advisory published against an unchanged lockfile from freezing every unrelated merge. It gets an SLA and an issue instead of a repo-wide block, and the daily scan guarantees it is seen within a day. npm audit gates at `high` because it has no per-advisory ignore, so anything it fails on can only be fixed. A no-fix moderate would otherwise leave CI red with no legitimate exit. OSV covers the moderate and low tail, and it does support time-boxed exceptions. It also overlaps the other two on purpose: on its first run it caught a dashboard `devalue` advisory that npm audit had not reported. The 90-day cap exists because cargo-deny has no expiry of its own, and an ignore that is never re-read silently outlives its justification. Tradeoff accepted: a PR can merge while a known advisory sits in an untouched lockfile, for up to its SLA.
 
 **Numbering**: allocated D95 by #661, then #657's merge indented this heading, so the allocator stopped seeing it and gave #657's decision D95 as well. This entry moved instead of that one because every other citation of D95 means the elicitation decision.
+
+## D-NEXT: `/mcp` also speaks MCP 2026-07-28, and its approval dialogs are multi round-trip requests with a signed `requestState` over the existing row
+
+**Date**: 2026-09-26
+**Decision**: `POST /mcp` is dual-era.
+- **Which era a request uses.** A request that carries `_meta["io.modelcontextprotocol/protocolVersion"]`, or is `server/discover`, is served as 2026-07-28 (`routes/mcp/modern.rs`). Everything else, `initialize` included, takes the unchanged `2025-06-18` path.
+- **What a modern request must carry.** The version must be `2026-07-28` (otherwise 400 `-32022`), and `MCP-Protocol-Version` / `Mcp-Method` / `Mcp-Name` must mirror the body (otherwise 400 `-32020`).
+- **What a modern request gets back.**
+  - `server/discover` advertises `["2026-07-28", "2025-06-18"]`.
+  - Every result carries `resultType` and `serverInfo`.
+  - `tools/list` and `server/discover` carry `ttlMs` plus `cacheScope: "private"`, because both are per caller.
+  - An unknown method is a 404 `-32601`.
+  - No session id is minted.
+- **Approval dialogs on a modern request.** The dialog is a multi round-trip request, not an SSE `elicitation/create`:
+  - The gated `tools/call` returns `input_required`, with the D99 decision form under `inputRequests.decision` and a `requestState`.
+  - The client retries with `inputResponses`.
+  - The retry runs the same `complete_from_elicitation` the legacy receiver runs, and answers with the result, the `isError` denial, the D99 follow-up (a second `input_required` under `remember`), or the D95 `pending_approval` envelope.
+- **What `requestState` is.** An HS256 token (`kind: "mcp_request_state"`) holding:
+  - the agent, and the MCP client;
+  - the elicitation row id and the step;
+  - a SHA-256 of the tool name plus key-sorted arguments;
+  - the `pending_approval` envelope;
+  - an expiry at the legacy 300s poll ceiling.
+- **What the retry checks.** The signature, `kind`, expiry, principal and digest, then that the row still belongs to the agent. The retry never dispatches the call a second time.
+- **Capabilities.** Eligibility reads the request's own `_meta` capabilities, and they are also recorded on `oauth_mcp_clients` for the dashboard. A client that lists elicitation modes gets a form only if it lists `form`, in both eras.
+
+**Rationale**: Claude Code (2.1.282+) declares `elicitation: { form, url }` only on a 2026-07-28 connection. It reaches that by probing `server/discover` first, and falls back to `initialize` on any non-modern answer. So URL-mode elicitation for Claude Code starts with speaking this era. That era has no server-to-client requests, which means the approval dialogs had to move onto the multi round-trip request (MRTR) shape before anything else could.
+
+**The dialogs keep the `pending_mcp_elicitations` row rather than going fully stateless.** The row already does jobs a `requestState` cannot:
+- it suppresses the approval's auto-call while a dialog is open;
+- a `cancel` on it starts D95's cooldown;
+- disconnect retires it;
+- it makes a duplicate retry idempotent, since `claim` lets only one retry resolve.
+
+The token adds what the retry needs to be served by any replica: the principal binding the spec requires, the envelope for the fallback and the follow-up, and the request digest. The digest stops a genuine state from being pasted onto a different call.
+
+**A modern row nobody retries is left to the existing sweeper.** Until it is reaped, the approval's auto-call stays suppressed for up to the same 360s a dead legacy originator already costs.
+
+**Verified against the real client.** Claude Code 2.1.283 negotiated 2026-07-28 against a local build. In headless mode it cancelled the dialog and got the envelope. Driven as an SDK host answering "Allow once", its retry executed the call. Codex 0.157.0 still negotiates `2025-06-18`, where nothing changed.

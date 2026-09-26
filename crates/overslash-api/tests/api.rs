@@ -98,6 +98,7 @@ mod mcp_external;
 mod mcp_external_e2e;
 mod mcp_filter;
 mod mcp_inbox;
+mod mcp_modern_protocol;
 mod mcp_oauth;
 mod mcp_replay;
 mod mcp_require_risk;

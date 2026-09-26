@@ -9,10 +9,17 @@ use super::*;
 /// multi-client-per-agent setup, an eligible client could be denied
 /// because the most recent binding belongs to a different client whose
 /// capabilities or toggle don't match.
+///
+/// `declared` is where the client's capabilities come from. A legacy
+/// (`initialize`) connection declared them once, at handshake, and they were
+/// persisted on the client row — pass `None` to read them from there. A
+/// 2026-07-28 request carries its own in `_meta`, which is the only
+/// authority for that request — pass them as `Some`.
 pub(super) async fn elicitation_eligible(
     state: &AppState,
     ext: &axum::http::Extensions,
     auth: &AuthContext,
+    declared: Option<&Value>,
 ) -> bool {
     let Some(agent_id) = auth.identity_id else {
         return false;
@@ -33,19 +40,21 @@ pub(super) async fn elicitation_eligible(
     if binding.elicitation_opted_out {
         return false;
     }
-    let client =
-        match overslash_db::repos::oauth_mcp_client::get_by_client_id(state.db(ext), client_id)
-            .await
-        {
-            Ok(Some(c)) => c,
-            _ => return false,
-        };
-    if client
-        .capabilities
-        .as_ref()
-        .and_then(|c| c.get("elicitation"))
-        .is_none()
-    {
+    let form_supported = match declared {
+        Some(caps) => supports_form_elicitation(caps),
+        None => {
+            match overslash_db::repos::oauth_mcp_client::get_by_client_id(state.db(ext), client_id)
+                .await
+            {
+                Ok(Some(c)) => c
+                    .capabilities
+                    .as_ref()
+                    .is_some_and(supports_form_elicitation),
+                _ => false,
+            }
+        }
+    };
+    if !form_supported {
         return false;
     }
     // Back off after an unanswered dialog (see `CANCEL_COOLDOWN`). Last check
@@ -62,6 +71,18 @@ pub(super) async fn elicitation_eligible(
         .await,
         Ok(false)
     )
+}
+
+/// Does a declared `capabilities` object allow a form-mode dialog?
+///
+/// `elicitation: {}` is the pre-`2025-11-25` shape and means form only, per
+/// both the 2025-11-25 and 2026-07-28 specs; a client that lists modes must
+/// list `form` for one to be sent. A `{ url: {} }`-only client gets no form.
+pub(super) fn supports_form_elicitation(capabilities: &Value) -> bool {
+    match capabilities.get("elicitation") {
+        Some(Value::Object(modes)) => modes.is_empty() || modes.contains_key("form"),
+        _ => false,
+    }
 }
 
 pub(super) fn sse_elicitation_response(
@@ -185,21 +206,24 @@ fn elicit_result_event(
     outcome: mcp_session::ElicitOutcome,
     pending_outcome: &Value,
 ) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "id": rpc_id,
+        "result": elicit_result(outcome, pending_outcome),
+    })
+}
+
+/// The `tools/call` result a settled elicitation ends in — shared by the
+/// legacy SSE tail and the 2026-07-28 retry, so the two eras can never
+/// disagree about what a denial or an unanswered dialog looks like.
+pub(super) fn elicit_result(outcome: mcp_session::ElicitOutcome, pending_outcome: &Value) -> Value {
     match outcome {
         mcp_session::ElicitOutcome::Completed(v) => json!({
-            "jsonrpc": "2.0",
-            "id": rpc_id,
-            "result": {
-                "content": [{ "type": "text", "text": serde_json::to_string(&v).unwrap_or_default() }],
-            }
+            "content": [{ "type": "text", "text": serde_json::to_string(&v).unwrap_or_default() }],
         }),
         mcp_session::ElicitOutcome::Failed(v) => json!({
-            "jsonrpc": "2.0",
-            "id": rpc_id,
-            "result": {
-                "isError": true,
-                "content": [{ "type": "text", "text": serde_json::to_string(&v).unwrap_or_default() }],
-            }
+            "isError": true,
+            "content": [{ "type": "text", "text": serde_json::to_string(&v).unwrap_or_default() }],
         }),
         // Nobody answered. The approval is still pending, so close the call
         // with the very envelope the non-elicitation path would have returned
@@ -215,11 +239,9 @@ fn elicit_result_event(
         // — is right for that state anyway, so it self-heals.
         // The stream turns a `FollowUp` into a second dialog before it ever
         // reaches here; one that does is a dialog nobody finished.
-        mcp_session::ElicitOutcome::Abandoned | mcp_session::ElicitOutcome::FollowUp(_) => json!({
-            "jsonrpc": "2.0",
-            "id": rpc_id,
-            "result": super::tools_call::pending_approval_result(pending_outcome),
-        }),
+        mcp_session::ElicitOutcome::Abandoned | mcp_session::ElicitOutcome::FollowUp(_) => {
+            super::tools_call::pending_approval_result(pending_outcome)
+        }
     }
 }
 
@@ -231,7 +253,7 @@ fn elicit_result_event(
 /// and duration only mean something for "Allow & remember", so they live in
 /// the follow-up dialog that choice raises ([`remember_params`]). Answers are
 /// translated in `mcp_session::complete_from_elicitation`.
-fn elicitation_params(action_summary: &str, pending_outcome: &Value) -> Value {
+pub(super) fn elicitation_params(action_summary: &str, pending_outcome: &Value) -> Value {
     json!({
         "message": format!("Allow this agent to: {}?", action_summary),
         "requestedSchema": {
@@ -265,7 +287,7 @@ fn elicitation_params(action_summary: &str, pending_outcome: &Value) -> Value {
 /// them against the approval, so nothing here is trusted. The narrowest tier
 /// is the default. With no tiers the scope field is left out and the
 /// approval's own keys are remembered.
-fn remember_params(pending_outcome: &Value) -> Value {
+pub(super) fn remember_params(pending_outcome: &Value) -> Value {
     let action_summary = pending_outcome
         .get("action_description")
         .and_then(Value::as_str)
@@ -425,6 +447,22 @@ mod tests {
             &envelope(),
         );
         assert_eq!(failed["result"]["isError"], true);
+    }
+
+    /// `elicitation: {}` predates modes and means form; a client that lists
+    /// modes gets a form only if it listed `form`.
+    #[test]
+    fn form_support_follows_the_declared_modes() {
+        for (caps, form) in [
+            (json!({ "elicitation": {} }), true),
+            (json!({ "elicitation": { "form": {} } }), true),
+            (json!({ "elicitation": { "form": {}, "url": {} } }), true),
+            (json!({ "elicitation": { "url": {} } }), false),
+            (json!({ "roots": {} }), false),
+            (json!({}), false),
+        ] {
+            assert_eq!(supports_form_elicitation(&caps), form, "{caps}");
+        }
     }
 
     /// The decision dialog must not ask anything that only one choice uses:
