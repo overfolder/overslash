@@ -1139,7 +1139,7 @@ The token adds what the retry needs to be served by any replica: the principal b
 
 **Verified against the real client.** Claude Code 2.1.283 negotiated 2026-07-28 against a local build. In headless mode it cancelled the dialog and got the envelope. Driven as an SDK host answering "Allow once", its retry executed the call. Codex 0.157.0 still negotiates `2025-06-18`, where nothing changed.
 
-## D-NEXT: Links the user must open become URL-mode elicitations that wait for the browser flow, and a declined link is never an answer
+## D104: Links the user must open become URL-mode elicitations that wait for the browser flow, and a declined link is never an answer
 
 **Date**: 2026-09-28
 **Decision**: When the client declares `elicitation.url`, every tool result that ends with a human opening a browser link is handed to the user as a URL-mode elicitation (`routes/mcp/url_elicitation.rs`), and the call answers only once that browser flow finishes. This is on by default wherever the client can do it. It does not depend on the "Approve in your client" toggle, because that toggle is about answering approvals *inside* the client, and URL mode sends the user out of it.
