@@ -100,23 +100,27 @@ impl ClientIp {
     /// The resolution itself, for handlers that hold `&Parts` rather than
     /// extracting.
     pub fn resolve(parts: &Parts, state: &AppState) -> Self {
-        let peer = parts
-            .extensions
+        Self::resolve_from(&parts.headers, &parts.extensions, state)
+    }
+
+    /// The same, for middleware that holds a whole request.
+    pub fn resolve_from(
+        headers: &axum::http::HeaderMap,
+        extensions: &axum::http::Extensions,
+        state: &AppState,
+    ) -> Self {
+        let peer = extensions
             .get::<axum::extract::ConnectInfo<SocketAddr>>()
             .map(|c| c.0.ip());
-        let xff: Vec<&str> = parts
-            .headers
+        let xff: Vec<&str> = headers
             .get_all("x-forwarded-for")
             .iter()
             .filter_map(|v| v.to_str().ok())
             .collect();
         use crate::services::client_ip::{CLIENT_IP_HEADER, PROXY_SECRET_HEADER, ProxyStamp};
         let stamp = ProxyStamp {
-            secret: parts.headers.get(PROXY_SECRET_HEADER).map(|v| v.as_bytes()),
-            client: parts
-                .headers
-                .get(CLIENT_IP_HEADER)
-                .and_then(|v| v.to_str().ok()),
+            secret: headers.get(PROXY_SECRET_HEADER).map(|v| v.as_bytes()),
+            client: headers.get(CLIENT_IP_HEADER).and_then(|v| v.to_str().ok()),
         };
         ClientIp(
             state

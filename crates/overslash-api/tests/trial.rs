@@ -158,6 +158,7 @@ async fn make_app_state(pool: PgPool) -> overslash_api::AppState {
         resolve_cache_namespace: None,
         default_rate_limit: 1000,
         default_rate_window_secs: 60,
+        ingress_rate_limits: overslash_api::config::IngressRateLimits::disabled(),
         allow_org_creation: true,
         trial_default_duration_days: 30,
         single_org_mode: None,

@@ -684,6 +684,9 @@ where
         resolve_cache_namespace: None,
         default_rate_limit: 10000,
         default_rate_window_secs: 60,
+        // Off in the harness so a test that registers many clients from
+        // 127.0.0.1 is not throttled; `tests/ingress_rate_limits.rs` turns them on.
+        ingress_rate_limits: overslash_api::config::IngressRateLimits::disabled(),
         allow_org_creation: true,
         trial_default_duration_days: 30,
         single_org_mode: None,
@@ -790,10 +793,8 @@ where
         .merge(overslash_api::routes::directory_groups::router())
         .merge(overslash_api::routes::rate_limits::router())
         .merge(overslash_api::routes::preferences::router())
-        .merge(overslash_api::routes::oauth_as::router())
-        .merge(overslash_api::routes::oauth::router())
+        .merge(overslash_api::mcp_oauth_routes(&state))
         .merge(overslash_api::routes::oauth::consent_router())
-        .merge(overslash_api::routes::mcp::router())
         .merge(overslash_api::routes::oauth_mcp_clients::router())
         .merge(overslash_api::routes::unsubscribe::router());
 
@@ -915,6 +916,7 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         resolve_cache_namespace: None,
         default_rate_limit: 10000,
         default_rate_window_secs: 60,
+        ingress_rate_limits: overslash_api::config::IngressRateLimits::disabled(),
         allow_org_creation: true,
         trial_default_duration_days: 30,
         single_org_mode: None,
@@ -1010,11 +1012,9 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         .merge(overslash_api::routes::directory_groups::router())
         .merge(overslash_api::routes::rate_limits::router())
         .merge(overslash_api::routes::preferences::router())
-        .merge(overslash_api::routes::oauth_as::router())
-        .merge(overslash_api::routes::oauth::router())
+        .merge(overslash_api::mcp_oauth_routes(&state))
         .merge(overslash_api::routes::oauth::consent_router())
         .merge(overslash_api::routes::oauth_upstream::router())
-        .merge(overslash_api::routes::mcp::router())
         .merge(overslash_api::routes::oauth_mcp_clients::router())
         .merge(overslash_api::routes::unsubscribe::router())
         .with_state(state)
@@ -1092,6 +1092,7 @@ pub async fn start_api_with_auth_providers(
         resolve_cache_namespace: None,
         default_rate_limit: 10000,
         default_rate_window_secs: 60,
+        ingress_rate_limits: overslash_api::config::IngressRateLimits::disabled(),
         allow_org_creation: true,
         trial_default_duration_days: 30,
         single_org_mode: None,
@@ -1790,6 +1791,7 @@ where
         resolve_cache_namespace: None,
         default_rate_limit: 10000,
         default_rate_window_secs: 60,
+        ingress_rate_limits: overslash_api::config::IngressRateLimits::disabled(),
         allow_org_creation: true,
         trial_default_duration_days: 30,
         single_org_mode: None,
@@ -1884,10 +1886,8 @@ where
         .merge(overslash_api::routes::directory_groups::router())
         .merge(overslash_api::routes::rate_limits::router())
         .merge(overslash_api::routes::preferences::router())
-        .merge(overslash_api::routes::oauth_as::router())
-        .merge(overslash_api::routes::oauth::router())
+        .merge(overslash_api::mcp_oauth_routes(&state))
         .merge(overslash_api::routes::oauth::consent_router())
-        .merge(overslash_api::routes::mcp::router())
         .merge(overslash_api::routes::oauth_mcp_clients::router())
         .merge(overslash_api::routes::search::router())
         .with_state(state)
@@ -1974,6 +1974,7 @@ pub async fn start_api_for_search(pool: PgPool) -> (String, Client) {
         resolve_cache_namespace: None,
         default_rate_limit: 10000,
         default_rate_window_secs: 60,
+        ingress_rate_limits: overslash_api::config::IngressRateLimits::disabled(),
         allow_org_creation: true,
         trial_default_duration_days: 30,
         single_org_mode: None,
@@ -2051,8 +2052,8 @@ pub async fn start_api_for_search(pool: PgPool) -> (String, Client) {
         .merge(overslash_api::routes::downloads::router())
         .merge(overslash_api::routes::uploads::router())
         .merge(overslash_api::routes::actions::validate_router())
-        .merge(overslash_api::routes::mcp::router())
         .merge(overslash_api::routes::auth::router())
+        .merge(overslash_api::mcp_oauth_routes(&state))
         .with_state(state)
         .layer(axum::middleware::from_fn(
             overslash_api::middleware::security_headers::security_headers,
@@ -2129,6 +2130,7 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         resolve_cache_namespace: None,
         default_rate_limit: 10000,
         default_rate_window_secs: 60,
+        ingress_rate_limits: overslash_api::config::IngressRateLimits::disabled(),
         allow_org_creation: true,
         trial_default_duration_days: 30,
         single_org_mode: None,
@@ -2222,10 +2224,8 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         .merge(overslash_api::routes::directory_groups::router())
         .merge(overslash_api::routes::rate_limits::router())
         .merge(overslash_api::routes::preferences::router())
-        .merge(overslash_api::routes::oauth_as::router())
-        .merge(overslash_api::routes::oauth::router())
+        .merge(overslash_api::mcp_oauth_routes(&state))
         .merge(overslash_api::routes::oauth::consent_router())
-        .merge(overslash_api::routes::mcp::router())
         .merge(overslash_api::routes::oauth_mcp_clients::router())
         .with_state(state)
         .layer(axum::middleware::from_fn(
@@ -2471,6 +2471,7 @@ pub async fn make_app_state(pool: PgPool) -> overslash_api::AppState {
         resolve_cache_namespace: None,
         default_rate_limit: 1000,
         default_rate_window_secs: 60,
+        ingress_rate_limits: overslash_api::config::IngressRateLimits::disabled(),
         allow_org_creation: true,
         trial_default_duration_days: 30,
         single_org_mode: None,

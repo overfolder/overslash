@@ -239,10 +239,8 @@ fn build_shared_router(state: AppState) -> axum::Router {
         .merge(routes::groups::router())
         .merge(routes::rate_limits::router())
         .merge(routes::preferences::router())
-        .merge(routes::oauth_as::router())
-        .merge(routes::oauth::router())
+        .merge(overslash_api::mcp_oauth_routes(&state))
         .merge(routes::oauth::consent_router())
-        .merge(routes::mcp::router())
         .merge(routes::oauth_mcp_clients::router())
         .merge(routes::unsubscribe::router())
         // Test-pool middleware runs BEFORE subdomain_middleware so
@@ -343,6 +341,7 @@ fn shared_config(addr: SocketAddr) -> overslash_api::config::Config {
         resolve_cache_namespace: None,
         default_rate_limit: 10000,
         default_rate_window_secs: 60,
+        ingress_rate_limits: overslash_api::config::IngressRateLimits::disabled(),
         allow_org_creation: true,
         trial_default_duration_days: 30,
         single_org_mode: None,

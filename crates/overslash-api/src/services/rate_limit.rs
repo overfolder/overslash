@@ -21,7 +21,7 @@ pub struct RateLimitResult {
 }
 
 /// Resolved rate limit config (max_requests, window_seconds).
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RateLimitConfig {
     pub max_requests: u32,
     pub window_seconds: u32,
@@ -434,6 +434,18 @@ pub async fn create_store_with_eviction(
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────
+
+/// The 429 for a refused check: `Retry-After`, `X-RateLimit-*` and the JSON
+/// body, all from [`crate::error::AppError::RateLimited`].
+pub fn too_many_requests(result: &RateLimitResult) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    crate::error::AppError::RateLimited {
+        limit: result.limit,
+        reset_at: result.reset_at,
+        retry_after: result.reset_at.saturating_sub(now_unix()),
+    }
+    .into_response()
+}
 
 pub fn now_unix() -> u64 {
     SystemTime::now()

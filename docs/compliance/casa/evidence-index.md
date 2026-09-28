@@ -17,7 +17,7 @@ snippets and the policies, because those are the parts it cannot test for. Assum
 
 | For | Statement | Status | Source |
 |-----|-----------|--------|--------|
-| 1.1.1 | The list of external authentication services (Google, GitHub, per-org OIDC), plus the magic-link anti-automation policy: per-IP 30/600s, per-email 5/900s, opaque response on every outcome | `need` | `routes/auth/magic_link.rs:16-19,76-113` |
+| 1.1.1 | The list of external authentication services (Google, GitHub, per-org OIDC), plus the anti-automation policy: magic link per-IP 30/600s and per-email 5/900s with an opaque response on every outcome; OAuth handshake per-IP 120/60s; Dynamic Client Registration per-IP 20/3600s; every credential (key, MCP token, session) metered on `/v1` | `need` | `routes/auth/magic_link.rs:16-19,76-113`, `middleware/ingress_rate_limit.rs`, `middleware/rate_limit.rs` |
 | 1.1.3 | "No passwords exist." Describe the API-key analogue: Argon2id, 256-bit entropy, prefix-indexed, revocable, expiring | `need` | `routes/api_keys.rs:191-209` |
 | 2.1.1 | Why three capability tokens legitimately appear in URLs, and their compensating properties (single-use / short-TTL, SHA-256 at rest, clean redirect after use) | `need` | `gap-assessment.md` 2.1.1 |
 | 2.3.3 | Why `osk_` API keys coexist with session tokens — programmatic access, not user sessions | `need` | — |

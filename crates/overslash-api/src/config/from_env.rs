@@ -147,6 +147,7 @@ impl Config {
             resolve_cache_namespace: env::optional("RESOLVE_CACHE_NAMESPACE"),
             default_rate_limit: env::parse_opt("DEFAULT_RATE_LIMIT").unwrap_or(1000),
             default_rate_window_secs: env::parse_opt("DEFAULT_RATE_WINDOW_SECS").unwrap_or(60),
+            ingress_rate_limits: IngressRateLimits::from_env(),
             allow_org_creation: env::flag_or("ALLOW_ORG_CREATION", true),
             trial_default_duration_days: env::parse_opt("TRIAL_DEFAULT_DURATION_DAYS")
                 .filter(|d| *d > 0)
