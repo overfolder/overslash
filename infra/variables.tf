@@ -149,6 +149,18 @@ variable "use_private_vpc" {
   default     = false
 }
 
+variable "enable_bi" {
+  description = "Provision the BI surface: a BigQuery connection + overslash_bi dataset over the Postgres `bi` schema (docs/runbooks/bi.md)."
+  type        = bool
+  default     = false
+}
+
+variable "bi_viewers" {
+  description = "IAM members (e.g. user:a@b.com) allowed to query overslash_bi. Project owners already can."
+  type        = list(string)
+  default     = []
+}
+
 variable "enable_valkey" {
   description = "Enable Memorystore Valkey for webhooks/pub-sub"
   type        = bool

@@ -19,6 +19,7 @@ resource "google_project_service" "apis" {
     var.enable_dns ? ["dns.googleapis.com"] : [],
     var.enable_api_lb ? ["certificatemanager.googleapis.com"] : [],
     var.enable_valkey ? ["redis.googleapis.com"] : [],
+    var.enable_bi ? ["bigquery.googleapis.com", "bigqueryconnection.googleapis.com"] : [],
   ))
 
   service            = each.key
@@ -100,6 +101,23 @@ module "cloud_sql" {
     google_project_service.apis,
     module.networking,
   ]
+}
+
+# --- BI (BigQuery federation over the `bi` schema; docs/runbooks/bi.md) ---
+module "bi" {
+  count = var.enable_bi ? 1 : 0
+
+  source      = "./modules/bi"
+  project_id  = var.project_id
+  region      = var.region
+  base_prefix = local.base_prefix
+
+  sql_instance_name   = module.cloud_sql.instance_name
+  sql_connection_name = module.cloud_sql.connection_name
+  sql_database        = module.cloud_sql.db_name
+  bi_viewers          = var.bi_viewers
+
+  depends_on = [google_project_service.apis]
 }
 
 # --- Cloud Run ---

@@ -56,6 +56,10 @@ enable_valkey    = true
 enable_dns       = false
 enable_shortener = true
 
+# BI: BigQuery federation over the Postgres `bi` schema (docs/runbooks/bi.md).
+# After apply, once: `GRANT bi_reader TO bi;` via bin/db-shell.sh prod.
+enable_bi = true
+
 # Shared overfwd Mailbox Gateway. This hostname is what `services/email.yaml`
 # ships as `servers[0]`, so every `email` instance that pins no `url` lands
 # here. Needs a manual `mailbox CNAME ghs.googlehosted.com` at the registrar.
