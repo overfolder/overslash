@@ -164,7 +164,7 @@ store.
 all live in `_Default` — 30 days, unlocked, deletable by anyone with `roles/logging.admin`.
 
 **Remediation written, not applied (2026-09-28).** `infra/modules/audit-logging/` turns on
-Data Access for Secret Manager, Cloud SQL Admin and Cloud Run, sinks every Cloud Audit Log
+Data Access for Secret Manager, Cloud SQL (`cloudsql.googleapis.com`) and Cloud Run, sinks every Cloud Audit Log
 to a 400-day `overslash-<env>-audit` bucket (locked in prod), and alerts on
 `AccessSecretVersion` by anyone but the runtime SA. The measurements above stand until an
 operator applies it; re-measure afterwards. Policy:

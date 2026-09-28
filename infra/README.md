@@ -216,7 +216,7 @@ browser's address, not a Vercel or Google one.
 ### Audit logging (CASA 6.7.1)
 
 `module.audit_logging` turns on Data Access audit logs (`ADMIN_READ`, `DATA_READ`,
-`DATA_WRITE`) for Secret Manager, Cloud SQL Admin and Cloud Run; routes every Cloud
+`DATA_WRITE`) for Secret Manager, Cloud SQL (`cloudsql.googleapis.com`, which also carries pgAudit output) and Cloud Run; routes every Cloud
 Audit Log into a dedicated bucket `overslash-<env>-audit` kept for
 `audit_log_retention_days` (400); and alerts (P1, email) whenever a principal other than
 the runtime service account reads a secret payload. Policy and rationale:

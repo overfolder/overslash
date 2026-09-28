@@ -4,7 +4,7 @@
 #
 # Four pieces:
 #
-# 1. Data Access audit logs on Secret Manager, Cloud SQL Admin and Cloud Run.
+# 1. Data Access audit logs on Secret Manager, Cloud SQL and Cloud Run.
 #    GCP leaves these off by default, and the live projects returned
 #    `auditConfigs: NONE` (gcp-posture.md), so an AccessSecretVersion on the
 #    vault master key left no record at all.
@@ -15,6 +15,12 @@
 #    `expected_secret_accessors`, and an alert on it.
 
 # --- 1. Data Access audit logs ---
+#
+# Keyed by the service name the logs are emitted under. For Cloud SQL that is
+# `cloudsql.googleapis.com`, NOT its API endpoint `sqladmin.googleapis.com`:
+# every Cloud SQL audit entry in the live projects carries the former, and
+# `sqladmin` in auditConfigs enables nothing. This is also what makes the
+# pgAudit output (cloud-sql module) visible: it is a Cloud SQL Data Access log.
 #
 # Non-authoritative per service: each resource owns only its own service's
 # entry in the project policy's `auditConfigs`, so it does not fight the

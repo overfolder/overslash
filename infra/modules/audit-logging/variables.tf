@@ -32,8 +32,8 @@ variable "locked" {
 
 variable "audited_services" {
   type        = list(string)
-  default     = ["secretmanager.googleapis.com", "sqladmin.googleapis.com", "run.googleapis.com"]
-  description = "Services whose Data Access audit logs (ADMIN_READ, DATA_READ, DATA_WRITE) are turned on. Admin Activity logs are always on and need no config."
+  default     = ["secretmanager.googleapis.com", "cloudsql.googleapis.com", "run.googleapis.com"]
+  description = "Services whose Data Access audit logs (ADMIN_READ, DATA_READ, DATA_WRITE) are turned on. Admin Activity logs are always on and need no config. Use the service name the audit logs are emitted under (protoPayload.serviceName): Cloud SQL logs as cloudsql.googleapis.com, not its API endpoint sqladmin.googleapis.com."
 }
 
 variable "expected_secret_accessors" {

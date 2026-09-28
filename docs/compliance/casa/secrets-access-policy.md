@@ -60,7 +60,7 @@ never be exempted from the alert.
 
 | Control | Setting | Where |
 |---------|---------|-------|
-| Data Access audit logs | `ADMIN_READ`, `DATA_READ`, `DATA_WRITE` on `secretmanager.googleapis.com`, `sqladmin.googleapis.com`, `run.googleapis.com` | `google_project_iam_audit_config.data_access` |
+| Data Access audit logs | `ADMIN_READ`, `DATA_READ`, `DATA_WRITE` on `secretmanager.googleapis.com`, `cloudsql.googleapis.com`, `run.googleapis.com` (the Cloud SQL entry also makes pgAudit output visible) | `google_project_iam_audit_config.data_access` |
 | Admin Activity audit logs | Always on (GCP default, cannot be disabled) | — |
 | Retained copy | Sink `overslash-<env>-audit` routes **every** Cloud Audit Log in the project (`logName:"/logs/cloudaudit.googleapis.com%2F"`) to bucket `overslash-<env>-audit` in `europe-west1` | `google_logging_project_sink.audit` |
 | Retention | **400 days** | `google_logging_project_bucket_config.audit` |
