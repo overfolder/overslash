@@ -18,7 +18,12 @@
 //!   load balancer's own address, an nginx on loopback.
 //! - `OVERSLASH_TRUSTED_PROXY_SECRET` — a proxy that has no stable address
 //!   (Vercel's rewrite egress) proves itself by stamping this value in
-//!   [`PROXY_SECRET_HEADER`]. A match trusts exactly one more hop.
+//!   [`PROXY_SECRET_HEADER`], and names the client it saw in
+//!   [`CLIENT_IP_HEADER`]. A match makes that header the client in place of
+//!   the proxy's own hop. XFF left of a vouching proxy is never read: Vercel
+//!   forwards the browser's `X-Forwarded-For` upstream and does not reliably
+//!   apply a middleware override of it, so that part of the list is the
+//!   caller's claim (measured on dev, see DECISIONS D102).
 //!
 //! With none of them set, `X-Forwarded-For` is ignored and the socket peer is
 //! the client — the safe default for a process nobody told about its proxies.
@@ -32,6 +37,18 @@ use subtle::ConstantTimeEq;
 /// The request header a secret-bearing proxy stamps. Overwritten, not
 /// appended, by the Vercel middleware, so a client cannot pre-seed it.
 pub const PROXY_SECRET_HEADER: &str = "x-overslash-proxy-secret";
+
+/// The client address a secret-bearing proxy observed. Believed only when
+/// [`PROXY_SECRET_HEADER`] matches; the middleware sets (never passes
+/// through) both.
+pub const CLIENT_IP_HEADER: &str = "x-overslash-client-ip";
+
+/// What a secret-bearing proxy stamped on the request.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ProxyStamp<'a> {
+    pub secret: Option<&'a [u8]>,
+    pub client: Option<&'a str>,
+}
 
 /// Shortest `OVERSLASH_TRUSTED_PROXY_SECRET` accepted: 32 bytes, the length
 /// of `openssl rand -hex 16`, so a placeholder like `REPLACE_ME` is refused.
@@ -154,28 +171,33 @@ impl TrustedProxies {
     /// The client address for one request.
     ///
     /// `peer` is the socket address, `xff` every `X-Forwarded-For` header
-    /// value in the order received, `secret` the [`PROXY_SECRET_HEADER`]
-    /// value if present.
+    /// value in the order received, `stamp` what a secret-bearing proxy set.
     pub fn resolve(
         &self,
         peer: Option<IpAddr>,
         xff: &[&str],
-        secret: Option<&[u8]>,
+        stamp: ProxyStamp<'_>,
     ) -> Option<IpAddr> {
         if !self.is_configured() {
             return peer.map(|p| p.to_canonical());
         }
-        // One free pass over an address we would otherwise stop at: the hop a
-        // secret-bearing proxy connected from, which it cannot name in advance.
-        let mut vouched = self.secret_matches(secret);
+        // The first address we don't trust is the client, unless the proxy
+        // at that hop vouched with the secret: then the client is the one it
+        // names. If it named none (or garbage), the proxy's own address is the
+        // best we know. Either way the walk stops here: nothing left of a
+        // vouching proxy was written by it.
+        let vouched = self.secret_matches(stamp.secret);
+        let client_at = |hop: IpAddr| -> IpAddr {
+            match stamp.client {
+                Some(c) if vouched => parse_entry(c.trim()).unwrap_or(hop),
+                _ => hop,
+            }
+        };
         let mut last_trusted = match peer {
             Some(p) => {
                 let p = p.to_canonical();
                 if !self.trusted_at(0, p) {
-                    if !vouched {
-                        return Some(p);
-                    }
-                    vouched = false;
+                    return Some(client_at(p));
                 }
                 Some(p)
             }
@@ -200,10 +222,7 @@ impl TrustedProxies {
                 return last_trusted;
             };
             if !self.trusted_at(k + 1, ip) {
-                if !vouched {
-                    return Some(ip);
-                }
-                vouched = false;
+                return Some(client_at(ip));
             }
             last_trusted = Some(ip);
         }
@@ -239,7 +258,21 @@ mod tests {
     }
 
     fn resolve(t: &TrustedProxies, peer: &str, xff: &[&str], secret: Option<&str>) -> String {
-        t.resolve(Some(ip(peer)), xff, secret.map(str::as_bytes))
+        vouch(t, peer, xff, secret, None)
+    }
+
+    fn vouch(
+        t: &TrustedProxies,
+        peer: &str,
+        xff: &[&str],
+        secret: Option<&str>,
+        client: Option<&str>,
+    ) -> String {
+        let stamp = ProxyStamp {
+            secret: secret.map(str::as_bytes),
+            client,
+        };
+        t.resolve(Some(ip(peer)), xff, stamp)
             .map(|i| i.to_string())
             .unwrap_or_else(|| "none".into())
     }
@@ -251,7 +284,7 @@ mod tests {
             resolve(&t, "198.51.100.7", &["1.2.3.4"], None),
             "198.51.100.7"
         );
-        assert_eq!(t.resolve(None, &["1.2.3.4"], None), None);
+        assert_eq!(t.resolve(None, &["1.2.3.4"], ProxyStamp::default()), None);
     }
 
     #[test]
@@ -308,40 +341,65 @@ mod tests {
     }
 
     #[test]
-    fn matching_secret_trusts_exactly_one_more_hop() {
+    fn matching_secret_makes_the_named_client_the_client() {
         let t = tp("1", &format!("{LB}/32"), Some(SECRET));
-        let xff = format!("1.2.3.4, 203.0.113.9, 76.76.21.21, {LB}");
-        // Vercel overwrites XFF, so in practice 1.2.3.4 is absent; even if a
-        // client got one in, the vouch only reaches past the egress hop.
-        assert_eq!(resolve(&t, GFE, &[&xff], Some(SECRET)), "203.0.113.9");
-        // Wrong or missing secret: the egress hop is the client.
-        assert_eq!(resolve(&t, GFE, &[&xff], Some("nope")), "76.76.21.21");
-        assert_eq!(resolve(&t, GFE, &[&xff], None), "76.76.21.21");
+        // What dev actually delivered: the browser's forged XFF forwarded
+        // by Vercel, then Vercel's egress, then the LB.
+        let xff = format!("203.0.113.66, 76.76.21.21, {LB}");
+        let named = Some("128.140.96.98");
+        assert_eq!(
+            vouch(&t, GFE, &[&xff], Some(SECRET), named),
+            "128.140.96.98"
+        );
+        // Wrong or missing secret: the named client is ignored and the
+        // egress hop is the client.
+        assert_eq!(vouch(&t, GFE, &[&xff], Some("nope"), named), "76.76.21.21");
+        assert_eq!(vouch(&t, GFE, &[&xff], None, named), "76.76.21.21");
     }
 
     #[test]
-    fn vouched_hop_with_nothing_behind_it_is_the_client() {
-        // Vercel always sets XFF, but if a vouched request ever arrives
-        // without one, fall back to the vouched hop itself. That address was
-        // seen, not claimed, so nothing forgeable is believed. The cost is
-        // that such requests share the egress IP's throttle bucket.
+    fn vouching_never_reads_xff_left_of_the_proxy() {
+        // The regression this design exists for: with the secret matching
+        // but no client named, the XFF entry behind the egress is the
+        // browser's claim, not Vercel's observation. Stop at the egress.
         let t = tp("1", &format!("{LB}/32"), Some(SECRET));
-        let xff = format!("76.76.21.21, {LB}");
-        assert_eq!(resolve(&t, GFE, &[&xff], Some(SECRET)), "76.76.21.21");
-        let xff = format!("unknown, 76.76.21.21, {LB}");
-        assert_eq!(resolve(&t, GFE, &[&xff], Some(SECRET)), "76.76.21.21");
+        let xff = format!("203.0.113.66, 76.76.21.21, {LB}");
+        assert_eq!(vouch(&t, GFE, &[&xff], Some(SECRET), None), "76.76.21.21");
+        // A garbage name is no name.
+        assert_eq!(
+            vouch(&t, GFE, &[&xff], Some(SECRET), Some("unknown")),
+            "76.76.21.21"
+        );
+    }
+
+    #[test]
+    fn named_client_is_ignored_where_no_untrusted_hop_is_reached() {
+        // Everything in the chain is ours: there is no vouching proxy, so
+        // a stamped name has nothing to stand in for.
+        let t = tp("0", "10.0.0.0/8", Some(SECRET));
+        assert_eq!(
+            vouch(
+                &t,
+                "10.0.0.1",
+                &["10.0.0.2"],
+                Some(SECRET),
+                Some("203.0.113.9")
+            ),
+            "10.0.0.2"
+        );
     }
 
     #[test]
     fn secret_vouches_for_an_untrusted_peer_too() {
         // Vercel talking to the API with no frontend in between.
         let t = tp("0", "", Some(SECRET));
+        let named = Some("203.0.113.9");
         assert_eq!(
-            resolve(&t, "76.76.21.21", &["203.0.113.9"], Some(SECRET)),
+            vouch(&t, "76.76.21.21", &["198.51.100.1"], Some(SECRET), named),
             "203.0.113.9"
         );
         assert_eq!(
-            resolve(&t, "76.76.21.21", &["203.0.113.9"], None),
+            vouch(&t, "76.76.21.21", &["198.51.100.1"], None, named),
             "76.76.21.21"
         );
     }
