@@ -92,19 +92,20 @@ async fn reconcile(db: &PgPool, password: &BiPassword) -> Result<(), sqlx::Error
     .execute(&mut *tx)
     .await?;
 
+    // Start from nothing on every table in the schema, not just the listed
+    // ones, so a table (or column) dropped from the list loses its grant on
+    // the next boot. A table-level REVOKE also clears column privileges.
     let mut sql = format!(
         "DO $$ BEGIN
              CREATE ROLE bi;
          EXCEPTION WHEN duplicate_object OR unique_violation THEN NULL; END $$;
-         ALTER ROLE bi LOGIN PASSWORD '{}';",
+         ALTER ROLE bi LOGIN PASSWORD '{}';
+         REVOKE ALL ON ALL TABLES IN SCHEMA public FROM bi;",
         password.0
     );
-    // Revoking a table privilege also revokes its column privileges, so a
-    // column dropped from the list loses its grant on the next boot.
     for (table, columns) in READABLE_COLUMNS {
         sql.push_str(&format!(
-            "REVOKE ALL ON public.{table} FROM bi;
-             GRANT SELECT ({}) ON public.{table} TO bi;",
+            "GRANT SELECT ({}) ON public.{table} TO bi;",
             columns.join(", ")
         ));
     }

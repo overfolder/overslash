@@ -83,12 +83,15 @@ async fn bi_role_reads_the_allow_list_and_every_bi_query_runs_as_it() {
     // A second boot re-applies the allow-list from scratch.
     let password = overslash_db::bi::BiPassword::parse(&"a1".repeat(16)).unwrap();
     overslash_db::bi::reconcile_bi_user(&pool, Some(&password)).await;
-    // A column granted by an earlier allow-list (or by hand) must not survive
-    // the next boot: the probe below expects `orgs.headless` to be denied.
-    sqlx::query("GRANT SELECT (headless) ON orgs TO bi")
-        .execute(&pool)
-        .await
-        .unwrap();
+    // A column or a whole table granted by an earlier allow-list (or by hand)
+    // must not survive the next boot: the probes below expect both denied.
+    sqlx::raw_sql(
+        "GRANT SELECT (headless) ON orgs TO bi;
+         GRANT SELECT ON secrets TO bi;",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
     overslash_db::bi::reconcile_bi_user(&pool, Some(&password)).await;
     let (login, memberships): (bool, i64) = sqlx::query_as(
         "SELECT r.rolcanlogin,
@@ -125,8 +128,8 @@ async fn bi_role_reads_the_allow_list_and_every_bi_query_runs_as_it() {
         }
     }
 
-    // Past the allow-list: a column off it (granted above, then reconciled
-    // away), and a table off it.
+    // Past the allow-list, both granted above and then reconciled away: a
+    // column off it, and a table off it.
     for sql in [
         "SELECT headless FROM orgs LIMIT 1",
         "SELECT 1 FROM secrets LIMIT 1",
