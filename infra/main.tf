@@ -19,6 +19,7 @@ resource "google_project_service" "apis" {
     var.enable_dns ? ["dns.googleapis.com"] : [],
     var.enable_api_lb ? ["certificatemanager.googleapis.com"] : [],
     var.enable_valkey ? ["redis.googleapis.com"] : [],
+    var.enable_bi ? ["bigquery.googleapis.com", "bigqueryconnection.googleapis.com"] : [],
   ))
 
   service            = each.key
@@ -102,6 +103,22 @@ module "cloud_sql" {
   ]
 }
 
+# --- BI (BigQuery federation over the `bi` schema; docs/runbooks/bi.md) ---
+module "bi" {
+  count = var.enable_bi ? 1 : 0
+
+  source      = "./modules/bi"
+  project_id  = var.project_id
+  region      = var.region
+  base_prefix = local.base_prefix
+
+  sql_connection_name = module.cloud_sql.connection_name
+  sql_database        = module.cloud_sql.db_name
+  bi_viewers          = var.bi_viewers
+
+  depends_on = [google_project_service.apis]
+}
+
 # --- Cloud Run ---
 module "cloud_run" {
   source      = "./modules/cloud-run"
@@ -172,6 +189,7 @@ module "cloud_run" {
   trusted_proxy_cidrs            = var.trusted_proxy_cidrs
   enable_trusted_proxy_secret    = var.enable_trusted_proxy_secret
   trusted_proxy_secret_secret_id = module.secret_manager.trusted_proxy_secret_secret_id
+  bi_db_password_secret_id       = var.enable_bi ? module.bi[0].db_password_secret_id : ""
 
   redis_host = var.enable_valkey && var.use_private_vpc ? module.memorystore[0].redis_host : ""
   redis_port = var.enable_valkey && var.use_private_vpc ? module.memorystore[0].redis_port : ""

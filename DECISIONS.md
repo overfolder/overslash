@@ -1173,3 +1173,15 @@ The client's accept or decline arrives on a separate POST and crosses replicas t
 **Why the fallback carries a note.** It is the original envelope rather than an error, so the agent keeps its link, and the note tells it that the user already saw the prompt. Only a real answer (a denial on the dashboard, a failed OAuth callback) ends the call as anything other than that fallback.
 
 **Verified against the real client.** Claude Code 2.1.283, driven as an SDK host on a local build, received the approval as a `mode: "url"` elicitation with no `elicitationId`. Its retry waited on the keep-alive stream until the approval was granted on the dashboard. The call then executed exactly once, even with auto-call on.
+
+## D-NEXT: BI is terraform-owned queries, federated into BigQuery, read as a column-allow-listed `bi` role
+
+**Date**: 2026-09-28
+**Decision**: Business-intelligence queries over prod data run in BigQuery, against the `overslash_bi` dataset. Each view there is an `EXTERNAL_QUERY` whose inner SQL is a file in `infra/modules/bi/sql/`, run live against Cloud SQL as the Postgres role `bi`. The API creates that role at boot, using a terraform-generated password mounted as `OVERSLASH_BI_DB_PASSWORD`, and replaces its grants with column-level SELECT on `overslash_db::bi::READABLE_COLUMNS`. `bi` belongs to no role. There is no migration, schema or view in Postgres. `tests/bi_views.rs` runs every BI query as `bi` in CI. Dashboards are built in Looker Studio. The whole surface is gated by `enable_bi`. Runbook: `docs/runbooks/bi.md`.
+**Rationale**: Cloud Monitoring stores time series, not rows. Putting org names or emails into it would mean log-based metrics that carry personal data, and it still could not show a table. Federation needs no pipeline and no extra service, reads live data, and is controlled by IAM.
+
+**Queries in terraform, not migrations.** A report change should not need an app release. Postgres views would also make every app migration that touches a referenced column drop and recreate them. And views created outside migrations would be worse still: CI never has them, so a migration could pass CI and then fail in prod.
+
+**The allow-list in Rust, applied at boot.** Nothing that runs `tofu` can reach the private-IP instance, so terraform can't issue grants. A `google_sql_user` always joins `cloudsqlsuperuser`, and revoking that needs ADMIN OPTION the app's user doesn't hold. The API already holds a privileged connection at boot, and keeping the list in code puts every widening through review. Revoking the table privilege first also revokes its column privileges, so shrinking the list takes effect on the next boot.
+
+**Tradeoff accepted:** every BI query runs on the primary instance. That is fine at current volume, and Datastream replication is the exit when it stops being fine.

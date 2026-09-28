@@ -35,6 +35,7 @@ mod audit_tags;
 mod auth_login;
 mod auth_magic_link;
 mod auto_call_on_approve;
+mod bi_views;
 mod billing;
 mod byoc_self_service;
 mod call_results;

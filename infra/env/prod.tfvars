@@ -56,6 +56,10 @@ enable_valkey    = true
 enable_dns       = false
 enable_shortener = true
 
+# BI: BigQuery federation over the Postgres `bi` schema (docs/runbooks/bi.md).
+# Rolls a Cloud Run revision whose boot creates the `bi` role; nothing manual.
+enable_bi = true
+
 # Shared overfwd Mailbox Gateway. This hostname is what `services/email.yaml`
 # ships as `servers[0]`, so every `email` instance that pins no `url` lands
 # here. Needs a manual `mailbox CNAME ghs.googlehosted.com` at the registrar.

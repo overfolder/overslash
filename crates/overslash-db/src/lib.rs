@@ -1,3 +1,4 @@
+pub mod bi;
 pub mod repos;
 pub mod scopes;
 

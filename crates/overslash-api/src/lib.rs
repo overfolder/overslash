@@ -85,6 +85,11 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
 
     // Run migrations
     overslash_db::MIGRATOR.run(&db).await?;
+    // BI login role (docs/runbooks/bi.md). A malformed password refuses the
+    // boot like any other bad config; an unset one means BI is off.
+    let bi_password = overslash_env::optional("OVERSLASH_BI_DB_PASSWORD")
+        .map(|raw| overslash_db::bi::BiPassword::parse(&raw).unwrap_or_else(|e| panic!("{e}")));
+    overslash_db::bi::reconcile_bi_user(&db, bi_password.as_ref()).await;
 
     // Resolve Stripe price IDs from lookup keys at startup so a misconfigured
     // billing deploy fails fast (not at first checkout). Skip when billing is
