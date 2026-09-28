@@ -373,9 +373,12 @@ session-gated.
   surfaces — the create wizard (which *is* the "Connect & create" screen) and
   the service detail page's credentials tab, which is what makes a reconnect
   verifiable.
-- **No deny.** `/secrets/provide`'s Deny button is still local-only
-  (`TODO(secret-request-deny)`), and the setup page does not add one. A request
-  the human refuses stays pending until it expires.
+- **Deny on the provide page only.** `/secrets/provide`'s Deny button records
+  the refusal (`POST /public/secrets/provide/{id}/decline` →
+  `secret_requests.declined_at`, advisory: a later submission still fulfils the
+  request), so an agent waiting on the link as a URL-mode elicitation hears
+  `declined` at once (D-NEXT). The setup page still has no Deny; a setup link
+  the human ignores stays pending until it expires.
 - **No `activate` over MCP.** `probe::run` needs `AuthContext`,
   `CallerTransport` and `ClientIp`; a `PlatformCallContext` carries none of
   them, so exposing activation as a platform action would mean synthesising an

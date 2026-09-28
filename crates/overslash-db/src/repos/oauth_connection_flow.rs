@@ -165,14 +165,17 @@ pub async fn consume(
 pub struct FlowCompletion {
     pub org_id: Uuid,
     pub expires_at: OffsetDateTime,
+    pub consumed_at: Option<OffsetDateTime>,
     pub completed_at: Option<OffsetDateTime>,
     pub failed_at: Option<OffsetDateTime>,
+    /// Why it failed, when it did (migration 127).
+    pub failure: Option<String>,
 }
 
 pub async fn completion(pool: &PgPool, id: &str) -> Result<Option<FlowCompletion>, sqlx::Error> {
     sqlx::query_as!(
         FlowCompletion,
-        "SELECT org_id, expires_at, completed_at, failed_at
+        "SELECT org_id, expires_at, consumed_at, completed_at, failed_at, failure
            FROM oauth_connection_flows WHERE id = $1",
         id,
     )
@@ -180,25 +183,35 @@ pub async fn completion(pool: &PgPool, id: &str) -> Result<Option<FlowCompletion
     .await
 }
 
-/// Stamp the callback's outcome. `succeeded` picks the column; whichever is
-/// written first wins, so a replayed callback cannot flip a finished flow.
-pub async fn mark_finished(pool: &PgPool, id: &str, succeeded: bool) -> Result<(), sqlx::Error> {
-    if succeeded {
-        sqlx::query!(
-            "UPDATE oauth_connection_flows SET completed_at = now()
-              WHERE id = $1 AND completed_at IS NULL AND failed_at IS NULL",
-            id,
-        )
-        .execute(pool)
-        .await?;
-    } else {
-        sqlx::query!(
-            "UPDATE oauth_connection_flows SET failed_at = now()
-              WHERE id = $1 AND completed_at IS NULL AND failed_at IS NULL",
-            id,
-        )
-        .execute(pool)
-        .await?;
+/// Stamp how the flow ended: `Ok(())` for a connection, `Err(reason)` for a
+/// failure. Whichever is written first wins, so a replayed callback — or a
+/// Cancel pressed after the provider already answered — cannot flip a
+/// finished flow.
+pub async fn mark_finished(
+    pool: &PgPool,
+    id: &str,
+    outcome: Result<(), &str>,
+) -> Result<(), sqlx::Error> {
+    match outcome {
+        Ok(()) => {
+            sqlx::query!(
+                "UPDATE oauth_connection_flows SET completed_at = now()
+                  WHERE id = $1 AND completed_at IS NULL AND failed_at IS NULL",
+                id,
+            )
+            .execute(pool)
+            .await?;
+        }
+        Err(reason) => {
+            sqlx::query!(
+                "UPDATE oauth_connection_flows SET failed_at = now(), failure = $2
+                  WHERE id = $1 AND completed_at IS NULL AND failed_at IS NULL",
+                id,
+                reason,
+            )
+            .execute(pool)
+            .await?;
+        }
     }
     Ok(())
 }

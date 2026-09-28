@@ -532,6 +532,20 @@ request's `_meta` on 2026-07-28, the `initialize` capabilities on 2025 — indep
   `pending_mcp_elicitations` row a form uses, retired `withdrawn` (no cooldown) if the link is
   not completed. The post-cancel cooldown does suppress the link, as it does the form.
 
+**How a hand-off ends (D-NEXT).** Every ending reaches the call promptly and says why:
+
+| Ending | Note | `url_elicitation_error` | Link handed back |
+|---|---|---|---|
+| Client declines / dismisses the prompt | `declined` / `cancelled` | — | the original (never opened) |
+| Provider Deny, consent-page Cancel, provide-page Deny | `declined` | `access_denied` / `cancelled_by_user` / `declined_on_page` | auth links: a fresh one (call re-run) |
+| Callback error, flow or request expired, target gone | `failed` | coarse reason (`bad_request`, `expired`, `not_found`, …) | auth links: a fresh one |
+| Nothing within 300s | `timed_out` | — | auth links: the original if never opened, else a fresh one |
+| Retry after the `requestState` expired (≤24h) | form: D95 envelope; URL: `timed_out` | — | as above; nothing acted on |
+
+Legacy streams send `notifications/elicitation/complete` on every browser-side ending, not
+only success. Modern waits run detached, so a dropped client still releases an approval's
+auto-call hold.
+
 Verified against Claude Code 2.1.283 on 2026-09-28: the approval arrived as a `url` mode
 elicitation, the retry held on the keep-alive stream until the dashboard approved, and the
 call executed exactly once with auto-call on.

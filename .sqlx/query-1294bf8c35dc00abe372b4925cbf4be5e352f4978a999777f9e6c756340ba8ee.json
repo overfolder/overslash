@@ -1,0 +1,64 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT org_id, expires_at, fulfilled_at, declined_at FROM secret_requests WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "org_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "secret_requests",
+            "name": "org_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "expires_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "secret_requests",
+            "name": "expires_at"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "fulfilled_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "secret_requests",
+            "name": "fulfilled_at"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "declined_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "secret_requests",
+            "name": "declined_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "1294bf8c35dc00abe372b4925cbf4be5e352f4978a999777f9e6c756340ba8ee"
+}
