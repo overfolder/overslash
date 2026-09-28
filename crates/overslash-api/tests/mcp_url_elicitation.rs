@@ -114,6 +114,8 @@ struct XFx {
     client: reqwest::Client,
     pool: sqlx::PgPool,
     agent_key: String,
+    org_id: Uuid,
+    agent_id: Uuid,
 }
 
 /// The bundled `x` template with no connection: every call answers
@@ -126,7 +128,7 @@ async fn x_setup() -> XFx {
         std::env::set_var("OAUTH_X_CLIENT_SECRET", "x_test_secret");
     }
     let (base, client) = common::start_api_with_registry(pool.clone(), None).await;
-    let (_org, ident_id, agent_key, admin_key) =
+    let (org_id, ident_id, agent_key, admin_key) =
         common::bootstrap_org_identity(&base, &client).await;
     let resp = client
         .post(format!("{base}/v1/services"))
@@ -154,7 +156,56 @@ async fn x_setup() -> XFx {
         client,
         pool,
         agent_key,
+        org_id,
+        agent_id: ident_id,
     }
+}
+
+impl XFx {
+    /// The first leg: a fresh call answered with the auth link.
+    async fn first(&self) -> Value {
+        modern_call(
+            &self.client,
+            &self.base,
+            &self.agent_key,
+            get_me(),
+            url_caps(),
+        )
+        .await["result"]
+            .clone()
+    }
+
+    async fn retry(&self, first: &Value, action: &str) -> Value {
+        modern_call(
+            &self.client,
+            &self.base,
+            &self.agent_key,
+            retry(first, action),
+            url_caps(),
+        )
+        .await
+    }
+}
+
+/// An auth link whose browser side ended is handed back as a *fresh* link —
+/// the original flow was consumed when the user opened it, so relaying it
+/// would give the agent a dead link.
+fn assert_fresh_link(done: &Value, old_flow: &str, note: &str, reason: Option<&str>) {
+    let r = &done["result"];
+    assert_eq!(r["isError"], true, "{done}");
+    let env = text_of(r);
+    assert_eq!(env["error"], "needs_authentication", "{env}");
+    assert_eq!(env["url_elicitation"], note, "{env}");
+    assert_eq!(
+        env.get("url_elicitation_error").and_then(Value::as_str),
+        reason,
+        "{env}"
+    );
+    let fresh = flow_id_of(env["auth_url"].as_str().unwrap());
+    assert_ne!(
+        fresh, old_flow,
+        "the dead link must not be handed back: {env}"
+    );
 }
 
 fn get_me() -> Value {
@@ -190,7 +241,7 @@ async fn an_auth_link_replays_the_call_once_the_flow_completes() {
     assert!(!pending.is_finished(), "the retry must wait for the flow");
 
     // What the OAuth callback writes when the provider sends the user back.
-    db::oauth_connection_flow::mark_finished(&fx.pool, &flow_id, true)
+    db::oauth_connection_flow::mark_finished(&fx.pool, &flow_id, Ok(()))
         .await
         .unwrap();
     let done = tokio::time::timeout(Duration::from_secs(20), pending)
@@ -211,47 +262,152 @@ async fn an_auth_link_replays_the_call_once_the_flow_completes() {
 }
 
 #[tokio::test]
-async fn declining_or_failing_the_link_returns_the_envelope_with_a_note() {
+async fn declining_in_the_client_keeps_the_unopened_link() {
     let fx = x_setup().await;
-
-    let first = modern_call(&fx.client, &fx.base, &fx.agent_key, get_me(), url_caps()).await;
-    let first = first["result"].clone();
+    let first = fx.first().await;
     let link = asked_url(&first);
-    let done = modern_call(
-        &fx.client,
-        &fx.base,
-        &fx.agent_key,
-        retry(&first, "decline"),
-        url_caps(),
-    )
-    .await;
+    let done = fx.retry(&first, "decline").await;
     let r = &done["result"];
     assert_eq!(r["isError"], true, "{done}");
     let env = text_of(r);
     assert_eq!(env["error"], "needs_authentication");
     assert_eq!(env["url_elicitation"], "declined");
-    assert_eq!(env["auth_url"], json!(link), "the same link, still usable");
+    assert!(env.get("url_elicitation_error").is_none(), "{env}");
+    assert_eq!(
+        env["auth_url"],
+        json!(link),
+        "never opened, so still usable"
+    );
+}
 
-    // The provider bounced the user back with an error.
-    let first = modern_call(&fx.client, &fx.base, &fx.agent_key, get_me(), url_caps()).await;
-    let first = first["result"].clone();
+#[tokio::test]
+async fn a_failed_callback_hands_back_a_fresh_link_and_the_reason() {
+    let fx = x_setup().await;
+    let first = fx.first().await;
     let flow_id = flow_id_of(&asked_url(&first));
-    db::oauth_connection_flow::mark_finished(&fx.pool, &flow_id, false)
+    db::oauth_connection_flow::mark_finished(&fx.pool, &flow_id, Err("server_error"))
         .await
         .unwrap();
-    let done = modern_call(
-        &fx.client,
-        &fx.base,
-        &fx.agent_key,
-        retry(&first, "accept"),
-        url_caps(),
-    )
-    .await;
-    assert_eq!(
-        text_of(&done["result"])["url_elicitation"],
-        "failed",
-        "{done}"
-    );
+    let done = fx.retry(&first, "accept").await;
+    assert_fresh_link(&done, &flow_id, "failed", Some("server_error"));
+}
+
+/// The user pressed Deny at the provider, which redirects back with
+/// `?error=access_denied` and no `code`. That redirect used to bounce off the
+/// callback's query extractor, leaving the waiting call to time out.
+#[tokio::test]
+async fn a_deny_at_the_provider_ends_the_wait_as_declined() {
+    let fx = x_setup().await;
+    let first = fx.first().await;
+    let flow_id = flow_id_of(&asked_url(&first));
+
+    let pending = {
+        let (client, base, key, body) = (
+            fx.client.clone(),
+            fx.base.clone(),
+            fx.agent_key.clone(),
+            retry(&first, "accept"),
+        );
+        tokio::spawn(async move { modern_call(&client, &base, &key, body, url_caps()).await })
+    };
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    let resp = fx
+        .client
+        .get(format!(
+            "{}/v1/oauth/callback?state={flow_id}&error=access_denied&error_description=nope",
+            fx.base
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400, "the callback still reports the refusal");
+    let flow = db::oauth_connection_flow::completion(&fx.pool, &flow_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(flow.failure.as_deref(), Some("access_denied"));
+
+    let done = tokio::time::timeout(Duration::from_secs(20), pending)
+        .await
+        .expect("the refusal ends the wait now, not at the timeout")
+        .unwrap();
+    assert_fresh_link(&done, &flow_id, "declined", Some("access_denied"));
+}
+
+/// A provider error code outside RFC 6749's character set is not relayed.
+#[tokio::test]
+async fn an_odd_provider_error_code_is_not_relayed() {
+    let fx = x_setup().await;
+    let first = fx.first().await;
+    let flow_id = flow_id_of(&asked_url(&first));
+    fx.client
+        .get(format!(
+            "{}/v1/oauth/callback?state={flow_id}&error=%3Cscript%3E",
+            fx.base
+        ))
+        .send()
+        .await
+        .unwrap();
+    let flow = db::oauth_connection_flow::completion(&fx.pool, &flow_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(flow.failure.as_deref(), Some("provider_error"));
+}
+
+/// Cancel on the consent interstitial records the refusal on the flow.
+#[tokio::test]
+async fn cancel_on_the_consent_page_ends_the_wait_as_declined() {
+    let fx = x_setup().await;
+    let first = fx.first().await;
+    let flow_id = flow_id_of(&asked_url(&first));
+
+    // Without a session the POST is refused and records nothing.
+    let resp = fx
+        .client
+        .post(format!("{}/connect-authorize/cancel", fx.base))
+        .form(&[("id", flow_id.as_str())])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 401);
+
+    let resp = fx
+        .client
+        .post(format!("{}/connect-authorize/cancel", fx.base))
+        .header("Cookie", common::session_cookie(fx.org_id, fx.agent_id))
+        .form(&[("id", flow_id.as_str())])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    assert!(resp.text().await.unwrap().contains("Connection cancelled"));
+
+    let done = fx.retry(&first, "accept").await;
+    assert_fresh_link(&done, &flow_id, "declined", Some("cancelled_by_user"));
+}
+
+/// Retrying after the state expired gets an answer, not a JSON-RPC error.
+#[tokio::test]
+async fn a_late_retry_gets_the_fallback_not_an_error() {
+    let fx = x_setup().await;
+    let first = fx.first().await;
+    let flow_id = flow_id_of(&asked_url(&first));
+    let mut late = first.clone();
+    late["requestState"] = json!(expire(first["requestState"].as_str().unwrap()));
+    let done = fx.retry(&late, "accept").await;
+    assert!(done.get("error").is_none(), "{done}");
+    assert_fresh_link(&done, &flow_id, "timed_out", None);
+}
+
+/// Re-sign a request state as if it had expired ten minutes ago — past the
+/// verifier's 60s clock leeway, which would otherwise still accept it.
+fn expire(state: &str) -> String {
+    let key = common::signing_key_bytes();
+    let mut claims =
+        overslash_api::services::jwt::verify_mcp_request_state(&key, state).expect("fresh state");
+    claims.exp = time::OffsetDateTime::now_utc().unix_timestamp() - 600;
+    overslash_api::services::jwt::mint_mcp_request_state(&key, &claims).unwrap()
 }
 
 #[tokio::test]
@@ -324,6 +480,76 @@ async fn a_secret_request_reports_completed_once_the_user_enters_it() {
         out.to_string().contains(&request_id),
         "the original result is what comes back: {out}"
     );
+}
+
+/// Deny on the provide page records the refusal; the waiting call ends now
+/// with the original result, marked declined.
+#[tokio::test]
+async fn deny_on_the_provide_page_ends_the_wait_as_declined() {
+    let fx = x_setup().await;
+    let call = json!({ "arguments": {
+        "service": "overslash",
+        "action": "request_secret",
+        "params": { "secret_name": "acme_key", "purpose": "the Acme API" },
+    }});
+    let first = modern_call(
+        &fx.client,
+        &fx.base,
+        &fx.agent_key,
+        call.clone(),
+        url_caps(),
+    )
+    .await;
+    let first = first["result"].clone();
+    let link = url::Url::parse(&asked_url(&first)).unwrap();
+    let request_id = link.path().rsplit('/').next().unwrap().to_string();
+    let token = link
+        .query_pairs()
+        .find(|(k, _)| k == "token")
+        .unwrap()
+        .1
+        .into_owned();
+
+    let pending = {
+        let mut body = call.clone();
+        body["inputResponses"] = json!({ "url": { "action": "accept" } });
+        body["requestState"] = first["requestState"].clone();
+        let (client, base, key) = (fx.client.clone(), fx.base.clone(), fx.agent_key.clone());
+        tokio::spawn(async move { modern_call(&client, &base, &key, body, url_caps()).await })
+    };
+    tokio::time::sleep(Duration::from_millis(800)).await;
+
+    // A wrong token declines nothing.
+    let resp = fx
+        .client
+        .post(format!(
+            "{}/public/secrets/provide/{request_id}/decline",
+            fx.base
+        ))
+        .json(&json!({ "token": "nope" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+    let resp = fx
+        .client
+        .post(format!(
+            "{}/public/secrets/provide/{request_id}/decline",
+            fx.base
+        ))
+        .json(&json!({ "token": token }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 204);
+
+    let done = tokio::time::timeout(Duration::from_secs(20), pending)
+        .await
+        .expect("the Deny ends the wait now")
+        .unwrap();
+    let out = text_of(&done["result"]);
+    assert_eq!(out["url_elicitation"], "declined", "{out}");
+    assert_eq!(out["url_elicitation_error"], "declined_on_page", "{out}");
 }
 
 // ── Approvals, with the in-client form unavailable ──────────────────────────
@@ -435,6 +661,37 @@ async fn declining_an_approval_link_is_not_a_denial() {
     assert_eq!(fx.approval_status(&approval_id).await, "pending");
 }
 
+/// A form dialog answered after its state expired: the envelope, not an
+/// error — and nothing is resolved on the strength of a stale state.
+#[tokio::test]
+async fn a_late_answer_to_a_form_dialog_gets_the_envelope() {
+    let fx = setup().await;
+    let first = fx.gated_call("too-late", claude_code_caps()).await;
+    assert_eq!(first["resultType"], "input_required", "{first}");
+    let approval_id = only_pending_approval(&fx).await;
+    let late = expire(first["requestState"].as_str().unwrap());
+
+    let (_, done) = modern(
+        &fx,
+        "tools/call",
+        json!({
+            "name": "overslash_call",
+            "arguments": fx.call_args("too-late"),
+            "inputResponses": { "decision": { "action": "accept", "content": { "decision": "allow" } } },
+            "requestState": late,
+        }),
+        claude_code_caps(),
+    )
+    .await;
+    assert!(done.get("error").is_none(), "{done}");
+    assert_eq!(envelope_of(&done["result"])["status"], "pending_approval");
+    assert_eq!(
+        fx.approval_status(&approval_id).await,
+        "pending",
+        "an \"allow\" on a stale state must not resolve anything"
+    );
+}
+
 // ── The 2025-era transport: one SSE stream around the hand-off ──────────────
 
 /// Reads a `text/event-stream` response one `data:` event at a time.
@@ -541,6 +798,31 @@ async fn legacy_accept_completes_then_answers_with_the_result() {
     assert_eq!(result["id"], 1);
     let text = result["result"]["content"][0]["text"].as_str().unwrap();
     assert!(text.contains("legacy-yes"), "{text}");
+}
+
+/// The browser side ending in a "no" still closes the out-of-band
+/// interaction: the client gets `notifications/elicitation/complete`, then
+/// the denial.
+#[tokio::test]
+async fn legacy_dashboard_denial_completes_then_fails_the_call() {
+    let fx = setup().await;
+    legacy_url_client(&fx).await;
+    let mut events = legacy_gated_call(&fx, "legacy-denied").await;
+    let ask = events.next().await;
+    let eid = ask["id"].as_str().unwrap().to_string();
+    let approval_id = only_pending_approval(&fx).await;
+
+    legacy_answer(&fx, &eid, "accept").await;
+    resolve(&fx, &approval_id, "deny").await;
+
+    let complete = events.next().await;
+    assert_eq!(
+        complete["method"], "notifications/elicitation/complete",
+        "{complete}"
+    );
+    let result = events.next().await;
+    assert_eq!(result["result"]["isError"], true, "{result}");
+    assert_eq!(text_of(&result["result"])["resolution"], "denied");
 }
 
 #[tokio::test]

@@ -40,8 +40,11 @@ use serde::Serialize;
 
 use super::dispatch::{dispatch_call, dispatch_read};
 use super::modern::{STEP_URL, mint_url_state};
+
+mod legacy;
 use super::tools_call::{Reply, text_result};
 use super::*;
+pub(super) use legacy::{legacy_stream, record_legacy_answer};
 
 /// How long one browser hand-off may take before the call gives up on it —
 /// the same ceiling the form dialogs and the sweeper already work to.
@@ -55,6 +58,13 @@ pub(super) const URL_ID_PREFIX: &str = "elicit_url_";
 
 /// The field added to a fallback body saying how the hand-off ended.
 const NOTE_FIELD: &str = "url_elicitation";
+/// Beside the note, when the browser side said why: the provider's OAuth
+/// error code, `cancelled_by_user`, `declined_on_page`, `expired`, …
+const REASON_FIELD: &str = "url_elicitation_error";
+
+/// Browser-side reasons that mean the user said no, as opposed to something
+/// going wrong: reported as `declined`, not `failed`.
+const REFUSALS: &[&str] = &["access_denied", "cancelled_by_user", "declined_on_page"];
 
 /// A browser hand-off Overslash can watch to completion.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -103,29 +113,58 @@ pub(super) struct Plan {
 }
 
 /// How a plan ended without completing, as the note reports it.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(super) enum Stopped {
-    Declined,
+    /// The user said no. `None`: in the client, before the link was opened.
+    /// `Some(reason)`: in the browser — the provider's Deny, the consent
+    /// page's Cancel, the provide page's Deny.
+    Declined(Option<String>),
+    /// The client dismissed the prompt without answering, or hung up.
     Cancelled,
+    /// Nobody finished within `URL_TIMEOUT`.
     TimedOut,
-    Failed,
+    /// The browser flow ended in an error, or the thing it pointed at is gone.
+    Failed(Option<String>),
 }
 
 impl Stopped {
-    fn note(self) -> &'static str {
+    fn note(&self) -> &'static str {
         match self {
-            Stopped::Declined => "declined",
+            Stopped::Declined(_) => "declined",
             Stopped::Cancelled => "cancelled",
             Stopped::TimedOut => "timed_out",
-            Stopped::Failed => "failed",
+            Stopped::Failed(_) => "failed",
         }
     }
 
+    fn reason(&self) -> Option<&str> {
+        match self {
+            Stopped::Declined(r) | Stopped::Failed(r) => r.as_deref(),
+            Stopped::Cancelled | Stopped::TimedOut => None,
+        }
+    }
+
+    /// The client's own answer to the prompt.
     pub(super) fn from_action(action: &str) -> Self {
         match action {
-            "decline" => Stopped::Declined,
+            "decline" => Stopped::Declined(None),
             _ => Stopped::Cancelled,
         }
+    }
+
+    /// A reason the browser side reported, sorted into refusal or failure.
+    fn from_browser(reason: Option<String>) -> Self {
+        match reason {
+            Some(r) if REFUSALS.contains(&r.as_str()) => Stopped::Declined(Some(r)),
+            other => Stopped::Failed(other),
+        }
+    }
+
+    /// Whether the wait ended on the browser side (or ran out), rather than
+    /// on the client's answer. Then the link was likely opened — for an auth
+    /// link, consumed — and the out-of-band interaction is over either way.
+    fn ended_in_browser(&self) -> bool {
+        !matches!(self, Stopped::Declined(None) | Stopped::Cancelled)
     }
 }
 
@@ -384,7 +423,11 @@ pub(super) async fn open_approval_row(
 enum Progress {
     Pending,
     Done,
-    Failed,
+    Ended(Stopped),
+}
+
+fn gone(reason: &str) -> Progress {
+    Progress::Ended(Stopped::Failed(Some(reason.to_string())))
 }
 
 async fn progress(ctx: &Ctx, watch: &Watch) -> Progress {
@@ -396,13 +439,17 @@ async fn progress(ctx: &Ctx, watch: &Watch) -> Progress {
                 Ok(Some(f)) if f.org_id == ctx.auth.org_id => {
                     if f.completed_at.is_some() {
                         Progress::Done
-                    } else if f.failed_at.is_some() || f.expires_at < now {
-                        Progress::Failed
+                    } else if f.failed_at.is_some() {
+                        Progress::Ended(Stopped::from_browser(f.failure))
+                    } else if f.expires_at < now && f.consumed_at.is_none() {
+                        // Never opened in time. (An opened flow may still be
+                        // at the provider past this; its callback decides.)
+                        gone("expired")
                     } else {
                         Progress::Pending
                     }
                 }
-                Ok(_) => Progress::Failed,
+                Ok(_) => gone("not_found"),
                 Err(e) => {
                     tracing::warn!("poll oauth flow failed: {e}");
                     Progress::Pending
@@ -410,17 +457,19 @@ async fn progress(ctx: &Ctx, watch: &Watch) -> Progress {
             }
         }
         Watch::SecretRequest { id } => {
-            match overslash_db::repos::secret_request::get(db, id).await {
+            match overslash_db::repos::secret_request::progress(db, id).await {
                 Ok(Some(r)) if r.org_id == ctx.auth.org_id => {
                     if r.fulfilled_at.is_some() {
                         Progress::Done
+                    } else if r.declined_at.is_some() {
+                        Progress::Ended(Stopped::Declined(Some("declined_on_page".into())))
                     } else if r.expires_at < now {
-                        Progress::Failed
+                        gone("expired")
                     } else {
                         Progress::Pending
                     }
                 }
-                Ok(_) => Progress::Failed,
+                Ok(_) => gone("not_found"),
                 Err(e) => {
                     tracing::warn!("poll secret request failed: {e}");
                     Progress::Pending
@@ -432,7 +481,7 @@ async fn progress(ctx: &Ctx, watch: &Watch) -> Progress {
             match scope.get_approval(*id).await {
                 Ok(Some(a)) if a.status == "pending" => Progress::Pending,
                 Ok(Some(_)) => Progress::Done,
-                Ok(None) => Progress::Failed,
+                Ok(None) => gone("not_found"),
                 Err(e) => {
                     tracing::warn!("poll approval failed: {e}");
                     Progress::Pending
@@ -458,7 +507,7 @@ where
     loop {
         match progress(ctx, watch).await {
             Progress::Done => return Ok(()),
-            Progress::Failed => return Err(Stopped::Failed),
+            Progress::Ended(stopped) => return Err(stopped),
             Progress::Pending => {}
         }
         if let Some(stopped) = answered().await {
@@ -478,14 +527,8 @@ where
 /// Every hand-off completed: earn the plan's result.
 pub(super) async fn finish(ctx: &Ctx, plan: &Plan) -> Reply {
     let reply = match plan.then {
-        Then::Replay => {
-            let outcome = match ctx.tool_name.as_str() {
-                "overslash_read" => dispatch_read(&ctx.state, &ctx.bearer, &ctx.args).await,
-                _ => dispatch_call(&ctx.state, &ctx.bearer, &ctx.args).await,
-            };
-            render(outcome)
-        }
-        Then::Report => Reply::Result(text_result(&with_note(&plan.fallback, "completed"))),
+        Then::Replay => render(redispatch(ctx).await),
+        Then::Report => Reply::Result(text_result(&with_note(&plan.fallback, "completed", None))),
         Then::CallApproval => call_approval(ctx, plan).await,
     };
     retire_approval_row(ctx, plan, true).await;
@@ -493,13 +536,28 @@ pub(super) async fn finish(ctx: &Ctx, plan: &Plan) -> Reply {
 }
 
 /// A hand-off did not complete: the original body, with a note saying why.
+///
+/// Except for an auth link whose browser side ended — refused at the
+/// provider, failed, or run out: its flow was consumed when the user opened
+/// it (or is about to expire), so the original `auth_url` is dead, and handing
+/// it back would send the agent round a loop with a broken link. The call is
+/// run again instead, which mints a fresh one, and the note rides on that.
 pub(super) async fn stop(ctx: &Ctx, plan: &Plan, stopped: Stopped) -> Reply {
     retire_approval_row(ctx, plan, false).await;
-    fallback(plan, stopped)
+    if plan.then == Then::Replay && stopped.ended_in_browser() {
+        return match redispatch(ctx).await {
+            Ok(ForwardOutcome::TypedError(envelope)) => {
+                Reply::Result(tool_error_result(&noted(&envelope, &stopped)))
+            }
+            // Recovered some other way meanwhile: the result is the answer.
+            other => render(other),
+        };
+    }
+    fallback(plan, &stopped)
 }
 
-pub(super) fn fallback(plan: &Plan, stopped: Stopped) -> Reply {
-    let body = with_note(&plan.fallback, stopped.note());
+pub(super) fn fallback(plan: &Plan, stopped: &Stopped) -> Reply {
+    let body = noted(&plan.fallback, stopped);
     if plan.fallback_is_error {
         Reply::Result(tool_error_result(&body))
     } else {
@@ -507,14 +565,25 @@ pub(super) fn fallback(plan: &Plan, stopped: Stopped) -> Reply {
     }
 }
 
+async fn redispatch(ctx: &Ctx) -> Result<ForwardOutcome, String> {
+    match ctx.tool_name.as_str() {
+        "overslash_read" => dispatch_read(&ctx.state, &ctx.bearer, &ctx.args).await,
+        _ => dispatch_call(&ctx.state, &ctx.bearer, &ctx.args).await,
+    }
+}
+
+fn noted(body: &Value, stopped: &Stopped) -> Value {
+    with_note(body, stopped.note(), stopped.reason())
+}
+
 async fn call_approval(ctx: &Ctx, plan: &Plan) -> Reply {
     let Some(Watch::Approval { id }) = plan.handoffs.first().map(|h| &h.watch) else {
-        return fallback(plan, Stopped::Failed);
+        return fallback(plan, &Stopped::Failed(None));
     };
     let scope = overslash_db::OrgScope::new(ctx.auth.org_id, ctx.state.db_pool(&ctx.ext));
     let status = match scope.get_approval(*id).await {
         Ok(Some(a)) => a.status,
-        _ => return fallback(plan, Stopped::Failed),
+        _ => return fallback(plan, &Stopped::Failed(Some("not_found".into()))),
     };
     if status != "allowed" {
         // Denied, bubbled up or expired on the dashboard: a real answer, so
@@ -557,15 +626,20 @@ async fn retire_approval_row(ctx: &Ctx, plan: &Plan, completed: bool) {
     }
 }
 
-fn with_note(body: &Value, note: &str) -> Value {
-    match body {
-        Value::Object(map) => {
-            let mut map = map.clone();
-            map.insert(NOTE_FIELD.into(), json!(note));
-            Value::Object(map)
+fn with_note(body: &Value, note: &str, reason: Option<&str>) -> Value {
+    let mut map = match body {
+        Value::Object(map) => map.clone(),
+        other => {
+            let mut m = serde_json::Map::new();
+            m.insert("result".into(), other.clone());
+            m
         }
-        other => json!({ "result": other, NOTE_FIELD: note }),
+    };
+    map.insert(NOTE_FIELD.into(), json!(note));
+    if let Some(reason) = reason {
+        map.insert(REASON_FIELD.into(), json!(reason));
     }
+    Value::Object(map)
 }
 
 /// The `elicitation/create` params for one hand-off. The legacy era adds its
@@ -583,128 +657,6 @@ pub(super) fn url_params(handoff: &Handoff, elicitation_id: Option<&str>) -> Val
 }
 
 // ---------------------------------------------------------------------------
-// 2025-era transport: an SSE stream around the whole plan
-// ---------------------------------------------------------------------------
-
-pub(super) fn legacy_stream(ctx: Ctx, rpc_id: Value, plan: Plan) -> Reply {
-    let (tx, rx) = tokio::sync::mpsc::channel::<Value>(8);
-    tokio::spawn(async move {
-        let reply = drive_legacy(&ctx, &plan, &tx).await;
-        let frame = match reply {
-            Reply::Result(result) => json!({ "jsonrpc": "2.0", "id": rpc_id, "result": result }),
-            Reply::Error(code, message) => json!({
-                "jsonrpc": "2.0", "id": rpc_id,
-                "error": { "code": code, "message": message },
-            }),
-            Reply::Stream(_) | Reply::Deferred(_) => json!({
-                "jsonrpc": "2.0", "id": rpc_id,
-                "error": { "code": INTERNAL_ERROR, "message": "unexpected nested reply" },
-            }),
-        };
-        let _ = tx.send(frame).await;
-    });
-    let events = stream::unfold(rx, |mut rx| async move {
-        let frame = rx.recv().await?;
-        Some((
-            Ok::<_, Infallible>(Event::default().json_data(frame).unwrap_or_default()),
-            rx,
-        ))
-    });
-    Reply::Stream(
-        Sse::new(events)
-            .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
-            .into_response(),
-    )
-}
-
-async fn drive_legacy(ctx: &Ctx, plan: &Plan, tx: &tokio::sync::mpsc::Sender<Value>) -> Reply {
-    let Some(agent) = ctx.auth.identity_id else {
-        return stop(ctx, plan, Stopped::Failed).await;
-    };
-    for handoff in &plan.handoffs {
-        let eid = format!("{URL_ID_PREFIX}{}", Uuid::new_v4());
-        if let Err(e) =
-            overslash_db::repos::mcp_url_elicitation::insert(ctx.state.db(&ctx.ext), &eid, agent)
-                .await
-        {
-            tracing::error!("open url elicitation failed: {e}");
-            return stop(ctx, plan, Stopped::Failed).await;
-        }
-        let ask = json!({
-            "jsonrpc": "2.0",
-            "id": eid,
-            "method": "elicitation/create",
-            "params": url_params(handoff, Some(&eid)),
-        });
-        if tx.send(ask).await.is_err() {
-            // The client hung up; nobody is left to answer.
-            return stop(ctx, plan, Stopped::Cancelled).await;
-        }
-
-        let waited = wait_for(ctx, &handoff.watch, || async {
-            if tx.is_closed() {
-                return Some(Stopped::Cancelled);
-            }
-            match overslash_db::repos::mcp_url_elicitation::get(ctx.state.db(&ctx.ext), &eid).await
-            {
-                Ok(Some(row)) => match row.action.as_deref() {
-                    Some("accept") | None => None,
-                    Some(other) => Some(Stopped::from_action(other)),
-                },
-                _ => None,
-            }
-        })
-        .await;
-        if let Err(stopped) = waited {
-            return stop(ctx, plan, stopped).await;
-        }
-        let _ = tx
-            .send(json!({
-                "jsonrpc": "2.0",
-                "method": "notifications/elicitation/complete",
-                "params": { "elicitationId": eid },
-            }))
-            .await;
-    }
-    finish(ctx, plan).await
-}
-
-/// A 2025-era client's answer to a URL elicitation, delivered as a bare
-/// JSON-RPC response on `POST /mcp`. Recorded for the replica holding the
-/// stream; only the agent the elicitation belongs to may answer it.
-pub(super) async fn record_legacy_answer(
-    state: &AppState,
-    ext: &axum::http::Extensions,
-    auth: &AuthContext,
-    elicit_id: &str,
-    response: &Value,
-) -> Response {
-    let owner_ok = matches!(
-        overslash_db::repos::mcp_url_elicitation::get(state.db(ext), elicit_id).await,
-        Ok(Some(row)) if Some(row.agent_identity_id) == auth.identity_id
-    );
-    if !owner_ok {
-        return rpc_error_response(
-            Value::String(elicit_id.to_string()),
-            INVALID_REQUEST,
-            "elicitation not found or not addressable by this caller",
-        );
-    }
-    // A JSON-RPC error answer is the client saying it could not do it.
-    let action = response
-        .get("result")
-        .and_then(|r| r.get("action"))
-        .and_then(Value::as_str)
-        .unwrap_or("cancel");
-    if let Err(e) =
-        overslash_db::repos::mcp_url_elicitation::answer(state.db(ext), elicit_id, action).await
-    {
-        tracing::error!(elicit_id, "record url elicitation answer failed: {e}");
-    }
-    (StatusCode::ACCEPTED, "").into_response()
-}
-
-// ---------------------------------------------------------------------------
 // 2026-07-28 transport: one hand-off per round trip
 // ---------------------------------------------------------------------------
 
@@ -718,7 +670,7 @@ pub(super) struct PlanState {
 /// `input_required` asking the user to open hand-off `index`.
 pub(super) fn modern_ask(ctx: &Ctx, plan: Plan, index: usize) -> Reply {
     let Some(handoff) = plan.handoffs.get(index) else {
-        return fallback(&plan, Stopped::Failed);
+        return fallback(&plan, &Stopped::Failed(None));
     };
     let params = url_params(handoff, None);
     let plan_state = PlanState { plan, index };
@@ -732,7 +684,7 @@ pub(super) fn modern_ask(ctx: &Ctx, plan: Plan, index: usize) -> Reply {
         })),
         Err(e) => {
             tracing::error!("mint url request state failed: {e}");
-            fallback(&plan_state.plan, Stopped::Failed)
+            fallback(&plan_state.plan, &Stopped::Failed(None))
         }
     }
 }
@@ -749,11 +701,11 @@ pub(super) fn modern_continue(ctx: Ctx, plan_state: PlanState, answer: &Value) -
     let PlanState { plan, index } = plan_state;
     if action != "accept" {
         let stopped = Stopped::from_action(action);
-        return Reply::Deferred(Box::pin(async move { stop(&ctx, &plan, stopped).await }));
+        return detached(async move { stop(&ctx, &plan, stopped).await });
     }
-    Reply::Deferred(Box::pin(async move {
+    detached(async move {
         let Some(handoff) = plan.handoffs.get(index) else {
-            return stop(&ctx, &plan, Stopped::Failed).await;
+            return stop(&ctx, &plan, Stopped::Failed(None)).await;
         };
         let watch = handoff.watch.clone();
         match wait_for(&ctx, &watch, || async { None }).await {
@@ -761,6 +713,22 @@ pub(super) fn modern_continue(ctx: Ctx, plan_state: PlanState, answer: &Value) -
             Ok(()) if index + 1 < plan.handoffs.len() => modern_ask(&ctx, plan, index + 1),
             Ok(()) => finish(&ctx, &plan).await,
         }
+    })
+}
+
+/// A deferred reply whose work runs on its own task. If the client drops the
+/// connection mid-wait, the response future is dropped — but the work still
+/// runs to its end, so an approval's auto-call hold is always released (and a
+/// completed approval still runs) rather than left for the sweeper.
+pub(super) fn detached<F>(work: F) -> Reply
+where
+    F: std::future::Future<Output = Reply> + Send + 'static,
+{
+    let handle = tokio::spawn(work);
+    Reply::Deferred(Box::pin(async move {
+        handle.await.unwrap_or_else(|e| {
+            Reply::Error(INTERNAL_ERROR, format!("url elicitation task failed: {e}"))
+        })
     }))
 }
 
@@ -817,13 +785,42 @@ mod tests {
     #[test]
     fn a_note_is_added_without_disturbing_the_body() {
         let body = json!({ "error": "needs_authentication", "auth_url": "https://x" });
-        let noted = with_note(&body, "declined");
-        assert_eq!(noted["url_elicitation"], "declined");
-        assert_eq!(noted["auth_url"], "https://x");
+        let n = noted(&body, &Stopped::Declined(Some("access_denied".into())));
+        assert_eq!(n["url_elicitation"], "declined");
+        assert_eq!(n["url_elicitation_error"], "access_denied");
+        assert_eq!(n["auth_url"], "https://x");
+        assert!(
+            noted(&body, &Stopped::TimedOut)
+                .get("url_elicitation_error")
+                .is_none()
+        );
         assert_eq!(
-            with_note(&json!([1]), "failed"),
+            noted(&json!([1]), &Stopped::Failed(None)),
             json!({ "result": [1], "url_elicitation": "failed" })
         );
+    }
+
+    /// A refusal in the browser reads as `declined`, anything else as
+    /// `failed`; and only the client's own answer keeps the link as it was.
+    #[test]
+    fn browser_reasons_sort_into_refusals_and_failures() {
+        for r in ["access_denied", "cancelled_by_user", "declined_on_page"] {
+            assert_eq!(
+                Stopped::from_browser(Some(r.into())),
+                Stopped::Declined(Some(r.into()))
+            );
+        }
+        assert_eq!(
+            Stopped::from_browser(Some("server_error".into())),
+            Stopped::Failed(Some("server_error".into()))
+        );
+        assert_eq!(Stopped::from_browser(None), Stopped::Failed(None));
+
+        assert!(!Stopped::from_action("decline").ended_in_browser());
+        assert!(!Stopped::from_action("cancel").ended_in_browser());
+        assert!(Stopped::Declined(Some("access_denied".into())).ended_in_browser());
+        assert!(Stopped::Failed(None).ended_in_browser());
+        assert!(Stopped::TimedOut.ended_in_browser());
     }
 
     #[test]

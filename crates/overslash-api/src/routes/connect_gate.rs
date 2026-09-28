@@ -25,7 +25,6 @@ use overslash_db::repos::{identity, membership};
 use crate::AppState;
 use crate::cookies;
 use crate::error::AppError;
-use crate::middleware::security_headers;
 use crate::routes::auth::{session_cookie, signing_key_bytes};
 use crate::services::jwt;
 
@@ -327,9 +326,6 @@ pub fn mismatch_html() -> Response {
     (StatusCode::FORBIDDEN, Html(body)).into_response()
 }
 
-const CANCEL_SCRIPT: &str =
-    "document.getElementById('cancel').addEventListener('click', () => window.close());";
-
 /// The loud admin/actor consent interstitial. Shown when the signed-in
 /// identity is *not* the flow's owner but is an org admin (or the flow's
 /// actor) and so may proceed on the owner's behalf. It must name **whose**
@@ -338,7 +334,10 @@ const CANCEL_SCRIPT: &str =
 /// POSTs back to `/connect-authorize/confirm`, which re-validates the override
 /// before consuming the flow (so this page is advisory, not the security
 /// boundary). `SameSite=Lax` on `oss_session` keeps a cross-site forge of the
-/// POST from carrying the victim's session.
+/// POST from carrying the victim's session. Cancel submits the same form to
+/// `/connect-authorize/cancel`, which records the refusal on the flow — so a
+/// tool call waiting on this link as a URL-mode elicitation ends at once
+/// instead of timing out.
 pub fn admin_consent_html(owner_label: &str, provider: &str, flow_id: &str) -> Response {
     let owner = html_escape(owner_label);
     let prov = html_escape(provider);
@@ -357,13 +356,20 @@ pub fn admin_consent_html(owner_label: &str, provider: &str, flow_id: &str) -> R
          <input type='hidden' name='id' value='{id}'>\
          <button type='submit' style='padding:.6rem 1.1rem;font-size:1rem;cursor:pointer'>\
          Continue to {prov}</button>\
-         <button type='button' id=cancel \
+         <button type='submit' formaction='/connect-authorize/cancel' \
          style='margin-left:.5rem;padding:.6rem 1.1rem;font-size:1rem;cursor:pointer'>Cancel</button>\
-         </form><script>{CANCEL_SCRIPT}</script></body>"
+         </form></body>"
     );
-    // An `onclick=` attribute would need `'unsafe-hashes'`; a hashed block
-    // keeps the page's CSP to exactly this one script.
-    security_headers::html_with_inline_script(StatusCode::OK, body, CANCEL_SCRIPT)
+    (StatusCode::OK, Html(body)).into_response()
+}
+
+/// Shown after Cancel on the consent interstitial.
+pub fn cancelled_html() -> Response {
+    let body = "<!doctype html><meta charset=utf-8><title>Connection cancelled</title>\
+                <body style='font-family:system-ui;max-width:480px;margin:4rem auto;padding:0 1rem'>\
+                <h1>Connection cancelled</h1><p>Nothing was connected. You can close this \
+                window.</p></body>";
+    (StatusCode::OK, Html(body)).into_response()
 }
 
 #[cfg(test)]

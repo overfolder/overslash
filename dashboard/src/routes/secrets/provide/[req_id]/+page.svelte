@@ -3,7 +3,12 @@
 	import PublicRequestCard from '$lib/components/secrets/PublicRequestCard.svelte';
 	import RequestIdentityBox from '$lib/components/RequestIdentityBox.svelte';
 	import SecretValueField from '$lib/components/secrets/SecretValueField.svelte';
-	import { fmtCountdown, loginUrl, submitPublicRequest } from '$lib/public-request';
+	import {
+		declinePublicRequest,
+		fmtCountdown,
+		loginUrl,
+		submitPublicRequest
+	} from '$lib/public-request';
 
 	let { data } = $props();
 
@@ -32,6 +37,11 @@
 		const h = Math.floor(m / 60);
 		if (h < 24) return `${h}h ago`;
 		return `${Math.floor(h / 24)}d ago`;
+	}
+
+	async function deny() {
+		denied = true;
+		if (data.state === 'ready') await declinePublicRequest(data.req_id, data.token);
 	}
 
 	async function submit() {
@@ -146,10 +156,7 @@
 			<button class="btn primary" onclick={submit} disabled={submitting || !value}>
 				{submitting ? 'Submitting…' : 'Provide'}
 			</button>
-			<!-- TODO(secret-request-deny): wire to a backend deny endpoint so the
-			     requesting agent gets notified. For now Deny only flips local
-			     state — the request row remains pending until it expires. -->
-			<button class="btn secondary" onclick={() => (denied = true)} disabled={submitting}>
+			<button class="btn secondary" onclick={deny} disabled={submitting}>
 				Deny
 			</button>
 		</div>

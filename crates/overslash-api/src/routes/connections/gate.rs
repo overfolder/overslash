@@ -124,6 +124,31 @@ pub(super) async fn connect_authorize_confirm(
     }
 }
 
+/// POST target of the interstitial's Cancel button. Records the refusal on the
+/// flow (`failure = cancelled_by_user`) so a tool call waiting on this link as
+/// a URL-mode elicitation answers now, rather than timing out. Needs a session
+/// like the confirm POST it sits beside, so a cross-site form cannot end
+/// someone else's flow. Only an unconsumed flow can be cancelled: once the
+/// user has gone on to the provider, the provider's own answer is what counts.
+pub(super) async fn connect_authorize_cancel(
+    State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
+    headers: HeaderMap,
+    Form(params): Form<ConfirmParams>,
+) -> Result<Response> {
+    if read_session(&state, &headers).is_err() {
+        return Err(AppError::Unauthorized("missing session".into()));
+    }
+    let Some(flow) = oauth_connection_flow::get_by_id(state.db(&ext), &params.id).await? else {
+        return Ok(gone_html("This OAuth link is invalid or has been revoked."));
+    };
+    if flow.consumed_at.is_none() {
+        oauth_connection_flow::mark_finished(state.db(&ext), &flow.id, Err("cancelled_by_user"))
+            .await?;
+    }
+    Ok(cancelled_html())
+}
+
 /// Whether the connect gate may transparently re-mint the session cookie to the
 /// flow's org. On an explicit org subdomain the dashboard already aligns the
 /// cookie via `/auth/switch-org`, so we never silently re-scope there; on

@@ -1185,3 +1185,27 @@ The client's accept or decline arrives on a separate POST and crosses replicas t
 **The allow-list in Rust, applied at boot.** Nothing that runs `tofu` can reach the private-IP instance, so terraform can't issue grants. A `google_sql_user` always joins `cloudsqlsuperuser`, and revoking that needs ADMIN OPTION the app's user doesn't hold. The API already holds a privileged connection at boot, and keeping the list in code puts every widening through review. Revoking the table privilege first also revokes its column privileges, so shrinking the list takes effect on the next boot.
 
 **Tradeoff accepted:** every BI query runs on the primary instance. That is fine at current volume, and Datastream replication is the exit when it stops being fine.
+
+## D-NEXT: A URL hand-off always ends in an answer that says why, and never hands back a link that is already used up
+
+**Date**: 2026-09-28
+**Decision**: This refines D104. Every way a URL-mode hand-off can end now reaches the waiting tool call promptly and is reported.
+
+**Refusals recorded in the browser end the wait at once and are reported as `declined`,** with the reason in `url_elicitation_error`:
+- `access_denied`: the provider's own Deny. The callback now accepts an `error=` redirect with no `code` instead of rejecting it at the query extractor, which used to leave the call waiting out its timeout.
+- `cancelled_by_user`: the consent interstitial's Cancel, now a `POST /connect-authorize/cancel` that needs a session.
+- `declined_on_page`: the provide page's Deny, now `POST /public/secrets/provide/{id}/decline`. It uses the link's own token and is advisory: a later submission still fulfils the request.
+
+Other callback failures are reported as `failed` with a coarse, allow-listed reason, stored on the flow (migration 127). A provider error code is relayed only if it fits RFC 6749's character set.
+
+**An auth link is re-run rather than handed back** when its browser side ended: refused, failed or timed out. The flow was consumed when the user opened it, so the original `auth_url` is dead. Re-running mints a fresh one, and the note rides on the new envelope. Only the client's own decline or dismissal, where the link was never opened, returns the original link.
+
+**Old-protocol clients get `notifications/elicitation/complete` whenever the out-of-band part ended**, whether it succeeded, was refused, failed or timed out. Previously this happened only on success.
+
+**A new-protocol retry that arrives after its `requestState` expired gets an answer rather than a JSON-RPC error.** The signature and binding are still checked, and states more than a day past expiry are rejected. The answer is the D95 envelope for a form dialog, or the plan's fallback marked `timed_out` for a URL hand-off. Nothing is resolved, executed or advanced on the strength of a stale state.
+
+**A new-protocol wait runs on its own task.** A client that drops mid-wait no longer cancels it: the approval's auto-call hold is always released, and an approval granted meanwhile still runs.
+
+**Rationale**: The fallback is only useful if it arrives, and only honest if it is live. A refusal that left the call waiting 300s told the agent nothing for five minutes, and "failed" without a reason cannot be told apart from "the user said no". Handing back a consumed `auth_url` gave the agent a link that could only fail, and with it a loop.
+
+**A stale state is answered, but never acted on.** Its signature proves the server issued it to this caller for this call, so returning the fallback it carries leaks nothing. Acting on it would let an answer outlive the window the spec requires the state to be bounded by.
