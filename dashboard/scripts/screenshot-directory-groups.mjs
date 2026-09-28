@@ -1,4 +1,4 @@
-// Real-stack screenshots for directory group sync (D-NEXT).
+// Real-stack screenshots for directory group sync (D107).
 //
 // Unlike the other screenshot scripts, the fixture here cannot be seeded
 // through the API: directory groups exist only because an IdP asserted them,

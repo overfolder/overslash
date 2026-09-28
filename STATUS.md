@@ -133,7 +133,7 @@
 - Approval resolution validates `remember_keys` against group ceiling
 - Backward compatible: no groups assigned = no ceiling enforced (permissive)
 
-### Directory Group Sync (D-NEXT)
+### Directory Group Sync (D107)
 
 - `directory_groups`, `identity_directory_groups`, `group_directory_sources` + the `effective_identity_groups` view (migration 123)
 - Opt-in per IdP config: `org_idp_configs.group_sync_enabled` (default **off**) and `group_claim` (default `groups`)

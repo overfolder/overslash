@@ -1186,7 +1186,7 @@ The client's accept or decline arrives on a separate POST and crosses replicas t
 
 **Tradeoff accepted:** every BI query runs on the primary instance. That is fine at current volume, and Datastream replication is the exit when it stops being fine.
 
-## D-NEXT: A directory group is a membership source, not a ceiling
+## D107: A directory group is a membership source, not a ceiling
 
 **Date**: 2026-09
 **Decision**: An org's own IdP may assert group membership, and that assertion lands in three new tables of its own rather than in `groups`. `directory_groups` records what the directory says exists; `identity_directory_groups` records what it says about one human and is owned outright by sync; `group_directory_sources` is the admin-drawn edge that turns the second into Layer 1 membership. A new view, `effective_identity_groups`, is the single definition of "which groups is this identity in" — `identity_groups` UNION one hop through that edge — and all eight membership read sites go through it. Sync runs only on an enabled `org_idp_configs` row with `group_sync_enabled`, only for `kind = 'user'` identities, and only at sign-in. `org_idp_configs` gains `group_sync_enabled` (default false) and `group_claim` (default `groups`). System groups refuse a directory source. Full design at [docs/design/directory-group-sync.md](docs/design/directory-group-sync.md).

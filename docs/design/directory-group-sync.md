@@ -6,7 +6,7 @@ Automatic provisioning of Overslash groups from an external directory. This
 document covers the OIDC `groups`-claim source that ships now, and the shape
 the Google Admin SDK and SCIM sources drop into later.
 
-Binding decision: D-NEXT, *A directory group is a membership source, not a
+Binding decision: D107, *A directory group is a membership source, not a
 ceiling*.
 
 ---

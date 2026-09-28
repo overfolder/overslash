@@ -3,7 +3,7 @@
 -- A *directory group* is not a ceiling. It is a statement by the org's own IdP
 -- about which humans belong together: it carries no grants, no rate limit and
 -- no service visibility. That is why it lives here rather than as a fourth
--- class inside `groups` — see the D-NEXT entry in DECISIONS.md and
+-- class inside `groups` — see the D107 entry in DECISIONS.md and
 -- `docs/design/directory-group-sync.md`.
 --
 -- Three tables, one responsibility each:

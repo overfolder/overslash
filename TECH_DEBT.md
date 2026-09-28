@@ -448,7 +448,7 @@ so the regeneration noise is reviewable on its own.
 
 ## The login ID token's signature is not verified
 
-Directory group sync (D-NEXT) reads group claims from `/userinfo` **and** the
+Directory group sync (D107) reads group claims from `/userinfo` **and** the
 ID token, because Entra will not release `groups` on the v2 userinfo endpoint.
 `routes/auth/userinfo.rs::id_token_claims` base64-decodes the payload without
 checking the signature.
