@@ -532,7 +532,7 @@ request's `_meta` on 2026-07-28, the `initialize` capabilities on 2025 — indep
   `pending_mcp_elicitations` row a form uses, retired `withdrawn` (no cooldown) if the link is
   not completed. The post-cancel cooldown does suppress the link, as it does the form.
 
-**How a hand-off ends (D-NEXT).** Every ending reaches the call promptly and says why:
+**How a hand-off ends (D106).** Every ending reaches the call promptly and says why:
 
 | Ending | Note | `url_elicitation_error` | Link handed back |
 |---|---|---|---|

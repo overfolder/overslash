@@ -1186,7 +1186,7 @@ The client's accept or decline arrives on a separate POST and crosses replicas t
 
 **Tradeoff accepted:** every BI query runs on the primary instance. That is fine at current volume, and Datastream replication is the exit when it stops being fine.
 
-## D-NEXT: A URL hand-off always ends in an answer that says why, and never hands back a link that is already used up
+## D106: A URL hand-off always ends in an answer that says why, and never hands back a link that is already used up
 
 **Date**: 2026-09-28
 **Decision**: This refines D104. Every way a URL-mode hand-off can end now reaches the waiting tool call promptly and is reported.

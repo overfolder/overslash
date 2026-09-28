@@ -377,7 +377,7 @@ session-gated.
   the refusal (`POST /public/secrets/provide/{id}/decline` →
   `secret_requests.declined_at`, advisory: a later submission still fulfils the
   request), so an agent waiting on the link as a URL-mode elicitation hears
-  `declined` at once (D-NEXT). The setup page still has no Deny; a setup link
+  `declined` at once (D106). The setup page still has no Deny; a setup link
   the human ignores stays pending until it expires.
 - **No `activate` over MCP.** `probe::run` needs `AuthContext`,
   `CallerTransport` and `ClientIp`; a `PlatformCallContext` carries none of
