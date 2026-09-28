@@ -56,9 +56,11 @@ enable_valkey    = true
 enable_dns       = false
 enable_shortener = true
 
-# BI: BigQuery federation over the Postgres `bi` schema (docs/runbooks/bi.md).
-# Rolls a Cloud Run revision whose boot creates the `bi` role; nothing manual.
+# BI: BigQuery federation over prod Postgres (docs/runbooks/bi.md).
+# Step 1 mounts OVERSLASH_BI_DB_PASSWORD; an API boot then creates the `bi` role.
 enable_bi = true
+# Step 2, after an API release containing overslash_db::bi is live in prod.
+bi_publish_views = false
 
 # Shared overfwd Mailbox Gateway. This hostname is what `services/email.yaml`
 # ships as `servers[0]`, so every `email` instance that pins no `url` lands

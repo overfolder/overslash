@@ -30,6 +30,12 @@ variable "sql_database" {
   type = string
 }
 
+variable "publish_views" {
+  description = "Create the BigQuery views. BigQuery test-runs each one on create, so this needs the `bi` role to exist (an API release containing overslash_db::bi has booted with the password mounted) and the connection's cloudsql.client grant to have propagated. Turn on in a second apply."
+  type        = bool
+  default     = false
+}
+
 variable "bi_viewers" {
   description = "IAM members (e.g. user:a@b.com) allowed to query the BI dataset. Project owners already can."
   type        = list(string)
@@ -99,7 +105,10 @@ resource "google_bigquery_dataset" "bi" {
 }
 
 resource "google_bigquery_table" "view" {
-  for_each = local.views
+  # Gated, not just ordered: the `bi` role is created by an API boot running
+  # an image terraform doesn't manage (containers[0].image is ignore_changes),
+  # so no depends_on here can wait for it. See docs/runbooks/bi.md.
+  for_each = var.publish_views ? local.views : {}
 
   dataset_id          = google_bigquery_dataset.bi.dataset_id
   project             = var.project_id
@@ -110,6 +119,8 @@ resource "google_bigquery_table" "view" {
     query          = "SELECT * FROM EXTERNAL_QUERY(\"${local.external_connection}\", \"\"\"${each.value}\"\"\")"
     use_legacy_sql = false
   }
+
+  depends_on = [google_project_iam_member.connection_sql_client]
 }
 
 # --- Who can query ---
