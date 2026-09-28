@@ -633,11 +633,7 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
 
     // MCP transport + OAuth handshake. `cors_mcp` is wider (allows the
     // Inspector origin); the layer is attached to this subrouter only.
-    let mcp_oauth_routes = Router::new()
-        .merge(routes::oauth_as::router())
-        .merge(routes::oauth::router())
-        .merge(routes::mcp::router())
-        .layer(cors_mcp);
+    let mcp_oauth_routes = mcp_oauth_routes(&state).layer(cors_mcp);
 
     // Everything else gets `cors_global`, scoped via a sibling subrouter
     // so the two CORS layers don't compose (an outer cors_global would
@@ -715,6 +711,23 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
         );
 
     Ok(app)
+}
+
+/// The MCP transport and the OAuth handshake around it, behind their own
+/// throttle (`middleware::ingress_rate_limit`): per client IP on `/oauth/*`,
+/// a stricter per-IP cap on Dynamic Client Registration, per MCP client on
+/// `/mcp`. Outside the `/v1` rate-limit layer, which keys on credentials most
+/// of these requests do not have yet. `pub` so the test harness mounts the
+/// same throttled subrouter production does.
+pub fn mcp_oauth_routes(state: &AppState) -> Router<AppState> {
+    Router::new()
+        .merge(routes::oauth_as::router())
+        .merge(routes::oauth::router())
+        .merge(routes::mcp::router())
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            middleware::ingress_rate_limit::ingress_rate_limit_middleware,
+        ))
 }
 
 /// Parse a comma-separated CORS origin spec into a tower-http `AllowOrigin`.

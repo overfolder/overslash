@@ -1790,6 +1790,26 @@ Identity caps are per-identity only — no inheritance.
 
 Configured by org admins via `PUT /GET /DELETE /v1/rate-limits`.
 
+### Who is charged
+
+The middleware charges the principal the auth extractors resolve, in the same order (session cookie, then bearer):
+
+- **`osk_` API key** and **MCP access token** — the owner-user bucket plus that identity's cap. An MCP tool call reaches `/v1` as a loopback request carrying the client's own bearer, so it is counted there, once.
+- **Dashboard session** — a bucket of its own per identity, sized by the same resolution chain, with no identity cap. A runaway agent draining the shared user bucket cannot lock its owner out of the dashboard.
+- A credential that does not verify is not charged; the route's extractor rejects it.
+
+### MCP transport and OAuth handshake
+
+The `/oauth/*`, `/.well-known/oauth-*` and `/mcp` routes sit outside the `/v1` layer, behind their own. These limits are instance-wide, not per org, because most of the traffic arrives before the caller has proven an org:
+
+| Env var (`…_RATE_LIMIT` / `…_RATE_WINDOW_SECS`) | Keyed on | Default |
+|---|---|---|
+| `OAUTH_` | Client IP, across the handshake and unauthenticated `/mcp` | 120 / 60s |
+| `OAUTH_REGISTER_` | Client IP, `POST /oauth/register` only (on top of the above) | 20 / 3600s |
+| `MCP_` | MCP client (identity for an `osk_` key or a session) on `/mcp` | 600 / 60s |
+
+The client IP is `ClientIp`, resolved against the trusted-proxy configuration. `0` disables a limit, and a value that doesn't parse stops the boot.
+
 ### Behavior
 
 - **Algorithm**: Fixed window counter.

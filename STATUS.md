@@ -169,6 +169,8 @@
 - Dual storage backend: Redis/Valkey (distributed) or in-memory DashMap (single-instance fallback)
 - Fail-open on Redis errors; health endpoint exempt from rate limiting
 - Fixed window counter algorithm with configurable window size
+- Dashboard sessions (own per-identity bucket, sized from the user budget) and MCP access tokens (owner-user bucket + identity cap) are metered, not only `osk_` keys
+- `/oauth/*`, `/.well-known/oauth-*` and `/mcp` throttled by `middleware/ingress_rate_limit.rs`: per client IP on the handshake, a stricter per-IP cap on `POST /oauth/register`, per MCP client on `/mcp` (`OAUTH_`, `OAUTH_REGISTER_`, `MCP_RATE_LIMIT` / `_RATE_WINDOW_SECS`)
 
 ### Org Slug Subdomains (`<org>.app|api.overslash.com`)
 

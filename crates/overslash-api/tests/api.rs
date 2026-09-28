@@ -83,6 +83,7 @@ mod identity_idle_cleanup;
 mod identity_remove_user;
 mod identity_repo;
 mod impersonation;
+mod ingress_rate_limits;
 mod inherit_permissions;
 mod instance_admin;
 mod instance_credentials_envelope;

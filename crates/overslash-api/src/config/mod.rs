@@ -10,12 +10,14 @@ use std::collections::HashMap;
 
 mod boot_policy;
 mod from_env;
+mod ingress_rate_limits;
 mod parse;
 mod sweeps;
 
 pub use boot_policy::{
     BootReport, BootViolation, DeploymentEnv, KeyWeakness, assess_key, log_filter,
 };
+pub use ingress_rate_limits::IngressRateLimits;
 pub use parse::default_public_url;
 
 #[derive(Clone, Debug)]
@@ -229,6 +231,8 @@ pub struct Config {
     pub resolve_cache_namespace: Option<String>,
     pub default_rate_limit: u32,
     pub default_rate_window_secs: u32,
+    /// Per-IP and per-MCP-client limits on the MCP / OAuth subrouter.
+    pub ingress_rate_limits: IngressRateLimits,
     /// When `false`, `POST /v1/orgs` returns 403 and the dashboard hides the
     /// "Create org" CTA. Lets a self-hosted operator lock down org creation
     /// after initial setup. Default `true`.
@@ -941,6 +945,7 @@ pub(crate) mod tests {
             resolve_cache_namespace: None,
             default_rate_limit: 0,
             default_rate_window_secs: 0,
+            ingress_rate_limits: Default::default(),
             allow_org_creation: true,
             trial_default_duration_days: 30,
             single_org_mode: None,
