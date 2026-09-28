@@ -4,8 +4,9 @@ use super::dispatch::{
     dispatch_approve, dispatch_auth, dispatch_call, dispatch_read, dispatch_search,
     normalize_stringified_params,
 };
-use super::elicitation::{elicitation_eligible, sse_elicitation_response};
+use super::elicitation::{elicitation_eligible, in_cancel_cooldown, sse_elicitation_response};
 use super::modern::{self, ModernRequest};
+use super::url_elicitation::{self as url_elicit, Plan};
 use super::*;
 
 // ---------------------------------------------------------------------------
@@ -31,15 +32,28 @@ struct ToolCallParams {
 ///
 /// A legacy connection wraps it in a plain JSON-RPC response; a 2026-07-28
 /// request additionally stamps `resultType` and `serverInfo` on the result.
-/// `Stream` only ever comes out of the legacy elicitation path — the modern
-/// era has no server-to-client requests to stream.
+/// `Stream` only ever comes out of the legacy elicitation paths — the modern
+/// era has no server-to-client requests to stream. `Deferred` only out of the
+/// modern URL-mode retry, which waits on a browser flow before it can answer.
 pub(super) enum Reply {
     /// The JSON-RPC `result` object.
     Result(Value),
     /// A JSON-RPC error: code and message.
     Error(i32, String),
-    /// An already-built response (the legacy SSE elicitation stream).
+    /// An already-built response (a legacy SSE elicitation stream).
     Stream(Response),
+    /// A reply that is not ready yet. Resolves to `Result` or `Error`.
+    Deferred(std::pin::Pin<Box<dyn std::future::Future<Output = Reply> + Send>>),
+}
+
+/// How the request arrived — what decides which elicitation transport, if
+/// any, a reply may use.
+#[derive(Clone, Copy)]
+struct Transport<'a> {
+    /// `Some` on a 2026-07-28 request.
+    modern: Option<&'a ModernRequest>,
+    /// The client offered to read an event stream (legacy SSE elicitation).
+    accepts_sse: bool,
 }
 
 /// `modern` is `Some` for a 2026-07-28 request, carrying what its `_meta`
@@ -78,6 +92,7 @@ pub(super) async fn tools_call(
             state,
             ext,
             auth,
+            bearer,
             &params.name,
             &params.arguments,
             request_state,
@@ -86,9 +101,27 @@ pub(super) async fn tools_call(
         .await;
     }
 
+    let transport = Transport {
+        modern,
+        accepts_sse,
+    };
     let outcome = match params.name.as_str() {
         "overslash_search" => dispatch_search(state, bearer, &params.arguments).await,
-        "overslash_read" => dispatch_read(state, bearer, &params.arguments).await,
+        "overslash_read" => {
+            let outcome = dispatch_read(state, bearer, &params.arguments).await;
+            return url_or_render(
+                state,
+                ext,
+                auth,
+                req,
+                bearer,
+                "overslash_read",
+                &params.arguments,
+                transport,
+                outcome,
+            )
+            .await;
+        }
         "overslash_call" => {
             return tools_call_overslash_call(
                 state,
@@ -110,6 +143,10 @@ pub(super) async fn tools_call(
         other => return Reply::Error(METHOD_NOT_FOUND, format!("unknown tool `{other}`")),
     };
 
+    render(outcome)
+}
+
+fn render(outcome: Result<ForwardOutcome, String>) -> Reply {
     match outcome {
         Ok(ForwardOutcome::Ok(v)) => Reply::Result(text_result(&v)),
         Ok(ForwardOutcome::TypedError(envelope)) => Reply::Result(tool_error_result(&envelope)),
@@ -117,10 +154,82 @@ pub(super) async fn tools_call(
     }
 }
 
+/// Render a forwarded outcome — unless it hands the user a browser link and
+/// the client can open one for them, in which case run it as a URL-mode
+/// elicitation (see `url_elicitation`).
+#[allow(clippy::too_many_arguments)]
+async fn url_or_render(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    auth: &AuthContext,
+    req: &JsonRpcRequest,
+    bearer: &str,
+    tool_name: &str,
+    args: &Value,
+    transport: Transport<'_>,
+    outcome: Result<ForwardOutcome, String>,
+) -> Reply {
+    let plan = match &outcome {
+        Ok(o) => url_elicit::plan_for(state, tool_name, args, o),
+        Err(_) => None,
+    };
+    match plan {
+        Some(plan) => run_url_plan(
+            state, ext, auth, req, bearer, tool_name, args, transport, plan,
+        )
+        .await
+        .unwrap_or_else(|| render(outcome)),
+        None => render(outcome),
+    }
+}
+
+/// Start a URL-mode elicitation on whichever transport the request allows.
+/// `None` when neither does, so the caller renders the plain result.
+#[allow(clippy::too_many_arguments)]
+async fn run_url_plan(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    auth: &AuthContext,
+    req: &JsonRpcRequest,
+    bearer: &str,
+    tool_name: &str,
+    args: &Value,
+    transport: Transport<'_>,
+    mut plan: Plan,
+) -> Option<Reply> {
+    let declared = transport.modern.map(|m| &m.capabilities);
+    // The legacy transport is a stream; a caller that cannot read one must
+    // never be upgraded onto it.
+    if transport.modern.is_none() && !transport.accepts_sse {
+        return None;
+    }
+    if !url_elicit::url_eligible(state, ext, auth, declared).await {
+        return None;
+    }
+    if plan.then == url_elicit::Then::CallApproval {
+        plan.approval_row = Some(url_elicit::open_approval_row(state, ext, auth, &plan).await?);
+    }
+    let ctx = url_elicit::Ctx {
+        state: state.clone(),
+        ext: ext.clone(),
+        auth: auth.clone(),
+        bearer: bearer.to_string(),
+        tool_name: tool_name.to_string(),
+        args: args.clone(),
+    };
+    Some(match transport.modern {
+        Some(_) => url_elicit::modern_ask(&ctx, plan, 0),
+        None => url_elicit::legacy_stream(ctx, req.id.clone(), plan),
+    })
+}
+
 /// A successful tool result: `value` stringified into one text block.
-fn text_result(value: &Value) -> Value {
+pub(super) fn text_result(value: &Value) -> Value {
     json!({
-        "content": [{ "type": "text", "text": serde_json::to_string(value).unwrap_or_default() }]
+        "content": [{
+            "type": "text",
+            "text": serde_json::to_string(&collapse_link_pairs(value.clone())).unwrap_or_default(),
+        }]
     })
 }
 
@@ -149,47 +258,74 @@ async fn tools_call_overslash_call(
     accepts_sse: bool,
     modern: Option<&ModernRequest>,
 ) -> Reply {
+    let transport = Transport {
+        modern,
+        accepts_sse,
+    };
     let outcome = match dispatch_call(state, bearer, args).await {
-        Ok(ForwardOutcome::Ok(v)) => v,
-        Ok(ForwardOutcome::TypedError(envelope)) => {
-            // Typed envelopes (needs_authentication, reauth_required,
-            // missing_scopes, credential_missing, not_in_your_chain) bypass
-            // the elicitation fork: the agent has structured branching info
-            // already, no human-in-the-loop dialog applies.
-            return Reply::Result(tool_error_result(&envelope));
+        Ok(ForwardOutcome::Ok(v))
+            if v.get("status").and_then(Value::as_str) == Some("pending_approval") =>
+        {
+            v
         }
-        Err(msg) => return Reply::Error(INTERNAL_ERROR, msg),
+        // Everything but a permission gap: a result, or a typed envelope the
+        // agent can branch on. The ones that end with a human opening a link
+        // — auth, setup, credential entry — become a URL-mode elicitation
+        // when the client can open links; the rest render as they are.
+        other => {
+            return url_or_render(
+                state,
+                ext,
+                auth,
+                req,
+                bearer,
+                "overslash_call",
+                args,
+                transport,
+                other,
+            )
+            .await;
+        }
     };
 
-    // Synchronous success or platform action: return as today.
-    let is_pending = outcome.get("status").and_then(Value::as_str) == Some("pending_approval");
-    if !is_pending {
-        return Reply::Result(text_result(&outcome));
-    }
-
-    if let Some(modern) = modern {
-        return modern::begin_elicitation(
-            state,
-            ext,
-            auth,
-            modern,
-            "overslash_call",
-            args,
-            &outcome,
-        )
-        .await;
-    }
-
-    // Pending approval — promote to elicitation if eligible. The `Accept`
-    // check comes first because it is free and because a caller that cannot
-    // read the stream must never be upgraded onto one, whatever its binding
-    // or declared capabilities say.
-    if !accepts_sse {
-        tracing::debug!("skipping elicitation upgrade: caller did not Accept text/event-stream");
+    // A permission gap. Answered in the client when the approval form is
+    // reachable. Otherwise — no form support, or "Approve in your client"
+    // switched off — on the dashboard, handed over as a URL-mode link when
+    // the client can open one; failing that, the plain envelope.
+    // `accepts_sse` gates the legacy form because a caller that cannot read
+    // the stream must never be upgraded onto one, whatever its binding or
+    // declared capabilities say.
+    let form_ok = match modern {
+        Some(m) => modern::form_eligible(state, ext, auth, m).await,
+        None => accepts_sse && elicitation_eligible(state, ext, auth, None).await,
+    };
+    if !form_ok {
+        let cooling_down = match auth.identity_id {
+            Some(agent) => in_cancel_cooldown(state, ext, agent).await,
+            None => true,
+        };
+        if !cooling_down
+            && let Some(plan) = url_elicit::plan_for_approval(&outcome)
+            && let Some(reply) = run_url_plan(
+                state,
+                ext,
+                auth,
+                req,
+                bearer,
+                "overslash_call",
+                args,
+                transport,
+                plan,
+            )
+            .await
+        {
+            return reply;
+        }
         return Reply::Result(pending_approval_result(&outcome));
     }
-    if !elicitation_eligible(state, ext, auth, None).await {
-        return Reply::Result(pending_approval_result(&outcome));
+
+    if modern.is_some() {
+        return modern::begin_elicitation(state, ext, auth, "overslash_call", args, &outcome).await;
     }
 
     let approval_id = match outcome.get("approval_id").and_then(Value::as_str) {
@@ -266,7 +402,5 @@ async fn tools_call_overslash_call(
 /// fallback trustworthy, so resist adding an "elicitation was skipped" marker
 /// here — it would only invite the two paths to drift.
 pub(super) fn pending_approval_result(outcome: &Value) -> Value {
-    json!({
-        "content": [{ "type": "text", "text": serde_json::to_string(outcome).unwrap_or_default() }]
-    })
+    text_result(outcome)
 }

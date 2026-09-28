@@ -158,6 +158,51 @@ pub async fn consume(
     .await
 }
 
+/// How a flow ended, as far as the callback got. Read by URL-mode MCP
+/// elicitation, which waits on a connect link the user is completing in a
+/// browser.
+#[derive(Debug)]
+pub struct FlowCompletion {
+    pub org_id: Uuid,
+    pub expires_at: OffsetDateTime,
+    pub completed_at: Option<OffsetDateTime>,
+    pub failed_at: Option<OffsetDateTime>,
+}
+
+pub async fn completion(pool: &PgPool, id: &str) -> Result<Option<FlowCompletion>, sqlx::Error> {
+    sqlx::query_as!(
+        FlowCompletion,
+        "SELECT org_id, expires_at, completed_at, failed_at
+           FROM oauth_connection_flows WHERE id = $1",
+        id,
+    )
+    .fetch_optional(pool)
+    .await
+}
+
+/// Stamp the callback's outcome. `succeeded` picks the column; whichever is
+/// written first wins, so a replayed callback cannot flip a finished flow.
+pub async fn mark_finished(pool: &PgPool, id: &str, succeeded: bool) -> Result<(), sqlx::Error> {
+    if succeeded {
+        sqlx::query!(
+            "UPDATE oauth_connection_flows SET completed_at = now()
+              WHERE id = $1 AND completed_at IS NULL AND failed_at IS NULL",
+            id,
+        )
+        .execute(pool)
+        .await?;
+    } else {
+        sqlx::query!(
+            "UPDATE oauth_connection_flows SET failed_at = now()
+              WHERE id = $1 AND completed_at IS NULL AND failed_at IS NULL",
+            id,
+        )
+        .execute(pool)
+        .await?;
+    }
+    Ok(())
+}
+
 /// Best-effort cleanup of expired & unconsumed flows. Call periodically.
 pub async fn delete_expired(pool: &PgPool) -> Result<u64, sqlx::Error> {
     let result = sqlx::query!(

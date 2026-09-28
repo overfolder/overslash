@@ -105,6 +105,7 @@ mod mcp_replay;
 mod mcp_require_risk;
 mod mcp_roster;
 mod mcp_typed_errors;
+mod mcp_url_elicitation;
 mod metabase;
 mod multi_org;
 mod multi_org_backfill;

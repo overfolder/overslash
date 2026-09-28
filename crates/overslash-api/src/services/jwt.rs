@@ -191,6 +191,11 @@ pub struct McpRequestStateClaims {
     /// Hex SHA-256 of the tool name and its canonicalised arguments.
     pub digest: String,
     pub envelope: serde_json::Value,
+    /// For a URL-mode elicitation (`step == "url"`): the browser hand-offs
+    /// still to walk and what to do once they finish. Absent on the form
+    /// dialogs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url_plan: Option<serde_json::Value>,
     pub iat: i64,
     pub exp: i64,
 }
@@ -316,6 +321,7 @@ mod tests {
             step: "decision".into(),
             digest: "00".into(),
             envelope: serde_json::json!({ "status": "pending_approval" }),
+            url_plan: None,
             iat: now,
             exp: now + 300,
         }

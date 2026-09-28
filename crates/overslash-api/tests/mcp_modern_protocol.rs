@@ -95,20 +95,24 @@ x-overslash-mcp:
 
 // ── Fixture ────────────────────────────────────────────────────────────────
 
-struct Fx {
-    base: String,
-    client: Client,
-    pool: sqlx::PgPool,
-    agent_id: Uuid,
-    client_id: String,
-    service: String,
+/// Shared with `mcp_url_elicitation`, which runs the same gated service
+/// through URL-mode hand-offs.
+pub(crate) struct Fx {
+    pub(crate) base: String,
+    pub(crate) client: Client,
+    pub(crate) pool: sqlx::PgPool,
+    pub(crate) agent_id: Uuid,
+    pub(crate) client_id: String,
+    pub(crate) service: String,
+    /// Org-admin key, for resolving approvals as a human would.
+    pub(crate) admin_key: String,
     /// MCP-aud JWT for the agent, bound to `client_id`.
-    token: String,
+    pub(crate) token: String,
 }
 
 /// An org whose agent reaches `/mcp` through an MCP OAuth client, plus an
 /// MCP-runtime service the agent can call only with approval.
-async fn setup() -> Fx {
+pub(crate) async fn setup() -> Fx {
     let pool = common::test_pool().await;
     let stub_addr = start_stub().await;
     let (api_addr, client) = common::start_api(pool.clone()).await;
@@ -267,18 +271,19 @@ async fn setup() -> Fx {
         agent_id,
         client_id,
         service,
+        admin_key,
         token,
     }
 }
 
 /// What Claude Code 2.1.282 declares on a modern connection.
-fn claude_code_caps() -> Value {
+pub(crate) fn claude_code_caps() -> Value {
     json!({ "elicitation": { "form": {}, "url": {} } })
 }
 
 /// POST a 2026-07-28 request: `_meta` in the body, mirrored headers on the
 /// wire. `params` is merged next to `_meta`.
-async fn modern(fx: &Fx, method: &str, params: Value, caps: Value) -> (u16, Value) {
+pub(crate) async fn modern(fx: &Fx, method: &str, params: Value, caps: Value) -> (u16, Value) {
     let mut body_params = json!({
         "_meta": {
             "io.modelcontextprotocol/protocolVersion": MODERN,
@@ -310,7 +315,28 @@ async fn modern(fx: &Fx, method: &str, params: Value, caps: Value) -> (u16, Valu
         .await
         .unwrap();
     let status = resp.status().as_u16();
-    (status, resp.json().await.unwrap())
+    (status, response_body(resp).await)
+}
+
+/// The JSON-RPC response in a reply, whichever framing it came in: a plain
+/// JSON body, or an SSE stream whose final `data:` frame is the response (a
+/// retry that waited on a browser flow).
+pub(crate) async fn response_body(resp: reqwest::Response) -> Value {
+    let is_sse = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.starts_with("text/event-stream"));
+    let text = resp.text().await.unwrap();
+    if !is_sse {
+        return serde_json::from_str(&text).unwrap_or_else(|e| panic!("{e}: {text}"));
+    }
+    let last = text
+        .lines()
+        .filter_map(|l| l.strip_prefix("data:"))
+        .next_back()
+        .unwrap_or_else(|| panic!("no data frame in SSE body: {text}"));
+    serde_json::from_str(last.trim()).unwrap()
 }
 
 fn echo_args(x: &str) -> Value {
@@ -318,14 +344,14 @@ fn echo_args(x: &str) -> Value {
 }
 
 impl Fx {
-    fn call_args(&self, x: &str) -> Value {
+    pub(crate) fn call_args(&self, x: &str) -> Value {
         let mut a = echo_args(x);
         a["service"] = json!(self.service);
         a
     }
 
     /// The gated first leg: a fresh `overslash_call`.
-    async fn gated_call(&self, x: &str, caps: Value) -> Value {
+    pub(crate) async fn gated_call(&self, x: &str, caps: Value) -> Value {
         let (status, body) = modern(
             self,
             "tools/call",
@@ -355,7 +381,7 @@ impl Fx {
         body
     }
 
-    async fn approval_status(&self, approval_id: &str) -> String {
+    pub(crate) async fn approval_status(&self, approval_id: &str) -> String {
         sqlx::query("SELECT status FROM approvals WHERE id = $1")
             .bind(Uuid::parse_str(approval_id).unwrap())
             .fetch_one(&self.pool)
@@ -366,14 +392,14 @@ impl Fx {
 }
 
 /// The approval a `pending_approval` envelope (in a tool result) names.
-fn envelope_of(result: &Value) -> Value {
+pub(crate) fn envelope_of(result: &Value) -> Value {
     serde_json::from_str(result["content"][0]["text"].as_str().expect("text block")).unwrap()
 }
 
 /// The approval id an `input_required` result's dialog is about — read off
 /// the only pending approval for the agent, since the dialog itself carries
 /// no id (the `requestState` is opaque).
-async fn only_pending_approval(fx: &Fx) -> String {
+pub(crate) async fn only_pending_approval(fx: &Fx) -> String {
     let rows = sqlx::query(
         "SELECT id FROM approvals WHERE identity_id = $1 AND status = 'pending'
           ORDER BY created_at DESC",
@@ -674,7 +700,9 @@ async fn the_request_state_is_bound_to_its_call() {
 async fn a_client_without_form_elicitation_gets_the_envelope() {
     let fx = setup().await;
 
-    for caps in [json!({}), json!({ "elicitation": { "url": {} } })] {
+    // A URL-only client is not in this list: it gets the approval as a
+    // dashboard link instead (`mcp_url_elicitation`).
+    for caps in [json!({}), json!({ "roots": { "listChanged": true } })] {
         let r = fx.gated_call("plain", caps.clone()).await;
         assert_eq!(r["resultType"], "complete", "caps {caps}: {r}");
         assert_eq!(envelope_of(&r)["status"], "pending_approval", "caps {caps}");
@@ -687,7 +715,11 @@ async fn an_opted_out_binding_gets_the_envelope() {
     db::mcp_client_agent_binding::set_elicitation_opted_out_for_agent(&fx.pool, fx.agent_id, true)
         .await
         .unwrap();
-    let r = fx.gated_call("off", claude_code_caps()).await;
+    // Form-only: with `url` declared too, the opted-out approval would be
+    // handed over as a dashboard link (`mcp_url_elicitation`).
+    let r = fx
+        .gated_call("off", json!({ "elicitation": { "form": {} } }))
+        .await;
     assert_eq!(r["resultType"], "complete", "{r}");
     assert_eq!(envelope_of(&r)["status"], "pending_approval");
 }
