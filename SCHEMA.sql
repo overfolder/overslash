@@ -807,7 +807,8 @@ CREATE TABLE public.oauth_connection_flows (
     service_instance_id uuid,
     pin_service_instance_ids uuid[] DEFAULT '{}'::uuid[] NOT NULL,
     completed_at timestamp with time zone,
-    failed_at timestamp with time zone
+    failed_at timestamp with time zone,
+    failure text
 );
 
 
@@ -823,6 +824,13 @@ COMMENT ON COLUMN public.oauth_connection_flows.completed_at IS 'Set by the OAut
 --
 
 COMMENT ON COLUMN public.oauth_connection_flows.failed_at IS 'Set by the OAuth callback when the flow ended in an error. Polled by URL-mode MCP elicitation.';
+
+
+--
+-- Name: COLUMN oauth_connection_flows.failure; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.oauth_connection_flows.failure IS 'Short reason the flow failed (provider OAuth error code, cancelled_by_user, or a coarse callback token). Set with failed_at.';
 
 
 --
@@ -1119,6 +1127,7 @@ CREATE TABLE public.secret_requests (
     require_user_session boolean DEFAULT false NOT NULL,
     service_instance_id uuid,
     credential_key text,
+    declined_at timestamp with time zone,
     CONSTRAINT secret_requests_service_binding_complete CHECK (((service_instance_id IS NULL) = (credential_key IS NULL)))
 );
 
@@ -1135,6 +1144,13 @@ COMMENT ON COLUMN public.secret_requests.service_instance_id IS 'Service instanc
 --
 
 COMMENT ON COLUMN public.secret_requests.credential_key IS 'Template securityScheme slot key to bind on fulfilment, validated against the template at mint time. NULL whenever service_instance_id is.';
+
+
+--
+-- Name: COLUMN secret_requests.declined_at; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.secret_requests.declined_at IS 'Set when the recipient pressed Deny on the provide page. Advisory; fulfilment still wins.';
 
 
 --

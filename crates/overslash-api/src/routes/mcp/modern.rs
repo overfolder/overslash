@@ -455,11 +455,17 @@ pub(super) async fn continue_elicitation(
     input_responses: Option<&Value>,
 ) -> Reply {
     let secret = jwt::signing_key_bytes(&state.config.signing_key);
-    let Ok(claims) = jwt::verify_mcp_request_state(&secret, request_state) else {
-        return Reply::Error(
-            INVALID_PARAMS,
-            "requestState is invalid or has expired; call the tool again without it".into(),
-        );
+    let (claims, stale) = match jwt::verify_mcp_request_state(&secret, request_state) {
+        Ok(claims) => (claims, false),
+        Err(_) => match jwt::verify_mcp_request_state_stale(&secret, request_state) {
+            Ok(claims) => (claims, true),
+            Err(_) => {
+                return Reply::Error(
+                    INVALID_PARAMS,
+                    "requestState is invalid; call the tool again without it".into(),
+                );
+            }
+        },
     };
     // Bound to the principal and to the request it was minted for. A state
     // lifted from someone else's call, or pasted onto a different call of
@@ -472,6 +478,15 @@ pub(super) async fn continue_elicitation(
             INVALID_PARAMS,
             "requestState does not belong to this request".into(),
         );
+    }
+
+    // A retry that came back after the state expired. Nothing is driven off
+    // it — no resolve, no call, no next dialog — but the caller still gets
+    // what the first leg would have answered had nobody been asked: the
+    // envelope (form dialogs, byte-identical per D95) or the plan's fallback
+    // marked `timed_out` (URL hand-offs, which also release their hold).
+    if stale {
+        return answer_stale(state, ext, auth, bearer, tool_name, args, claims).await;
     }
 
     // A URL hand-off: the plan rides in the state, not in a dialog row.
@@ -565,6 +580,44 @@ pub(super) async fn continue_elicitation(
         }
         other => Reply::Result(elicit_result(other, &claims.envelope)),
     }
+}
+
+/// The answer to a retry whose `requestState` expired. See the call site.
+#[allow(clippy::too_many_arguments)]
+async fn answer_stale(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    auth: &AuthContext,
+    bearer: &str,
+    tool_name: &str,
+    args: &Value,
+    claims: jwt::McpRequestStateClaims,
+) -> Reply {
+    if claims.step == STEP_URL {
+        let Some(plan_state) = claims
+            .url_plan
+            .and_then(|v| serde_json::from_value::<PlanState>(v).ok())
+        else {
+            return Reply::Error(INVALID_PARAMS, "requestState carries no URL plan".into());
+        };
+        let ctx = url_elicit::Ctx {
+            state: state.clone(),
+            ext: ext.clone(),
+            auth: auth.clone(),
+            bearer: bearer.to_string(),
+            tool_name: tool_name.to_string(),
+            args: args.clone(),
+        };
+        let plan = plan_state.plan;
+        return url_elicit::detached(async move {
+            url_elicit::stop(&ctx, &plan, url_elicit::Stopped::TimedOut).await
+        });
+    }
+    // A form dialog nobody answered in time. Retire its row if the sweeper
+    // has not (`withdraw` only touches a still-open row, and starts no
+    // cooldown: a late answer is not a client that cannot answer).
+    let _ = overslash_db::repos::mcp_elicitation::withdraw(state.db(ext), &claims.elicit_id).await;
+    Reply::Result(pending_approval_result(&claims.envelope))
 }
 
 /// An `input_required` result asking one dialog, keyed by its step.

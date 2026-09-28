@@ -115,6 +115,7 @@ module "bi" {
   sql_connection_name = module.cloud_sql.connection_name
   sql_database        = module.cloud_sql.db_name
   bi_viewers          = var.bi_viewers
+  publish_views       = var.bi_publish_views
 
   depends_on = [google_project_service.apis]
 }

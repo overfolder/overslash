@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE oauth_connection_flows SET failed_at = now(), failure = $2\n                  WHERE id = $1 AND completed_at IS NULL AND failed_at IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "053f66e73766b07c3f1df5bcc3e153c2f6798fa9b89403905d954f1314dcb8e4"
+}

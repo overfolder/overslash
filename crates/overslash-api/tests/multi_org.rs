@@ -1466,26 +1466,18 @@ async fn connect_gate_admin_override_shows_consent_then_confirm_redirects() {
     // GET → consent interstitial naming the owner; flow not consumed.
     let resp = get_gate(&base, &flow, &cookie).await;
     assert_eq!(resp.status(), StatusCode::OK);
-    let csp = resp.headers()["content-security-policy"]
-        .to_str()
-        .unwrap()
-        .to_owned();
     let body = resp.text().await.unwrap();
     assert!(body.contains("Bob"), "consent names the owner: {body}");
-    // The Cancel button's handler runs only because the CSP allows the
-    // page's one inline script by hash — assert the hash matches the body.
-    let script = body
-        .split_once("<script>")
-        .and_then(|(_, rest)| rest.split_once("</script>"))
-        .map(|(s, _)| s)
-        .expect("consent page carries its cancel script");
-    let hash = base64::Engine::encode(
-        &base64::engine::general_purpose::STANDARD,
-        <sha2::Sha256 as sha2::Digest>::digest(script.as_bytes()),
+    // Cancel is a second submit button posting the same form to the cancel
+    // endpoint, which records the refusal on the flow. No script, so nothing
+    // for the CSP to allow.
+    assert!(
+        body.contains("formaction='/connect-authorize/cancel'"),
+        "Cancel records the refusal server-side: {body}"
     );
     assert!(
-        csp.contains(&format!("script-src 'sha256-{hash}'")),
-        "{csp}"
+        !body.contains("<script"),
+        "the page needs no script: {body}"
     );
     assert!(
         !body.contains("onclick="),

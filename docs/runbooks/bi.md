@@ -44,16 +44,30 @@ UUIDs to `text`, since BigQuery federation has no UUID type.
 
 ## Enabling in an environment
 
-1. Set `enable_bi = true` in that environment's tfvars and run `make tofu-apply`.
-   Nothing applies terraform automatically. The apply creates the password
-   secret, the BigQuery connection and the views, and mounts the password into
-   Cloud Run as `OVERSLASH_BI_DB_PASSWORD`, which rolls out a new revision.
-2. That revision's boot runs `overslash_db::bi::reconcile_bi_user`: it creates
-   `bi`, sets its password, and replaces its grants with the allow-list. This
-   happens on every boot, so rotating the secret or changing the allow-list
-   only takes a deploy. Failures are logged as `bi user reconcile failed`.
-3. Check it in the BigQuery console:
+It takes two applies. BigQuery test-runs every view when the view is created,
+so the views can only be created once the `bi` role exists. That role is
+created by an API boot, running an image terraform doesn't manage
+(`containers[0].image` is `ignore_changes`), so no `depends_on` can wait for it.
+
+1. **Plumbing.** Set `enable_bi = true` (leave `bi_publish_views = false`) and
+   run `make tofu-apply`. Nothing applies terraform automatically. This creates
+   the password secret, the BigQuery connection, and its `cloudsql.client`
+   grant, and mounts the password into Cloud Run as `OVERSLASH_BI_DB_PASSWORD`.
+2. **The role.** The API must run a release containing `overslash_db::bi`,
+   meaning `dev` has been released to `master` and deployed. Its boot runs
+   `reconcile_bi_user`, which creates `bi`, sets its password, and replaces its
+   grants with the allow-list. It does this on every boot, so rotating the
+   secret or changing the allow-list only takes a deploy. Check the API logs:
+   there should be no `bi user reconcile failed`.
+3. **Views.** Set `bi_publish_views = true` and apply again.
+4. Check it in the BigQuery console:
    `SELECT * FROM overslash_bi.org_summary ORDER BY created_at`.
+
+If step 3 fails with `Connect to PostgreSQL server failed: server closed the
+connection unexpectedly`, BigQuery never reached Postgres, and the Postgres log
+shows nothing. The connection's `cloudsql.client` grant is usually still
+propagating, so re-apply a few minutes later. If it fails with a password or
+role error instead, step 2 hasn't happened yet.
 
 ## Adding a query
 
@@ -62,7 +76,9 @@ UUIDs to `text`, since BigQuery federation has no UUID type.
 2. If it reads a column that isn't in `READABLE_COLUMNS`, add the column
    there. That is a code change reviewed like any other, and it takes effect
    on the next API deploy.
-3. `make test` runs it as `bi`, then `tofu apply` publishes it.
+3. `make test` runs it as `bi`, then `tofu apply` publishes it. The file
+   needs `bi_publish_views = true`, and its columns must already be granted by
+   the running API release.
 
 ## Looker Studio
 

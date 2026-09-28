@@ -227,6 +227,35 @@ pub fn verify_mcp_request_state(
     Ok(data.claims)
 }
 
+/// How long past its expiry a request state is still recognised — only to
+/// give a late retry back what the first leg would have answered.
+pub const MCP_REQUEST_STATE_STALE_LIMIT_SECS: i64 = 24 * 60 * 60;
+
+/// [`verify_mcp_request_state`] for a state that may have expired, within
+/// [`MCP_REQUEST_STATE_STALE_LIMIT_SECS`]. The signature and `kind` are
+/// checked exactly as before. A caller must never *act* on a stale state —
+/// resolve, execute, advance a dialog — only answer with what it carries.
+pub fn verify_mcp_request_state_stale(
+    secret: &[u8],
+    token: &str,
+) -> Result<McpRequestStateClaims, JwtError> {
+    let key = DecodingKey::from_secret(secret);
+    let mut validation = Validation::new(Algorithm::HS256);
+    validation.set_required_spec_claims(&["exp"]);
+    validation.validate_aud = false;
+    validation.validate_exp = false;
+    let data = jsonwebtoken::decode::<McpRequestStateClaims>(token, &key, &validation)?;
+    let now = time::OffsetDateTime::now_utc().unix_timestamp();
+    if data.claims.kind != MCP_REQUEST_STATE_KIND
+        || data.claims.exp < now - MCP_REQUEST_STATE_STALE_LIMIT_SECS
+    {
+        return Err(JwtError::Token(
+            jsonwebtoken::errors::ErrorKind::InvalidToken.into(),
+        ));
+    }
+    Ok(data.claims)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -360,5 +389,23 @@ mod tests {
         claims.exp = time::OffsetDateTime::now_utc().unix_timestamp() - 3600;
         let state = mint_mcp_request_state(&secret, &claims).unwrap();
         assert!(verify_mcp_request_state(&secret, &state).is_err());
+        // Still recognisable as stale, so a late retry can get its answer.
+        assert!(verify_mcp_request_state_stale(&secret, &state).is_ok());
+    }
+
+    #[test]
+    fn a_stale_state_is_only_recognised_for_a_day_and_never_forged() {
+        let secret = test_secret();
+        let mut claims = request_state_claims();
+        claims.exp = time::OffsetDateTime::now_utc().unix_timestamp()
+            - MCP_REQUEST_STATE_STALE_LIMIT_SECS
+            - 60;
+        let state = mint_mcp_request_state(&secret, &claims).unwrap();
+        assert!(verify_mcp_request_state_stale(&secret, &state).is_err());
+
+        let fresh = mint_mcp_request_state(&secret, &request_state_claims()).unwrap();
+        assert!(verify_mcp_request_state_stale(&[1u8; 32], &fresh).is_err());
+        let session = mint(&secret, &test_claims()).unwrap();
+        assert!(verify_mcp_request_state_stale(&secret, &session).is_err());
     }
 }
