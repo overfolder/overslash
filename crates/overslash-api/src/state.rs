@@ -61,6 +61,10 @@ pub struct AppState {
     /// round trip on every call (D64). Valkey-backed when `REDIS_URL` is set,
     /// process-local otherwise; a backend failure is a miss, never an error.
     pub resolve_cache: Arc<dyn services::resolve_cache::ResolveCacheStore>,
+    /// Validation cache for the session gate (`jti` → live identity). Valkey
+    /// when `REDIS_URL` is set, otherwise disabled — never process-local in
+    /// production, where one replica could not invalidate another's copy.
+    pub session_cache: Arc<dyn services::user_sessions::SessionCache>,
     /// Per-request resource resolver. `None` in production: the field
     /// accessors below fall through to `self.db`, `self.rate_limit_cache`,
     /// etc. `Some(_)` only in test builds where multiple test pools share

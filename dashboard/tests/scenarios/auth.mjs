@@ -45,8 +45,12 @@ export const SESSION_COOKIE = '__Host-oss_session';
  * emails, so nothing a spec does there is visible to any other spec. Pair it
  * with `deleteOrg` in teardown; see `freshOrgSlug`.
  *
+ * Every call is a fresh server-side session (a `user_sessions` row). Pass
+ * `opts.userAgent` to label it the way a real browser would — the account
+ * page's Sessions list shows it.
+ *
  * @param {DevProfile} [profile='admin']
- * @param {{ org?: string }} [opts]
+ * @param {{ org?: string, userAgent?: string }} [opts]
  * @returns {Promise<Session>}
  */
 export async function login(profile = 'admin', opts = {}) {
@@ -54,7 +58,8 @@ export async function login(profile = 'admin', opts = {}) {
 	const query = new URLSearchParams({ profile });
 	if (opts.org) query.set('org', opts.org);
 	const res = await fetch(`${apiUrl}/auth/dev/token?${query}`, {
-		redirect: 'manual'
+		redirect: 'manual',
+		headers: opts.userAgent ? { 'user-agent': opts.userAgent } : {}
 	});
 	if (!res.ok && res.status !== 302) {
 		throw new Error(`dev login failed: HTTP ${res.status} ${await res.text().catch(() => '')}`);

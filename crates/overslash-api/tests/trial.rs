@@ -43,6 +43,7 @@ fn mint_session_with_user(org_id: Uuid, identity_id: Uuid, user_id: Uuid) -> Str
         exp: now + 3600,
         user_id: Some(user_id),
         mcp_client_id: None,
+        jti: None,
     };
     jwt::mint(&secret, &claims).expect("mint jwt")
 }
@@ -209,6 +210,7 @@ async fn make_app_state(pool: PgPool) -> overslash_api::AppState {
         mailer: std::sync::Arc::new(overslash_core::email::NoopMailer),
         event_bus: overslash_api::services::events::EventBus::new(),
         resolve_cache: overslash_api::services::resolve_cache::in_memory(10_000),
+        session_cache: overslash_api::services::user_sessions::cache::in_memory(),
         test_resources: None,
         background_db: None,
     }

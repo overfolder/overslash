@@ -2,7 +2,16 @@
 
 use super::*;
 
-pub(super) async fn logout(State(state): State<AppState>) -> impl IntoResponse {
+pub(super) async fn logout(
+    State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, AppError> {
+    // End the server-side session first: clearing the cookie only asks this
+    // browser to forget it, revoking the row makes every copy worthless.
+    if let Some(jti) = user_sessions::current_jti(&state, &headers) {
+        user_sessions::revoke_one(&state, &ext, jti, None, user_sessions::reason::LOGOUT).await?;
+    }
     // Clear on the same Domain the session was set with so browsers actually
     // drop the cookie (missing-Domain clear won't match a Domain-scoped
     // cookie and the session persists visually). Also clear the host-only
@@ -12,9 +21,9 @@ pub(super) async fn logout(State(state): State<AppState>) -> impl IntoResponse {
         clears.push(cookies::clear(cookies::SESSION, None, "/"));
     }
     clears.extend(cookies::legacy_session_clears_for(&state));
-    let mut headers = HeaderMap::new();
-    cookies::append_all(&mut headers, clears);
-    (headers, axum::Json(json!({ "status": "logged_out" })))
+    let mut resp_headers = HeaderMap::new();
+    cookies::append_all(&mut resp_headers, clears);
+    Ok((resp_headers, axum::Json(json!({ "status": "logged_out" }))))
 }
 
 // ---------------------------------------------------------------------------
@@ -207,10 +216,9 @@ pub(super) async fn switch_org(
     State(state): State<AppState>,
     ReqExt(ext): ReqExt,
     session: crate::extractors::SessionAuth,
+    headers: HeaderMap,
     axum::Json(req): axum::Json<SwitchOrgRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    let jwt_secret = signing_key_bytes(&state.config.signing_key);
-
     let current_scope = OrgScope::new(session.org_id, state.db_pool(&ext));
     let current_ident = current_scope
         .get_identity(session.identity_id)
@@ -253,19 +261,19 @@ pub(super) async fn switch_org(
         .or(current_ident.email.clone())
         .unwrap_or_default();
 
-    let now = time::OffsetDateTime::now_utc().unix_timestamp();
-    let new_claims = jwt::Claims {
-        sub: target_identity_id,
-        org: req.org_id,
-        email: claim_email,
-        aud: jwt::AUD_SESSION.into(),
-        iat: now,
-        exp: now + 7 * 24 * 3600,
-        user_id: Some(user_id),
-        mcp_client_id: None,
-    };
-    let new_token = jwt::mint(&jwt_secret, &new_claims)
-        .map_err(|e| AppError::Internal(format!("jwt mint failed: {e}")))?;
+    // Same session, re-pointed at the target org — not a new sign-in.
+    let new_token = user_sessions::rescope(
+        &state,
+        &ext,
+        &headers,
+        user_sessions::Subject {
+            identity_id: target_identity_id,
+            org_id: req.org_id,
+            user_id: Some(user_id),
+            email: claim_email,
+        },
+    )
+    .await?;
 
     let redirect_to = build_org_redirect(&state, &target_org);
 

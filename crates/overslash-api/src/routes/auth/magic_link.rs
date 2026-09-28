@@ -162,6 +162,7 @@ pub(super) async fn verify_magic_link(
     State(state): State<AppState>,
     ReqExt(ext): ReqExt,
     Query(q): Query<MagicLinkVerifyQuery>,
+    headers: HeaderMap,
 ) -> Result<Response, AppError> {
     if !state.config.magic_link_enabled {
         return Err(AppError::NotFound("magic-link login is disabled".into()));
@@ -188,20 +189,18 @@ pub(super) async fn verify_magic_link(
     let (org_id, identity_id, user_id, email) =
         find_or_provision_user(&state, &ext, &userinfo, None).await?;
 
-    let jwt_secret = signing_key_bytes(&state.config.signing_key);
-    let now = time::OffsetDateTime::now_utc().unix_timestamp();
-    let claims = jwt::Claims {
-        sub: identity_id,
-        org: org_id,
-        email,
-        aud: jwt::AUD_SESSION.into(),
-        iat: now,
-        exp: now + 7 * 24 * 3600,
-        user_id: Some(user_id),
-        mcp_client_id: None,
-    };
-    let token = jwt::mint(&jwt_secret, &claims)
-        .map_err(|e| AppError::Internal(format!("jwt mint failed: {e}")))?;
+    let token = user_sessions::start(
+        &state,
+        &ext,
+        &headers,
+        user_sessions::Subject {
+            identity_id,
+            org_id,
+            user_id: Some(user_id),
+            email,
+        },
+    )
+    .await?;
 
     let session_cookie = session_cookie(&state, &token)?;
     let mut resp_headers = HeaderMap::new();

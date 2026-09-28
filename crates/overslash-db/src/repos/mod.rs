@@ -58,5 +58,6 @@ pub mod service_instance;
 pub mod service_template;
 pub mod upload_token;
 pub mod user;
+pub mod user_session;
 pub mod webhook;
 pub mod webhook_digest_run;

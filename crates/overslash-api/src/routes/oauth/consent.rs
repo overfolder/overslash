@@ -421,21 +421,19 @@ pub(super) async fn consent_switch_org(
         },
     );
 
-    // Mint a session cookie scoped to the target org (mirrors `switch_org`).
-    let jwt_secret = crate::routes::auth::signing_key_bytes(&state.config.signing_key);
-    let now = OffsetDateTime::now_utc().unix_timestamp();
-    let new_claims = jwt::Claims {
-        sub: target_identity.id,
-        org: target_org.id,
-        email: claim_email,
-        aud: jwt::AUD_SESSION.into(),
-        iat: now,
-        exp: now + 7 * 24 * 3600,
-        user_id: Some(user_id),
-        mcp_client_id: None,
-    };
-    let new_token = jwt::mint(&jwt_secret, &new_claims)
-        .map_err(|e| AppError::Internal(format!("jwt mint failed: {e}")))?;
+    // Re-scope the session to the target org (mirrors `switch_org`).
+    let new_token = crate::services::user_sessions::rescope(
+        &state,
+        &ext,
+        &headers,
+        crate::services::user_sessions::Subject {
+            identity_id: target_identity.id,
+            org_id: target_org.id,
+            user_id: Some(user_id),
+            email: claim_email,
+        },
+    )
+    .await?;
 
     // `build_org_redirect` returns an absolute URL ending in `/`. The
     // request_id is URL-safe base64 (no padding), so it needs no escaping.

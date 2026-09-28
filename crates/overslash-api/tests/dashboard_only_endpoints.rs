@@ -31,6 +31,7 @@ fn mint_session_cookie(org_id: Uuid, identity_id: Uuid) -> String {
         exp: now + 3600,
         user_id: None,
         mcp_client_id: None,
+        jti: None,
     };
     jwt::mint(&secret, &claims).expect("mint jwt")
 }

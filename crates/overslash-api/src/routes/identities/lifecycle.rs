@@ -92,6 +92,7 @@ pub(super) struct ArchiveResponse {
 /// may be omitted (defaults to `"manual"`).
 pub(super) async fn archive_identity(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     WriteAcl(acl): WriteAcl,
     scope: OrgScope,
     ip: ClientIp,
@@ -112,6 +113,17 @@ pub(super) async fn archive_identity(
         .archive_identity(id, reason)
         .await?
         .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
+
+    // An archived member is disabled; their open sessions in this org end
+    // with it. (Agents hold no sessions, so this is a no-op for them.)
+    user_sessions::revoke_for_identities(
+        &state,
+        &ext,
+        scope.org_id(),
+        &[outcome.identity.id],
+        user_sessions::reason::IDENTITY_ARCHIVED,
+    )
+    .await?;
 
     let _ = scope
         .log_audit(AuditEntry {

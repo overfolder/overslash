@@ -52,13 +52,7 @@ async fn provision_root(
     )
     .await?
     {
-        let _ = user_repo::refresh_profile(
-            state.db(ext),
-            user.id,
-            Some(&userinfo.email),
-            Some(display_name),
-        )
-        .await;
+        refresh_user_profile(state, ext, user.id, &userinfo.email, display_name).await?;
         let personal_org_id = user.personal_org_id.ok_or_else(|| {
             AppError::Internal(
                 "Overslash-backed user has no personal_org_id; backfill incomplete".into(),
@@ -214,13 +208,7 @@ async fn provision_root_contents(
             .ok_or_else(|| {
                 AppError::Internal("race: winner has no identity in their personal org yet".into())
             })?;
-            let _ = user_repo::refresh_profile(
-                state.db(ext),
-                winner.id,
-                Some(&userinfo.email),
-                Some(display_name),
-            )
-            .await;
+            refresh_user_profile(state, ext, winner.id, &userinfo.email, display_name).await?;
             return Ok((
                 personal_org_id,
                 identity.id,
@@ -363,13 +351,7 @@ async fn provision_org_subdomain_inner(
                 "org-identity missing user_id; migration 040 backfill incomplete".into(),
             )
         })?;
-        let _ = user_repo::refresh_profile(
-            state.db(ext),
-            user_id,
-            Some(&userinfo.email),
-            Some(display_name),
-        )
-        .await;
+        refresh_user_profile(state, ext, user_id, &userinfo.email, display_name).await?;
         return Ok((target_org.id, existing.id, user_id, userinfo.email.clone()));
     }
 
@@ -428,13 +410,7 @@ async fn provision_org_subdomain_inner(
         let _ = scope
             .update_identity_profile(existing.id, display_name, metadata)
             .await;
-        let _ = user_repo::refresh_profile(
-            state.db(ext),
-            user.id,
-            Some(&userinfo.email),
-            Some(display_name),
-        )
-        .await;
+        refresh_user_profile(state, ext, user.id, &userinfo.email, display_name).await?;
         return Ok((target_org.id, existing.id, user.id, userinfo.email.clone()));
     }
 
@@ -457,13 +433,7 @@ async fn provision_org_subdomain_inner(
         // match, else a fresh org-only user for a never-signed-in invite.
         let user_id = match existing.user_id {
             Some(uid) => {
-                let _ = user_repo::refresh_profile(
-                    state.db(ext),
-                    uid,
-                    Some(&userinfo.email),
-                    Some(display_name),
-                )
-                .await;
+                refresh_user_profile(state, ext, uid, &userinfo.email, display_name).await?;
                 uid
             }
             // The adopt-by-user branch above already proved this account has
@@ -471,13 +441,7 @@ async fn provision_org_subdomain_inner(
             // `identities_org_user_unique`.
             None => match &overslash_user {
                 Some(u) => {
-                    let _ = user_repo::refresh_profile(
-                        state.db(ext),
-                        u.id,
-                        Some(&userinfo.email),
-                        Some(display_name),
-                    )
-                    .await;
+                    refresh_user_profile(state, ext, u.id, &userinfo.email, display_name).await?;
                     u.id
                 }
                 None => {
@@ -651,13 +615,7 @@ async fn provision_org_subdomain_inner(
     // fresh row below is this human's first actor here.
     let user_id = match &overslash_user {
         Some(u) => {
-            let _ = user_repo::refresh_profile(
-                state.db(ext),
-                u.id,
-                Some(&userinfo.email),
-                Some(display_name),
-            )
-            .await;
+            refresh_user_profile(state, ext, u.id, &userinfo.email, display_name).await?;
             u.id
         }
         None => {
@@ -767,4 +725,41 @@ fn generate_personal_slug() -> String {
     // unlikely even across millions of orgs.
     let suffix = rand::random::<u64>();
     format!("personal-{suffix:016x}")
+}
+
+/// Refresh the `users` row from what the IdP just asserted. When the email
+/// changed underneath us, that is an identity change: every session the human
+/// already holds was issued to the old address, so it ends here — before the
+/// caller starts the session for this sign-in.
+async fn refresh_user_profile(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    user_id: Uuid,
+    email: &str,
+    display_name: &str,
+) -> Result<(), AppError> {
+    let before = user_repo::get_by_id(state.db(ext), user_id)
+        .await?
+        .and_then(|u| u.email);
+    if let Err(e) =
+        user_repo::refresh_profile(state.db(ext), user_id, Some(email), Some(display_name)).await
+    {
+        // Was fire-and-forget before sessions depended on it; stay that way
+        // for the profile write itself.
+        tracing::warn!(%user_id, "profile refresh failed: {e}");
+        return Ok(());
+    }
+    if let Some(before) = before
+        && !before.eq_ignore_ascii_case(email)
+    {
+        user_sessions::revoke_all_for_user(
+            state,
+            ext,
+            user_id,
+            None,
+            user_sessions::reason::IDENTITY_CHANGED,
+        )
+        .await?;
+    }
+    Ok(())
 }

@@ -504,6 +504,7 @@ fn mint_user_session(
         // identity isn't backed by a users row.
         user_id: user_pk,
         mcp_client_id: None,
+        jti: None,
     };
     Ok(crate::services::jwt::mint(signing_key, &claims)?)
 }

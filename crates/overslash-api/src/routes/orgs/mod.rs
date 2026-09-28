@@ -19,8 +19,8 @@ use crate::{
     AppState,
     error::{AppError, Result},
     extractors::{AdminAcl, AuthContext, ClientIp, InstanceAdminAuth, ReqExt},
-    routes::auth::{session_cookie, signing_key_bytes},
-    services::{audit_capture::AuditResponseBodyMode, jwt},
+    routes::auth::session_cookie,
+    services::audit_capture::AuditResponseBodyMode,
 };
 
 mod billing_admin;

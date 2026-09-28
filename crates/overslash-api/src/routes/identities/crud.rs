@@ -97,6 +97,7 @@ async fn resolve_email_patch(
 
 pub(super) async fn update_identity(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     AdminAcl(acl): AdminAcl,
     scope: OrgScope,
     ip: ClientIp,
@@ -208,6 +209,20 @@ pub(super) async fn update_identity(
         }
     };
 
+    // The email is who may sign in as this member (the login path adopts by
+    // it), so rewriting it is an identity change: end the member's sessions
+    // here rather than let them outlive the address they were issued for.
+    if email.is_some() && email.as_deref() != target.email.as_deref() {
+        user_sessions::revoke_for_identities(
+            &state,
+            &ext,
+            scope.org_id(),
+            &[id],
+            user_sessions::reason::IDENTITY_CHANGED,
+        )
+        .await?;
+    }
+
     let _ = scope
         .log_audit(AuditEntry {
             org_id: acl.org_id,
@@ -231,6 +246,8 @@ pub(super) async fn update_identity(
 }
 
 pub(super) async fn delete_identity(
+    State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     AdminAcl(acl): AdminAcl,
     scope: OrgScope,
     ip: ClientIp,
@@ -252,7 +269,7 @@ pub(super) async fn delete_identity(
         .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
 
     if target.kind == "user" && target.user_id.is_some() {
-        return remove_user_from_org(acl, scope, ip, id).await;
+        return remove_user_from_org(&state, &ext, acl, scope, ip, id).await;
     }
 
     // Atomic delete: holds FOR UPDATE on the parent row so concurrent
@@ -292,6 +309,8 @@ pub(super) async fn delete_identity(
 /// `user_org_memberships` row, and detaches the archived identity from the user
 /// — all atomically. Guards against removing yourself or the org's last admin.
 async fn remove_user_from_org(
+    state: &AppState,
+    ext: &axum::http::Extensions,
     acl: crate::extractors::OrgAcl,
     scope: OrgScope,
     ip: ClientIp,
@@ -329,6 +348,18 @@ async fn remove_user_from_org(
         }
     };
 
+    // Removal takes effect now, not when their cookie expires. Only the
+    // sessions scoped to this org: the org's admin has no say over the
+    // human's sessions elsewhere.
+    let revoked_sessions = user_sessions::revoke_for_identities(
+        state,
+        ext,
+        scope.org_id(),
+        &[id],
+        user_sessions::reason::MEMBER_REMOVED,
+    )
+    .await?;
+
     let _ = scope
         .log_audit(AuditEntry {
             org_id: acl.org_id,
@@ -344,6 +375,7 @@ async fn remove_user_from_org(
                 "archived_count": archived_count,
                 "was_admin": was_admin,
                 "removed_by_admin": true,
+                "revoked_sessions": revoked_sessions,
             }),
             description: Some("Admin removed a member from the org"),
             ip_address: ip.0.as_deref(),
