@@ -149,4 +149,4 @@ trusted_proxy_hops  = 1
 trusted_proxy_cidrs = ""
 # Flip after `gcloud secrets versions add overslash-dev-trusted-proxy-secret`
 # and setting the same value as OVERSLASH_TRUSTED_PROXY_SECRET in Vercel (Preview).
-enable_trusted_proxy_secret = false
+enable_trusted_proxy_secret = true

@@ -62,3 +62,4 @@ infra/terraform.tfvars
 # Local Metabase MCP exploration (secrets)
 docker/metabase/.env.metabase
 docker/metabase/pagila/
+.env*
