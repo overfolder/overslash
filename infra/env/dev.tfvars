@@ -150,3 +150,8 @@ trusted_proxy_cidrs = ""
 # Flip after `gcloud secrets versions add overslash-dev-trusted-proxy-secret`
 # and setting the same value as OVERSLASH_TRUSTED_PROXY_SECRET in Vercel (Preview).
 enable_trusted_proxy_secret = true
+
+# Audit logging (CASA 6.7.1). Dev keeps its audit bucket UNLOCKED so the
+# retention and the module can still be iterated on. Do not flip this here.
+audit_log_retention_days = 400
+audit_log_bucket_locked  = false

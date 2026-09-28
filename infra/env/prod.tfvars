@@ -142,3 +142,12 @@ trusted_proxy_cidrs = "34.36.8.174/32,35.191.0.0/16,130.211.0.0/22"
 # and setting the same value as OVERSLASH_TRUSTED_PROXY_SECRET in Vercel (Production).
 enable_trusted_proxy_secret = true
 
+
+# Audit logging (CASA 6.7.1; docs/compliance/casa/secrets-access-policy.md).
+# !!! audit_log_bucket_locked = true IS IRREVERSIBLE !!!
+# The first apply that carries it locks overslash-prod-audit for good: 400-day
+# retention fixed forever, the bucket undeletable until its contents age out,
+# and no way to unlock. Apply to dev first and verify (infra/README.md
+# "Audit logging") before this line reaches a prod apply.
+audit_log_retention_days = 400
+audit_log_bucket_locked  = true

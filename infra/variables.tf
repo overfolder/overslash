@@ -490,6 +490,20 @@ variable "billing_account_id" {
   default     = ""
 }
 
+# --- Audit logging (CASA 6.7.1) ---
+
+variable "audit_log_retention_days" {
+  description = "Retention of the dedicated audit log bucket. 400 = GCP's own `_Required` bucket, one CASA cycle plus slack. Cannot be changed once the bucket is locked."
+  type        = number
+  default     = 400
+}
+
+variable "audit_log_bucket_locked" {
+  description = "IRREVERSIBLE. Lock the audit log bucket's retention. Once applied it can never be unlocked, its retention can never change, and the bucket cannot be deleted until its contents age out. Off by default; prod.tfvars turns it on."
+  type        = bool
+  default     = false
+}
+
 variable "enable_metrics_sidecar" {
   description = "Run the OTel sidecar that scrapes /internal/metrics into Google Managed Prometheus."
   type        = bool

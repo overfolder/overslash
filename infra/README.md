@@ -133,6 +133,7 @@ the GitHub button on `/auth/providers` only once both are populated.
 | `memorystore` | (Optional) Valkey via Memorystore |
 | `cloud-run-shortener` | (Optional) oversla.sh URL shortener |
 | `cloud-run-overfwd` | (Optional) Shared overfwd Mailbox Gateway behind `services/email.yaml` — see [docs/runbooks/mailbox-gateway.md](../docs/runbooks/mailbox-gateway.md) |
+| `audit-logging` | Data Access audit logs, a retained (and in prod **locked**) audit log bucket + sink, and an alert on unexpected secret reads — see [Audit logging](#audit-logging-casa-671) |
 
 ### Mailbox Gateway (overfwd)
 
@@ -212,6 +213,80 @@ The `secret.put` row in `/v1/audit` must show your own address, not
 `203.0.113.9`. Do the same from the dashboard: the row should show your
 browser's address, not a Vercel or Google one.
 
+### Audit logging (CASA 6.7.1)
+
+`module.audit_logging` turns on Data Access audit logs (`ADMIN_READ`, `DATA_READ`,
+`DATA_WRITE`) for Secret Manager, Cloud SQL Admin and Cloud Run; routes every Cloud
+Audit Log into a dedicated bucket `overslash-<env>-audit` kept for
+`audit_log_retention_days` (400); and alerts (P1, email) whenever a principal other than
+the runtime service account reads a secret payload. Policy and rationale:
+[docs/compliance/casa/secrets-access-policy.md](../docs/compliance/casa/secrets-access-policy.md).
+
+> **`audit_log_bucket_locked = true` is IRREVERSIBLE.** It is `true` in
+> `env/prod.tfvars` only. The apply that carries it locks `overslash-prod-audit`
+> forever: its retention can never be changed (not raised, not lowered), it cannot be
+> deleted until its last entry ages out, the lock cannot be lifted, and `tofu destroy`
+> on prod fails at that resource. Review the plan line `locked = true` /
+> `retention_days = 400` before typing `prod`.
+
+The unexpected-secret-access alert **fires on your own `tofu plan`**: the provider reads
+every `google_secret_manager_secret_version` on refresh, and prod reads the PagerDuty key
+as a data source. That is intended — human reads of platform secrets are meant to be seen.
+Expect one email per plan, naming you.
+
+**Applying it.** Dev first, then prod, and prod in two steps so the lock lands only on a
+bucket you have already watched fill:
+
+```bash
+# 1. Dev (unlocked).
+make tofu-plan ENV=dev          # expect the 8 audit-logging adds, 0 to change, 0 to destroy (plus any unrelated drift)
+make tofu-apply ENV=dev
+
+# 2. Verify on dev: Data Access on, sink writing, and a secret read shows up.
+gcloud projects get-iam-policy overslash-dev --format=json | jq .auditConfigs
+gcloud secrets versions access latest --secret=overslash-dev-pagerduty-integration-key --project=overslash-dev >/dev/null
+#    within ~2 min: the entry below, and a "[P1] overslash-dev Unexpected Secret Access" email naming you
+gcloud logging read 'protoPayload.methodName:"AccessSecretVersion"' --project=overslash-dev \
+  --bucket=overslash-dev-audit --location=europe-west1 --view=_AllLogs --limit=3 --freshness=1h
+
+# 3. Leave dev for a few days and read the real volume before prod:
+gcloud logging read 'logName:"cloudaudit.googleapis.com%2Fdata_access"' --project=overslash-dev \
+  --freshness=1d --format=json | wc -c
+
+# 4. Prod, UNLOCKED first. A command-line -var beats -var-file, so this one plan
+#    overrides prod.tfvars (TF_VAR_* would not — tfvars wins over the environment).
+cd infra && tofu workspace select prod && \
+  tofu plan -var-file=env/prod.tfvars -var audit_log_bucket_locked=false -out=prod.tfplan && cd ..
+#    expect the 8 audit-logging adds; the bucket shows locked = false
+make tofu-apply ENV=prod
+#    repeat the step-2 checks against overslash / overslash-prod-audit
+
+# 5. Prod, LOCK. Irreversible. The plan must show exactly one in-place update:
+#    module.audit_logging.google_logging_project_bucket_config.audit  locked: false -> true
+make tofu-plan ENV=prod
+make tofu-apply ENV=prod
+gcloud logging buckets describe overslash-prod-audit --location=europe-west1 --project=overslash
+#    expect: locked: true, retentionDays: 400
+```
+
+Reading Data Access entries needs `roles/logging.privateLogViewer` (Owners have it).
+
+If the first apply fails on the alert policy with `Cannot find metric(s) that match type
+= "logging.googleapis.com/user/…"`, the just-created log-based metric has not
+propagated yet: re-plan and apply again after a minute.
+
+**Cost.** Measured 2026-09-28: `overslash` ingests ~0.2 GiB of billable logs per 30 days
+and writes ~960 Admin Activity / System Event entries a day (~5 KiB each). Data Access
+adds, by estimate, 1,500–3,000 entries a day — dominated by the metrics-exporter job
+(every 5 min: a DB-password read plus Cloud SQL connector calls) and Cloud Run instance
+starts (one read per mounted secret) — so ~0.3–0.5 GiB/month, counted twice (the
+`_Default` copy and the audit bucket). That is ~1–1.5 GiB/month against Cloud Logging's
+50 GiB/project free ingestion allotment: **$0 ingestion**. Retention past 30 days bills at
+$0.01/GiB-month; at steady state (400 days, ~8 GiB held) that is **~$0.10/month**. The
+alert policy is one condition (~$0.10/month); the log-based metric is near-empty. Total
+**under $1/month per project**. Step 3 exists to replace this estimate with a measurement
+before the prod bucket is locked.
+
 ## Connectivity Modes
 
 - **Auth Proxy (default, `use_private_vpc = false`)**: Cloud SQL has public IP but only accepts Auth Proxy connections (IAM-authenticated). No VPC connector needed. Saves ~$7/month.
@@ -225,6 +300,7 @@ browser's address, not a Vercel or Google one.
 | Cloud Run (scale to zero) | ~$0 |
 | Secret Manager (6 secrets) | ~$0.09 |
 | Artifact Registry | ~$0.10/GB |
+| Audit logging (Data Access + 400-day bucket + alert) | < $1 |
 | Cloud Scheduler (2 jobs) | ~$0 |
 | **Total** | **~$9-10/month** |
 

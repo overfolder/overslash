@@ -10,6 +10,7 @@ resource "google_project_service" "apis" {
       "compute.googleapis.com",
       "cloudscheduler.googleapis.com",
       "monitoring.googleapis.com",
+      "logging.googleapis.com",
       "billingbudgets.googleapis.com",
     ],
     var.use_private_vpc ? [
@@ -252,6 +253,30 @@ module "monitoring" {
     module.cloud_run,
     module.cloud_sql,
   ]
+}
+
+# --- Audit logging (CASA 6.7.1; docs/compliance/casa/secrets-access-policy.md) ---
+#
+# Data Access audit logs, a retained audit bucket + sink, and an alert on
+# AccessSecretVersion by anyone but the runtime. `audit_log_bucket_locked` is
+# IRREVERSIBLE once applied — see the module header.
+module "audit_logging" {
+  source      = "./modules/audit-logging"
+  project_id  = var.project_id
+  region      = var.region
+  base_prefix = local.base_prefix
+
+  retention_days = var.audit_log_retention_days
+  locked         = var.audit_log_bucket_locked
+
+  # Every secret consumer runs as this one SA: the API, the shortener, overfwd
+  # and the metrics-exporter job all take module.iam.cloud_run_sa_email.
+  expected_secret_accessors = [module.iam.cloud_run_sa_email]
+
+  alerts_enabled        = var.alert_email != ""
+  notification_channels = var.alert_email != "" ? [module.monitoring.email_channel_id] : []
+
+  depends_on = [google_project_service.apis]
 }
 
 # --- API Load Balancer (global HTTPS LB with wildcard Certificate Manager cert) ---
