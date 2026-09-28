@@ -18,7 +18,9 @@
 	const claudeCmd = $derived(
 		`claude mcp add --transport http --scope user overslash ${mcpUrl}`
 	);
-	const genericCmd = $derived(`npx -y mcp-remote ${mcpUrl}`);
+	// mcp-add writes the config into whichever clients the user picks (Cursor,
+	// VS Code, Claude Desktop, …); no --clients/--scope, so it prompts for both.
+	const genericCmd = $derived(`npx -y mcp-add --name overslash --type http --url ${mcpUrl}`);
 </script>
 
 <div class="tip" class:modal={variant === 'modal'}>
@@ -27,7 +29,7 @@
 		one here first.
 	</p>
 	<CopyCommand label="Claude Code" command={claudeCmd} dense={variant === 'modal'} />
-	<CopyCommand label="Any MCP client" command={genericCmd} dense={variant === 'modal'} />
+	<CopyCommand label="Other MCP clients" command={genericCmd} dense={variant === 'modal'} />
 	<p class="tip-note">
 		A browser window opens once so you can sign in and name the agent.
 	</p>

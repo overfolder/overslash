@@ -23,5 +23,8 @@
 <Story name="Dense" args={{ dense: true }} />
 <Story
 	name="Short"
-	args={{ label: 'Any MCP client', command: 'npx -y mcp-remote https://reveni.api.overslash.com/mcp' }}
+	args={{
+		label: 'Other MCP clients',
+		command: 'npx -y mcp-add --name overslash --type http --url https://reveni.api.overslash.com/mcp'
+	}}
 />

@@ -287,6 +287,19 @@ config format (Cursor, Windsurf, etc. with their equivalent file names):
 }
 ```
 
+### `mcp-add` (any other client)
+
+[`mcp-add`](https://github.com/paoloricciuti/mcp-add) writes the server entry
+into the config of whichever clients you pick (Cursor, VS Code, Claude Desktop,
+…) and asks whether to install it globally or per project:
+
+```bash
+npx -y mcp-add --name overslash --type http --url https://<your-overslash>/mcp
+```
+
+It is a third-party package, not ours. The dashboard's Agents view renders this
+command (next to the Claude Code one) with your org's URL already filled in.
+
 ### `npx` (clients that only speak stdio)
 
 For a client that takes an `npx`-style launcher but not Streamable-HTTP, the
@@ -298,8 +311,7 @@ npx -y mcp-remote https://<your-overslash>/mcp
 
 `mcp-remote` is a third-party package, not ours — no Overslash-specific `npx`
 package is published. If your client speaks HTTP, prefer the two options above;
-if it ships its own launcher, prefer that. The dashboard's Agents view renders
-this command too, with your org's URL already filled in.
+if it ships its own launcher, prefer that.
 
 ### Stdio fallback
 
