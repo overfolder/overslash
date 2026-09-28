@@ -3,8 +3,10 @@
 #
 # Nothing is copied out of Postgres: each BigQuery view below is an
 # EXTERNAL_QUERY that runs against the live instance as the `bi` login user,
-# which holds only `bi_reader` (granted once by hand — the migration can't
-# grant a role to a user terraform creates afterwards). Cloud SQL on private
+# which holds only `bi_reader`: the API's boot reconcile
+# (overslash_db::bi) grants it and strips Cloud SQL's default
+# cloudsqlsuperuser, since no migration can act on a user terraform
+# creates afterwards. Cloud SQL on private
 # IP is reachable because the instance sets
 # enable_private_path_for_google_cloud_services.
 

@@ -36,13 +36,19 @@ separately, because a creator can leave the org and admins can change.
 1. Deploy the API so migration 126 has run.
 2. `make tofu-apply` for that environment, with `enable_bi = true`.
    Nothing applies terraform automatically.
-3. Once, as a human with DB access:
+3. Wait for the next API boot (any deploy or restart). After migrations,
+   `overslash_db::bi::reconcile_bi_user` grants `bi_reader` to `bi`. It also
+   revokes `cloudsqlsuperuser`, which Cloud SQL gives every user created
+   through its API, so `bi` ends up holding `bi_reader` and nothing else.
+   It is idempotent and never fails the boot; problems show up as a
+   `bi user reconcile failed` warning in the API logs. To skip the wait, run
+   the same statements by hand:
    ```bash
    bin/db-shell.sh prod
    GRANT bi_reader TO bi;
+   REVOKE cloudsqlsuperuser FROM bi;
    ```
-   The migration can't do this, because the `bi` user is created by terraform
-   after the migrations have run.
+   Then confirm with `\du bi`: the only role listed should be `bi_reader`.
 4. Check it in the BigQuery console:
    `SELECT * FROM overslash_bi.org_summary ORDER BY created_at`.
 

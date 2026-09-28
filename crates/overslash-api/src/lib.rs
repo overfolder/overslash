@@ -85,6 +85,7 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
 
     // Run migrations
     overslash_db::MIGRATOR.run(&db).await?;
+    overslash_db::bi::reconcile_bi_user(&db).await;
 
     // Resolve Stripe price IDs from lookup keys at startup so a misconfigured
     // billing deploy fails fast (not at first checkout). Skip when billing is

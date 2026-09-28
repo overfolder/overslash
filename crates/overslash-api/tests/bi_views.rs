@@ -92,3 +92,37 @@ async fn bi_reader_sees_bi_views_but_not_public() {
         .expect_err("bi_reader must not read public tables");
     assert!(err.to_string().contains("permission denied"), "{err}");
 }
+
+/// Terraform's `bi` user arrives after the migration and, on Cloud SQL, as a
+/// `cloudsqlsuperuser` member. The boot reconcile must leave it holding
+/// `bi_reader` and nothing else, and be a no-op on the next boot.
+#[tokio::test]
+async fn boot_reconcile_grants_bi_reader_and_strips_superuser() {
+    let pool = common::test_pool().await;
+    // Roles are cluster-wide; tolerate a previous run having made them.
+    sqlx::raw_sql(
+        "DO $$ BEGIN
+             CREATE ROLE cloudsqlsuperuser NOLOGIN;
+         EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+         DO $$ BEGIN
+             CREATE ROLE bi NOLOGIN;
+         EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+         GRANT cloudsqlsuperuser TO bi;",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    for _ in 0..2 {
+        overslash_db::bi::reconcile_bi_user(&pool).await;
+        let (reader, superuser): (bool, bool) = sqlx::query_as(
+            "SELECT pg_has_role('bi', 'bi_reader', 'MEMBER'),
+                    pg_has_role('bi', 'cloudsqlsuperuser', 'MEMBER')",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(reader, "bi must hold bi_reader");
+        assert!(!superuser, "bi must not stay a cloudsqlsuperuser member");
+    }
+}
