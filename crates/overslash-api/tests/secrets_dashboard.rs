@@ -55,7 +55,7 @@ async fn list_returns_owner_and_timestamps() {
     let cookie = mint_session_cookie(fx.org_id, admin_user);
     let resp = client
         .get(format!("{base}/v1/secrets"))
-        .header("cookie", format!("oss_session={cookie}"))
+        .header("cookie", format!("__Host-oss_session={cookie}"))
         .send()
         .await
         .unwrap();
@@ -94,7 +94,7 @@ async fn detail_includes_versions_and_used_by() {
     let cookie = mint_session_cookie(fx.org_id, admin_user);
     let resp = client
         .get(format!("{base}/v1/secrets/openai_key"))
-        .header("cookie", format!("oss_session={cookie}"))
+        .header("cookie", format!("__Host-oss_session={cookie}"))
         .send()
         .await
         .unwrap();
@@ -135,7 +135,7 @@ async fn reveal_returns_decrypted_value_and_audits() {
     let cookie = mint_session_cookie(fx.org_id, admin_user);
     let resp = client
         .post(format!("{base}/v1/secrets/stripe_key/versions/1/reveal"))
-        .header("cookie", format!("oss_session={cookie}"))
+        .header("cookie", format!("__Host-oss_session={cookie}"))
         .send()
         .await
         .unwrap();
@@ -174,7 +174,7 @@ async fn reveal_unknown_version_returns_404() {
     let cookie = mint_session_cookie(fx.org_id, admin_user);
     let resp = client
         .post(format!("{base}/v1/secrets/known/versions/99/reveal"))
-        .header("cookie", format!("oss_session={cookie}"))
+        .header("cookie", format!("__Host-oss_session={cookie}"))
         .send()
         .await
         .unwrap();
@@ -205,7 +205,7 @@ async fn restore_creates_new_version_with_old_value() {
     // Restore v1 → expect v3 with old value.
     let resp = client
         .post(format!("{base}/v1/secrets/rotate_me/versions/1/restore"))
-        .header("cookie", format!("oss_session={cookie}"))
+        .header("cookie", format!("__Host-oss_session={cookie}"))
         .send()
         .await
         .unwrap();
@@ -219,7 +219,7 @@ async fn restore_creates_new_version_with_old_value() {
     // Reveal v3 → matches the restored "old" value.
     let resp = client
         .post(format!("{base}/v1/secrets/rotate_me/versions/3/reveal"))
-        .header("cookie", format!("oss_session={cookie}"))
+        .header("cookie", format!("__Host-oss_session={cookie}"))
         .send()
         .await
         .unwrap();
@@ -264,7 +264,7 @@ async fn non_admin_cannot_see_other_users_secrets() {
     let cookie = mint_session_cookie(fx.org_id, fx.user_ids[1]);
     let resp = client
         .get(format!("{base}/v1/secrets"))
-        .header("cookie", format!("oss_session={cookie}"))
+        .header("cookie", format!("__Host-oss_session={cookie}"))
         .send()
         .await
         .unwrap();
@@ -281,7 +281,7 @@ async fn non_admin_cannot_see_other_users_secrets() {
     // leaking the existence of the name).
     let resp = client
         .get(format!("{base}/v1/secrets/admin_only"))
-        .header("cookie", format!("oss_session={cookie}"))
+        .header("cookie", format!("__Host-oss_session={cookie}"))
         .send()
         .await
         .unwrap();
@@ -324,7 +324,7 @@ async fn flag_only_admin_sees_all_secrets() {
     let cookie = mint_session_cookie(fx.org_id, fx.user_ids[1]);
     let resp = client
         .get(format!("{base}/v1/secrets"))
-        .header("cookie", format!("oss_session={cookie}"))
+        .header("cookie", format!("__Host-oss_session={cookie}"))
         .send()
         .await
         .unwrap();

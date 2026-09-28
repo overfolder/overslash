@@ -316,10 +316,7 @@ pub async fn rule_placement_for(scope: &OrgScope, requester_id: Uuid) -> Result<
 ///
 /// Exposed as a standalone function so the background loop and tests can both
 /// call it.
-pub async fn process_auto_bubble(
-    system: &SystemScope,
-    http_client: &reqwest::Client,
-) -> Result<u64, AppError> {
+pub async fn process_auto_bubble(system: &SystemScope) -> Result<u64, AppError> {
     let stale = system.list_pending_approvals_for_auto_bubble().await?;
     let mut bubbled = 0u64;
     for approval in stale {
@@ -369,7 +366,6 @@ pub async fn process_auto_bubble(
             // the approval row, so the absence of a caller costs nothing.
             crate::services::events::emit_all(
                 system.db().clone(),
-                http_client.clone(),
                 vec![
                     crate::services::events::approvals::bubbled(
                         &org_scope,
@@ -569,7 +565,6 @@ pub async fn cascade_resolve(
         .await;
         crate::services::events::emit(
             state.db.clone(),
-            state.http_client.clone(),
             crate::services::events::EventDraft {
                 org_id: scope.org_id(),
                 event_type: crate::services::events::EventType::ApprovalResolved,

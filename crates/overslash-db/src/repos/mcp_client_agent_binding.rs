@@ -22,8 +22,21 @@ pub struct McpClientAgentBindingRow {
     pub agent_identity_id: Uuid,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
-    pub elicitation_enabled: bool,
+    /// The user said no. Storage answers only that question: the platform
+    /// default lives in code and the client-capability check happens at
+    /// request time, because `oauth_mcp_clients.capabilities` is not yet
+    /// written when a binding is created (see migration 123).
+    pub elicitation_opted_out: bool,
     pub self_approve_enabled: bool,
+}
+
+impl McpClientAgentBindingRow {
+    /// The user-facing reading of the stored opt-out. Everything above the
+    /// repo — the DTO, the consent page, the dashboard toggle — speaks
+    /// "enabled", so invert once, here.
+    pub fn elicitation_enabled(&self) -> bool {
+        !self.elicitation_opted_out
+    }
 }
 
 /// Fast-path lookup for `/oauth/authorize`, scoped to the resolved enrollment
@@ -39,7 +52,7 @@ pub async fn get_for(
     sqlx::query_as!(
         McpClientAgentBindingRow,
         "SELECT id, org_id, user_identity_id, client_id, agent_identity_id,
-                created_at, updated_at, elicitation_enabled, self_approve_enabled
+                created_at, updated_at, elicitation_opted_out, self_approve_enabled
            FROM mcp_client_agent_bindings
           WHERE user_identity_id = $1 AND client_id = $2 AND org_id = $3",
         user_identity_id,
@@ -61,7 +74,7 @@ pub async fn get_by_agent_identity(
     sqlx::query_as!(
         McpClientAgentBindingRow,
         "SELECT id, org_id, user_identity_id, client_id, agent_identity_id,
-                created_at, updated_at, elicitation_enabled, self_approve_enabled
+                created_at, updated_at, elicitation_opted_out, self_approve_enabled
            FROM mcp_client_agent_bindings
           WHERE agent_identity_id = $1
           ORDER BY updated_at DESC
@@ -135,7 +148,7 @@ pub async fn get_for_agent_and_client(
     sqlx::query_as!(
         McpClientAgentBindingRow,
         "SELECT id, org_id, user_identity_id, client_id, agent_identity_id,
-                created_at, updated_at, elicitation_enabled, self_approve_enabled
+                created_at, updated_at, elicitation_opted_out, self_approve_enabled
            FROM mcp_client_agent_bindings
           WHERE agent_identity_id = $1 AND client_id = $2
           ORDER BY updated_at DESC
@@ -147,43 +160,43 @@ pub async fn get_for_agent_and_client(
     .await
 }
 
-pub async fn set_elicitation_enabled(
+pub async fn set_elicitation_opted_out(
     pool: &PgPool,
     binding_id: Uuid,
-    enabled: bool,
+    opted_out: bool,
 ) -> Result<Option<McpClientAgentBindingRow>, sqlx::Error> {
     sqlx::query_as!(
         McpClientAgentBindingRow,
         "UPDATE mcp_client_agent_bindings
-            SET elicitation_enabled = $2,
+            SET elicitation_opted_out = $2,
                 updated_at = now()
           WHERE id = $1
          RETURNING id, org_id, user_identity_id, client_id, agent_identity_id,
-                   created_at, updated_at, elicitation_enabled, self_approve_enabled",
+                   created_at, updated_at, elicitation_opted_out, self_approve_enabled",
         binding_id,
-        enabled,
+        opted_out,
     )
     .fetch_optional(pool)
     .await
 }
 
-/// Apply the elicitation toggle to *every* binding for this agent. The
+/// Apply the elicitation opt-out to *every* binding for this agent. The
 /// dashboard surfaces a single per-agent toggle, so the change has to fan
 /// out — otherwise the eligibility check (which is keyed on the calling
 /// client's binding) would read a stale flag for any client other than
 /// the most-recently-updated one. Returns rows_affected.
-pub async fn set_elicitation_enabled_for_agent(
+pub async fn set_elicitation_opted_out_for_agent(
     pool: &PgPool,
     agent_identity_id: Uuid,
-    enabled: bool,
+    opted_out: bool,
 ) -> Result<u64, sqlx::Error> {
     let r = sqlx::query!(
         "UPDATE mcp_client_agent_bindings
-            SET elicitation_enabled = $2,
+            SET elicitation_opted_out = $2,
                 updated_at = now()
           WHERE agent_identity_id = $1",
         agent_identity_id,
-        enabled,
+        opted_out,
     )
     .execute(pool)
     .await?;
@@ -202,7 +215,7 @@ pub async fn set_self_approve_enabled(
                 updated_at = now()
           WHERE id = $1
          RETURNING id, org_id, user_identity_id, client_id, agent_identity_id,
-                   created_at, updated_at, elicitation_enabled, self_approve_enabled",
+                   created_at, updated_at, elicitation_opted_out, self_approve_enabled",
         binding_id,
         enabled,
     )
@@ -211,7 +224,7 @@ pub async fn set_self_approve_enabled(
 }
 
 /// Apply the self-approve toggle to *every* binding for this agent — same
-/// fan-out rationale as `set_elicitation_enabled_for_agent`. Returns
+/// fan-out rationale as `set_elicitation_opted_out_for_agent`. Returns
 /// rows_affected.
 pub async fn set_self_approve_enabled_for_agent(
     pool: &PgPool,
@@ -245,7 +258,7 @@ pub async fn delete_by_agent_identity(
         "DELETE FROM mcp_client_agent_bindings
           WHERE agent_identity_id = $1
          RETURNING id, org_id, user_identity_id, client_id, agent_identity_id,
-                   created_at, updated_at, elicitation_enabled, self_approve_enabled",
+                   created_at, updated_at, elicitation_opted_out, self_approve_enabled",
         agent_identity_id,
     )
     .fetch_all(pool)
@@ -268,7 +281,7 @@ pub async fn upsert(
            DO UPDATE SET agent_identity_id = EXCLUDED.agent_identity_id,
                          updated_at = now()
          RETURNING id, org_id, user_identity_id, client_id, agent_identity_id,
-                   created_at, updated_at, elicitation_enabled, self_approve_enabled",
+                   created_at, updated_at, elicitation_opted_out, self_approve_enabled",
         org_id,
         user_identity_id,
         client_id,
@@ -285,7 +298,7 @@ pub async fn list_for_user(
     sqlx::query_as!(
         McpClientAgentBindingRow,
         "SELECT id, org_id, user_identity_id, client_id, agent_identity_id,
-                created_at, updated_at, elicitation_enabled, self_approve_enabled
+                created_at, updated_at, elicitation_opted_out, self_approve_enabled
            FROM mcp_client_agent_bindings
           WHERE user_identity_id = $1
           ORDER BY updated_at DESC",

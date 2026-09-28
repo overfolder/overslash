@@ -8,6 +8,7 @@
 #![allow(clippy::result_large_err)]
 
 pub mod config;
+pub mod cookies;
 pub mod error;
 pub mod extractors;
 pub mod impersonation;
@@ -186,6 +187,13 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
 
     let (embedder, embeddings_available) = init_embeddings(&db).await;
 
+    // Parse the egress allow-list now, so "your outbound reach is wider than
+    // the default, and here is exactly how much" lands next to the rest of
+    // startup rather than in the middle of the day's traffic — and so a
+    // deployment that set the dangerous metadata variable and nothing else
+    // hears about it before it wonders why nothing happened.
+    services::ssrf_guard::log_egress_configuration();
+
     let http_client = reqwest::Client::new();
     let mailer = services::email::build_mailer(&config, http_client.clone());
 
@@ -228,10 +236,6 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
     {
         let db = background_db.clone();
         let system = overslash_db::scopes::SystemScope::new_internal(db.clone());
-        // The auto-bubble and expiry sweeps emit the same events their
-        // human-driven counterparts do, so they need a client for the webhook
-        // half of that.
-        let bg_http_client = state.http_client.clone();
         // Hoisted out of the task: it is constant for the process lifetime, and
         // reading it inside the `async move` would drag the whole `Config` in.
         let orphan_grace = state.config.orphan_execution_grace_secs();
@@ -247,7 +251,7 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
                 tokio::time::sleep(std::time::Duration::from_secs(60)).await;
                 instrumented_step(
                     "approval_expiry",
-                    services::approval_expiry::process_expiry(&system, &bg_http_client),
+                    services::approval_expiry::process_expiry(&system),
                     |n| {
                         tracing::info!("Expired {n} stale approvals");
                         for _ in 0..n {
@@ -334,7 +338,7 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
                 .await;
                 instrumented_step(
                     "auto_bubble",
-                    services::permission_chain::process_auto_bubble(&system, &bg_http_client),
+                    services::permission_chain::process_auto_bubble(&system),
                     |n| tracing::info!("Auto-bubbled {n} approvals"),
                 )
                 .await;
@@ -421,7 +425,6 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
         // Webhook retry loop
         tokio::spawn(services::webhook_dispatcher::spawn_retry_loop(
             background_db.clone(),
-            state.http_client.clone(),
         ));
 
         // Webhook DLQ digest (daily, 13:00 UTC). Idempotent across replicas
@@ -674,6 +677,12 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
         // so the GMP / OTel sidecar can scrape it over loopback unconditionally.
         .merge(overslash_metrics::metrics_router(metrics_handle))
         .layer(CompressionLayer::new())
+        // Outside compression and every router, so 404s, CORS preflights
+        // and `/internal/metrics` carry the baseline too. Sets each header
+        // only when the handler did not.
+        .layer(axum::middleware::from_fn(
+            middleware::security_headers::security_headers,
+        ))
         .layer(axum::middleware::from_fn(
             overslash_metrics::http::middleware,
         ))
@@ -831,7 +840,7 @@ async fn instrumented_step<E: std::fmt::Display>(
 /// to write to — the endpoint uses this flag to decide whether the cosine
 /// query is worth issuing at all.
 pub async fn init_embeddings(db: &PgPool) -> (Arc<dyn Embedder>, bool) {
-    let env_flag = std::env::var("OVERSLASH_EMBEDDINGS").unwrap_or_else(|_| "on".to_string());
+    let env_flag = overslash_env::or_default("OVERSLASH_EMBEDDINGS", "on");
     if env_flag.eq_ignore_ascii_case("off") {
         if has_pgvector(db).await {
             tracing::info!(
@@ -853,9 +862,8 @@ pub async fn init_embeddings(db: &PgPool) -> (Arc<dyn Embedder>, bool) {
 
     #[cfg(feature = "embeddings")]
     {
-        let cache_dir = std::env::var("OVERSLASH_EMBED_CACHE_DIR")
-            .ok()
-            .map(std::path::PathBuf::from);
+        let cache_dir =
+            overslash_env::optional("OVERSLASH_EMBED_CACHE_DIR").map(std::path::PathBuf::from);
         match overslash_core::embeddings::FastembedEmbedder::new(cache_dir) {
             Ok(e) => {
                 tracing::info!("semantic search enabled (pgvector + fastembed/bge-small-en-v1.5)");

@@ -36,18 +36,14 @@ const MAX_BATCHES_PER_TICK: usize = 4;
 ///
 /// Returns the count the background loop logs and turns into `expired` metric
 /// samples.
-pub async fn process_expiry(
-    system: &SystemScope,
-    http_client: &reqwest::Client,
-) -> Result<u64, AppError> {
-    process_expiry_batched(system, http_client, EXPIRY_BATCH).await
+pub async fn process_expiry(system: &SystemScope) -> Result<u64, AppError> {
+    process_expiry_batched(system, EXPIRY_BATCH).await
 }
 
 /// [`process_expiry`] with the batch size supplied, so a test can drive the
 /// drain loop and its ceiling without seeding [`EXPIRY_BATCH`] approvals.
 pub async fn process_expiry_batched(
     system: &SystemScope,
-    http_client: &reqwest::Client,
     batch_size: i64,
 ) -> Result<u64, AppError> {
     let mut total = 0u64;
@@ -69,7 +65,7 @@ pub async fn process_expiry_batched(
         }
         let drained_everything = (batch.len() as i64) < batch_size;
         total += batch.len() as u64;
-        announce(system, http_client, batch).await;
+        announce(system, batch).await;
         if drained_everything {
             break;
         }
@@ -93,11 +89,7 @@ pub async fn process_expiry_batched(
 /// to the event log *before* dispatching any webhook: the stream — the transport
 /// this sweep exists to feed — never waits on some tenant's endpoint, and a
 /// tenant's endpoint is never hit by hundreds of parallel deliveries either.
-async fn announce(
-    system: &SystemScope,
-    http_client: &reqwest::Client,
-    batch: Vec<ExpiredApproval>,
-) {
+async fn announce(system: &SystemScope, batch: Vec<ExpiredApproval>) {
     let mut by_org: BTreeMap<Uuid, Vec<ExpiredApproval>> = BTreeMap::new();
     for approval in batch {
         by_org.entry(approval.org_id).or_default().push(approval);
@@ -141,6 +133,6 @@ async fn announce(
                 .await,
             );
         }
-        events::emit_all(system.db().clone(), http_client.clone(), drafts);
+        events::emit_all(system.db().clone(), drafts);
     }
 }

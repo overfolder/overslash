@@ -436,7 +436,6 @@ async fn update_service_status(
     // name, because a subscriber refetches either way.
     platform_services::fire_service_event(
         state.db_pool(&ext),
-        state.http_client.clone(),
         platform_services::ServiceEvent {
             org_id: scope.org_id(),
             event_type: crate::services::events::EventType::ServiceUpdated,
@@ -529,7 +528,6 @@ async fn delete_service(
     // the connection cleanup and re-render a service that is already gone.
     platform_services::fire_service_event(
         state.db_pool(&ext),
-        state.http_client.clone(),
         platform_services::ServiceEvent {
             org_id: scope.org_id(),
             event_type: crate::services::events::EventType::ServiceDeleted,

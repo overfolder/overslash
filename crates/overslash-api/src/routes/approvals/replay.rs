@@ -518,7 +518,6 @@ pub(super) async fn cancel_approval_execution(
         .await;
         crate::services::events::emit(
             state.db_pool(&ext),
-            state.http_client.clone(),
             crate::services::events::EventDraft {
                 org_id: auth.org_id,
                 event_type: crate::services::events::EventType::ApprovalExecutionCancelled,

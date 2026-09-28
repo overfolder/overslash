@@ -7,6 +7,22 @@
 //! rejected (mirrors `additionalProperties: false`), and `enum` members must
 //! be respected.
 //!
+//! The same three checks run at every *depth* a parameter declares a shape for
+//! (see [`nested`]), so an action whose contract is a nested object gets the
+//! same self-correctable 400 its top-level fields get, naming the field by its
+//! full path. A parameter whose template authored no sub-schema is
+//! unconstrained inside, exactly as every parameter was before shapes existed.
+//!
+//! That closed world is the default, not a law. An action carrying
+//! `x-overslash-additional-properties: true` passes `additional_properties`
+//! here, which drops *both* the unknown-key rejection and the `enum`
+//! membership check — the key is named for the JSON Schema keyword but is
+//! deliberately wider than it, because a template we transcribed from a
+//! `tools/list` snapshot or a partially-documented upstream is as likely to
+//! have a stale enum as a missing parameter. `required` is enforced either
+//! way: it is a statement about the operation, not about how completely we
+//! wrote it down.
+//!
 //! The checks run in two passes. [`coerce_args`] first repairs the obvious
 //! fixable cases in place — an integer where a `string` is declared is
 //! stringified, an enum value is case-normalized to its canonical member — so
@@ -31,6 +47,7 @@ use crate::types::ActionParam;
 
 mod coerce;
 mod error;
+mod nested;
 #[cfg(test)]
 mod test_helpers;
 
@@ -51,9 +68,15 @@ use error::{key, value_to_plain_string};
 /// When `params` is empty (e.g. the action declared no input contract),
 /// validation is a no-op — we cannot reject arguments without a schema to
 /// compare against.
+///
+/// `additional_properties` is the action's
+/// [`ServiceAction::additional_properties`](crate::types::ServiceAction::additional_properties).
+/// When set, an undeclared key is forwarded instead of rejected and a declared
+/// `enum` becomes advisory. The required pass is unaffected.
 pub fn validate_args(
     params: &HashMap<String, ActionParam>,
     args: &HashMap<String, Value>,
+    additional_properties: bool,
 ) -> Result<(), Vec<ArgError>> {
     if params.is_empty() {
         return Ok(());
@@ -72,39 +95,101 @@ pub fn validate_args(
         }
     }
 
-    let mut expected: Vec<String> = params.keys().cloned().collect();
-    expected.sort();
-    for name in args.keys() {
-        if !params.contains_key(name) {
-            errors.push(ArgError::Unknown {
-                field: name.clone(),
-                suggestion: closest_match(name, params.keys().map(String::as_str)),
-                expected: expected.clone(),
-            });
+    // Undeclared keys. Skipped entirely when the action opted out of the
+    // closed world — the cost is the `did you mean` suggestion on a typo,
+    // which is the trade the template author made knowingly.
+    if !additional_properties {
+        let mut expected: Vec<String> = params.keys().cloned().collect();
+        expected.sort();
+        for name in args.keys() {
+            if !params.contains_key(name) {
+                errors.push(ArgError::Unknown {
+                    field: name.clone(),
+                    suggestion: closest_match(name, params.keys().map(String::as_str)),
+                    expected: expected.clone(),
+                });
+            }
         }
     }
 
     // Enum contract for supplied values. Runs after `coerce_args` has had its
     // chance to case-normalize, so a value still outside the member set is a
     // genuine miss. `null` is handled by the required pass above.
+    //
+    // Relaxed along with undeclared keys: an enum we transcribed is a snapshot
+    // of the upstream's members at transcription time, and the same template
+    // that cannot name every parameter cannot be trusted to have a current
+    // member list either. `coerce_args` still case-normalizes a near-miss onto
+    // its canonical member, so the common case keeps its repair.
+    if !additional_properties {
+        for (name, p) in params {
+            let Some(v) = args.get(name) else { continue };
+            if v.is_null() {
+                continue;
+            }
+            // An empty member list is not a constraint: the loader collects
+            // enum members via `as_str`, so a numeric/boolean enum (e.g.
+            // `[200, 404]`) lowers to `Some(vec![])`. Treat that as
+            // unconstrained rather than rejecting every value against an empty
+            // allow-list.
+            if let Some(allowed) = p.enum_values.as_ref().filter(|a| !a.is_empty()) {
+                let is_member = v.as_str().is_some_and(|s| allowed.iter().any(|a| a == s));
+                if !is_member {
+                    errors.push(ArgError::NotInEnum {
+                        field: name.clone(),
+                        value: value_to_plain_string(v),
+                        allowed: allowed.clone(),
+                    });
+                }
+            }
+        }
+    }
+
+    // Nested shapes, for every supplied value whose param declared one. Runs
+    // after the flat passes so the errors an agent reads are ordered
+    // outside-in: a missing top-level `createRequest` is reported before
+    // anything about what should have been inside it.
+    //
+    // A JSON-carrying *string* param is parsed here and nowhere else, and only
+    // into a read-only view: the argument itself keeps the caller's exact
+    // bytes, because a parse/serialize round trip would re-sort its keys. A
+    // param that declares no `contentSchema` is not parsed at all — nobody
+    // asked to look inside, so a blob we would consider malformed stays the
+    // upstream's business.
     for (name, p) in params {
-        let Some(v) = args.get(name) else { continue };
-        if v.is_null() {
+        let Some(v) = args.get(name).filter(|v| !v.is_null()) else {
+            continue;
+        };
+        if p.is_json_string() {
+            let Some(text) = v.as_str() else { continue };
+            let Some(shape) = p.shape.as_deref() else {
+                // Still worth saying it is not JSON: `coerce_args` would have
+                // encoded structure, so a string here is the caller's own and
+                // the upstream is about to be handed something it declared it
+                // would not accept.
+                if serde_json::from_str::<Value>(text).is_err() {
+                    errors.push(ArgError::NotJson {
+                        field: name.clone(),
+                    });
+                }
+                continue;
+            };
+            match serde_json::from_str::<Value>(text) {
+                Ok(parsed) => nested::validate_nested(
+                    shape,
+                    &parsed,
+                    additional_properties,
+                    name,
+                    &mut errors,
+                ),
+                Err(_) => errors.push(ArgError::NotJson {
+                    field: name.clone(),
+                }),
+            }
             continue;
         }
-        // An empty member list is not a constraint: the loader collects enum
-        // members via `as_str`, so a numeric/boolean enum (e.g. `[200, 404]`)
-        // lowers to `Some(vec![])`. Treat that as unconstrained rather than
-        // rejecting every value against an empty allow-list.
-        if let Some(allowed) = p.enum_values.as_ref().filter(|a| !a.is_empty()) {
-            let is_member = v.as_str().is_some_and(|s| allowed.iter().any(|a| a == s));
-            if !is_member {
-                errors.push(ArgError::NotInEnum {
-                    field: name.clone(),
-                    value: value_to_plain_string(v),
-                    allowed: allowed.clone(),
-                });
-            }
+        if let Some(shape) = p.shape.as_deref() {
+            nested::validate_nested(shape, v, additional_properties, name, &mut errors);
         }
     }
 
@@ -123,7 +208,9 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    use super::test_helpers::{args, p, p_enum, schema};
+    use crate::types::{NestedParam, ParamShape};
+
+    use super::test_helpers::{args, p, p_enum, p_json, schema};
 
     #[test]
     fn ok_when_all_required_present_and_no_unknowns() {
@@ -136,7 +223,7 @@ mod tests {
             ("recipient", json!("x@s.whatsapp.net")),
             ("text", json!("hi")),
         ]);
-        assert!(validate_args(&s, &a).is_ok());
+        assert!(validate_args(&s, &a, false).is_ok());
     }
 
     #[test]
@@ -146,7 +233,7 @@ mod tests {
             ("text", p("string", true)),
         ]);
         let a = args(&[("text", json!("hi"))]);
-        let err = validate_args(&s, &a).unwrap_err();
+        let err = validate_args(&s, &a, false).unwrap_err();
         assert_eq!(
             err,
             vec![ArgError::Missing {
@@ -159,7 +246,7 @@ mod tests {
     fn null_value_treated_as_missing() {
         let s = schema(&[("recipient", p("string", true))]);
         let a = args(&[("recipient", json!(null))]);
-        let err = validate_args(&s, &a).unwrap_err();
+        let err = validate_args(&s, &a, false).unwrap_err();
         assert_eq!(
             err,
             vec![ArgError::Missing {
@@ -179,7 +266,7 @@ mod tests {
             ("text", p("string", true)),
         ]);
         let a = args(&[("jid", json!("x@s.whatsapp.net")), ("text", json!("hi"))]);
-        let err = validate_args(&s, &a).unwrap_err();
+        let err = validate_args(&s, &a, false).unwrap_err();
         assert!(
             err.iter()
                 .any(|e| matches!(e, ArgError::Missing { field } if field == "recipient"))
@@ -212,7 +299,7 @@ mod tests {
         // Real typo: `recipien` (missing 't') → distance 1 from `recipient`.
         let s = schema(&[("recipient", p("string", true))]);
         let a = args(&[("recipien", json!("x"))]);
-        let err = validate_args(&s, &a).unwrap_err();
+        let err = validate_args(&s, &a, false).unwrap_err();
         let unknown = err
             .iter()
             .find(|e| matches!(e, ArgError::Unknown { field, .. } if field == "recipien"))
@@ -230,20 +317,21 @@ mod tests {
         // No declared params → can't validate, accept anything.
         let s: HashMap<String, ActionParam> = HashMap::new();
         let a = args(&[("anything", json!(1))]);
-        assert!(validate_args(&s, &a).is_ok());
+        assert!(validate_args(&s, &a, false).is_ok());
     }
 
     #[test]
     fn errors_ordered_missing_then_unknown_alphabetical() {
         let s = schema(&[("a", p("string", true)), ("b", p("string", true))]);
         let a = args(&[("z", json!(1)), ("y", json!(2))]);
-        let err = validate_args(&s, &a).unwrap_err();
+        let err = validate_args(&s, &a, false).unwrap_err();
         let fields: Vec<&str> = err
             .iter()
             .map(|e| match e {
                 ArgError::Missing { field }
                 | ArgError::Unknown { field, .. }
-                | ArgError::NotInEnum { field, .. } => field.as_str(),
+                | ArgError::NotInEnum { field, .. }
+                | ArgError::NotJson { field } => field.as_str(),
             })
             .collect();
         assert_eq!(fields, vec!["a", "b", "y", "z"]);
@@ -259,8 +347,15 @@ mod tests {
         // the declared scalar type passes through — coercion handles the safe
         // cases, everything else is the upstream's business.
         let s = schema(&[("labelIds", p("string", false))]);
-        assert!(validate_args(&s, &args(&[("labelIds", json!(["INBOX", "UNREAD"]))])).is_ok());
-        assert!(validate_args(&s, &args(&[("labelIds", json!({"nested": 1}))])).is_ok());
+        assert!(
+            validate_args(
+                &s,
+                &args(&[("labelIds", json!(["INBOX", "UNREAD"]))]),
+                false
+            )
+            .is_ok()
+        );
+        assert!(validate_args(&s, &args(&[("labelIds", json!({"nested": 1}))]), false).is_ok());
     }
 
     #[test]
@@ -268,7 +363,7 @@ mod tests {
         let s = schema(&[("parse_mode", p_enum(&["HTML", "Markdown"], false))]);
         let mut a = args(&[("parse_mode", json!("Fancy"))]);
         coerce_args(&s, &mut a);
-        let err = validate_args(&s, &a).unwrap_err();
+        let err = validate_args(&s, &a, false).unwrap_err();
         assert_eq!(
             err,
             vec![ArgError::NotInEnum {
@@ -289,16 +384,16 @@ mod tests {
             ..p("integer", false)
         };
         let s = schema(&[("status", param)]);
-        assert!(validate_args(&s, &args(&[("status", json!(404))])).is_ok());
+        assert!(validate_args(&s, &args(&[("status", json!(404))]), false).is_ok());
     }
 
     #[test]
     fn unspecified_type_accepts_any_scalar() {
         // Empty param_type is unconstrained — any value passes.
         let s = schema(&[("val", p("", false))]);
-        assert!(validate_args(&s, &args(&[("val", json!(7))])).is_ok());
-        assert!(validate_args(&s, &args(&[("val", json!(true))])).is_ok());
-        assert!(validate_args(&s, &args(&[("val", json!("x"))])).is_ok());
+        assert!(validate_args(&s, &args(&[("val", json!(7))]), false).is_ok());
+        assert!(validate_args(&s, &args(&[("val", json!(true))]), false).is_ok());
+        assert!(validate_args(&s, &args(&[("val", json!("x"))]), false).is_ok());
     }
 
     #[test]
@@ -312,15 +407,155 @@ mod tests {
             ("zzz", json!(1)),       // Unknown
             ("mode", json!("nope")), // NotInEnum
         ]);
-        let err = validate_args(&s, &a).unwrap_err();
+        let err = validate_args(&s, &a, false).unwrap_err();
         let tags: Vec<&str> = err
             .iter()
             .map(|e| match e {
                 ArgError::Missing { .. } => "missing",
                 ArgError::Unknown { .. } => "unknown",
                 ArgError::NotInEnum { .. } => "enum",
+                ArgError::NotJson { .. } => "not_json",
             })
             .collect();
         assert_eq!(tags, vec!["missing", "unknown", "enum"]);
+    }
+
+    // --- JSON-carrying string params ---------------------------------------
+
+    fn p_json_shaped() -> ActionParam {
+        ActionParam {
+            shape: Some(Box::new(ParamShape::Object {
+                properties: std::collections::BTreeMap::from([(
+                    "peer".to_string(),
+                    NestedParam {
+                        param_type: "string".into(),
+                        required: true,
+                        ..Default::default()
+                    },
+                )]),
+                additional_properties: false,
+            })),
+            ..p_json("string")
+        }
+    }
+
+    #[test]
+    fn a_json_string_is_validated_against_its_content_schema() {
+        let s = schema(&[("params_json", p_json_shaped())]);
+        let ok = args(&[("params_json", json!(r#"{"peer":"me"}"#))]);
+        assert!(validate_args(&s, &ok, false).is_ok());
+
+        let bad = args(&[("params_json", json!(r#"{"user":"me"}"#))]);
+        let err = validate_args(&s, &bad, false).unwrap_err();
+        assert!(
+            err.contains(&ArgError::Missing {
+                field: "params_json.peer".into()
+            }),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn a_json_string_keeps_its_bytes_through_validation() {
+        // Validation parses into a read-only view. The argument itself must be
+        // untouched — the whole point of not re-encoding in `coerce_args`
+        // would be lost if this path wrote the parse back.
+        let raw = r#"{"z":1,"peer":"me"}"#;
+        let s = schema(&[("params_json", p_json_shaped())]);
+        let mut a = args(&[("params_json", json!(raw))]);
+        // `additional_properties` so the undeclared `z` is not the thing under
+        // test here.
+        let _ = validate_args(&s, &a, true);
+        assert_eq!(a.remove("params_json"), Some(json!(raw)));
+    }
+
+    #[test]
+    fn a_string_that_is_not_json_is_reported() {
+        let s = schema(&[("params_json", p_json_shaped())]);
+        let a = args(&[("params_json", json!("not json"))]);
+        assert_eq!(
+            validate_args(&s, &a, false).unwrap_err(),
+            vec![ArgError::NotJson {
+                field: "params_json".into()
+            }]
+        );
+    }
+
+    #[test]
+    fn not_json_bites_even_when_the_action_is_relaxed() {
+        // The relaxation exists because a transcribed *enum* goes stale. "Is
+        // this string JSON" cannot.
+        let s = schema(&[("params_json", p_json("string"))]);
+        let a = args(&[("params_json", json!("{ not json"))]);
+        assert_eq!(
+            validate_args(&s, &a, true).unwrap_err(),
+            vec![ArgError::NotJson {
+                field: "params_json".into()
+            }]
+        );
+    }
+
+    #[test]
+    fn a_json_string_with_no_content_schema_is_only_checked_for_being_json() {
+        let s = schema(&[("params_json", p_json("string"))]);
+        let a = args(&[("params_json", json!(r#"{"anything":[1,2,3]}"#))]);
+        assert!(validate_args(&s, &a, false).is_ok());
+    }
+
+    // --- `additional_properties: true` -------------------------------------
+
+    #[test]
+    fn relaxed_allows_undeclared_keys() {
+        let s = schema(&[("q", p("string", false))]);
+        let a = args(&[("q", json!("hi")), ("undeclared", json!("forwarded"))]);
+        assert!(
+            validate_args(&s, &a, false).is_err(),
+            "strict still rejects"
+        );
+        assert!(validate_args(&s, &a, true).is_ok());
+    }
+
+    #[test]
+    fn relaxed_allows_enum_non_members() {
+        let s = schema(&[("mode", p_enum(&["a", "b"], false))]);
+        let a = args(&[("mode", json!("c"))]);
+        assert!(
+            validate_args(&s, &a, false).is_err(),
+            "strict still rejects"
+        );
+        assert!(validate_args(&s, &a, true).is_ok());
+    }
+
+    #[test]
+    fn relaxed_still_enforces_required() {
+        // The whole point of the split: `required` is a statement about the
+        // operation, not about how completely we transcribed it.
+        let s = schema(&[
+            ("req", p("string", true)),
+            ("mode", p_enum(&["a", "b"], false)),
+        ]);
+        let a = args(&[("mode", json!("off-list")), ("extra", json!(1))]);
+        let err = validate_args(&s, &a, true).unwrap_err();
+        assert!(
+            matches!(err.as_slice(), [ArgError::Missing { field }] if field == "req"),
+            "expected only the missing-required error, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn relaxed_reports_every_missing_required_at_once() {
+        let s = schema(&[("a", p("string", true)), ("b", p("string", true))]);
+        let err = validate_args(&s, &args(&[("junk", json!(1))]), true).unwrap_err();
+        assert_eq!(err.len(), 2, "both requireds reported: {err:?}");
+    }
+
+    #[test]
+    fn relaxed_is_still_a_noop_without_a_schema() {
+        // `params.is_empty()` short-circuits before the flag is consulted, so
+        // the two agree on the action that declares nothing.
+        let s = schema(&[]);
+        let a = args(&[("anything", json!(1))]);
+        assert!(validate_args(&s, &a, false).is_ok());
+        assert!(validate_args(&s, &a, true).is_ok());
     }
 }

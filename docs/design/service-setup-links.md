@@ -127,7 +127,7 @@ deliberate:
 |---|---|
 | `deepwiki` | every tool needs a repo name, and it authenticates with nothing — no credential for a probe to prove |
 | `overslash` | `runtime: platform`; a platform action answers from this process against no upstream credential, which is why `Ext::Test` is not read at `Pos::PlatformAction` |
-| `github_legacy_oauth`, `test_email` | `x-overslash-hidden` fixtures, not agent-facing |
+| `test_email` | `x-overslash-hidden` fixture, not agent-facing |
 
 ### The setup link — mirroring auto-connect
 

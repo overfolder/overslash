@@ -150,7 +150,7 @@ async fn the_setup_bundle_is_collapsed_for_mcp_callers() {
     let mock = common::start_mock().await;
     let (base, client, fx) =
         setup_with_shortener(format!("http://127.0.0.1:{}", mock.port())).await;
-    let (_user, _ident, agent_key) = common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
+    let (_user, ident, agent_key) = common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
 
     // `manage_services_own` is seeded for a first-level agent (D79), but grant
     // it explicitly so this asserts the collapse rather than the org default.
@@ -158,7 +158,7 @@ async fn the_setup_bundle_is_collapsed_for_mcp_callers() {
         .post(format!("{base}/v1/permissions"))
         .header(common::auth(&fx.admin_key).0, common::auth(&fx.admin_key).1)
         .json(&json!({
-            "identity_id": _ident,
+            "identity_id": ident,
             "action_pattern": "overslash:manage_services_own:*",
             "effect": "allow"
         }))

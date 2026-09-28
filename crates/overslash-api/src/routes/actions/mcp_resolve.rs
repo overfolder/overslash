@@ -133,6 +133,9 @@ pub(crate) async fn resolve_effective_mcp(
             .await);
         }
     };
+    // The bearer rides this URL; a plaintext one stored before https was
+    // required fails here, before any approval is created (CASA 4.1.1).
+    crate::services::outbound_tls::check_url(&url)?;
 
     // Auth: Bearer picks the effective secret_name (instance wins); OAuth
     // resolves a live bearer now, gating when no connection exists yet.

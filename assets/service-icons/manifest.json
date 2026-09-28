@@ -60,6 +60,7 @@
       "guidelines": "https://www.eventbrite.com/l/for-press/",
       "note": "No simple-icons entry. Source from the vendor brand page before shipping."
     },
+    "figma": { "source": "simple-icons:figma" },
     "github": { "source": "simple-icons:github" },
     "gmail": { "source": "simple-icons:gmail" },
     "google_calendar": { "source": "simple-icons:googlecalendar" },
@@ -77,6 +78,12 @@
       "source": "local:globe.svg",
       "owner": "Overspiral S.L.",
       "note": "Generic globe glyph authored by us. Mode A is not a vendor — this stands for \"any URL you supply\", which is what the pseudo-service is."
+    },
+    "langfuse": {
+      "source": "pending",
+      "owner": "Langfuse GmbH",
+      "guidelines": "https://langfuse.com/",
+      "note": "No Langfuse mark in simple-icons. Source from the vendor brand page before shipping."
     },
     "linkedin": {
       "source": "pending",

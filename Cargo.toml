@@ -1,10 +1,10 @@
 [workspace]
 resolver = "2"
-members = ["crates/overslash-core", "crates/overslash-db", "crates/overslash-api", "crates/overslash-mcp", "crates/overslash-mcp-puppet", "crates/overslash-cli", "crates/oversla-sh", "crates/overslash-metrics", "crates/overslash-metrics-exporter", "crates/overslash-fakes", "tests/mock-target"]
+members = ["crates/overslash-env", "crates/overslash-core", "crates/overslash-db", "crates/overslash-api", "crates/overslash-mcp", "crates/overslash-mcp-puppet", "crates/overslash-cli", "crates/oversla-sh", "crates/overslash-metrics", "crates/overslash-metrics-exporter", "crates/overslash-fakes", "tests/mock-target"]
 
 [workspace.package]
 edition = "2024"
-rust-version = "1.97"
+rust-version = "1.98"
 license = "Apache-2.0"
 
 [workspace.dependencies]
@@ -30,12 +30,27 @@ clap = { version = "4", features = ["derive", "env"] }
 rust-embed = { version = "8", features = ["mime-guess", "interpolate-folder-path", "debug-embed"] }
 mime_guess = "2"
 url = "2"
+# CIDR parsing for the operator egress allow-list (`OVERSLASH_SSRF_ALLOWED_CIDRS`).
+# Already in the tree transitively via hyper; named here so the guard can use it.
+ipnet = "2"
 subtle = "2"
 metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.18", default-features = false }
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 regex = "1"
 async-trait = "0.1"
+
+# Lints every workspace member inherits via `[lints] workspace = true`.
+#
+# `used_underscore_binding` is pedantic-group, so it is allow-by-default: an
+# `_name` binding that is then read compiles silently. The underscore is how
+# this codebase says "deliberately unused" — a tuple element we destructure
+# past, a guard we only hold. When a later edit starts reading one, the name
+# now lies about its own purpose, and `_` prefixes stop being a reliable
+# signal of what is dead. A genuinely unused binding keeps its underscore;
+# one that gets read loses it.
+[workspace.lints.clippy]
+used_underscore_binding = "warn"
 
 # Fast dev builds: minimal debug info
 [profile.dev]

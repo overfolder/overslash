@@ -68,7 +68,7 @@ async fn load_mcp_connection(
         session_id: client.last_session_id,
         connected_at: fmt_time(binding.created_at),
         last_seen_at: client.last_seen_at.map(fmt_time),
-        elicitation_enabled: binding.elicitation_enabled,
+        elicitation_enabled: binding.elicitation_enabled(),
         elicitation_supported,
         self_approve_enabled: binding.self_approve_enabled,
     }))
@@ -117,16 +117,17 @@ pub(super) async fn patch_mcp_connection(
     ensure_agent(&scope, id).await?;
 
     if let Some(enabled) = req.elicitation_enabled {
+        // Stored as the opt-out; `enabled` is the user-facing sense.
         // Fan the toggle out to every binding under this agent. The
         // dashboard surfaces a single per-agent toggle, so applying the
         // change to only the most-recently-updated binding would leave
         // older client bindings reading a stale flag (the eligibility
         // check is keyed on the calling client's binding).
         let updated =
-            overslash_db::repos::mcp_client_agent_binding::set_elicitation_enabled_for_agent(
+            overslash_db::repos::mcp_client_agent_binding::set_elicitation_opted_out_for_agent(
                 state.db(&ext),
                 id,
-                enabled,
+                !enabled,
             )
             .await?;
         if updated == 0 {
@@ -152,7 +153,7 @@ pub(super) async fn patch_mcp_connection(
     }
 
     if let Some(enabled) = req.self_approve_enabled {
-        // Same fan-out rationale as `elicitation_enabled`: the dashboard
+        // Same fan-out rationale as the elicitation opt-out: the dashboard
         // surfaces a single per-agent toggle, and the MCP visibility check
         // (in `routes/mcp.rs::tools_list_response`) plus the resolve-time
         // gate (in `routes/approvals.rs::resolve_approval`) both read the

@@ -1536,7 +1536,7 @@ async fn test_audit_webhook_created() {
     client
         .post(format!("{base}/v1/webhooks"))
         .header(auth(&admin_key).0, auth(&admin_key).1)
-        .json(&json!({"url": "https://example.com/hook", "events": ["approval.resolved"]}))
+        .json(&json!({"url": "https://127.0.0.1:9/hook", "events": ["approval.resolved"]}))
         .send()
         .await
         .unwrap();
@@ -1544,7 +1544,7 @@ async fn test_audit_webhook_created() {
     let entries = fetch_audit_with(&base, &client, &key, "action=webhook.created").await;
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0]["resource_type"], "webhook");
-    assert_eq!(entries[0]["detail"]["url"], "https://example.com/hook");
+    assert_eq!(entries[0]["detail"]["url"], "https://127.0.0.1:9/hook");
 }
 
 #[tokio::test]
@@ -1558,7 +1558,7 @@ async fn test_audit_webhook_deleted() {
     let resp = client
         .post(format!("{base}/v1/webhooks"))
         .header(auth(&admin_key).0, auth(&admin_key).1)
-        .json(&json!({"url": "https://example.com/hook", "events": ["approval.resolved"]}))
+        .json(&json!({"url": "https://127.0.0.1:9/hook", "events": ["approval.resolved"]}))
         .send()
         .await
         .unwrap();

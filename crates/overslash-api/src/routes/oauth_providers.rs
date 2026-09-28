@@ -70,7 +70,7 @@ async fn list_providers(
 ) -> Result<Json<Vec<ProviderRow>>> {
     let providers = oauth_provider::list_all(state.db(&ext)).await?;
     let env_fallback_enabled =
-        std::env::var("OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS").is_ok();
+        overslash_env::flag("OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS");
 
     // BYOC setup values the user pastes into their own OAuth app. Provider-
     // independent: the redirect URI matches the one used at token exchange
@@ -112,8 +112,8 @@ async fn list_providers(
                 .is_some();
 
         let has_system_credential = env_fallback_enabled
-            && std::env::var(&id_name).is_ok()
-            && std::env::var(&secret_name).is_ok();
+            && overslash_env::is_set(&id_name)
+            && overslash_env::is_set(&secret_name);
 
         let has_user_byoc_credential = user_byoc_providers.contains(&p.key);
 

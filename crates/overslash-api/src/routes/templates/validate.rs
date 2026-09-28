@@ -39,7 +39,16 @@ pub(super) async fn validate_template(
             body.len()
         )));
     }
-    Ok(Json(validate_template_yaml(&body, state.registry.vars())))
+    let report = validate_template_yaml(&body, state.registry.vars());
+    // The endpoint check needs the compiled definition, and is only worth a
+    // second compile once the template is otherwise sound.
+    if !report.valid {
+        return Ok(Json(report));
+    }
+    let endpoint_errors = parse_normalize_compile_yaml(&body, state.registry.vars())
+        .map(|(_, def)| template_endpoint_issues(&def))
+        .unwrap_or_default();
+    Ok(Json(with_errors(report, endpoint_errors)))
 }
 
 #[derive(Deserialize)]
@@ -101,7 +110,10 @@ pub(super) async fn validate_delta_route(
     .await
     .map_err(|_| AppError::BadRequest(format!("base template '{}' not found", req.extends)))?;
 
-    let mut report = service_layer::validate_delta(&delta, &base.definition, req.user_level);
+    let mut report = with_errors(
+        service_layer::validate_delta(&delta, &base.definition, req.user_level),
+        delta_endpoint_issues(&delta),
+    );
     // Fold this delta over the base and surface the resolution warnings too, so
     // the editor previews shadowed extensions / dead entries live.
     let (_def, resolution_warnings) = service_layer::apply_delta(&delta, &base.definition);

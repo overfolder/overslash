@@ -1,0 +1,232 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT key, display_name, authorization_endpoint, token_endpoint, refresh_endpoint,\n                revocation_endpoint,\n                userinfo_endpoint, client_id_pattern, supports_pkce, supports_refresh,\n                extra_auth_params, token_auth_method, is_builtin, issuer_url, jwks_uri,\n                default_identity_scopes, login_hint_param, created_at\n         FROM oauth_providers WHERE key = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "key",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "oauth_providers",
+            "name": "key"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "display_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "oauth_providers",
+            "name": "display_name"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "authorization_endpoint",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "oauth_providers",
+            "name": "authorization_endpoint"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "token_endpoint",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "oauth_providers",
+            "name": "token_endpoint"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "refresh_endpoint",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "oauth_providers",
+            "name": "refresh_endpoint"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "revocation_endpoint",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "oauth_providers",
+            "name": "revocation_endpoint"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "userinfo_endpoint",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "oauth_providers",
+            "name": "userinfo_endpoint"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "client_id_pattern",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "oauth_providers",
+            "name": "client_id_pattern"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "supports_pkce",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "oauth_providers",
+            "name": "supports_pkce"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "supports_refresh",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "oauth_providers",
+            "name": "supports_refresh"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "extra_auth_params",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "oauth_providers",
+            "name": "extra_auth_params"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "token_auth_method",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "oauth_providers",
+            "name": "token_auth_method"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "is_builtin",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "oauth_providers",
+            "name": "is_builtin"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "issuer_url",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "oauth_providers",
+            "name": "issuer_url"
+          }
+        }
+      },
+      {
+        "ordinal": 14,
+        "name": "jwks_uri",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "oauth_providers",
+            "name": "jwks_uri"
+          }
+        }
+      },
+      {
+        "ordinal": 15,
+        "name": "default_identity_scopes",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "oauth_providers",
+            "name": "default_identity_scopes"
+          }
+        }
+      },
+      {
+        "ordinal": 16,
+        "name": "login_hint_param",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "oauth_providers",
+            "name": "login_hint_param"
+          }
+        }
+      },
+      {
+        "ordinal": 17,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "oauth_providers",
+            "name": "created_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "aa2b53dbd677d003f093676aaf32e9886af798b1482aa30dd79f2a16163eb2f9"
+}

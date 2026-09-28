@@ -355,7 +355,6 @@ pub async fn kernel_import_connection(
         .await;
         crate::services::events::emit(
             ctx.db.clone(),
-            ctx.http_client.clone(),
             crate::services::events::EventDraft {
                 org_id: ctx.org_id,
                 event_type,

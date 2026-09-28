@@ -115,16 +115,7 @@ async fn bootstrap(pool: sqlx::PgPool) -> (String, String, Uuid, std::net::Socke
         .unwrap();
     let org_id: Uuid = org["id"].as_str().unwrap().parse().unwrap();
 
-    let org_key_resp: Value = client
-        .post(format!("{base}/v1/api-keys"))
-        .json(&json!({"org_id": org_id, "name": "org-admin"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let org_key = org_key_resp["key"].as_str().unwrap().to_string();
+    let org_key = org["api_key"].as_str().unwrap().to_string();
 
     // Permission-chain tests assert the manual `/call` flow produces
     // `triggered_by="agent"` executions. Flip the org default so every
@@ -529,12 +520,9 @@ async fn auto_bubble_advances_resolver() {
     .unwrap();
 
     let system = overslash_db::scopes::SystemScope::new_internal(pool.clone());
-    let bubbled = overslash_api::services::permission_chain::process_auto_bubble(
-        &system,
-        &reqwest::Client::new(),
-    )
-    .await
-    .unwrap();
+    let bubbled = overslash_api::services::permission_chain::process_auto_bubble(&system)
+        .await
+        .unwrap();
     assert!(bubbled >= 1);
 
     let updated = test_scope.get_approval(approval.id).await.unwrap().unwrap();
@@ -1042,18 +1030,7 @@ async fn cross_tenant_walk_cannot_see_other_org_rules() {
         .await
         .unwrap();
     let org_id_b: Uuid = org_b["id"].as_str().unwrap().parse().unwrap();
-    let org_key_b: String = client
-        .post(format!("{base}/v1/api-keys"))
-        .json(&json!({"org_id": org_id_b, "name": "b-admin"}))
-        .send()
-        .await
-        .unwrap()
-        .json::<Value>()
-        .await
-        .unwrap()["key"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let org_key_b: String = org_b["api_key"].as_str().unwrap().to_string();
 
     // Agents in both orgs (each under its own user).
     let user_a = create_identity(&base, &org_key_a, "ua", "user", None).await;

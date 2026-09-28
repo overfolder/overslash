@@ -187,8 +187,10 @@ async fn create_derived_layer(
 
     // Write-time delta validation against the resolved base. `owner_identity_id`
     // set ⇒ a user-tier layer, which may not carry `instance_defaults`.
-    let report =
-        service_layer::validate_delta(&delta, &base.definition, owner_identity_id.is_some());
+    let report = with_errors(
+        service_layer::validate_delta(&delta, &base.definition, owner_identity_id.is_some()),
+        delta_endpoint_issues(&delta),
+    );
     if !report.valid {
         return Err(AppError::TemplateValidationFailed { report });
     }
@@ -460,10 +462,13 @@ async fn update_derived_layer(
         extends,
     )
     .await?;
-    let report = service_layer::validate_delta(
-        &delta,
-        &base.definition,
-        existing.owner_identity_id.is_some(),
+    let report = with_errors(
+        service_layer::validate_delta(
+            &delta,
+            &base.definition,
+            existing.owner_identity_id.is_some(),
+        ),
+        delta_endpoint_issues(&delta),
     );
     if !report.valid {
         return Err(AppError::TemplateValidationFailed { report });

@@ -168,6 +168,9 @@ pub fn apply_delta(
         // Credential slots ride with `auth`: a mask may add actions and hosts,
         // never rebind credentials.
         secrets: base.secrets.clone(),
+        // And so do the alternatives between them: a layer that could drop a
+        // mode would strand every instance that had picked it.
+        declared_auth_modes: base.declared_auth_modes.clone(),
         // Same reasoning for the non-secret inputs those credentials read: a
         // layer presets their *values* through `instance_defaults.config`, it
         // never redeclares them.
@@ -177,6 +180,12 @@ pub fn apply_delta(
         // `ActionPatch::timeout_ms`, and the org-wide knob lives on the org
         // row rather than in the mask.
         default_timeout_ms: base.default_timeout_ms,
+        // Carried through so a layer's *added* MCP tools discovered later
+        // inherit the same service-wide default the base's own tools did. The
+        // layer cannot change it: `ActionPatch` is restrictive-only, and
+        // relaxing validation is a capability grant rather than the kind of
+        // no-new-capability tuning D56 allowed for `timeout_ms`.
+        default_additional_properties: base.default_additional_properties,
         runtime: base.runtime,
         mcp: base.mcp.clone(),
         instance_defaults,

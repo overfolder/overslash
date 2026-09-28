@@ -122,7 +122,7 @@ async fn impersonation_provisioned_member_is_adopted_at_first_signin() {
         ))
         .header(
             "cookie",
-            format!("oss_auth_nonce={nonce}; oss_auth_verifier=v; oss_auth_org={org_slug}"),
+            format!("__Host-oss_auth_nonce={nonce}; __Host-oss_auth_verifier=v; __Host-oss_auth_org={org_slug}"),
         )
         .send()
         .await
@@ -215,7 +215,7 @@ async fn uninvited_email_is_rejected_when_invite_required() {
         ))
         .header(
             "cookie",
-            format!("oss_auth_nonce={nonce}; oss_auth_verifier=v; oss_auth_org={org_slug}"),
+            format!("__Host-oss_auth_nonce={nonce}; __Host-oss_auth_verifier=v; __Host-oss_auth_org={org_slug}"),
         )
         .send()
         .await
@@ -255,7 +255,7 @@ async fn admin_invite_signs_in_as_admin() {
         ))
         .header(
             "cookie",
-            format!("oss_auth_nonce={nonce}; oss_auth_verifier=v; oss_auth_org={org_slug}"),
+            format!("__Host-oss_auth_nonce={nonce}; __Host-oss_auth_verifier=v; __Host-oss_auth_org={org_slug}"),
         )
         .send()
         .await
@@ -365,7 +365,7 @@ async fn member_whose_idp_email_changed_is_adopted_not_forked() {
         ))
         .header(
             "cookie",
-            format!("oss_auth_nonce={nonce}; oss_auth_verifier=v; oss_auth_org={org_slug}"),
+            format!("__Host-oss_auth_nonce={nonce}; __Host-oss_auth_verifier=v; __Host-oss_auth_org={org_slug}"),
         )
         .send()
         .await
@@ -475,7 +475,7 @@ async fn an_archived_member_cannot_sign_back_in() {
             ))
             .header(
                 "cookie",
-                format!("oss_auth_nonce={nonce}; oss_auth_verifier=v; oss_auth_org={org_slug}"),
+                format!("__Host-oss_auth_nonce={nonce}; __Host-oss_auth_verifier=v; __Host-oss_auth_org={org_slug}"),
             )
             .send()
             .await

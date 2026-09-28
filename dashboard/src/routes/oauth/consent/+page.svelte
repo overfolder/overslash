@@ -26,15 +26,19 @@
 			agentName = ctx.reauth_target.agent_name;
 			parentId = ctx.reauth_target.parent_id ?? '';
 			// Pre-fill from the existing binding so reconnecting doesn't
-			// silently flip the user's saved choice off. Capability gating
-			// still wins — if the rebound client no longer announces
-			// elicitation, force the toggle off.
-			elicitationEnabled =
-				ctx.reauth_target.elicitation_enabled && ctx.client.elicitation_supported;
+			// silently flip the user's saved choice off. Deliberately not
+			// AND-ed with elicitation_supported: a client that has not
+			// initialized yet has declared nothing, and that is every
+			// freshly-registered client_id. The capability check happens at
+			// request time, where the answer is actually known.
+			elicitationEnabled = ctx.reauth_target.elicitation_enabled;
 		} else {
 			agentName = ctx.suggested_agent_name;
 			parentId = ctx.parents.find((p) => p.is_you)?.id ?? ctx.parents[0]?.id ?? '';
-			elicitationEnabled = false;
+			// On by default. The reauth branch above deliberately prefills
+			// from the existing binding instead — that is what makes an
+			// opt-out stick.
+			elicitationEnabled = true;
 		}
 	});
 
@@ -353,20 +357,23 @@
 				<div class="conn-head">Connection Settings</div>
 				<div class="conn-option">
 					<div class="conn-option-text">
-						<div class="opt-title" id="opt-elicitation-label">Elicitation approvals</div>
+						<div class="opt-title" id="opt-elicitation-label">Approve in your client</div>
 						<div class="hint">
-							Elicitation allows approving in line but stops the approval from being
-							async.
+							On by default. When this agent needs approval, your MCP client asks
+							you right there instead of sending you to the dashboard. Clients
+							that can't show a prompt &mdash; headless or <code>--print</code>
+							sessions &mdash; fall back to the approval link automatically;
+							nothing is denied on your behalf.
 						</div>
 						{#if !ctx.client.elicitation_supported}
-							<div class="opt-warn">
-								This MCP client did not declare elicitation support at connect time.
+							<div class="hint">
+								This client hasn't told us yet whether it can show a prompt &mdash; it
+								does that on its first connection. Until then, approvals use the link.
 							</div>
 						{/if}
 					</div>
 					<ToggleSwitch
 						checked={elicitationEnabled}
-						disabled={!ctx.client.elicitation_supported}
 						labelledby="opt-elicitation-label"
 						onchange={(v) => (elicitationEnabled = v)}
 					/>
@@ -787,11 +794,6 @@
 		font-size: 14px;
 		font-weight: 500;
 		color: var(--color-text);
-	}
-	.opt-warn {
-		font-size: 12px;
-		color: var(--color-text-muted);
-		font-style: italic;
 	}
 	.summary {
 		background: var(--color-primary-bg);

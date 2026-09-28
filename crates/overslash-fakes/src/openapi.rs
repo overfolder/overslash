@@ -146,11 +146,22 @@ async fn thing_display(
     }))
 }
 
+/// Answer Overslash's endpoint-ownership challenge (CASA 7.1.2) the way a
+/// conforming receiver does, so a subscription pointed here verifies. The
+/// handshake is not recorded: `/webhooks/received` lists events only.
+pub fn verification_echo(p: &Value) -> Option<Json<Value>> {
+    (p["type"] == "webhook.verification")
+        .then(|| Json(json!({ "challenge": p["data"]["challenge"] })))
+}
+
 async fn receive_webhook(
     State(s): State<SharedState>,
     headers: HeaderMap,
     Json(p): Json<Value>,
-) -> &'static str {
+) -> axum::response::Response {
+    if let Some(echo) = verification_echo(&p) {
+        return echo.into_response();
+    }
     let h: serde_json::Map<String, Value> = headers
         .iter()
         .map(|(k, v)| (k.as_str().to_string(), json!(v.to_str().unwrap_or(""))))
@@ -158,7 +169,7 @@ async fn receive_webhook(
     let mut state = s.lock().await;
     state.webhooks.push(p);
     state.webhook_headers.push(json!(h));
-    "ok"
+    "ok".into_response()
 }
 
 async fn list_webhooks(State(s): State<SharedState>) -> Json<Value> {

@@ -12,6 +12,7 @@ use super::auth::extract_template;
 pub(super) fn extract_oauth2(
     obj: &Map<String, Value>,
     _base: &str,
+    scheme_key: &str,
 ) -> Result<ServiceAuth, Vec<ValidationIssue>> {
     let provider = ext::get(obj, Pos::SecurityScheme(SchemeKind::Oauth2), Ext::Provider)
         .and_then(Value::as_str)
@@ -51,6 +52,7 @@ pub(super) fn extract_oauth2(
     });
 
     Ok(ServiceAuth::OAuth {
+        scheme: scheme_key.to_string(),
         provider,
         scopes,
         token_injection,

@@ -168,10 +168,34 @@ paths:
                   description: Title of the event
                 start:
                   type: object
-                  description: "Start time object: {dateTime, timeZone} or {date}"
+                  description: >-
+                    Start time. Supply `dateTime` for a timed event or `date`
+                    for an all-day one — never both.
+                  properties:
+                    dateTime:
+                      type: string
+                      description: "RFC 3339, e.g. 2026-03-01T09:00:00-05:00."
+                    date:
+                      type: string
+                      description: "YYYY-MM-DD, for an all-day event."
+                    timeZone:
+                      type: string
+                      description: >-
+                        IANA name, e.g. Europe/Madrid. Required when
+                        `dateTime` carries no offset, and for a recurring
+                        event.
                 end:
                   type: object
-                  description: "End time object: {dateTime, timeZone} or {date}"
+                  description: >-
+                    End time, same shape as `start`. Exclusive for an all-day
+                    event, so a single-day event ends on the following date.
+                  properties:
+                    dateTime:
+                      type: string
+                    date:
+                      type: string
+                    timeZone:
+                      type: string
                 description:
                   type: string
                   description: Description of the event
@@ -180,13 +204,46 @@ paths:
                   description: Geographic location of the event
                 attendees:
                   type: array
-                  description: "List of attendees: [{email}]"
+                  description: "Who to invite."
+                  items:
+                    type: object
+                    required: [email]
+                    properties:
+                      email:
+                        type: string
+                      displayName:
+                        type: string
+                      optional:
+                        type: boolean
+                        description: "Attendance is optional. Default false."
+                      responseStatus:
+                        type: string
+                        enum: [needsAction, declined, tentative, accepted]
                 reminders:
                   type: object
-                  description: "Reminders: {useDefault, overrides: [{method: email|popup, minutes}]}; set useDefault: false when supplying overrides"
+                  description: >-
+                    Set `useDefault: false` when supplying `overrides`, or the
+                    calendar's defaults win and the overrides are ignored.
+                  properties:
+                    useDefault:
+                      type: boolean
+                    overrides:
+                      type: array
+                      items:
+                        type: object
+                        required: [method, minutes]
+                        properties:
+                          method:
+                            type: string
+                            enum: [email, popup]
+                          minutes:
+                            type: integer
+                            description: "Minutes before the event, 0-40320."
                 recurrence:
                   type: array
-                  description: "List of RRULE strings, e.g. ['RRULE:FREQ=WEEKLY;COUNT=10']"
+                  description: "RRULE/EXRULE/RDATE/EXDATE lines, e.g. ['RRULE:FREQ=WEEKLY;COUNT=10']."
+                  items:
+                    type: string
                 colorId:
                   type: string
                   description: "Color id of the event (1-11, see Colors.event in the Google Calendar API)"
@@ -255,10 +312,34 @@ paths:
                   description: Title of the event
                 start:
                   type: object
-                  description: "Start time object: {dateTime, timeZone} or {date}"
+                  description: >-
+                    Start time. Supply `dateTime` for a timed event or `date`
+                    for an all-day one — never both.
+                  properties:
+                    dateTime:
+                      type: string
+                      description: "RFC 3339, e.g. 2026-03-01T09:00:00-05:00."
+                    date:
+                      type: string
+                      description: "YYYY-MM-DD, for an all-day event."
+                    timeZone:
+                      type: string
+                      description: >-
+                        IANA name, e.g. Europe/Madrid. Required when
+                        `dateTime` carries no offset, and for a recurring
+                        event.
                 end:
                   type: object
-                  description: "End time object: {dateTime, timeZone} or {date}"
+                  description: >-
+                    End time, same shape as `start`. Exclusive for an all-day
+                    event, so a single-day event ends on the following date.
+                  properties:
+                    dateTime:
+                      type: string
+                    date:
+                      type: string
+                    timeZone:
+                      type: string
                 description:
                   type: string
                   description: Description of the event
@@ -267,13 +348,46 @@ paths:
                   description: Geographic location of the event
                 attendees:
                   type: array
-                  description: "List of attendees: [{email}]"
+                  description: "Who to invite."
+                  items:
+                    type: object
+                    required: [email]
+                    properties:
+                      email:
+                        type: string
+                      displayName:
+                        type: string
+                      optional:
+                        type: boolean
+                        description: "Attendance is optional. Default false."
+                      responseStatus:
+                        type: string
+                        enum: [needsAction, declined, tentative, accepted]
                 reminders:
                   type: object
-                  description: "Reminders: {useDefault, overrides: [{method: email|popup, minutes}]}; set useDefault: false when supplying overrides"
+                  description: >-
+                    Set `useDefault: false` when supplying `overrides`, or the
+                    calendar's defaults win and the overrides are ignored.
+                  properties:
+                    useDefault:
+                      type: boolean
+                    overrides:
+                      type: array
+                      items:
+                        type: object
+                        required: [method, minutes]
+                        properties:
+                          method:
+                            type: string
+                            enum: [email, popup]
+                          minutes:
+                            type: integer
+                            description: "Minutes before the event, 0-40320."
                 recurrence:
                   type: array
-                  description: "List of RRULE strings, e.g. ['RRULE:FREQ=WEEKLY;COUNT=10']"
+                  description: "RRULE/EXRULE/RDATE/EXDATE lines, e.g. ['RRULE:FREQ=WEEKLY;COUNT=10']."
+                  items:
+                    type: string
                 colorId:
                   type: string
                   description: "Color id of the event (1-11, see Colors.event in the Google Calendar API)"

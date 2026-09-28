@@ -21,6 +21,25 @@ pub struct ScopeParamRef {
     pub param: String,
     /// The permission-key namespace the value is filed under.
     pub label: String,
+    /// A jq program that extracts the scope values from **this param's own
+    /// value**, for a param whose value is not itself the thing being gated.
+    ///
+    /// `outlook`'s recipients are `[{emailAddress: {address}}]`, so pointing a
+    /// bare `scope_param` at them mints a key whose value is a JSON literal —
+    /// nothing a rule can match and nothing a human can read. `extract:
+    /// '.[] | .emailAddress.address'` mints one key per address instead.
+    ///
+    /// Rooted at the param rather than at the whole params map on purpose: it
+    /// keeps `param` load-bearing (so `unknown_scope_param` still means
+    /// something), keeps a key's provenance to exactly one param, and removes
+    /// the class of bug where an expression silently reaches a param its entry
+    /// does not name. On an authorization surface, short and reviewable beats
+    /// general.
+    ///
+    /// `None` is the bare `param` / `param:label` string form — every shipped
+    /// template.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extract: Option<String>,
 }
 
 impl ScopeParamRef {
@@ -44,16 +63,76 @@ impl ScopeParamRef {
         Ok(Self {
             param: param.to_string(),
             label: label.to_string(),
+            extract: None,
         })
     }
 
-    /// The wire form — `param` when the label is implicit, else `param:label`.
-    pub fn to_wire(&self) -> String {
-        if self.param == self.label {
-            self.param.clone()
-        } else {
-            format!("{}:{}", self.param, self.label)
+    /// Parse the map form: `{param, label?, extract}`.
+    ///
+    /// A separate constructor rather than a second string grammar, because a
+    /// jq program contains `:`, `=` and `|` — every delimiter the compact form
+    /// could have used is ambiguous against a real expression.
+    pub fn from_entry(v: &serde_json::Value) -> Result<Self, String> {
+        let obj = v
+            .as_object()
+            .ok_or_else(|| "scope_param entry must be a string or a mapping".to_string())?;
+        let text = |k: &str| obj.get(k).and_then(serde_json::Value::as_str);
+        let param = text("param")
+            .ok_or_else(|| "scope_param mapping needs a `param`".to_string())?
+            .to_string();
+        let label = text("label").unwrap_or(&param).to_string();
+        for (side, v) in [("param", &param), ("label", &label)] {
+            if !is_scope_ident(v) {
+                return Err(format!(
+                    "scope_param mapping: {side} {v:?} must be an identifier \
+                     ([A-Za-z_][A-Za-z0-9_]*)"
+                ));
+            }
         }
+        let extract = text("extract")
+            .map(str::trim)
+            .filter(|e| !e.is_empty())
+            .map(str::to_string);
+        if extract.is_none() {
+            // A mapping with no `extract` is the string form written the long
+            // way — accepting it silently would give the same entry two
+            // spellings and let a typo'd key (`exctract:`) read as a valid
+            // no-op scope.
+            return Err(format!(
+                "scope_param mapping for {param:?} has no `extract`; write it as \
+                 the string {:?} instead",
+                if param == label {
+                    param.clone()
+                } else {
+                    format!("{param}:{label}")
+                }
+            ));
+        }
+        Ok(Self {
+            param,
+            label,
+            extract,
+        })
+    }
+
+    /// The wire form — the bare string when there is no extractor, else the
+    /// mapping. Keeping the string spelling for every entry that can use it is
+    /// what lets the shipped templates round-trip byte-identically.
+    pub fn to_wire(&self) -> serde_json::Value {
+        let Some(extract) = self.extract.as_deref() else {
+            return serde_json::Value::String(if self.param == self.label {
+                self.param.clone()
+            } else {
+                format!("{}:{}", self.param, self.label)
+            });
+        };
+        let mut map = serde_json::Map::new();
+        map.insert("param".into(), self.param.clone().into());
+        if self.label != self.param {
+            map.insert("label".into(), self.label.clone().into());
+        }
+        map.insert("extract".into(), extract.into());
+        serde_json::Value::Object(map)
     }
 }
 
@@ -91,6 +170,24 @@ impl ScopeParams {
             .collect::<Result<Vec<_>, _>>()
             .map(ScopeParams)
     }
+
+    /// Parse a list whose entries may be strings *or* mappings, mixed.
+    ///
+    /// A list is not all-or-nothing: an action scoping on one plain param and
+    /// one extracted param writes both side by side, and the templates that
+    /// predate extractors keep their strings untouched.
+    pub fn parse_entries<'a>(
+        entries: impl IntoIterator<Item = &'a serde_json::Value>,
+    ) -> Result<Self, String> {
+        entries
+            .into_iter()
+            .map(|v| match v.as_str() {
+                Some(text) => ScopeParamRef::parse(text),
+                None => ScopeParamRef::from_entry(v),
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map(ScopeParams)
+    }
 }
 
 impl FromIterator<ScopeParamRef> for ScopeParams {
@@ -112,6 +209,7 @@ impl From<&str> for ScopeParams {
         ScopeParams(vec![ScopeParamRef {
             param: param.to_string(),
             label: param.to_string(),
+            extract: None,
         }])
     }
 }
@@ -122,7 +220,9 @@ impl Serialize for ScopeParams {
     /// several as a sequence.
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match self.0.as_slice() {
-            [one] => serializer.serialize_str(&one.to_wire()),
+            // A lone bare entry keeps its scalar spelling; a lone *extractor*
+            // is a mapping, and a mapping cannot be a scalar.
+            [one] if one.extract.is_none() => one.to_wire().serialize(serializer),
             many => serializer.collect_seq(many.iter().map(ScopeParamRef::to_wire)),
         }
     }
@@ -130,19 +230,17 @@ impl Serialize for ScopeParams {
 
 impl<'de> Deserialize<'de> for ScopeParams {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum Raw {
-            One(String),
-            Many(Vec<String>),
-        }
-        let raw = Raw::deserialize(deserializer)?;
+        // Deserialized through `Value` rather than an untagged enum: the
+        // entries are heterogeneous (string or mapping), and an untagged enum
+        // reports a mapping's own error as "data did not match any variant",
+        // which is exactly the message an author trying to write an extractor
+        // must not get.
+        let raw = serde_json::Value::deserialize(deserializer)?;
         let entries = match &raw {
-            Raw::One(s) => std::slice::from_ref(s),
-            Raw::Many(v) => v.as_slice(),
+            serde_json::Value::Array(v) => v.clone(),
+            other => vec![other.clone()],
         };
-        ScopeParams::parse_list(entries.iter().map(String::as_str))
-            .map_err(serde::de::Error::custom)
+        ScopeParams::parse_entries(entries.iter()).map_err(serde::de::Error::custom)
     }
 }
 
@@ -162,7 +260,8 @@ mod tests {
             sp.refs(),
             [ScopeParamRef {
                 param: "repo".into(),
-                label: "repo".into()
+                label: "repo".into(),
+                extract: None
             }]
         );
         assert_eq!(
@@ -213,6 +312,82 @@ mod tests {
             assert!(
                 serde_json::from_value::<ScopeParams>(bad.clone()).is_err(),
                 "{bad} should not parse as a scope_param"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod extractor_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn a_mapping_entry_carries_its_jq() {
+        let authored = json!([
+            "to:recipient",
+            { "param": "toRecipients", "label": "recipient", "extract": ".[] | .emailAddress.address" }
+        ]);
+        let sp: ScopeParams = serde_json::from_value(authored.clone()).unwrap();
+        assert_eq!(sp.refs()[0].extract, None, "the string form is untouched");
+        assert_eq!(
+            sp.refs()[1].extract.as_deref(),
+            Some(".[] | .emailAddress.address")
+        );
+        assert_eq!(
+            serde_json::to_value(&sp).unwrap(),
+            authored,
+            "a mixed list must round-trip exactly as authored"
+        );
+    }
+
+    #[test]
+    fn a_mapping_label_defaults_to_its_param_and_is_not_written_back() {
+        let sp: ScopeParams =
+            serde_json::from_value(json!([{ "param": "createRequest", "extract": ".objectType" }]))
+                .unwrap();
+        assert_eq!(sp.refs()[0].label, "createRequest");
+        assert_eq!(
+            serde_json::to_value(&sp).unwrap(),
+            json!([{ "param": "createRequest", "extract": ".objectType" }])
+        );
+    }
+
+    #[test]
+    fn a_lone_extractor_serializes_as_a_sequence() {
+        // The scalar shorthand exists so templates that predate extractors stay
+        // byte-identical. A mapping has no scalar spelling to shorten to.
+        let sp: ScopeParams =
+            serde_json::from_value(json!({ "param": "p", "extract": ".a" })).unwrap();
+        assert_eq!(
+            serde_json::to_value(&sp).unwrap(),
+            json!([{ "param": "p", "extract": ".a" }])
+        );
+    }
+
+    #[test]
+    fn a_mapping_without_an_extract_is_refused() {
+        // Otherwise one entry has two spellings, and a typo'd `exctract:` reads
+        // as a valid scope that quietly extracts nothing.
+        let err =
+            serde_json::from_value::<ScopeParams>(json!([{ "param": "to", "label": "recipient" }]))
+                .unwrap_err()
+                .to_string();
+        assert!(err.contains("has no `extract`"), "{err}");
+        assert!(err.contains("to:recipient"), "names the string form: {err}");
+    }
+
+    #[test]
+    fn a_mapping_still_rejects_a_non_identifier_label() {
+        for bad in [
+            json!([{ "param": "to", "label": "a:b", "extract": ".x" }]),
+            json!([{ "param": "a.b", "extract": ".x" }]),
+            json!([{ "extract": ".x" }]),
+            json!([{ "param": "to", "extract": "" }]),
+        ] {
+            assert!(
+                serde_json::from_value::<ScopeParams>(bad.clone()).is_err(),
+                "{bad} should not parse"
             );
         }
     }

@@ -1,0 +1,22 @@
+# osv-scanner configuration — CASA 6.1.1. CI runs the scanner over every
+# lockfile in the repo (Cargo.lock, dashboard/ and sdk/ package-lock.json) in
+# the `osv-scan` job of .github/workflows/deps-audit.yml.
+#
+# Ignores follow docs/compliance/casa/dependency-vulnerability-policy.md: a
+# reason saying why the advisory does not apply, and an `ignoreUntil` no more
+# than 90 days out. Past that date the entry stops suppressing and the scan
+# fails again, forcing a re-triage.
+#
+# Keep in step with the `[advisories].ignore` list in deny.toml — the same
+# RustSec advisories surface through both scanners. The full justification
+# lives there; these reasons are the one-line version.
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2023-0071"
+ignoreUntil = 2026-12-22
+reason = "rsa (Marvin) needs a private RSA key; jsonwebtoken is used with HS256 only, no RSA key is ever loaded. No upstream fix. See deny.toml."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0436"
+ignoreUntil = 2026-12-22
+reason = "paste is unmaintained, not vulnerable; build-time proc-macro via fastembed. No maintained release. See deny.toml."

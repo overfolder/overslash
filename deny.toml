@@ -1,0 +1,89 @@
+# cargo-deny configuration — CASA 6.1.1 (no third-party components with known
+# exploitable vulnerabilities). Run locally with `cargo deny check`; CI runs
+# the same thing in the `deps-audit` job of .github/workflows/ci.yml.
+#
+# The triage policy — severity SLAs, who triages, how an ignore is justified
+# and re-reviewed — lives in docs/compliance/casa/dependency-vulnerability-policy.md.
+# Every entry in `[advisories].ignore` must follow it: a `reason` naming why
+# the advisory does not apply (or why no fix exists), and a `review-by:` date
+# no more than 90 days out. `scripts/check-deny-reviews.sh` fails CI once a
+# date has passed, so an ignore cannot silently outlive its justification.
+
+[graph]
+# Check every optional code path, not only the default feature set: the
+# release image builds with `sql_policy`, and a feature someone turns on
+# later should not smuggle in an advisory that was never looked at.
+all-features = true
+
+[advisories]
+# Vulnerability advisories are always errors (not configurable since
+# cargo-deny 0.16). Unmaintained crates: only flag them when the dependency
+# is one we could actually act on, i.e. anywhere in the graph — `paste` below
+# is the only current hit and is ignored with a reason.
+unmaintained = "all"
+# A yanked version was pulled by its author, usually for a reason worth
+# knowing; `cargo update -p <crate>` is almost always enough.
+yanked = "deny"
+ignore = [
+    # rsa 0.9.10 — Marvin Attack, a timing side channel in PKCS#1 v1.5
+    # *decryption / signing with a private key* (CVSS 5.9). No fixed release.
+    # Reaches us only through jsonwebtoken's `rust_crypto` backend, which
+    # compiles every algorithm in. We sign and verify HS256 exclusively
+    # (`EncodingKey::from_secret` / `DecodingKey::from_secret` with a fixed
+    # `Algorithm::HS256`, crates/overslash-api/src/services/jwt.rs); no RSA key
+    # is ever loaded, so the vulnerable code is linked but unreachable.
+    # Re-check on review: is an `rsa` 0.10 with the constant-time fix out, and
+    # has jsonwebtoken moved to it (or grown per-algorithm features)?
+    { id = "RUSTSEC-2023-0071", reason = "rsa: Marvin timing attack needs a private RSA key; we only use HS256 via jsonwebtoken, no RSA key is ever loaded. No upstream fix. review-by: 2026-12-22" },
+
+    # paste 1.0.15 — unmaintained (the author archived it), not a
+    # vulnerability. A proc-macro: it runs at build time only and contributes
+    # no runtime code. Pulled in by tokenizers (via fastembed) and rav1e (via
+    # image, via fastembed); neither has dropped it. Re-check on review: has
+    # tokenizers switched to `pastey` or similar, and is there a RUSTSEC
+    # *vulnerability* (not just unmaintained) against paste?
+    { id = "RUSTSEC-2024-0436", reason = "paste: unmaintained, not vulnerable; build-time proc-macro only, via fastembed -> tokenizers/rav1e. No maintained release to move to. review-by: 2026-12-22" },
+]
+
+[licenses]
+# Everything in the graph today, all permissive or weak-copyleft
+# file-scoped (MPL-2.0, one crate: option-ext). A new license anywhere in
+# the tree fails CI and needs an explicit decision here. Crates offering a
+# choice (e.g. `Apache-2.0 OR GPL-2.0-only`) pass because one arm is allowed.
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "MIT-0",
+    "MPL-2.0",
+    "NCSA",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+confidence-threshold = 0.8
+
+[licenses.private]
+# Skip crates marked `publish = false` (tests/mock-target). Our own crates
+# are licensed by LICENSE / LICENSING.md, not by this allow list.
+ignore = true
+
+[bans]
+# Duplicate versions are a build-time cost, not a security finding; dependabot
+# converges them over time.
+multiple-versions = "allow"
+# The only wildcards in the tree are intra-workspace `path = "../…"` deps,
+# which carry no version by design. Every registry dependency is versioned.
+wildcards = "allow"
+
+[sources]
+# crates.io only. A git or alternate-registry dependency bypasses the
+# RustSec database entirely, so adding one must be a deliberate edit here.
+unknown-registry = "deny"
+unknown-git = "deny"

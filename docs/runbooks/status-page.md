@@ -9,7 +9,7 @@ Public URL: <https://status.overslash.com>
   an HTTPS check on 180s cadence across the `eu`/`us`/`as`/`au` regions.
 - **Monitors** (managed in the Better Stack console, not IaC):
   - `api.overslash.com/health` — plain `status` (HTTP up) check. The body also
-    carries `"db": "up" | "down"` (plus `db_latency_ms` or `db_error`), but
+    carries `"db": "up" | "down"` (plus `db_latency_ms` when up), but
     `/health` returns **200 even when `db` is `down`** — by design. It backs the
     Cloud Run startup *and* liveness probes, so failing it on a Cloud SQL blip
     would recycle every container mid-outage and block redeploys until the
@@ -79,8 +79,11 @@ To sanity-check the monitor without faking an outage:
 
 During an incident, `/health` distinguishes "the process is wedged" (no
 response, or a slow one) from "the process is fine but can't reach Postgres"
-(`"db":"down"` with `db_error`) without shelling into the container. The probe
-is bounded at 2s, so a hung database still answers promptly.
+(`"db":"down"`) without shelling into the container. The body deliberately
+omits the database error — the endpoint is unauthenticated, and a sqlx error
+names hosts and roles (CASA 6.2.1) — so read the cause from the API's logs
+(`health probe: database query failed`). The probe is bounded at 2s, so a hung
+database still answers promptly.
 
 To exercise the public flip without affecting production, change a monitor's
 URL to a 404 path on the dev environment, wait two probe cycles, confirm the

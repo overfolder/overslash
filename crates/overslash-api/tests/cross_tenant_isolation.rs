@@ -432,7 +432,7 @@ async fn cross_tenant_rate_limit_delete_returns_404() {
 // ─── webhooks ──────────────────────────────────────────────────────────
 
 #[tokio::test]
-async fn cross_tenant_webhook_delete_returns_404() {
+async fn cross_tenant_webhook_verify_and_delete_return_404() {
     let pool = common::test_pool().await;
     let (base, client, _ia, _ka, admin_a, _ib, _kb, admin_b) = two_orgs(pool).await;
 
@@ -440,7 +440,9 @@ async fn cross_tenant_webhook_delete_returns_404() {
         .post(format!("{base}/v1/webhooks"))
         .header(auth(&admin_b).0, auth(&admin_b).1)
         .json(&json!({
-            "url": "http://example.com/hook",
+            // Nothing listens on :9, so the ownership handshake fails fast
+            // instead of dialing out to the internet.
+            "url": "https://127.0.0.1:9/hook",
             "events": ["approval.created"],
         }))
         .send()
@@ -450,6 +452,14 @@ async fn cross_tenant_webhook_delete_returns_404() {
         .await
         .unwrap();
     let wh_id = wh["id"].as_str().unwrap();
+
+    let r = client
+        .post(format!("{base}/v1/webhooks/{wh_id}/verify"))
+        .header(auth(&admin_a).0, auth(&admin_a).1)
+        .send()
+        .await
+        .unwrap();
+    assert_isolated(r).await;
 
     let r = client
         .delete(format!("{base}/v1/webhooks/{wh_id}"))

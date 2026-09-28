@@ -199,7 +199,7 @@ test('agent uses request_secret to fulfil a credential_missing error end-to-end'
 	}
 
 	// 4. Drive the public provide page POST as the member user (same-org
-	// session). The endpoint is public, but the member's `oss_session`
+	// session). The endpoint is public, but the member's session
 	// cookie is the only way for the version row to get a non-null
 	// `provisioned_by_user_id` — and that's what callers will do in
 	// practice when the user clicks the link in the dashboard.

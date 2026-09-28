@@ -5,9 +5,12 @@ use std::collections::HashMap;
 use serde_json::{Map, Value};
 
 use crate::template_validation::ValidationIssue;
-use crate::types::{ActionParam, ParamLocation, ParamResolver, RequestBodySpec, ResolveSource};
+use crate::types::{
+    ActionParam, ParamLocation, ParamResolver, ParamShape, RequestBodySpec, ResolveSource,
+};
 
 use super::super::ext::{self, Ext, Pos};
+use super::shape::{lower_content_media_type, lower_shape};
 use super::{parse_aliases, parse_instance_config, parse_sql_policy};
 
 // ── parameters → HashMap<String, ActionParam> ────────────────────────
@@ -33,7 +36,13 @@ pub(super) fn collect_parameters(
             .unwrap_or("")
             .to_string();
         let schema = obj.get("schema").and_then(Value::as_object);
-        let (param_type, enum_values, default) = schema_fields(schema);
+        let SchemaFields {
+            param_type,
+            enum_values,
+            default,
+            content_media_type,
+            shape,
+        } = schema_fields(schema);
 
         let resolve = ext::get(obj, Pos::Parameter, Ext::Resolve)
             .and_then(|v| parse_resolver(v, &format!("{base}.parameters.{name}"), issues));
@@ -63,6 +72,8 @@ pub(super) fn collect_parameters(
                 instance_config,
                 sql_field,
                 sql_database,
+                content_media_type,
+                shape,
             },
         );
     }
@@ -129,7 +140,13 @@ pub(super) fn collect_body_parameters(
 
     for (name, prop) in props {
         let pobj = prop.as_object();
-        let (param_type, enum_values, default) = schema_fields(pobj);
+        let SchemaFields {
+            param_type,
+            enum_values,
+            default,
+            content_media_type,
+            shape,
+        } = schema_fields(pobj);
         let description = pobj
             .and_then(|o| o.get("description"))
             .and_then(Value::as_str)
@@ -156,32 +173,50 @@ pub(super) fn collect_body_parameters(
                 instance_config,
                 sql_field,
                 sql_database,
+                content_media_type,
+                shape,
             },
         );
     }
 }
 
-fn schema_fields(
-    schema: Option<&Map<String, Value>>,
-) -> (String, Option<Vec<String>>, Option<Value>) {
+/// What a parameter's own schema object contributes to its [`ActionParam`].
+///
+/// A struct rather than the tuple this used to return: a fourth member made
+/// the positional form unreadable at the three call sites, and `shape` and
+/// `enum_values` are both `Option`s that would then sit next to each other
+/// unlabelled.
+#[derive(Default)]
+pub(super) struct SchemaFields {
+    pub(super) param_type: String,
+    pub(super) enum_values: Option<Vec<String>>,
+    pub(super) default: Option<Value>,
+    pub(super) content_media_type: Option<String>,
+    pub(super) shape: Option<Box<ParamShape>>,
+}
+
+fn schema_fields(schema: Option<&Map<String, Value>>) -> SchemaFields {
     // Empty `param_type` is the "type unspecified" sentinel (no schema, or a
     // schema with no concrete `type` such as anyOf/oneOf) — runtime type
     // checks skip these rather than guess "string".
     let Some(s) = schema else {
-        return (String::new(), None, None);
+        return SchemaFields::default();
     };
-    let param_type = s
-        .get("type")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .to_string();
-    let enum_values = s.get("enum").and_then(Value::as_array).map(|a| {
-        a.iter()
-            .filter_map(|v| v.as_str().map(str::to_string))
-            .collect()
-    });
-    let default = s.get("default").cloned();
-    (param_type, enum_values, default)
+    SchemaFields {
+        param_type: s
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+        enum_values: s.get("enum").and_then(Value::as_array).map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        }),
+        default: s.get("default").cloned(),
+        content_media_type: lower_content_media_type(schema),
+        shape: lower_shape(schema, 0).map(Box::new),
+    }
 }
 
 /// Lower an `x-overslash-resolve` block into a [`ParamResolver`].

@@ -562,7 +562,6 @@ async fn finish(
         .await;
         events::emit(
             state.db.clone(),
-            state.http_client.clone(),
             EventDraft {
                 org_id: claim.org_id,
                 event_type: EventType::ApprovalExecutionCancelled,
@@ -579,7 +578,6 @@ async fn finish(
     let audience = events::audience::for_execution(&scope, claim.identity_id, resolver_id).await;
     events::emit(
         state.db.clone(),
-        state.http_client.clone(),
         EventDraft {
             org_id: claim.org_id,
             event_type,

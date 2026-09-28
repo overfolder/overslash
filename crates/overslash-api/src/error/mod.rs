@@ -24,6 +24,11 @@ pub enum ArgErrorDto {
         value: String,
         allowed: Vec<String>,
     },
+    /// A param declaring `contentMediaType: application/json` was handed a
+    /// string that is not a JSON document.
+    NotJson {
+        field: String,
+    },
 }
 
 impl From<ArgError> for ArgErrorDto {
@@ -48,6 +53,7 @@ impl From<ArgError> for ArgErrorDto {
                 value,
                 allowed,
             },
+            ArgError::NotJson { field } => Self::NotJson { field },
         }
     }
 }

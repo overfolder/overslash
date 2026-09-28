@@ -10,8 +10,9 @@ use crate::types::{ActionParam, DeclaredRisk, ParamLocation, Risk, ServiceAction
 use super::super::ext::{self, Ext, Pos};
 use super::params::{collect_body_parameters, collect_parameters, parse_request_body};
 use super::{
-    parse_aliases, parse_disclose, parse_instance_config, parse_pagination, parse_redact,
-    parse_scope_params, parse_sql_policy, parse_test, parse_timeout_ms, parse_wait_mode,
+    parse_additional_properties, parse_aliases, parse_disclose, parse_instance_config,
+    parse_pagination, parse_redact, parse_scope_params, parse_sql_policy, parse_test,
+    parse_timeout_ms, parse_wait_mode,
 };
 
 // ── paths.*.* → ServiceAction ────────────────────────────────────────
@@ -51,6 +52,7 @@ pub(crate) fn extract_http_action(
     op: &Map<String, Value>,
     path_level_params: Option<&Value>,
     root_security: Option<&Value>,
+    default_additional_properties: bool,
     sink: &mut HashMap<String, ServiceAction>,
 ) -> Result<(), Vec<ValidationIssue>> {
     let base = format!("paths.{path_key}.{method}");
@@ -169,6 +171,16 @@ pub(crate) fn extract_http_action(
         &base,
         &mut disclose_errors,
     );
+    // Nearest wins, the same `Option::or`-shaped precedence the operation's
+    // own `security` takes over the root's above — including when the nearer
+    // value is the falsy one, so an operation can write `false` to re-tighten
+    // under a service that relaxed globally.
+    let additional_properties = parse_additional_properties(
+        ext::get(op, Pos::Operation, Ext::AdditionalProperties),
+        &base,
+        &mut disclose_errors,
+    )
+    .unwrap_or(default_additional_properties);
     let test = parse_test(
         ext::get(op, Pos::Operation, Ext::Test),
         &base,
@@ -198,6 +210,7 @@ pub(crate) fn extract_http_action(
             redact,
             request_body,
             test,
+            additional_properties,
             // Everything else defaults. Notably `download`: an HTTP action that
             // returns bytes already *is* its own download, since `deliver:
             // "url"` mints a token from the resolved request. Only MCP, whose
@@ -308,6 +321,11 @@ fn parse_platform_params(raw: &Map<String, Value>, _base: &str) -> HashMap<Strin
                     instance_config,
                     sql_field,
                     sql_database,
+                    // A platform action's params are declared as a flat
+                    // `{name: type}` map, so there is no schema to read either
+                    // a media type or a sub-shape from.
+                    content_media_type: None,
+                    shape: None,
                 },
             ))
         })

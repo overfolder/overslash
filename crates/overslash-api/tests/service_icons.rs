@@ -158,14 +158,11 @@ async fn shipped_templates_resolve_an_implicit_icon_url() {
         "github should resolve its icon from its key alone"
     );
 
-    // `github_legacy_oauth` is the one shipped template whose key does not
-    // match an asset — it declares `icon: builtin:github` explicitly.
-    if let Some(legacy) = templates.iter().find(|t| t["key"] == "github_legacy_oauth") {
-        assert_eq!(
-            legacy["icon_url"],
-            json!(format!("{base}/icons/github.svg"))
-        );
-    }
+    // No shipped template declares `icon: builtin:<other>` any more — the one
+    // that did became an auth *mode* of `github` rather than a template of its
+    // own. The explicit-override path is still supported and still covered by
+    // `a_derived_layer_inherits_and_can_override_the_base_icon`; what is gone
+    // is the shipped example of it.
 
     // A template with neither a matching asset nor a declared icon omits the
     // field entirely, rather than sending a URL that would 404.

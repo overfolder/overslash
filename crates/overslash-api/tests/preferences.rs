@@ -45,7 +45,7 @@ async fn get_preferences_with_invalid_session_returns_401() {
 
     let resp = client
         .get(format!("{base}/auth/me/preferences"))
-        .header("cookie", "oss_session=not-a-real-jwt")
+        .header("cookie", "__Host-oss_session=not-a-real-jwt")
         .send()
         .await
         .unwrap();
@@ -58,7 +58,7 @@ async fn get_preferences_with_valid_session_returns_defaults() {
 
     let resp = client
         .get(format!("{base}/auth/me/preferences"))
-        .header("cookie", format!("oss_session={token}"))
+        .header("cookie", format!("__Host-oss_session={token}"))
         .send()
         .await
         .unwrap();
@@ -77,7 +77,7 @@ async fn put_preferences_persists_and_get_returns_them() {
 
     let put = client
         .put(format!("{base}/auth/me/preferences"))
-        .header("cookie", format!("oss_session={token}"))
+        .header("cookie", format!("__Host-oss_session={token}"))
         .json(&json!({ "theme": "dark", "time_display": "absolute" }))
         .send()
         .await
@@ -90,7 +90,7 @@ async fn put_preferences_persists_and_get_returns_them() {
     // Read-back through a fresh GET to make sure the row was actually written.
     let get_body: Value = client
         .get(format!("{base}/auth/me/preferences"))
-        .header("cookie", format!("oss_session={token}"))
+        .header("cookie", format!("__Host-oss_session={token}"))
         .send()
         .await
         .unwrap()
@@ -108,7 +108,7 @@ async fn put_preferences_partial_update_merges_with_existing() {
     // Seed both fields.
     let _ = client
         .put(format!("{base}/auth/me/preferences"))
-        .header("cookie", format!("oss_session={token}"))
+        .header("cookie", format!("__Host-oss_session={token}"))
         .json(&json!({ "theme": "light", "time_display": "relative" }))
         .send()
         .await
@@ -117,7 +117,7 @@ async fn put_preferences_partial_update_merges_with_existing() {
     // Now patch only `theme`.
     let patched: Value = client
         .put(format!("{base}/auth/me/preferences"))
-        .header("cookie", format!("oss_session={token}"))
+        .header("cookie", format!("__Host-oss_session={token}"))
         .json(&json!({ "theme": "dark" }))
         .send()
         .await
@@ -144,12 +144,12 @@ async fn put_preferences_concurrent_writes_do_not_clobber_each_other() {
     for round in 0..5 {
         let theme_put = client
             .put(format!("{base}/auth/me/preferences"))
-            .header("cookie", format!("oss_session={token}"))
+            .header("cookie", format!("__Host-oss_session={token}"))
             .json(&json!({ "theme": "dark" }))
             .send();
         let display_put = client
             .put(format!("{base}/auth/me/preferences"))
-            .header("cookie", format!("oss_session={token}"))
+            .header("cookie", format!("__Host-oss_session={token}"))
             .json(&json!({ "time_display": "absolute" }))
             .send();
         let (a, b) = tokio::join!(theme_put, display_put);
@@ -162,7 +162,7 @@ async fn put_preferences_concurrent_writes_do_not_clobber_each_other() {
 
         let merged: Value = client
             .get(format!("{base}/auth/me/preferences"))
-            .header("cookie", format!("oss_session={token}"))
+            .header("cookie", format!("__Host-oss_session={token}"))
             .send()
             .await
             .unwrap()
@@ -188,7 +188,7 @@ async fn put_preferences_rejects_unknown_fields_silently() {
     let (base, client, token) = dev_session().await;
     let resp = client
         .put(format!("{base}/auth/me/preferences"))
-        .header("cookie", format!("oss_session={token}"))
+        .header("cookie", format!("__Host-oss_session={token}"))
         .json(&json!({ "theme": "dark", "future_setting": "whatever" }))
         .send()
         .await

@@ -172,7 +172,7 @@ pub async fn kernel_request_secret(
         },
     )
     .await?;
-    crate::services::events::emit(ctx.db.clone(), ctx.http_client.clone(), minted.event);
+    crate::services::events::emit(ctx.db.clone(), minted.event);
     let (req_id, url, short_url, expires_at) = (
         minted.request_id,
         minted.url,

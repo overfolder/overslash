@@ -3,7 +3,7 @@
 # replaces the per-crate `COPY Cargo.toml` + `fn main(){}` stub scaffold this
 # file used to hand-maintain — a new crate needs no edit here — and the
 # `find crates/ -exec touch` that existed to defeat the stub fingerprints.
-FROM rust:1.97-trixie AS chef
+FROM rust:1.98-trixie AS chef
 
 WORKDIR /app
 
@@ -80,6 +80,10 @@ USER overslash
 
 ENV HOST=0.0.0.0
 ENV PORT=8080
+# The shipped image is a production artifact, so it gets the production boot
+# interlocks (no DEV_AUTH, no weak keys, no debug RUST_LOG) unless the
+# deployment says otherwise. The dev Cloud Run service sets OVERSLASH_ENV=dev.
+ENV OVERSLASH_ENV=prod
 EXPOSE 8080
 
 ENTRYPOINT ["/app/entrypoint.sh"]

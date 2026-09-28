@@ -29,12 +29,12 @@
 	name="Hidden"
 	args={{
 		template: {
-			key: 'github_legacy_oauth',
-			display_name: 'GitHub (Legacy OAuth)',
-			description: 'Classic OAuth App scopes. Hidden from agent-facing catalogs.',
-			category: 'Development',
-			hosts: ['api.github.com'],
-			action_count: 40,
+			key: 'test_email',
+			display_name: 'Test Mail',
+			description: 'Test email service for end-to-end evals. Hidden from agent-facing catalogs.',
+			category: 'Communication',
+			hosts: ['httpbun.com'],
+			action_count: 2,
 			tier: 'global',
 			hidden: true
 		}

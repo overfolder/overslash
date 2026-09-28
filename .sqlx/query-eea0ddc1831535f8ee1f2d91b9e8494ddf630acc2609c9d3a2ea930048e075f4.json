@@ -1,0 +1,32 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO webhook_subscriptions\n             (org_id, url, events, secret, active, disabled_reason, verification_status, grandfathered)\n         VALUES ($1, $2, $3, 'test-secret', $4, $5, 'verified', true) RETURNING id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "webhook_subscriptions",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "TextArray",
+        "Bool",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "eea0ddc1831535f8ee1f2d91b9e8494ddf630acc2609c9d3a2ea930048e075f4"
+}

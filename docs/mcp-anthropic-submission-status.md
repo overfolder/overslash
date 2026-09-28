@@ -24,7 +24,7 @@ Legend: ✅ pass · ⚠️ partial · ❌ missing · N/A not applicable to this 
 | Support channel | ✅ `contact@overslash.com` + public-repo issues |
 | Logo & favicon assets | ⚠️ (exist locally; need public URLs) |
 | Allowed link URIs declared | ❌ |
-| `SECURITY.md` / vuln-disclosure policy | ❌ |
+| `SECURITY.md` / vuln-disclosure policy | ✅ [`SECURITY.md`](../SECURITY.md), `security@overslash.com` |
 | Submission-form metadata package | ❌ (not yet assembled) |
 
 Overall: the protocol surface is in good shape. The blockers for submission are non-code: tool annotations, privacy/ToS pages, support contact, and the submission-form information bundle.
@@ -37,7 +37,7 @@ Overall: the protocol surface is in good shape. The blockers for submission are 
 > "Maintain connector security and functionality. Respond to security issues promptly."
 
 - ❌ No internal acknowledgement that the team has read and accepts the Directory Terms / Policy. Action: a maintainer must read both documents and confirm in the submission form.
-- ⚠️ Public contact is `contact@overslash.com` and the public-repo issue tracker. Acceptable, but a `SECURITY.md` is still required to formalise scope, SLA, and safe harbor — see §13 below.
+- ✅ Security issues go to `security@overslash.com`; [`SECURITY.md`](../SECURITY.md) formalises scope, SLA, and safe harbor (§13). General support stays on `contact@overslash.com` and the public-repo issue tracker.
 - ⚠️ No vulnerability-response runbook. Recommend a short internal doc (or section in `docs/`) describing who triages, how a fix is shipped, and how Anthropic gets notified.
 
 ## 2. Technical — security standards
@@ -176,7 +176,7 @@ The form requires the following — assemble before submitting.
 2. ✅ Privacy Policy <https://www.overslash.com/privacy> and Terms of Service <https://www.overslash.com/terms> are live — link from `/oauth/consent`, dashboard footer, and README.
 3. ✅ Support channel confirmed (`contact@overslash.com` + public-repo issues) — surface in README.
 4. ❌ Publish a public setup/usage doc (promote `SKILL.md` content to `docs.overslash.com/mcp` or `www.overslash.com/docs`).
-5. ❌ Add `SECURITY.md` (see §13 for required content).
+5. ✅ Add `SECURITY.md` (see §13 for required content).
 6. ❌ Determine and submit allowed link URIs (production origins we own).
 7. ⚠️ Verify production `issuer` in `/.well-known/oauth-authorization-server` exactly matches the canonical public URL.
 8. ⚠️ Verify the dashboard favicon and logo resolve at HTTPS URLs we will give Anthropic.

@@ -223,6 +223,7 @@ platform_actions:
     params:
       template_key: { type: string, required: true }
       name: { type: string, required: false }
+      auth_mode: { type: string, required: false }
       connection_id: { type: string, required: false }
       secret_name: { type: string, required: false }
       credentials: { type: object, required: false }
@@ -239,12 +240,21 @@ platform_actions:
       connect_return_url: { type: string, required: false }
 
   update_service:
-    description: "Update mutable fields on a service instance (name, connection, secret, url)"
+    description: >
+      Update mutable fields on a service instance (name, connection, secret,
+      url, auth_mode). Passing `auth_mode` switches which of the template's
+      alternative credential kinds the instance uses; the response then carries
+      `connect.auth_url` or `setup.setup_url` for the new one exactly as
+      create_service does, the instance drops to `pending_setup`, and it goes
+      live again when `POST /v1/services/{id}/activate` gets a green probe.
+      Switching destroys nothing — the old mode's credential stays bound, so
+      switching back needs no re-entry.
     risk: write
     permission: manage_services_own
     params:
       id: { type: string, required: true }
       name: { type: string, required: false }
+      auth_mode: { type: string, required: false }
       connection_id: { type: string, required: false }
       secret_name: { type: string, required: false }
       url: { type: string, required: false }

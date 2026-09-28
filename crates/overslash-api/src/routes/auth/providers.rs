@@ -176,10 +176,10 @@ pub(super) async fn provider_login(
         // domain (`session_cookie_domain`, e.g. `.app.overslash.com`) or the
         // browser won't send them to the callback host. Without this, login
         // from a subdomain silently fails with "missing auth nonce cookie".
-        let nonce_cookie = auth_cookie(&state, "oss_auth_nonce", &nonce);
+        let nonce_cookie = auth_cookie(&state, cookies::AUTH_NONCE, &nonce);
         let verifier_value = pkce.as_ref().map_or("none", |p| p.verifier.as_str());
-        let verifier_cookie = auth_cookie(&state, "oss_auth_verifier", verifier_value);
-        let org_cookie = auth_cookie(&state, "oss_auth_org", org_slug_value);
+        let verifier_cookie = auth_cookie(&state, cookies::AUTH_VERIFIER, verifier_value);
+        let org_cookie = auth_cookie(&state, cookies::AUTH_ORG, org_slug_value);
 
         headers.insert(header::SET_COOKIE, nonce_cookie.parse().unwrap());
         headers.append(header::SET_COOKIE, verifier_cookie.parse().unwrap());
@@ -190,7 +190,7 @@ pub(super) async fn provider_login(
         // through login). Only accept path-only targets to keep this from
         // turning into an open redirect.
         if let Some(next) = sanitized_next.as_deref() {
-            let next_cookie = auth_cookie(&state, "oss_auth_next", next);
+            let next_cookie = auth_cookie(&state, cookies::AUTH_NEXT, next);
             headers.append(header::SET_COOKIE, next_cookie.parse().unwrap());
         }
     }
@@ -200,25 +200,24 @@ pub(super) async fn provider_login(
 
 /// Build a Set-Cookie for the short-lived OAuth auth-state cookies (nonce,
 /// PKCE verifier, org slug, `next`). Scoped to `Path=/auth` so they only
-/// hitch along to auth endpoints. Domain comes from the same config knob
+/// hitch along to auth endpoints — except with no Domain configured, where
+/// the `__Host-` prefix forces `Path=/`. Domain comes from the same config knob
 /// as the session cookie — when set, both the login kickoff host and the
 /// callback host share the cookie.
 fn auth_cookie(state: &AppState, name: &str, value: &str) -> String {
-    let mut out = format!("{name}={value}; HttpOnly; SameSite=Lax; Path=/auth; Max-Age=600");
-    if let Some(domain) = state.config.session_cookie_domain.as_deref() {
-        out.push_str(&format!("; Domain={domain}"));
-    }
-    out
+    cookies::set_for(
+        state,
+        name,
+        value,
+        cookies::AUTH_STATE_PATH,
+        cookies::AUTH_STATE_MAX_AGE,
+    )
 }
 
 /// Matching clear for the auth-state cookies. Must emit the same `Domain`
 /// attribute, or the browser keeps a cross-subdomain copy around.
 fn clear_auth_cookie(state: &AppState, name: &str) -> String {
-    let mut out = format!("{name}=; HttpOnly; SameSite=Lax; Path=/auth; Max-Age=0");
-    if let Some(domain) = state.config.session_cookie_domain.as_deref() {
-        out.push_str(&format!("; Domain={domain}"));
-    }
-    out
+    cookies::clear_for(state, name, cookies::AUTH_STATE_PATH)
 }
 
 // ---------------------------------------------------------------------------
@@ -300,11 +299,13 @@ pub(super) async fn provider_callback(
         // we set during login. The preview branch substitutes a
         // server-side row for this cookie because it can't be set
         // cross-domain.
-        let cookie_nonce = extract_cookie(&headers, "oss_auth_nonce")
+        let cookie_nonce = cookies::read(&headers, &state, cookies::AUTH_NONCE)
             .ok_or_else(|| AppError::BadRequest("missing auth nonce cookie".into()))?;
-        let verifier = extract_cookie(&headers, "oss_auth_verifier").filter(|v| v != "none");
-        let slug = extract_cookie(&headers, "oss_auth_org").filter(|s| s != "none");
-        let next = extract_cookie(&headers, "oss_auth_next").and_then(|v| sanitize_next(&v));
+        let verifier =
+            cookies::read(&headers, &state, cookies::AUTH_VERIFIER).filter(|v| v != "none");
+        let slug = cookies::read(&headers, &state, cookies::AUTH_ORG).filter(|s| s != "none");
+        let next =
+            cookies::read(&headers, &state, cookies::AUTH_NEXT).and_then(|v| sanitize_next(&v));
         (cookie_nonce, verifier, slug, next, None)
     };
 
@@ -419,10 +420,10 @@ pub(super) async fn provider_callback(
     // to the dashboard / org subdomain as before. Always clear the auth-state
     // cookies we set during login — same Domain attribute, otherwise the
     // browser keeps a stale copy.
-    let clear_nonce = clear_auth_cookie(&state, "oss_auth_nonce");
-    let clear_verifier = clear_auth_cookie(&state, "oss_auth_verifier");
-    let clear_org = clear_auth_cookie(&state, "oss_auth_org");
-    let clear_next = clear_auth_cookie(&state, "oss_auth_next");
+    let clear_nonce = clear_auth_cookie(&state, cookies::AUTH_NONCE);
+    let clear_verifier = clear_auth_cookie(&state, cookies::AUTH_VERIFIER);
+    let clear_org = clear_auth_cookie(&state, cookies::AUTH_ORG);
+    let clear_next = clear_auth_cookie(&state, cookies::AUTH_NEXT);
 
     let session_cookie = session_cookie(&state, &token)?;
     let mut resp_headers = HeaderMap::new();
@@ -431,6 +432,10 @@ pub(super) async fn provider_callback(
     resp_headers.append(header::SET_COOKIE, clear_verifier.parse().unwrap());
     resp_headers.append(header::SET_COOKIE, clear_org.parse().unwrap());
     resp_headers.append(header::SET_COOKIE, clear_next.parse().unwrap());
+    cookies::append_all(
+        &mut resp_headers,
+        cookies::legacy_session_clears_for(&state),
+    );
 
     // Non-preview path: fall back to the configured dashboard URL when the
     // caller had no explicit `next`. (The preview branch above handles its
@@ -521,10 +526,7 @@ pub(super) async fn handoff_consume(
     // Host-only session cookie: no `Domain` so the browser scopes it to
     // the preview origin. `.vercel.app` is shared across tenants — sharing
     // a cookie there would be a cross-tenant data leak.
-    let cookie = format!(
-        "oss_session={}; HttpOnly; SameSite=Lax; Path=/; Secure; Max-Age=604800",
-        consumed.jwt
-    );
+    let cookie = cookies::host_only_session(&consumed.jwt);
 
     let next = consumed
         .next_path

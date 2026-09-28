@@ -3,7 +3,7 @@
  *
  * In dev, Vite proxies /v1 and /auth to the Rust backend on :3000.
  * On Vercel, vercel.json rewrites proxy API paths to the backend.
- * Auth relies on the `oss_session` HttpOnly cookie set by the backend.
+ * Auth relies on the `__Host-`/`__Secure-oss_session` HttpOnly cookie set by the backend.
  */
 
 // Type-only, so the `$lib/api/account` → `$lib/session` import cycle is erased

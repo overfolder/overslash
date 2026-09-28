@@ -117,6 +117,7 @@ mod risk_tests {
         actions.insert(
             action.into(),
             ServiceAction {
+                additional_properties: false,
                 wait_mode: None,
                 handoff_after_ms: None,
                 pagination: None,
@@ -144,6 +145,8 @@ mod risk_tests {
         );
         let mut registry = ServiceRegistry::default();
         registry.insert(ServiceDefinition {
+            declared_auth_modes: Vec::new(),
+            default_additional_properties: false,
             default_timeout_ms: None,
             secrets: Vec::new(),
             config: Vec::new(),

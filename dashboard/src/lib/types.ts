@@ -232,6 +232,17 @@ export interface Webhook {
   url: string;
   events: string[];
   active: boolean;
+  /** Why the platform switched it off. `needs_https`: a plain http:// URL
+   *  registered before HTTPS was enforced — nothing is delivered to it. */
+  disabled_reason?: string;
+  /** Endpoint ownership (CASA 7.1.2). Only `verified` subscriptions are
+   *  delivered to; events for a pending one are held until it verifies. */
+  verification_status: 'pending_verification' | 'verified';
+  verified_at: string | null;
+  /** Verified by migration because it predates the handshake. */
+  grandfathered: boolean;
+  /** Why the last handshake failed; absent after a success. */
+  verification_error?: string;
 }
 
 export interface WebhookCreated extends Webhook {
@@ -246,6 +257,8 @@ export interface WebhookDelivery {
   delivered_at: string | null;
   created_at: string;
   next_retry_at: string | null;
+  /** `pending_verification`: raised before the webhook verified; not sent yet. */
+  held_reason?: string;
 }
 
 // -- Service templates (catalog) --
@@ -362,6 +375,28 @@ export interface ResolutionReport {
   warnings: ValidationMessage[];
 }
 
+/**
+ * One of the alternative credential kinds a template accepts, of which an
+ * instance picks exactly one at creation.
+ *
+ * Always at least one — a template that declares no
+ * `x-overslash-auth-modes` has a single implicit mode holding every scheme,
+ * which is the "all of these, together" reading (`email`'s gateway key plus
+ * its mailbox login). The picker renders only when there is more than one.
+ */
+export interface AuthMode {
+	/** Stable key, as persisted on the instance (`oauth`, `token`). */
+	key: string;
+	/** Display name for the picker. Falls back to `key` when empty. */
+	label?: string;
+	/** Help text under the picker's option. */
+	description?: string;
+	/** The `securitySchemes` keys this mode activates. */
+	schemes: string[];
+	/** Whether a create that names no mode resolves to this one. */
+	default?: boolean;
+}
+
 export interface TemplateDetail {
   key: string;
   display_name: string;
@@ -379,6 +414,11 @@ export interface TemplateDetail {
    * is not derivable from `auth`; it is what the credentials form renders.
    */
   secrets?: SecretSlot[];
+  /**
+   * The alternative credential kinds this template accepts. Always at least
+   * one entry; the wizard shows a picker only when there is more than one.
+   */
+  auth_modes?: AuthMode[];
   /** Raw OpenAPI 3.1 YAML source. This is the editable document. */
   openapi: string;
   /** Compiled actions view for rendering the detail page without re-parsing. */
@@ -651,6 +691,15 @@ export interface McpDetail {
   discovered_at?: string;
 }
 
+/** One free-form argument row in the API Explorer, for an action whose
+ *  `additional_properties` is set. Not a server type — the gateway sees only
+ *  the merged `params` map — but shared so the form and the request builder
+ *  agree on the shape. */
+export interface ExtraArg {
+  key: string;
+  value: string;
+}
+
 /** Mirrors overslash_core::types::ScopeParamRef */
 export interface ScopeParamRef {
   param: string;
@@ -677,6 +726,12 @@ export interface ActionDetail {
    *  unscoped. The template document's compact `param:label` shorthand is
    *  parsed server-side — never here. */
   scope_param?: ScopeParamRef[];
+  /** Whether `params` above is a floor rather than a fence
+   *  (`x-overslash-additional-properties`). When true the gateway forwards
+   *  arguments the template never declared and treats a declared `enum` as
+   *  advisory, so the form offers free-form extra rows and renders enums as an
+   *  open combobox instead of a closed `<select>`. Absent when strict. */
+  additional_properties?: boolean;
 }
 
 // -- Service instances --
@@ -739,6 +794,12 @@ export interface ServiceInstanceSummary {
   url?: string;
   /** When `false`, an unbound instance won't fall back to the identity's default connection for the provider. Defaults to `true`. */
   use_default_connection: boolean;
+  /**
+   * Which of the template's alternative credential kinds this instance
+   * authenticates with. Absent when it is on the template's default, and on
+   * every template that declares only one.
+   */
+  auth_mode?: string;
   groups?: ServiceGroupRef[];
   credentials_status?: CredentialsStatus;
   /** The template's credential probe. Present means a Test button may be offered. */
@@ -818,6 +879,12 @@ export interface SetupRequestRef {
 export interface CreateServiceRequest {
   template_key: string;
   name?: string;
+  /**
+   * Which of the template's alternative credential kinds to use. Omitted
+   * resolves to the template's default; an unknown key is a 400 naming the
+   * ones that exist.
+   */
+  auth_mode?: string;
   connection_id?: string;
   secret_name?: string;
   /** Per-scheme secret bindings: securityScheme key → secret NAME in the org vault. */
@@ -875,6 +942,13 @@ export interface UpdateServiceRequest {
   config?: Record<string, string>;
   url?: string | null;
   use_default_connection?: boolean;
+  /**
+   * Switch which of the template's alternative credential kinds this instance
+   * uses. Destroys nothing — the other mode's credential stays bound — but the
+   * instance drops back to `pending_setup` and the response carries a fresh
+   * `connect.auth_url` or `setup.setup_url` for the new mode.
+   */
+  auth_mode?: string;
 }
 
 // -- OAuth --
@@ -1048,6 +1122,32 @@ export interface ActionParam {
   description: string;
   enum?: string[];
   default?: unknown;
+  /** The inner structure of an `object`/`array` param, lowered from the
+   *  template's own `properties`/`items`. Absent when the template authored no
+   *  sub-schema — which means "not described", never "described as empty", so
+   *  the form must fall back to a plain JSON textarea rather than to an empty
+   *  field list. */
+  shape?: ParamShape;
+}
+
+/** One of the two shapes a param can declare, matching the server's untagged
+ *  enum: an object carries `properties`, an array carries `items`. Never both. */
+export interface ParamShape {
+  properties?: Record<string, NestedParam>;
+  items?: NestedParam;
+  /** JSON Schema's own keyword: when true an undeclared key inside this object
+   *  is forwarded rather than rejected, so the form must not enforce the
+   *  key set the server stopped enforcing. */
+  additional_properties?: boolean;
+}
+
+export interface NestedParam {
+  type?: string;
+  required?: boolean;
+  description?: string;
+  enum?: string[];
+  default?: unknown;
+  shape?: ParamShape;
 }
 
 export interface ConnectionSummary {

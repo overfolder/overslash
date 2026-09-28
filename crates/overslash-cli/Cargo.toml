@@ -24,6 +24,7 @@ embed-dashboard = ["dep:rust-embed", "dep:mime_guess"]
 sql_policy = ["overslash-api/sql_policy", "overslash-core/sql_policy"]
 
 [dependencies]
+overslash-env = { path = "../overslash-env" }
 overslash-api = { path = "../overslash-api" }
 overslash-core = { path = "../overslash-core" }
 overslash-mcp = { path = "../overslash-mcp" }
@@ -51,3 +52,6 @@ urlencoding = "2"
 # `ServiceExt::oneshot`, so the route-precedence test can drive a Router
 # without binding a port.
 tower = "0.5"
+
+[lints]
+workspace = true

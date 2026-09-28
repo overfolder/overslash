@@ -121,6 +121,8 @@ mod tests {
 
     pub(super) fn minimal_valid() -> ServiceDefinition {
         ServiceDefinition {
+            declared_auth_modes: Vec::new(),
+            default_additional_properties: false,
             default_timeout_ms: None,
             secrets: Vec::new(),
             config: Vec::new(),
@@ -153,6 +155,7 @@ mod tests {
                 m.insert(
                     "list".into(),
                     ServiceAction {
+                        additional_properties: false,
                         wait_mode: None,
                         handoff_after_ms: None,
                         pagination: None,
@@ -190,15 +193,7 @@ mod tests {
         ActionParam {
             param_type: ty.into(),
             required,
-            description: String::new(),
-            enum_values: None,
-            default: None,
-            resolve: None,
-            aliases: Vec::new(),
-            location: crate::types::ParamLocation::Body,
-            instance_config: false,
-            sql_field: None,
-            sql_database: None,
+            ..Default::default()
         }
     }
 
@@ -232,6 +227,7 @@ mod tests {
         actions.insert(
             "search".into(),
             ServiceAction {
+                additional_properties: false,
                 wait_mode: None,
                 handoff_after_ms: None,
                 pagination: None,
@@ -249,15 +245,7 @@ mod tests {
                         ActionParam {
                             param_type: "string".into(),
                             required: true,
-                            description: String::new(),
-                            enum_values: None,
-                            default: None,
-                            resolve: None,
-                            aliases: Vec::new(),
-                            location: crate::types::ParamLocation::Body,
-                            instance_config: false,
-                            sql_field: None,
-                            sql_database: None,
+                            ..Default::default()
                         },
                     );
                     p
@@ -277,6 +265,8 @@ mod tests {
             },
         );
         ServiceDefinition {
+            declared_auth_modes: Vec::new(),
+            default_additional_properties: false,
             default_timeout_ms: None,
             secrets: Vec::new(),
             config: Vec::new(),

@@ -147,7 +147,7 @@ async fn list_templates_with_permission_returns_array() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|t| t["key"] == "github_legacy_oauth"),
+            .any(|t| t["key"] == "test_email"),
         "hidden template leaked into agent-facing list_templates"
     );
 }

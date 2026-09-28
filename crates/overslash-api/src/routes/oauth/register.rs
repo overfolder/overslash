@@ -1,6 +1,7 @@
 //! Dynamic Client Registration (RFC 7591) — `POST /oauth/register`.
 
 use super::*;
+use crate::services::oauth_redirect_uri::RedirectUris;
 
 // ---------------------------------------------------------------------------
 // Dynamic Client Registration (RFC 7591)
@@ -35,22 +36,17 @@ pub(super) async fn register(
         RequestOrgContext::Org { org_id, .. } => Some(*org_id),
         RequestOrgContext::Root => None,
     };
-    if req.redirect_uris.is_empty() {
-        return oauth_error(
-            StatusCode::BAD_REQUEST,
-            "invalid_redirect_uri",
-            "at least one redirect_uri is required",
-        );
-    }
-    for uri in &req.redirect_uris {
-        if uri.contains(char::is_whitespace) || uri.is_empty() {
+    // CASA 3.2.2: only https, loopback http and private-use app schemes.
+    let redirect_uris = match RedirectUris::parse(req.redirect_uris) {
+        Ok(u) => u.into_strings(),
+        Err(e) => {
             return oauth_error(
                 StatusCode::BAD_REQUEST,
                 "invalid_redirect_uri",
-                "redirect_uri must be a non-empty URL with no whitespace",
+                e.to_string(),
             );
         }
-    }
+    };
     if let Some(method) = req.token_endpoint_auth_method.as_deref()
         && method != "none"
     {
@@ -81,7 +77,7 @@ pub(super) async fn register(
         &oauth_mcp_client::CreateOauthMcpClient {
             client_id: &client_id,
             client_name: req.client_name.as_deref(),
-            redirect_uris: &req.redirect_uris,
+            redirect_uris: &redirect_uris,
             software_id: req.software_id.as_deref(),
             software_version: req.software_version.as_deref(),
             created_ip: ip.as_deref(),

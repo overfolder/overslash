@@ -32,17 +32,13 @@ async fn setup() -> (String, reqwest::Client, sqlx::PgPool, String) {
         .json()
         .await
         .unwrap();
-    let key: Value = client
-        .post(format!("{base}/v1/api-keys"))
-        .json(&json!({"org_id": org["id"].as_str().unwrap(), "name": "admin"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
 
-    (base, client, pool, key["key"].as_str().unwrap().to_string())
+    (
+        base,
+        client,
+        pool,
+        org["api_key"].as_str().unwrap().to_string(),
+    )
 }
 
 async fn create_identity(

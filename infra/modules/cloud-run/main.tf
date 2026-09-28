@@ -402,10 +402,12 @@ locals {
       STRIPE_USD_LOOKUP_KEY = var.stripe_usd_lookup_key
     } : {},
     var.email_provider != "" ? merge(
-      {
-        EMAIL_PROVIDER = var.email_provider
-        EMAIL_FROM     = var.email_from
-      },
+      { EMAIL_PROVIDER = var.email_provider },
+      # Guarded like email_reply_to below. EMAIL_FROM is required whenever a
+      # provider is set, and an empty one is caught at boot — but shipping
+      # EMAIL_FROM="" makes that a crashlooping revision rather than something
+      # visible in the plan.
+      var.email_from != "" ? { EMAIL_FROM = var.email_from } : {},
       var.email_reply_to != "" ? { EMAIL_REPLY_TO = var.email_reply_to } : {},
     ) : {},
     var.app_host_suffix != "" ? { APP_HOST_SUFFIX = var.app_host_suffix } : {},

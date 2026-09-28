@@ -49,12 +49,11 @@ beforeAll(async () => {
   const dev = (await res.json()) as { org_id: string; identity_id: string; token: string };
   orgId = dev.org_id;
 
-  const cookie = `oss_session=${dev.token}`;
+  const cookie = `__Host-oss_session=${dev.token}`;
   const keyRes = await fetch(`${API}/v1/api-keys`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', cookie },
     body: JSON.stringify({
-      org_id: dev.org_id,
       identity_id: dev.identity_id,
       name: `sdk-integration-${Date.now()}`,
       scopes: [],

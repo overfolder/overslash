@@ -43,11 +43,13 @@ import { api } from './api.mjs';
  *   template_key: string,
  *   template_source: string,
  *   status: string,
+ *   auth_mode?: string,
  * }} ServiceInstance
  *
  * @typedef {{
  *   templateKey: string,
  *   name?: string,
+ *   authMode?: string,
  *   status?: 'draft' | 'active' | 'archived',
  *   secretName?: string,
  *   credentials?: Record<string, string>,
@@ -56,6 +58,7 @@ import { api } from './api.mjs';
  *   userLevel?: boolean,
  *   groups?: { group_id: string, access_level?: string }[],
  *   bearer?: string,
+ *   skipConnect?: boolean,
  * }} SeedServiceInput
  *
  * @typedef {{
@@ -143,7 +146,7 @@ export async function listIdentities(session) {
 export async function seedAgentApiKey(session, identityId, name = 'scenarios-seed') {
 	return api(session, '/v1/api-keys', {
 		method: 'POST',
-		body: { org_id: session.orgId, identity_id: identityId, name },
+		body: { identity_id: identityId, name },
 		expect: [200, 201]
 	});
 }
@@ -184,6 +187,10 @@ export async function seedService(session, input) {
 		status: input.status ?? 'active'
 	};
 	if (input.name) body.name = input.name;
+	// Which of the template's alternative credential kinds to use. Only
+	// meaningful on a template that declares more than one (figma, github,
+	// notion); omitted takes the template's default.
+	if (input.authMode) body.auth_mode = input.authMode;
 	if (input.secretName) body.secret_name = input.secretName;
 	if (input.credentials) body.credentials = input.credentials;
 	if (input.config) body.config = input.config;
@@ -197,6 +204,10 @@ export async function seedService(session, input) {
 	// only path to a service nobody owns.
 	if (input.userLevel != null) body.user_level = input.userLevel;
 	if (input.groups) body.groups = input.groups;
+	// An OAuth template's create mints a connect flow and returns its URL. A
+	// scenario that supplies the connection itself (via
+	// `POST /v1/connections/import`) wants the instance without that detour.
+	if (input.skipConnect) body.skip_connect = true;
 
 	try {
 		return await api(session, '/v1/services', {
@@ -448,7 +459,7 @@ export async function seedApprovalResolution(session, approvalId, resolution) {
  * executes immediately — no approval detour. Pair with a URL that 404s/500s
  * to seed an upstream-error execution (`detail.is_error: true` on the
  * `action.executed` audit row), or a healthy one (e.g. `/health`) for a
- * success row. Requires the e2e stack (`OVERSLASH_SSRF_ALLOW_PRIVATE=1`)
+ * success row. Requires the e2e stack (`OVERSLASH_SSRF_ALLOWED_CIDRS`)
  * when pointing at localhost.
  *
  * @param {import('./auth.mjs').Session} session

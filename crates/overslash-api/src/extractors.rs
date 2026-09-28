@@ -4,7 +4,7 @@ use axum::{extract::FromRequestParts, http::request::Parts};
 use overslash_db::{AgentScope, OrgScope, SystemScope, UserScope};
 use uuid::Uuid;
 
-use crate::{AppState, error::AppError, services::jwt};
+use crate::{AppState, cookies, error::AppError, services::jwt};
 
 /// Hands handlers the request's `Extensions` map so they can pass it to
 /// the per-request accessor methods on [`AppState`] (`state.db(&ext)`,
@@ -180,7 +180,7 @@ impl FromRequestParts<AppState> for AuthContext {
         // Try JWT session cookie first (dashboard users). This mirrors
         // `UserOrKeyAuth` so any v1 endpoint extracted via `AuthContext`
         // works for the dashboard without needing an API key.
-        if let Some(token) = extract_cookie(&parts.headers, "oss_session") {
+        if let Some(token) = cookies::read_session(&parts.headers, state) {
             let signing_key = hex::decode(&state.config.signing_key)
                 .unwrap_or_else(|_| state.config.signing_key.as_bytes().to_vec());
             if let Ok(claims) = jwt::verify(&signing_key, &token, jwt::AUD_SESSION) {
@@ -499,7 +499,7 @@ impl FromRequestParts<AppState> for UserOrKeyAuth {
         // `AuthContext` and `SessionAuth` — without it, a personal-org
         // session would answer against a corp-org subdomain whose scope
         // it has no membership in.
-        if let Some(token) = extract_cookie(&parts.headers, "oss_session") {
+        if let Some(token) = cookies::read_session(&parts.headers, state) {
             let signing_key = hex::decode(&state.config.signing_key)
                 .unwrap_or_else(|_| state.config.signing_key.as_bytes().to_vec());
             if let Ok(claims) = jwt::verify(&signing_key, &token, jwt::AUD_SESSION) {
@@ -544,7 +544,7 @@ impl FromRequestParts<AppState> for SessionAuth {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        let token = extract_cookie(&parts.headers, "oss_session")
+        let token = cookies::read_session(&parts.headers, state)
             .ok_or_else(|| AppError::Unauthorized("session cookie required".into()))?;
         let signing_key = hex::decode(&state.config.signing_key)
             .unwrap_or_else(|_| state.config.signing_key.as_bytes().to_vec());
@@ -759,7 +759,7 @@ impl FromRequestParts<AppState> for OptionalOrgAcl {
     ) -> Result<Self, Self::Rejection> {
         // Check if any auth was provided (Authorization header OR session cookie)
         let has_auth_header = parts.headers.get("authorization").is_some();
-        let has_session_cookie = extract_cookie(&parts.headers, "oss_session").is_some();
+        let has_session_cookie = cookies::read_session(&parts.headers, state).is_some();
 
         if !has_auth_header && !has_session_cookie {
             // Truly unauthenticated — bootstrap path
@@ -833,14 +833,3 @@ impl FromRequestParts<AppState> for OrgScope {
 // signature as real extractors are added.
 #[allow(dead_code)]
 fn _scope_types_exist(_: AgentScope, _: SystemScope) {}
-
-pub(crate) fn extract_cookie(headers: &axum::http::HeaderMap, name: &str) -> Option<String> {
-    let cookie_header = headers.get(axum::http::header::COOKIE)?.to_str().ok()?;
-    for pair in cookie_header.split(';') {
-        let pair = pair.trim();
-        if let Some(value) = pair.strip_prefix(&format!("{name}=")) {
-            return Some(value.to_string());
-        }
-    }
-    None
-}

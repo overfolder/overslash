@@ -1,4 +1,22 @@
 {
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        { "key": "Strict-Transport-Security", "value": "max-age=63072000; includeSubDomains" },
+        { "key": "X-Content-Type-Options",    "value": "nosniff" },
+        { "key": "X-Frame-Options",           "value": "DENY" },
+        { "key": "Referrer-Policy",           "value": "strict-origin-when-cross-origin" },
+        { "key": "Permissions-Policy",        "value": "accelerometer=(), autoplay=(), camera=(), display-capture=(), encrypted-media=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), midi=(), payment=(), publickey-credentials-get=(), serial=(), usb=(), xr-spatial-tracking=()" }
+      ]
+    },
+    {
+      "source": "/.well-known/security.txt",
+      "headers": [
+        { "key": "Content-Type", "value": "text/plain; charset=utf-8" }
+      ]
+    }
+  ],
   "rewrites": [
     { "source": "/v1/billing/geo",                         "destination": "/billing/geo" },
     { "source": "/auth/handoff",                           "has": [{ "type": "host", "value": "app.overslash.com" }], "destination": "https://api.overslash.com/__handoff_disabled_in_prod" },
@@ -58,6 +76,8 @@
     { "source": "/connect-authorize",                      "destination": "https://api.dev.overslash.com/connect-authorize" }
   ],
   "redirects": [
+    { "source": "/.well-known/security.txt", "has": [{ "type": "host", "value": "(?<sub>[a-z0-9-]+)\\.app\\.overslash\\.com" }],          "destination": "https://app.overslash.com/.well-known/security.txt",     "permanent": false },
+    { "source": "/.well-known/security.txt", "has": [{ "type": "host", "value": "(?<sub>[a-z0-9-]+)\\.app\\.dev\\.overslash\\.com" }],     "destination": "https://app.dev.overslash.com/.well-known/security.txt", "permanent": false },
     { "source": "/.well-known/:path*",  "has": [{ "type": "host", "value": "(?<sub>[a-z0-9-]+)\\.app\\.overslash\\.com" }],          "destination": "https://:sub.api.overslash.com/.well-known/:path*",     "permanent": false },
     { "source": "/mcp",                 "has": [{ "type": "host", "value": "(?<sub>[a-z0-9-]+)\\.app\\.overslash\\.com" }],          "destination": "https://:sub.api.overslash.com/mcp",                  "permanent": false },
     { "source": "/connect-authorize",   "has": [{ "type": "host", "value": "(?<sub>[a-z0-9-]+)\\.app\\.overslash\\.com" }],          "destination": "https://:sub.api.overslash.com/connect-authorize",    "permanent": false },

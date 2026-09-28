@@ -22,11 +22,13 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use overslash_core::search::{Candidate, MIN_SCORE, apply_post_bonuses, keyword_fuzzy_score};
-use overslash_core::types::{DeclaredRisk, ServiceAction, ServiceDefinition};
+use overslash_core::types::{DeclaredRisk, ServiceDefinition};
 use overslash_db::repos::{org as org_repo, service_action_embedding, service_template};
 use overslash_db::scopes::{OrgScope, UserScope};
 
+mod params;
 mod setup_hint;
+use params::{ParamInfo, param_infos};
 use setup_hint::{AuthStatus, build_auth_status};
 
 use crate::{
@@ -166,78 +168,18 @@ struct SearchResult {
     /// inferring it from a parameter's name — which is the one bit this adds.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     paginated: bool,
-}
-
-/// The model-facing projection of an [`ServiceAction`] parameter.
-///
-/// Deliberately not `ActionParam` itself: that type also carries `resolve`,
-/// `sql_field`, `sql_database` and `instance_config`, which are gateway
-/// plumbing the caller neither supplies nor benefits from seeing.
-#[derive(Serialize)]
-struct ParamInfo {
-    name: String,
-    #[serde(rename = "type", skip_serializing_if = "String::is_empty")]
-    param_type: String,
+    /// Whether this action declares `x-overslash-additional-properties` — that
+    /// `params` above is a floor rather than a fence, so an argument it does
+    /// not list may still be sent and will be forwarded upstream, and a
+    /// declared `enum` names the members we know of rather than all of them.
+    ///
+    /// A bare boolean for the same reason as `paginated`: the fact is one the
+    /// caller cannot infer from `params` at any price, since it is precisely a
+    /// statement about what `params` leaves out. Without it the relaxation is
+    /// reachable only by a caller who already knew to guess, which is no
+    /// relaxation at all.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
-    required: bool,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    description: String,
-    #[serde(rename = "enum", skip_serializing_if = "Option::is_none")]
-    enum_values: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    default: Option<serde_json::Value>,
-}
-
-/// Longest parameter description carried into a search result.
-///
-/// Every row in a response holds up to this much per parameter, so the cap
-/// is a context-budget decision, not a display one. The widest action in the
-/// shipped registry declares 10 parameters, which bounds a row's parameter
-/// block at roughly 2 KB and a default 20-row response well under what the
-/// action's own descriptions already cost.
-const MAX_PARAM_DESCRIPTION_CHARS: usize = 160;
-
-/// Project an action's parameters for the model.
-///
-/// Ordering is explicit — required first, then alphabetical — because
-/// `ServiceAction.params` is a `HashMap`, and emitting its iteration order
-/// would make byte-identical requests return differently-ordered JSON.
-/// Required-first also front-loads what the caller cannot omit.
-fn param_infos(action: &ServiceAction) -> Vec<ParamInfo> {
-    let mut out: Vec<ParamInfo> = action
-        .params
-        .iter()
-        // `instance-config` params are pinned per service instance by an org
-        // admin and merged in under the caller's args at execution time. A
-        // caller has no business supplying them, so listing them here would
-        // only invite a wrong one.
-        .filter(|(_, p)| !p.instance_config)
-        .map(|(name, p)| ParamInfo {
-            name: name.clone(),
-            param_type: p.param_type.clone(),
-            required: p.required,
-            description: clamp_chars(&p.description, MAX_PARAM_DESCRIPTION_CHARS),
-            enum_values: p.enum_values.clone(),
-            default: p.default.clone(),
-        })
-        .collect();
-    out.sort_by(|a, b| {
-        b.required
-            .cmp(&a.required)
-            .then_with(|| a.name.cmp(&b.name))
-    });
-    out
-}
-
-/// Truncate `s` to at most `max` characters, appending an ellipsis when it
-/// actually cut. Cuts at a char *index* rather than a byte index — `&s[..n]`
-/// panics mid-codepoint, and template descriptions are exactly the strings
-/// that carry non-ASCII.
-fn clamp_chars(s: &str, max: usize) -> String {
-    match s.char_indices().nth(max) {
-        Some((cut, _)) => format!("{}…", &s[..cut]),
-        None => s.to_string(),
-    }
+    additional_properties: bool,
 }
 
 /// Per-instance data carried from `collect_visible_templates` into the
@@ -390,6 +332,7 @@ async fn search(
                     missing_scopes: Vec::new(),
                     params: Vec::new(),
                     paginated: false,
+                    additional_properties: false,
                 });
             } else {
                 for inst in connected_instances {
@@ -413,6 +356,7 @@ async fn search(
                         // Likewise: the parameter contract is per-action.
                         params: Vec::new(),
                         paginated: false,
+                        additional_properties: false,
                     });
                 }
             }
@@ -540,6 +484,7 @@ async fn search(
                     missing_scopes: Vec::new(),
                     params: param_infos(action),
                     paginated: action.pagination.is_some(),
+                    additional_properties: action.additional_properties,
                 });
             } else {
                 // Fan-out: one row per (action × instance). Score is the
@@ -572,6 +517,7 @@ async fn search(
                         missing_scopes,
                         params: param_infos(action),
                         paginated: action.pagination.is_some(),
+                        additional_properties: action.additional_properties,
                     });
                 }
             }
@@ -638,6 +584,7 @@ async fn search(
                     missing_scopes,
                     params: param_infos(action),
                     paginated: action.pagination.is_some(),
+                    additional_properties: action.additional_properties,
                 });
             }
         }

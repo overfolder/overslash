@@ -7,6 +7,11 @@ pub struct OAuthProviderRow {
     pub display_name: String,
     pub authorization_endpoint: String,
     pub token_endpoint: String,
+    /// Where the refresh grant is posted, when the provider does not accept it
+    /// at [`token_endpoint`](Self::token_endpoint). `None` — the case for every
+    /// provider but Figma — means "refresh where you minted". Added in
+    /// migration 120.
+    pub refresh_endpoint: Option<String>,
     pub revocation_endpoint: Option<String>,
     pub userinfo_endpoint: Option<String>,
     pub client_id_pattern: Option<String>,
@@ -44,7 +49,8 @@ pub struct OAuthProviderRow {
 pub async fn get_by_key(pool: &PgPool, key: &str) -> Result<Option<OAuthProviderRow>, sqlx::Error> {
     sqlx::query_as!(
         OAuthProviderRow,
-        "SELECT key, display_name, authorization_endpoint, token_endpoint, revocation_endpoint,
+        "SELECT key, display_name, authorization_endpoint, token_endpoint, refresh_endpoint,
+                revocation_endpoint,
                 userinfo_endpoint, client_id_pattern, supports_pkce, supports_refresh,
                 extra_auth_params, token_auth_method, is_builtin, issuer_url, jwks_uri,
                 default_identity_scopes, login_hint_param, created_at
@@ -58,7 +64,8 @@ pub async fn get_by_key(pool: &PgPool, key: &str) -> Result<Option<OAuthProvider
 pub async fn list_all(pool: &PgPool) -> Result<Vec<OAuthProviderRow>, sqlx::Error> {
     sqlx::query_as!(
         OAuthProviderRow,
-        "SELECT key, display_name, authorization_endpoint, token_endpoint, revocation_endpoint,
+        "SELECT key, display_name, authorization_endpoint, token_endpoint, refresh_endpoint,
+                revocation_endpoint,
                 userinfo_endpoint, client_id_pattern, supports_pkce, supports_refresh,
                 extra_auth_params, token_auth_method, is_builtin, issuer_url, jwks_uri,
                 default_identity_scopes, login_hint_param, created_at
@@ -102,7 +109,8 @@ pub async fn create_custom(
             supports_pkce = EXCLUDED.supports_pkce,
             supports_refresh = EXCLUDED.supports_refresh,
             token_auth_method = EXCLUDED.token_auth_method
-         RETURNING key, display_name, authorization_endpoint, token_endpoint, revocation_endpoint,
+         RETURNING key, display_name, authorization_endpoint, token_endpoint, refresh_endpoint,
+                   revocation_endpoint,
                    userinfo_endpoint, client_id_pattern, supports_pkce, supports_refresh,
                    extra_auth_params, token_auth_method, is_builtin, issuer_url, jwks_uri,
                    default_identity_scopes, login_hint_param, created_at",

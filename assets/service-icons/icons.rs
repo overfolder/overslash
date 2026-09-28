@@ -74,6 +74,13 @@ pub(super) const BUILTIN_ICONS: &[(&str, &[u8])] = &[
         )),
     ),
     (
+        "figma",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../assets/service-icons/figma.svg"
+        )),
+    ),
+    (
         "github",
         include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),

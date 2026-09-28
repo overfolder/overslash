@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM pending_mcp_elicitations\n          WHERE status IN ($1, $2, $3, $4, $5)\n            AND created_at < now() - make_interval(secs => $6)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Float8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "3f6510346aa9e391e83ad1a09bbe5ea70ce189489694c9ccb7669e19e5af2be5"
+}

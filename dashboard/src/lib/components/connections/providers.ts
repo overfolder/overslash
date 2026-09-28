@@ -27,6 +27,7 @@ const PROVIDER_BRAND: Record<string, ProviderBrand> = {
 	x: { letter: 'X', bg: '#0f1419', fg: '#ffffff' },
 	eventbrite: { letter: 'E', bg: '#f05537', fg: '#ffffff' },
 	linkedin: { letter: 'in', bg: '#0a66c2', fg: '#ffffff' },
+	figma: { letter: 'F', bg: '#f24e1e', fg: '#ffffff' },
 	microsoft: { letter: 'M', bg: '#0078d4', fg: '#ffffff' }
 };
 

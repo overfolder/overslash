@@ -14,7 +14,7 @@ use serde_json::json;
 use uuid::Uuid;
 
 use crate::{
-    AppState,
+    AppState, cookies,
     error::AppError,
     extractors::{ClientIp, ReqExt},
     services::{jwt, oauth, org_signin},
@@ -147,7 +147,8 @@ pub(crate) fn org_app_url(state: &AppState, slug: &str, path: &str) -> Option<St
 /// the org's app host so the user lands back where they started. Returns
 /// `path` unchanged when there's no subdomain context.
 fn absolute_redirect_for_org(state: &AppState, headers: &HeaderMap, path: &str) -> String {
-    let Some(slug) = extract_cookie(headers, "oss_auth_org").filter(|s| s != "none") else {
+    let Some(slug) = cookies::read(headers, state, cookies::AUTH_ORG).filter(|s| s != "none")
+    else {
         return path.to_string();
     };
     org_app_url(state, &slug, path).unwrap_or_else(|| path.to_string())
@@ -185,13 +186,15 @@ pub(crate) fn session_cookie(
     state: &AppState,
     token: &str,
 ) -> Result<header::HeaderValue, AppError> {
-    let mut value = format!("oss_session={token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800");
-    if let Some(domain) = state.config.session_cookie_domain.as_deref() {
-        value.push_str(&format!("; Domain={domain}"));
-    }
-    value
-        .parse()
-        .map_err(|e| AppError::Internal(format!("build session cookie: {e}")))
+    cookies::set_for(
+        state,
+        cookies::SESSION,
+        token,
+        "/",
+        cookies::SESSION_MAX_AGE,
+    )
+    .parse()
+    .map_err(|e| AppError::Internal(format!("build session cookie: {e}")))
 }
 
 /// Only allow same-origin path redirects to prevent open-redirect abuse
@@ -203,17 +206,6 @@ fn sanitize_next(raw: &str) -> Option<String> {
     } else {
         None
     }
-}
-
-fn extract_cookie(headers: &HeaderMap, name: &str) -> Option<String> {
-    let cookie_header = headers.get(header::COOKIE)?.to_str().ok()?;
-    for pair in cookie_header.split(';') {
-        let pair = pair.trim();
-        if let Some(value) = pair.strip_prefix(&format!("{name}=")) {
-            return Some(value.to_string());
-        }
-    }
-    None
 }
 
 pub(crate) fn signing_key_bytes(signing_key: &str) -> Vec<u8> {

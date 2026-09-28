@@ -8,6 +8,15 @@ use crate::types::CredentialTemplate;
 pub enum ServiceAuth {
     #[serde(rename = "oauth")]
     OAuth {
+        /// The `securitySchemes` key this was compiled from (`oauth`,
+        /// `token`, ...). Names the entry so an [`AuthMode`] can select it;
+        /// it keys nothing at execution time, where the provider decides
+        /// which connection answers.
+        ///
+        /// Empty on a definition compiled before auth modes existed — those
+        /// declare no modes either, so nothing ever reads it.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        scheme: String,
         provider: String,
         /// Superset of OAuth scopes this service may request. The caller
         /// (dashboard/API) picks which subset to actually request at connect
@@ -121,6 +130,46 @@ pub struct SecretSlot {
     /// request.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub optional: bool,
+}
+
+/// One of the alternative credential kinds a template accepts, of which an
+/// instance picks exactly one at creation.
+///
+/// Declared under `components.x-overslash-auth-modes` as a map of mode key to
+/// this shape, each naming the `securitySchemes` entries it activates. A
+/// template that declares none has one implicit mode holding *every* scheme,
+/// which is the pre-existing "all schemes are required together" reading that
+/// `services/email.yaml`'s gateway-plus-mailbox pair depends on.
+///
+/// The distinction modes add is **alternation**: `[oauth]` or `[token]`, never
+/// both. That is a fact about the instance, not about the template, which is
+/// why it is stored on `service_instances.auth_mode` rather than inferred from
+/// whichever credential happens to be bound — a freshly created instance has
+/// neither bound yet, and that is precisely the state the credentials-status
+/// badge has to answer for.
+///
+/// A scheme may appear in several modes. That is how a credential shared by
+/// every alternative — an org-wide gateway key in front of the real upstream —
+/// rides along with whichever one the operator picked.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthMode {
+    /// Stable key, as written in the modes map and as persisted on the
+    /// instance (`oauth`, `token`). Never displayed.
+    pub key: String,
+    /// Short human-readable name for the dashboard's picker ("Personal access
+    /// token"). Falls back to `key` when absent.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub label: String,
+    /// Help text under the picker's option.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    /// The `securitySchemes` keys this mode activates. Non-empty.
+    #[serde(default)]
+    pub schemes: Vec<String>,
+    /// Whether this is the mode a create that names none resolves to. Exactly
+    /// one mode carries it once a template declares more than one.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub default: bool,
 }
 
 /// A non-secret template input: one plain value the operator sets per service

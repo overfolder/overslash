@@ -11,6 +11,7 @@ name = "overslash-metrics-exporter"
 path = "src/main.rs"
 
 [dependencies]
+overslash-env = { path = "../overslash-env" }
 anyhow = { workspace = true }
 chrono = { workspace = true }
 reqwest = { workspace = true }
@@ -21,5 +22,9 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
-[lints.rust]
-unsafe_code = "forbid"
+# A manifest cannot both inherit `[workspace.lints]` and override it, and
+# inheriting is what keeps a future workspace lint from silently skipping
+# this crate — so the `unsafe_code = "forbid"` that used to live here is
+# now `#![forbid(unsafe_code)]` at the crate root.
+[lints]
+workspace = true

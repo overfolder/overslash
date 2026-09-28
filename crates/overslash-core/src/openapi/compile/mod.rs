@@ -17,7 +17,7 @@ use super::ext::{self, Ext, Pos};
 use super::extract;
 use super::extract::{
     extract_auth, extract_hosts, extract_http_action, extract_mcp_actions, extract_mcp_spec,
-    extract_platform_action, parse_timeout_ms,
+    extract_platform_action, parse_additional_properties, parse_timeout_ms,
 };
 
 /// Lower a normalized OpenAPI document into a [`ServiceDefinition`].
@@ -125,6 +125,17 @@ pub fn compile_service(
         &mut warnings,
     );
 
+    // Service-wide argument-validation default, folded into each action below.
+    // A warning rather than an error for the same reason as `hidden` and the
+    // timeout above, and the fallback is strict, so a malformed value cannot
+    // relax anything by accident.
+    let default_additional_properties = parse_additional_properties(
+        info.and_then(|i| ext::get(i, Pos::Info, Ext::AdditionalProperties)),
+        "info",
+        &mut warnings,
+    )
+    .unwrap_or(false);
+
     let hosts = extract_hosts(root.get("servers"));
 
     let creds = match extract_auth(root.get("components")) {
@@ -135,6 +146,7 @@ pub fn compile_service(
                 auth: Vec::new(),
                 secrets: Vec::new(),
                 config: Vec::new(),
+                auth_modes: Vec::new(),
             }
         }
     };
@@ -142,6 +154,7 @@ pub fn compile_service(
         auth,
         secrets,
         config,
+        auth_modes,
     } = creds;
 
     // Document root-level `security`, applied as the default required-scopes
@@ -165,6 +178,7 @@ pub fn compile_service(
                     op,
                     path_level_params,
                     root_security,
+                    default_additional_properties,
                     &mut actions,
                 ) {
                     Ok(()) => {}
@@ -216,9 +230,13 @@ pub fn compile_service(
     let mcp = if runtime == Runtime::Mcp {
         match extract_mcp_spec(root) {
             Ok(spec) => {
-                if let Err(mut es) =
-                    extract_mcp_actions(root, spec.autodiscover, &mut actions, &mut warnings)
-                {
+                if let Err(mut es) = extract_mcp_actions(
+                    root,
+                    spec.autodiscover,
+                    default_additional_properties,
+                    &mut actions,
+                    &mut warnings,
+                ) {
                     errors.append(&mut es);
                 }
                 Some(spec)
@@ -303,8 +321,10 @@ pub fn compile_service(
             auth,
             secrets,
             config,
+            declared_auth_modes: auth_modes,
             actions,
             default_timeout_ms,
+            default_additional_properties,
             runtime,
             mcp,
             // Only the fold sets these; a shipped template expresses its
@@ -319,3 +339,5 @@ pub fn compile_service(
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_relaxed_args;

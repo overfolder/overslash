@@ -80,7 +80,7 @@ test.describe('cloud billing checkout', () => {
 
 		// Switch the active org so the AdminAcl extractor on the
 		// subscription endpoint sees the new org. /auth/switch-org sets a
-		// fresh `oss_session` cookie via Set-Cookie which the request
+		// fresh `__Host-oss_session` cookie via Set-Cookie which the request
 		// context will pick up automatically.
 		const switchRes = await request.post(`${apiBase}/auth/switch-org`, {
 			data: { org_id: orgId }

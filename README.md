@@ -69,13 +69,13 @@ docker run -d --name overslash-pg \
 
 ### 3. Start `overslash web`
 
-Set the three required env vars and run the binary. The API auto-applies
-migrations on first start.
+Set the three required env vars (see [Configuration](#configuration)) and run
+the binary. The API auto-applies migrations on first start.
 
 ```bash
 export DATABASE_URL=postgres://postgres:overslash@localhost:5432/overslash
-export SECRETS_ENCRYPTION_KEY=$(openssl rand -base64 32)
-export SIGNING_KEY=$(openssl rand -base64 32)
+export SECRETS_ENCRYPTION_KEY=$(openssl rand -hex 32)
+export SIGNING_KEY=$(openssl rand -hex 32)
 ./overslash web
 ```
 
@@ -85,6 +85,80 @@ no state outside Postgres.
 > This path is enough to try Overslash. For development — hot-reload, tests,
 > writing migrations — see
 > [Running locally from source](#running-locally-from-source).
+
+## Configuration
+
+Overslash is configured entirely through the environment. `.env.example` is the
+full annotated catalogue; this table is the part you need to start.
+
+**An empty value means unset.** `SIGNING_KEY=""` is treated exactly as
+`SIGNING_KEY` never having been exported — the API reports it as missing and
+refuses to boot, rather than signing tokens with an empty key. This matters
+because deployment substrates hand empty strings to processes routinely: a
+Compose file's `${FOO:-}` renders as `""` when `FOO` is unset, and a Secret
+Manager version can hold an empty payload. Values are trimmed, so a secret that
+picked up a trailing newline from a shell pipeline still works.
+
+### Required
+
+The API exits at startup, naming everything that is missing, if any of these is
+unset or empty.
+
+| Variable | Purpose |
+|---|---|
+| `DATABASE_URL` | Postgres connection string. Migrations are applied on first start. |
+| `SECRETS_ENCRYPTION_KEY` | AES-256-GCM key for the secret vault. 32 bytes, as 64 hex chars (`openssl rand -hex 32`). |
+| `SIGNING_KEY` | Signs sessions, approval links and download/upload tokens. At least 32 bytes (`openssl rand -hex 32`). |
+
+### Boot interlocks
+
+`OVERSLASH_ENV` names the deployment: unset or `local` for a checkout on your
+machine, otherwise `dev`, `staging`, `prod` or any marker of your own. The
+container image defaults it to `prod`. Outside `local`, the API refuses to
+start with a weak `SECRETS_ENCRYPTION_KEY` or `SIGNING_KEY` — a placeholder,
+one repeated byte, fewer than 32 bytes, or a near-constant pattern (locally
+these only warn). In `prod` it also refuses `DEV_AUTH` on, and replaces a
+`RUST_LOG` that enables `debug` or `trace` with `info`. `DEV_AUTH` set to
+anything other than a recognised boolean stops the boot everywhere.
+
+### Required in context
+
+Only checked when the feature they belong to is switched on. Turning the
+feature on without them is a startup failure, not a silent degradation.
+
+| Variable | Required when |
+|---|---|
+| `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | `CLOUD_BILLING` is on |
+| `EMAIL_API_KEY`, `EMAIL_FROM` | `EMAIL_PROVIDER` is set |
+
+### Common optional
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `HOST` | `127.0.0.1` | Bind address. |
+| `PORT` | `3000` | Bind port. |
+| `PUBLIC_URL` | derived from `HOST`/`PORT` | The origin advertised in redirect URIs and links. Set it behind a reverse proxy. |
+| `DASHBOARD_ORIGIN` | `*localhost*` | Comma-separated CORS origins. Set explicit origins in production. |
+| `REDIS_URL` | unset | Valkey/Redis for rate-limit counters and the resolver cache. Unset means process-local, which is correct for a single replica. |
+| `GOOGLE_AUTH_CLIENT_ID`, `GOOGLE_AUTH_CLIENT_SECRET` | unset | Google sign-in. Both halves or neither. An IdP configured here takes precedence over one configured in the dashboard. |
+| `GITHUB_AUTH_CLIENT_ID`, `GITHUB_AUTH_CLIENT_SECRET` | unset | GitHub sign-in, same rules. |
+| `DEV_AUTH` | off | Enables `/auth/dev/token`, a passwordless local login. **Leave off in production.** |
+| `LOG_FORMAT` | text | Set to `json` for structured logs. |
+
+### Flags
+
+Every boolean above reads the same way: `true`, `1`, `yes` or `on` turn it on;
+`false`, `0`, `no` or `off` turn it off; case does not matter. Unset, empty, or
+a value that is none of those falls back to the documented default and logs a
+warning naming the variable — so `DEV_AUTH=0` disables dev login rather than
+enabling it on the strength of the variable merely existing.
+
+Operator-only variables that widen egress (`OVERSLASH_SSRF_ALLOWED_CIDRS` and
+the metadata override) are deliberately left out of this table; they are
+documented in
+[docs/compliance/casa/gap-assessment.md](docs/compliance/casa/gap-assessment.md),
+which depends on their being environment-only and unset on the hosted
+deployment.
 
 ## Running locally from source
 

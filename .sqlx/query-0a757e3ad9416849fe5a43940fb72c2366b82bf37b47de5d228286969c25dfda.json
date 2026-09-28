@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE webhook_subscriptions SET verification_status = 'verified' WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0a757e3ad9416849fe5a43940fb72c2366b82bf37b47de5d228286969c25dfda"
+}

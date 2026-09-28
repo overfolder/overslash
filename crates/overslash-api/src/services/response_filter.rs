@@ -261,6 +261,37 @@ pub(crate) fn run_jq_blocking(
     Ok((values, filtered_bytes))
 }
 
+/// The only thing anyone may say about a jaq runtime failure.
+///
+/// Returns `&'static str`, never a slice of `msg`: the classification is a
+/// whitelist of jaq's own fixed prefixes, which in `jaq_core::Error` always
+/// precede the first operand (`Error::index` builds
+/// `["cannot index ", Val(l), " with ", Val(r)]`, and `math`/`typ` are the
+/// same shape). Nothing operand-derived can ride out. A filter can try to
+/// imitate a prefix by raising `error("cannot index …")`, but jaq renders a
+/// raised string with its JSON quotes, so it never matches — and the return
+/// type means a match would only ever buy a wrong hint anyway.
+///
+/// The class survives because it is genuinely the useful half: "your dot-path
+/// indexed something that is not an object" is what shortens the round trip
+/// for a template author who can no longer read the message.
+///
+/// Lives here rather than in `disclosure` because it is about *jaq's* error
+/// shapes, not about disclosure — and it has a second caller now: a scope
+/// extractor's operand is caller-supplied request data, so the same rule
+/// applies for the same reason (D65).
+pub(crate) fn classify_runtime_error(msg: &str) -> &'static str {
+    if msg.starts_with("cannot index ") {
+        "filter runtime error (cannot index)"
+    } else if msg.starts_with("cannot calculate ") {
+        "filter runtime error (cannot calculate)"
+    } else if msg.starts_with("cannot use ") {
+        "filter runtime error (cannot use)"
+    } else {
+        "filter runtime error"
+    }
+}
+
 pub(crate) fn cap_message(msg: String) -> String {
     // Char-based cap. `String::truncate` is byte-indexed and panics if the
     // boundary lands inside a multi-byte UTF-8 sequence — reachable any time

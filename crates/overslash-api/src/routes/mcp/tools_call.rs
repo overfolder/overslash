@@ -25,6 +25,7 @@ pub(super) async fn tools_call(
     req: JsonRpcRequest,
     bearer: Option<&str>,
     req_session_id: Option<Uuid>,
+    accepts_sse: bool,
 ) -> Response {
     let mut params: ToolCallParams = match serde_json::from_value(req.params.clone()) {
         Ok(p) => p,
@@ -53,6 +54,7 @@ pub(super) async fn tools_call(
                 bearer,
                 &params.arguments,
                 req_session_id,
+                accepts_sse,
             )
             .await;
         }
@@ -95,6 +97,7 @@ async fn tools_call_overslash_call(
     bearer: &str,
     args: &Value,
     req_session_id: Option<Uuid>,
+    accepts_sse: bool,
 ) -> Response {
     let outcome = match dispatch_call(state, bearer, args).await {
         Ok(ForwardOutcome::Ok(v)) => v,
@@ -119,15 +122,16 @@ async fn tools_call_overslash_call(
         );
     }
 
-    // Pending approval — promote to elicitation if eligible.
-    let promote = elicitation_eligible(state, ext, auth).await;
-    if !promote {
-        return rpc_ok_response(
-            req.id.clone(),
-            json!({
-                "content": [{ "type": "text", "text": serde_json::to_string(&outcome).unwrap_or_default() }]
-            }),
-        );
+    // Pending approval — promote to elicitation if eligible. The `Accept`
+    // check comes first because it is free and because a caller that cannot
+    // read the stream must never be upgraded onto one, whatever its binding
+    // or declared capabilities say.
+    if !accepts_sse {
+        tracing::debug!("skipping elicitation upgrade: caller did not Accept text/event-stream");
+        return synchronous_pending_response(&req.id, &outcome);
+    }
+    if !elicitation_eligible(state, ext, auth).await {
+        return synchronous_pending_response(&req.id, &outcome);
     }
 
     let approval_id = match outcome.get("approval_id").and_then(Value::as_str) {
@@ -190,17 +194,25 @@ async fn tools_call_overslash_call(
         ext.clone(),
         req.id.clone(),
         elicit_id,
-        approval_id,
         action_summary,
         outcome.clone(),
     )
 }
 
+/// The tool result the no-elicitation path returns for a pending approval:
+/// the `pending_approval` envelope in a single text content block.
+///
+/// Shared with the elicitation SSE tail so that what the model reads after an
+/// unanswered dialog is byte-identical to what it would have read with
+/// elicitation switched off. That identity is the property that makes the
+/// fallback trustworthy, so resist adding an "elicitation was skipped" marker
+/// here — it would only invite the two paths to drift.
+pub(super) fn pending_approval_result(outcome: &Value) -> Value {
+    json!({
+        "content": [{ "type": "text", "text": serde_json::to_string(outcome).unwrap_or_default() }]
+    })
+}
+
 fn synchronous_pending_response(id: &Value, outcome: &Value) -> Response {
-    rpc_ok_response(
-        id.clone(),
-        json!({
-            "content": [{ "type": "text", "text": serde_json::to_string(outcome).unwrap_or_default() }]
-        }),
-    )
+    rpc_ok_response(id.clone(), pending_approval_result(outcome))
 }

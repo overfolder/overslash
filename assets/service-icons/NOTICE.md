@@ -38,6 +38,7 @@ data only — **not** the trademarks it depicts. See simple-icons'
 | `client_zed.svg` | Zed Industries | simple-icons 16.28.0 (`zedindustries`) | https://github.com/zed-industries/zed/blob/ccc939124fa2f366b3029926447fd0a0c46a85c7/assets/icons/logo_96.svg |
 | `deepwiki.svg` | Overspiral S.L. | local/book.svg | — |
 | `email.svg` | Overspiral S.L. | local/envelope.svg | — |
+| `figma.svg` | Figma | simple-icons 16.28.0 (`figma`) | https://www.figma.com/using-the-figma-brand/ |
 | `github.svg` | GitHub | simple-icons 16.28.0 (`github`) | https://github.com/logos |
 | `gmail.svg` | Gmail | simple-icons 16.28.0 (`gmail`) | https://fonts.gstatic.com/s/i/productlogos/gmail_2020q4/v8/192px.svg |
 | `google_calendar.svg` | Google Calendar | simple-icons 16.28.0 (`googlecalendar`) | https://fonts.gstatic.com/s/i/productlogos/calendar_2020q4/v8/192px.svg |
@@ -69,6 +70,7 @@ that as a signal when sourcing them.
 | `client_chatgpt` | OpenAI, L.L.C. | https://openai.com/brand/ | No OpenAI mark in simple-icons. Source from the vendor brand page before shipping. |
 | `client_vscode` | Microsoft Corporation | https://www.microsoft.com/en-us/legal/intellectualproperty/trademarks | No Microsoft marks in simple-icons. Source from the vendor brand page before shipping. |
 | `eventbrite` | Eventbrite, Inc. | https://www.eventbrite.com/l/for-press/ | No simple-icons entry. Source from the vendor brand page before shipping. |
+| `langfuse` | Langfuse GmbH | https://langfuse.com/ | No Langfuse mark in simple-icons. Source from the vendor brand page before shipping. |
 | `linkedin` | LinkedIn Corporation (Microsoft) | https://brand.linkedin.com/ | Removed from simple-icons at the brand's request. Source from the vendor brand page before shipping. |
 | `outlook` | Microsoft Corporation | https://www.microsoft.com/en-us/legal/intellectualproperty/trademarks | No Microsoft marks in simple-icons. Source from the vendor brand page before shipping. |
 | `slack` | Slack Technologies, LLC (Salesforce) | https://slack.com/media-kit | Removed from simple-icons at the brand's request. Source from the vendor brand page before shipping. |

@@ -5,13 +5,15 @@ use super::*;
 pub(super) async fn logout(State(state): State<AppState>) -> impl IntoResponse {
     // Clear on the same Domain the session was set with so browsers actually
     // drop the cookie (missing-Domain clear won't match a Domain-scoped
-    // cookie and the session persists visually).
-    let mut clear = String::from("oss_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0");
-    if let Some(domain) = state.config.session_cookie_domain.as_deref() {
-        clear.push_str(&format!("; Domain={domain}"));
+    // cookie and the session persists visually). Also clear the host-only
+    // preview-handoff variant and any pre-prefix `oss_session` left over.
+    let mut clears = vec![cookies::clear_for(&state, cookies::SESSION, "/")];
+    if state.config.session_cookie_domain.is_some() {
+        clears.push(cookies::clear(cookies::SESSION, None, "/"));
     }
+    clears.extend(cookies::legacy_session_clears_for(&state));
     let mut headers = HeaderMap::new();
-    headers.insert(header::SET_COOKIE, clear.parse().unwrap());
+    cookies::append_all(&mut headers, clears);
     (headers, axum::Json(json!({ "status": "logged_out" })))
 }
 
@@ -24,7 +26,7 @@ pub(super) async fn me(
     ReqExt(ext): ReqExt,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, AppError> {
-    let token = extract_cookie(&headers, "oss_session")
+    let token = cookies::read_session(&headers, &state)
         .ok_or_else(|| AppError::Unauthorized("not authenticated".into()))?;
 
     let jwt_secret = signing_key_bytes(&state.config.signing_key);

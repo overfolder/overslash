@@ -291,16 +291,20 @@ async fn test_hubspot_mcp_tool_call_injects_oauth_bearer() {
         &key,
         "manage_crm_objects",
         json!({
+            // `objectType` sits on each object, not on the request — the
+            // shape HubSpot's own tool schema declares.
             "createRequest": {
-                "objectType": "contacts",
-                "objects": [{"properties": {"email": "ada@analytical.example", "firstname": "Ada"}}]
+                "objects": [{
+                    "objectType": "contacts",
+                    "properties": {"email": "ada@analytical.example", "firstname": "Ada"}
+                }]
             },
             "confirmationStatus": "CONFIRMED"
         }),
     )
     .await;
     assert_eq!(
-        body["structured"]["echo"]["createRequest"]["objectType"],
+        body["structured"]["echo"]["createRequest"]["objects"][0]["objectType"],
         "contacts"
     );
 
@@ -538,8 +542,10 @@ async fn test_hubspot_mcp_write_disclosure_gates_to_approval() {
             "action": "manage_crm_objects",
             "params": {
                 "createRequest": {
-                    "objectType": "contacts",
-                    "objects": [{"properties": {"email": "grace@navy.example", "firstname": "Grace"}}]
+                    "objects": [{
+                        "objectType": "contacts",
+                        "properties": {"email": "grace@navy.example", "firstname": "Grace"}
+                    }]
                 }
             }
         }))

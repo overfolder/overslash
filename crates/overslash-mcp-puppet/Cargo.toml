@@ -34,3 +34,6 @@ dashmap = { workspace = true }
 futures-util = "0.3"
 tokio = { workspace = true }
 uuid = { workspace = true }
+
+[lints]
+workspace = true

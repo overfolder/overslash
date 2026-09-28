@@ -8,9 +8,15 @@ use super::*;
 /// The template's credential slot keys whose fallback is the instance's legacy
 /// scalar `secret_name` (i.e. `source: instance`). Empty keys
 /// (programmatically-built templates) are skipped — they can't key a binding.
+///
+/// Deliberately **template-wide**, not narrowed to the instance's auth mode:
+/// this validates bindings a caller supplies, and binding the credential for
+/// the mode you are about to switch *to* is a legitimate thing to do. Refusing
+/// it would make switching a two-step dance, and a binding for an inactive mode
+/// injects nothing — `auth_for_mode` never returns its scheme.
 pub(super) fn instance_slot_keys(template: &ServiceDefinition) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
-    for slot in crate::services::service_setup::instance_slots(template) {
+    for slot in crate::services::service_setup::all_instance_slots(template) {
         if !out.contains(&slot.key) {
             out.push(slot.key);
         }

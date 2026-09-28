@@ -37,7 +37,7 @@ async fn email_prefs_default_subscribed_then_toggle_roundtrip() {
     let token = token_resp["token"].as_str().unwrap();
     let org_id: Uuid = token_resp["org_id"].as_str().unwrap().parse().unwrap();
 
-    let cookie = format!("oss_session={token}");
+    let cookie = format!("__Host-oss_session={token}");
 
     let prefs: Value = client
         .get(format!("{base}/v1/account/email-preferences"))
@@ -142,7 +142,10 @@ async fn email_prefs_webhook_digest_toggle_is_independent_from_welcome() {
         .json()
         .await
         .unwrap();
-    let cookie = format!("oss_session={}", token_resp["token"].as_str().unwrap());
+    let cookie = format!(
+        "__Host-oss_session={}",
+        token_resp["token"].as_str().unwrap()
+    );
     let org_id: Uuid = token_resp["org_id"].as_str().unwrap().parse().unwrap();
 
     let prefs: Value = client
@@ -235,7 +238,10 @@ async fn unsubscribe_post_one_click_is_idempotent_and_opaque() {
         .json()
         .await
         .unwrap();
-    let cookie = format!("oss_session={}", token_resp["token"].as_str().unwrap());
+    let cookie = format!(
+        "__Host-oss_session={}",
+        token_resp["token"].as_str().unwrap()
+    );
     let org_id: Uuid = token_resp["org_id"].as_str().unwrap().parse().unwrap();
     let me: Value = client
         .get(format!("{base}/auth/me/identity"))
@@ -342,7 +348,10 @@ async fn already_redeemed_token_does_not_override_resubscribe() {
         .json()
         .await
         .unwrap();
-    let cookie = format!("oss_session={}", token_resp["token"].as_str().unwrap());
+    let cookie = format!(
+        "__Host-oss_session={}",
+        token_resp["token"].as_str().unwrap()
+    );
     let org_id: Uuid = token_resp["org_id"].as_str().unwrap().parse().unwrap();
     let me: Value = client
         .get(format!("{base}/auth/me/identity"))
@@ -425,7 +434,10 @@ async fn unsubscribe_get_renders_html_on_hit_and_404s_on_miss() {
         .json()
         .await
         .unwrap();
-    let cookie = format!("oss_session={}", token_resp["token"].as_str().unwrap());
+    let cookie = format!(
+        "__Host-oss_session={}",
+        token_resp["token"].as_str().unwrap()
+    );
     let org_id: Uuid = token_resp["org_id"].as_str().unwrap().parse().unwrap();
     let me: Value = client
         .get(format!("{base}/auth/me/identity"))
@@ -500,7 +512,10 @@ async fn orphan_unsubscribe_token_can_be_deleted_on_send_failure() {
         .json()
         .await
         .unwrap();
-    let cookie = format!("oss_session={}", token_resp["token"].as_str().unwrap());
+    let cookie = format!(
+        "__Host-oss_session={}",
+        token_resp["token"].as_str().unwrap()
+    );
     let org_id: Uuid = token_resp["org_id"].as_str().unwrap().parse().unwrap();
     let me: Value = client
         .get(format!("{base}/auth/me/identity"))
@@ -551,7 +566,10 @@ async fn welcome_email_sent_at_gate_is_one_shot() {
         .json()
         .await
         .unwrap();
-    let cookie = format!("oss_session={}", token_resp["token"].as_str().unwrap());
+    let cookie = format!(
+        "__Host-oss_session={}",
+        token_resp["token"].as_str().unwrap()
+    );
     let me: Value = client
         .get(format!("{base}/auth/me/identity"))
         .header("cookie", &cookie)

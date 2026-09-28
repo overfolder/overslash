@@ -12,6 +12,7 @@ Overslash is a standalone, multi-tenant actions and authentication gateway for A
 | Find what to work on | [TODO.md](TODO.md) |
 | Understand a known workaround | [TECH_DEBT.md](TECH_DEBT.md) |
 | Find a design doc | [docs/design/INDEX.md](docs/design/INDEX.md) |
+| Know where we stand on CASA / Google restricted scopes | [docs/compliance/casa/](docs/compliance/casa/README.md) |
 | Understand the UI | [UI_SPEC.md](UI_SPEC.md) |
 | Visual design reference | [Figma](https://www.figma.com/design/g385jjr9vo48bWqZq2yKCi) |
 | Design tokens (CSS) | [dashboard/src/lib/styles/design-tokens.css](dashboard/src/lib/styles/design-tokens.css) |
@@ -68,7 +69,7 @@ When running in a Kanban worktree (`.cline/worktrees/<id>/`), `make local` autom
    lands mid-codepoint — and the strings we truncate (upstream error text,
    user-supplied names, log lines) are exactly the ones that carry non-ASCII.
    Snap down to a valid boundary with `str::floor_char_boundary(n)` (stable
-   since 1.91, comfortably under our 1.97 MSRV), or iterate with
+   since 1.91, comfortably under our 1.98 MSRV), or iterate with
    `chars()`/`char_indices()`. Same for `split_at`/`get`. Older call sites
    hand-roll the same snap as `while !s.is_char_boundary(n) { n -= 1 }` — just
    as correct; no need to churn them.

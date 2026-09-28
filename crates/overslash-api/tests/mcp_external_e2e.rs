@@ -60,7 +60,7 @@ async fn deepwiki_live_resync_and_call() {
     }
     // DeepWiki is a public IP so the guard won't trip — no escape hatch
     // needed here. If OVERSLASH_E2E_DEEPWIKI_URL points at a loopback
-    // mirror for debugging, callers set OVERSLASH_SSRF_ALLOW_PRIVATE=1
+    // mirror for debugging, callers set OVERSLASH_SSRF_ALLOWED_CIDRS
     // themselves.
     let url = deepwiki_url();
 

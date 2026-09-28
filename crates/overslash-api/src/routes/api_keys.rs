@@ -1,4 +1,4 @@
-use axum::{Json, Router, extract::State, routing::get};
+use axum::{Json, Router, routing::get};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -9,9 +9,8 @@ use overslash_db::repos::audit::AuditEntry;
 use crate::{
     AppState,
     error::{AppError, Result},
-    extractors::{ClientIp, OptionalOrgAcl, OrgAcl, ReqExt},
+    extractors::{AdminAcl, ClientIp, OrgAcl},
 };
-use overslash_core::permissions::AccessLevel;
 
 pub fn router() -> Router<AppState> {
     Router::new().route("/v1/api-keys", get(list_api_keys).post(create_api_key))
@@ -54,18 +53,16 @@ async fn list_api_keys(_: OrgAcl, scope: OrgScope) -> Result<Json<Vec<ApiKeySumm
 
 #[derive(Deserialize)]
 struct CreateApiKeyRequest {
-    org_id: Uuid,
-    /// Required: every API key is bound to a User or Agent identity. The
-    /// previously-supported "org-level" key (identity_id = null) was removed
-    /// in migration 028.
+    /// The identity the key binds to. Every API key is bound to a User or
+    /// Agent — the "org-level" key (identity_id = null) was removed in
+    /// migration 028. Omitted means the caller's own identity.
     ///
-    /// Exception: in the unauthenticated bootstrap path (no auth header, no
-    /// existing keys, no existing users), this field may be omitted — the
-    /// server will mint a fresh admin User and bind the key to it.
+    /// Must name an identity in the caller's own org: it is resolved through
+    /// the caller's `OrgScope`, so an id from another tenant does not exist.
     identity_id: Option<Uuid>,
     name: String,
     /// Optional list of capability scopes for this key. The `"impersonate"`
-    /// scope enables `X-Overslash-As` header usage and requires admin ACL.
+    /// scope enables `X-Overslash-As` header usage.
     #[serde(default)]
     scopes: Vec<String>,
 }
@@ -82,88 +79,44 @@ struct CreateApiKeyResponse {
 
 /// Create an API key. Requires admin-level ACL access.
 ///
-/// Exception: if neither an API key nor an identity exists for the org yet
-/// (true bootstrap), allows unauthenticated creation. In that path the server
-/// also mints the first admin User and binds the key to it — there is no such
-/// thing as a naked "org-level" key.
+/// The org is never named by the caller: `OrgScope` is minted from the
+/// presented credential — a session JWT's currently *active* org, which
+/// `/auth/switch-org` re-mints, or an `osk_` key's own org. That distinction
+/// matters because a human can belong to several orgs: deriving from the
+/// *user* would let an org-A session write into org B on the grounds that the
+/// user is a member there. A multi-org human mints into B by being switched
+/// to B, and by nothing else.
+///
+/// There is no unauthenticated branch. An org's first admin key is minted by
+/// `POST /v1/orgs` itself and returned once in that response — see
+/// `routes/orgs/create.rs::provision_new_org_contents`.
 async fn create_api_key(
-    State(state): State<AppState>,
-    ReqExt(ext): ReqExt,
-    OptionalOrgAcl(acl): OptionalOrgAcl,
+    AdminAcl(acl): AdminAcl,
+    scope: OrgScope,
     ip: ClientIp,
     Json(req): Json<CreateApiKeyRequest>,
 ) -> Result<Json<CreateApiKeyResponse>> {
-    let create_scope = OrgScope::new(req.org_id, state.db_pool(&ext));
+    let identity_id = req
+        .identity_id
+        .or(acl.identity_id)
+        .ok_or_else(|| AppError::BadRequest("identity_id is required".into()))?;
 
-    // The "impersonate" scope is admin-only; reject early so the error is
-    // clear regardless of which path (authenticated vs. bootstrap) we take.
-    let wants_impersonate = req.scopes.iter().any(|s| s == "impersonate");
-    if wants_impersonate {
-        match &acl {
-            Some(acl) if acl.access_level >= AccessLevel::Admin => {}
-            _ => {
-                return Err(AppError::Forbidden(
-                    "'impersonate' scope requires admin access".into(),
-                ));
-            }
-        }
+    // Resolved *through the scope*, so the org bound is a WHERE clause on the
+    // lookup rather than a comparison a later edit can quietly drop. An id
+    // from another tenant is indistinguishable from one that does not exist.
+    if scope.get_identity(identity_id).await?.is_none() {
+        return Err(AppError::NotFound("identity not found".into()));
     }
-
-    // Resolve which identity the new key will be bound to.
-    let identity_id: Uuid = match acl {
-        Some(acl) if acl.access_level >= AccessLevel::Admin => {
-            // Authenticated admin path. If identity_id is omitted, default to
-            // the caller's own identity (the natural "mint a key for myself"
-            // case from the dashboard); otherwise honour the request.
-            req.identity_id
-                .or(acl.identity_id)
-                .ok_or_else(|| AppError::BadRequest("identity_id is required".into()))?
-        }
-        Some(_) => return Err(AppError::Forbidden("admin access required".into())),
-        None => {
-            // True bootstrap: no auth, no existing keys, no existing identities.
-            let key_count = create_scope.count_api_keys().await?;
-            let identity_count = create_scope.count_identities().await?;
-            if key_count > 0 || identity_count > 0 {
-                return Err(AppError::Unauthorized(
-                    "missing authorization header".into(),
-                ));
-            }
-            if req.identity_id.is_some() {
-                // Bootstrap mints its own admin user; caller must not pre-pick one.
-                return Err(AppError::BadRequest(
-                    "identity_id must be omitted in the bootstrap path".into(),
-                ));
-            }
-            // Mint the first admin user and add it to Everyone + Admins groups
-            // via the existing org bootstrap helper.
-            let admin_user = create_scope.create_identity("admin", "user", None).await?;
-            overslash_db::repos::identity::set_is_org_admin(
-                state.db(&ext),
-                req.org_id,
-                admin_user.id,
-                true,
-            )
-            .await?;
-            overslash_db::repos::org_bootstrap::bootstrap_org(
-                state.db(&ext),
-                req.org_id,
-                Some(admin_user.id),
-            )
-            .await?;
-            admin_user.id
-        }
-    };
 
     let (raw_key, key_hash, key_prefix) = generate_api_key()?;
 
-    let row = create_scope
+    let row = scope
         .create_api_key(identity_id, &req.name, &key_hash, &key_prefix, &req.scopes)
         .await?;
 
-    let _ = create_scope
+    let _ = scope
         .log_audit(AuditEntry {
-            org_id: req.org_id,
+            org_id: acl.org_id,
             identity_id: Some(identity_id),
             action: "api_key.created",
             resource_type: Some("api_key"),

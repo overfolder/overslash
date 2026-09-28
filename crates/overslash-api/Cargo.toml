@@ -24,6 +24,7 @@ embeddings = ["overslash-core/embeddings"]
 sql_policy = ["overslash-core/sql_policy"]
 
 [dependencies]
+overslash-env = { path = "../overslash-env" }
 overslash-core = { path = "../overslash-core", default-features = false, features = ["yaml"] }
 overslash-db = { path = "../overslash-db" }
 overslash-metrics = { path = "../overslash-metrics" }
@@ -33,6 +34,7 @@ tower-http = { workspace = true }
 tokio = { workspace = true }
 sqlx = { workspace = true }
 reqwest = { workspace = true }
+ipnet = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
@@ -62,6 +64,10 @@ jaq-std = "=3.0.3"
 jaq-json = { version = "=2.0.3", features = ["serde"] }
 
 [dev-dependencies]
+# `test-support` exposes `Keyring::test()` to the integration tests. Dev-only:
+# feature unification never carries a dev-dependency's features into the
+# release binary.
+overslash-core = { path = "../overslash-core", default-features = false, features = ["yaml", "test-support"] }
 overslash-fakes = { path = "../overslash-fakes" }
 sqlx = { workspace = true }
 reqwest = { workspace = true }
@@ -70,3 +76,6 @@ uuid = { workspace = true }
 tokio = { workspace = true }
 libc = "0.2"
 minijinja = { version = "2", default-features = false, features = ["serde"] }
+
+[lints]
+workspace = true

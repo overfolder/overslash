@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE mcp_client_agent_bindings\n            SET elicitation_opted_out = $2,\n                updated_at = now()\n          WHERE agent_identity_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c01aea9b17f37059ec5224973512b78ecb7135b3c275d6edbd2031464ce1b707"
+}

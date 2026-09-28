@@ -112,10 +112,76 @@ x-overslash-mcp:
           filterGroups:
             type: array
             description: >-
-              Filter groups (OR'd); each has `filters`
-              [{propertyName, operator, value}] (AND'd within a group).
+              Filter groups, OR'd together. Max 5 groups, 6 filters each, 18
+              filters total.
             items:
               type: object
+              properties:
+                filters:
+                  type: array
+                  description: >-
+                    Property conditions, AND'd within the group.
+                  items:
+                    type: object
+                    required: [propertyName, operator]
+                    properties:
+                      propertyName:
+                        type: string
+                        description: >-
+                          CRM property to filter on. Not the pseudo-properties
+                          `associations.{type}` / `associated_{type}` — use
+                          `associatedWith` for those.
+                      operator:
+                        type: string
+                        enum:
+                          - EQ
+                          - NEQ
+                          - LT
+                          - LTE
+                          - GT
+                          - GTE
+                          - BETWEEN
+                          - IN
+                          - NOT_IN
+                          - HAS_PROPERTY
+                          - NOT_HAS_PROPERTY
+                          - CONTAINS_TOKEN
+                          - NOT_CONTAINS_TOKEN
+                        description: >-
+                          HAS_PROPERTY and NOT_HAS_PROPERTY take no value.
+                      value:
+                        type: string
+                        description: "Single-value operators (EQ, NEQ, LT, LTE, GT, GTE, CONTAINS_TOKEN, NOT_CONTAINS_TOKEN)."
+                      values:
+                        type: array
+                        items:
+                          type: string
+                        description: "Multi-value operators (IN, NOT_IN)."
+                      highValue:
+                        type: string
+                        description: "Upper bound for BETWEEN."
+                associatedWith:
+                  type: array
+                  description: >-
+                    Association conditions, AND'd with each other and with
+                    `filters` in the same group — "contacts for company X".
+                  items:
+                    type: object
+                    required: [objectType, operator]
+                    properties:
+                      objectType:
+                        type: string
+                        description: "Object type to find associations with, e.g. `companies`."
+                      operator:
+                        type: string
+                        enum: [EQUAL, IN, NOT_EQUAL, NOT_IN]
+                      objectIdValues:
+                        type: array
+                        items:
+                          type: integer
+                        description: >-
+                          1-100 ids. Exactly one for EQUAL/NOT_EQUAL, several
+                          for IN/NOT_IN.
           properties:
             type: array
             items:
@@ -126,6 +192,13 @@ x-overslash-mcp:
             description: "Sorting rules (only one may be applied)."
             items:
               type: object
+              required: [propertyName, direction]
+              properties:
+                propertyName:
+                  type: string
+                direction:
+                  type: string
+                  enum: [ASCENDING, DESCENDING]
           limit:
             type: integer
             minimum: 1
@@ -422,13 +495,92 @@ x-overslash-mcp:
           createRequest:
             type: object
             description: >-
-              Create payload: {objectType, objects: [{properties, …}]}.
-              Provide exactly one of createRequest / updateRequest.
+              Create payload. Provide exactly one of createRequest /
+              updateRequest. Max 10 objects per request.
+            properties:
+              objects:
+                type: array
+                items:
+                  type: object
+                  required: [objectType]
+                  properties:
+                    objectType:
+                      type: string
+                      description: >-
+                        Object type to create, e.g. `contacts`, `companies`,
+                        `deals`, `tickets`. For anything that is not a
+                        well-known standard type, resolve the exact typeName
+                        with `discover_hubspot_schema` first — creating the
+                        wrong object type cannot be undone.
+                    properties:
+                      type: object
+                      additionalProperties: true
+                      description: >-
+                        Property keys and values to set. Free-form: the keys
+                        are this portal's property names, so check them with
+                        `search_properties`. `hubspot_owner_id` defaults to
+                        the connected user when omitted; pass an empty string
+                        to leave the record unowned.
+                    associations:
+                      type: array
+                      description: >-
+                        Records to associate once this one is created.
+                      items:
+                        type: object
+                        required: [targetObjectId, targetObjectType]
+                        properties:
+                          targetObjectId:
+                            type: integer
+                          targetObjectType:
+                            type: string
+                            description: "e.g. CONTACT, COMPANY, DEAL."
+                          labels:
+                            type: array
+                            items:
+                              type: string
+                            description: >-
+                              Association labels to add, e.g. "Billing
+                              Contact". They must already exist for this
+                              object-type pair; listed labels are added to any
+                              already on the association.
           updateRequest:
             type: object
             description: >-
-              Update payload: {objectType, objects: [{id, properties}]}.
-              Provide exactly one of createRequest / updateRequest.
+              Update payload. Provide exactly one of createRequest /
+              updateRequest. Max 10 objects per request. Also the way to
+              associate two records that both already exist.
+            properties:
+              objects:
+                type: array
+                items:
+                  type: object
+                  required: [objectType, objectId]
+                  properties:
+                    objectType:
+                      type: string
+                    objectId:
+                      type: integer
+                    properties:
+                      type: object
+                      additionalProperties: true
+                      description: >-
+                        Property keys and values to update. Not every property
+                        is editable — sample the record first. Leave empty to
+                        only create associations.
+                    associations:
+                      type: array
+                      items:
+                        type: object
+                        required: [targetObjectId, targetObjectType]
+                        properties:
+                          targetObjectId:
+                            type: integer
+                          targetObjectType:
+                            type: string
+                          labels:
+                            type: array
+                            items:
+                              type: string
           confirmationStatus:
             type: string
             enum: [CONFIRMED, CONFIRMATION_WAIVED_FOR_SESSION]
@@ -439,9 +591,10 @@ x-overslash-mcp:
         required: []
       # MCP-runtime disclosure input is {runtime, tool, arguments, resolved,
       # service, action}; filters address `.arguments.*`, or `.resolved.*` when
-      # a param declares a resolver. The upstream sub-schemas are
-      # opaque objects, so disclose the operation, its object type, and the
-      # (truncated) payload itself.
+      # a param declares a resolver. The payload is disclosed whole (truncated)
+      # rather than field by field: the property map inside it is free-form, so
+      # there is no fixed set of paths a filter could name, and a reviewer
+      # signing off on a write needs to see what is actually being written.
       disclose:
         - label: Operation
           filter: >-
@@ -449,7 +602,15 @@ x-overslash-mcp:
              (.arguments.updateRequest | if . then "update" else empty end)]
             | join("+")
         - label: Object type
-          filter: '.arguments.createRequest.objectType // .arguments.updateRequest.objectType // empty'
+          # The object type sits on each object, not on the request — so this
+          # collects the distinct types across the batch rather than reading a
+          # key that is never there. A null branch contributes nothing, which
+          # is how "exactly one of createRequest/updateRequest" is handled
+          # without naming which one arrived.
+          filter: >-
+            [(.arguments.createRequest, .arguments.updateRequest)
+             | .objects[]? | .objectType]
+            | unique | join(", ")
         - label: Payload
           filter: '(.arguments.createRequest // .arguments.updateRequest // empty) | tojson'
           max_chars: 1000

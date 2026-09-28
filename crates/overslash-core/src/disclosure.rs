@@ -12,7 +12,7 @@
 //! `overslash-api::services::disclosure`; it reads the projection this
 //! module builds.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use serde_json::{Map, Value};
 
@@ -98,14 +98,35 @@ fn is_json_content_type(headers: &HashMap<String, String>) -> bool {
 /// point, and surfacing them through either `disclose` or `redact` would
 /// risk leaks. Array indices are not supported (templates should redact
 /// whole fields, not individual array elements).
-pub fn apply_redactions(value: &mut Value, redact_paths: &[String]) {
+///
+/// `json_string_params` names the params that declared `contentMediaType:
+/// application/json`, and a path may descend *through* one: the string is
+/// parsed, redacted inside, and re-serialized. Without that, a
+/// `redact: [params.params_json.access_hash]` silently does nothing and the
+/// secret lands on `approvals.action_detail`, `audit_log.detail` and the
+/// inline `pending_approval` envelope — a lost redaction, which is the one
+/// failure mode here that is worse than a noisy one.
+///
+/// It is **declaration-driven, never a guess**: a string that merely looks
+/// like JSON is left alone. This walker mutates, and one that descended on a
+/// hunch would rewrite unrelated fields. The re-serialized blob differs from
+/// the wire value, which is correct — this is the display projection, and it
+/// is already not byte-identical the moment anything in it is redacted.
+///
+/// The set covers both projection roots, because a body param and its
+/// `params.*` twin share a name.
+pub fn apply_redactions(
+    value: &mut Value,
+    redact_paths: &[String],
+    json_string_params: &BTreeSet<String>,
+) {
     for path in redact_paths {
         let segments: Vec<&str> = path.split('.').collect();
-        redact_at(value, &segments);
+        redact_at(value, &segments, json_string_params);
     }
 }
 
-fn redact_at(value: &mut Value, segments: &[&str]) {
+fn redact_at(value: &mut Value, segments: &[&str], json_string_params: &BTreeSet<String>) {
     let Some((head, rest)) = segments.split_first() else {
         return;
     };
@@ -116,15 +137,35 @@ fn redact_at(value: &mut Value, segments: &[&str]) {
         }
         return;
     }
-    if let Some(child) = map.get_mut(*head) {
-        redact_at(child, rest);
+    let Some(child) = map.get_mut(*head) else {
+        return;
+    };
+    // Descend through a declared JSON-carrying string. Only here, only for a
+    // declared param, and only when the path actually continues into it —
+    // nothing is parsed to answer a question nobody asked.
+    if let Value::String(text) = child
+        && json_string_params.contains(*head)
+        && let Ok(mut inner) = serde_json::from_str::<Value>(text)
+    {
+        redact_at(&mut inner, rest, json_string_params);
+        if let Ok(reserialized) = serde_json::to_string(&inner) {
+            *child = Value::String(reserialized);
+        }
+        return;
     }
+    redact_at(child, rest, json_string_params);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// No param declares a JSON-carrying string — the state every template was
+    /// in before `contentMediaType` existed, and still the common case.
+    pub(super) fn no_json_params() -> BTreeSet<String> {
+        BTreeSet::new()
+    }
 
     fn req(method: &str, url: &str, headers: &[(&str, &str)], body: Option<&str>) -> ActionRequest {
         let mut h = HashMap::new();
@@ -222,7 +263,7 @@ mod tests {
     #[test]
     fn apply_redactions_nested_body_field() {
         let mut v = json!({"body": {"api_key": "sk_123", "other": "ok"}});
-        apply_redactions(&mut v, &["body.api_key".into()]);
+        apply_redactions(&mut v, &["body.api_key".into()], &no_json_params());
         assert_eq!(v["body"]["api_key"], REDACTED);
         assert_eq!(v["body"]["other"], "ok");
     }
@@ -230,14 +271,18 @@ mod tests {
     #[test]
     fn apply_redactions_top_level_field() {
         let mut v = json!({"url": "https://x", "params": {"token": "abc"}});
-        apply_redactions(&mut v, &["params.token".into()]);
+        apply_redactions(&mut v, &["params.token".into()], &no_json_params());
         assert_eq!(v["params"]["token"], REDACTED);
     }
 
     #[test]
     fn apply_redactions_missing_path_is_silent_noop() {
         let mut v = json!({"body": {"a": 1}});
-        apply_redactions(&mut v, &["body.nonexistent".into(), "headers.x".into()]);
+        apply_redactions(
+            &mut v,
+            &["body.nonexistent".into(), "headers.x".into()],
+            &no_json_params(),
+        );
         assert_eq!(v["body"]["a"], 1);
     }
 
@@ -254,9 +299,97 @@ mod tests {
             "body": {"a": "1", "b": "2"},
             "resolved": {},
         });
-        apply_redactions(&mut v, &["body.a".into(), "params.token".into()]);
+        apply_redactions(
+            &mut v,
+            &["body.a".into(), "params.token".into()],
+            &no_json_params(),
+        );
         assert_eq!(v["body"]["a"], REDACTED);
         assert_eq!(v["body"]["b"], "2");
         assert_eq!(v["params"]["token"], REDACTED);
+    }
+}
+
+#[cfg(test)]
+mod json_string_redaction_tests {
+    use super::tests::no_json_params;
+    use super::*;
+    use serde_json::json;
+
+    fn declared(name: &str) -> BTreeSet<String> {
+        BTreeSet::from([name.to_string()])
+    }
+
+    #[test]
+    fn a_path_descends_through_a_declared_json_string() {
+        // Before this, `redact: [params.params_json.access_hash]` silently did
+        // nothing and the secret landed on the approval row in the clear.
+        let mut v = json!({
+            "params": { "params_json": r#"{"peer":"me","access_hash":"s3cret"}"# }
+        });
+        apply_redactions(
+            &mut v,
+            &["params.params_json.access_hash".into()],
+            &declared("params_json"),
+        );
+        let inner: Value =
+            serde_json::from_str(v["params"]["params_json"].as_str().unwrap()).unwrap();
+        assert_eq!(inner["access_hash"], REDACTED);
+        assert_eq!(inner["peer"], "me", "siblings survive");
+    }
+
+    #[test]
+    fn an_undeclared_string_is_never_descended_into() {
+        // This walker mutates. One that descended because a value *looked*
+        // like JSON would rewrite fields no template ever named.
+        let raw = r#"{"peer":"me","access_hash":"s3cret"}"#;
+        let mut v = json!({ "params": { "params_json": raw } });
+        apply_redactions(
+            &mut v,
+            &["params.params_json.access_hash".into()],
+            &no_json_params(),
+        );
+        assert_eq!(v["params"]["params_json"], raw, "left byte-identical");
+    }
+
+    #[test]
+    fn a_declared_string_that_is_not_json_is_left_alone() {
+        let mut v = json!({ "params": { "params_json": "not json at all" } });
+        apply_redactions(
+            &mut v,
+            &["params.params_json.secret".into()],
+            &declared("params_json"),
+        );
+        assert_eq!(v["params"]["params_json"], "not json at all");
+    }
+
+    #[test]
+    fn redacting_the_whole_field_still_replaces_the_string() {
+        // The path stops *at* the param rather than descending, so the ordinary
+        // leaf rule applies and the entire blob goes.
+        let mut v = json!({ "params": { "params_json": r#"{"a":1}"# } });
+        apply_redactions(
+            &mut v,
+            &["params.params_json".into()],
+            &declared("params_json"),
+        );
+        assert_eq!(v["params"]["params_json"], REDACTED);
+    }
+
+    #[test]
+    fn both_projection_roots_are_covered_by_one_set() {
+        // A body param and its `params.*` twin share a name, which is why the
+        // set is keyed by param name rather than by full path.
+        let blob = r#"{"token":"t"}"#;
+        let mut v = json!({ "params": { "payload": blob }, "body": { "payload": blob } });
+        apply_redactions(
+            &mut v,
+            &["params.payload.token".into(), "body.payload.token".into()],
+            &declared("payload"),
+        );
+        for root in ["params", "body"] {
+            let inner: Value = serde_json::from_str(v[root]["payload"].as_str().unwrap()).unwrap();
+            assert_eq!(inner["token"], REDACTED, "{root} root");
+        }
     }
 }

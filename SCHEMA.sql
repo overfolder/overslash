@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict VeJjLWgpX0zHeRI6jPdnuguwh5zra0DSWpgdtS7uMn5IDYXj1fAAdE1K7oioO0n
+\restrict c4ZOwNzpn1YqvUvZuguiaNIKICNL7i6say5iMyjrzQpjImZ1lV1UyxBIEteL3f4
 
 -- Dumped from database version 16.14 (Debian 16.14-1.pgdg12+1)
 -- Dumped by pg_dump version 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1)
@@ -610,8 +610,8 @@ CREATE TABLE public.mcp_client_agent_bindings (
     agent_identity_id uuid NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    elicitation_enabled boolean DEFAULT false NOT NULL,
-    self_approve_enabled boolean DEFAULT false NOT NULL
+    self_approve_enabled boolean DEFAULT false NOT NULL,
+    elicitation_opted_out boolean DEFAULT false NOT NULL
 );
 
 
@@ -824,8 +824,16 @@ CREATE TABLE public.oauth_providers (
     issuer_url text,
     jwks_uri text,
     default_identity_scopes text[] DEFAULT '{}'::text[] NOT NULL,
-    login_hint_param text
+    login_hint_param text,
+    refresh_endpoint text
 );
+
+
+--
+-- Name: COLUMN oauth_providers.refresh_endpoint; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.oauth_providers.refresh_endpoint IS 'Where the refresh grant is posted, when the provider does not accept it at token_endpoint. NULL means refresh at token_endpoint.';
 
 
 --
@@ -1116,6 +1124,7 @@ CREATE TABLE public.service_instances (
     discovered_tools jsonb,
     discovered_at timestamp with time zone,
     config jsonb DEFAULT '{}'::jsonb NOT NULL,
+    auth_mode text,
     CONSTRAINT service_instances_status_check CHECK ((status = ANY (ARRAY['draft'::text, 'active'::text, 'archived'::text, 'pending_setup'::text]))),
     CONSTRAINT service_instances_template_source_check CHECK ((template_source = ANY (ARRAY['global'::text, 'org'::text, 'user'::text])))
 );
@@ -1147,6 +1156,13 @@ COMMENT ON COLUMN public.service_instances.discovered_tools IS 'MCP tools/list r
 --
 
 COMMENT ON COLUMN public.service_instances.config IS 'Per-instance non-secret param values: {param name -> scalar}. Only params the template marks x-overslash-instance-config may appear. Never secrets — those are vault references in credentials.';
+
+
+--
+-- Name: COLUMN service_instances.auth_mode; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.service_instances.auth_mode IS 'Which of the template''s x-overslash-auth-modes this instance authenticates with (e.g. oauth, token). NULL = the template''s default mode, and the only possibility for a template declaring no modes.';
 
 
 --
@@ -1297,8 +1313,16 @@ CREATE TABLE public.webhook_deliveries (
     attempts integer DEFAULT 0 NOT NULL,
     next_retry_at timestamp with time zone,
     delivered_at timestamp with time zone,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    held_reason text
 );
+
+
+--
+-- Name: COLUMN webhook_deliveries.held_reason; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.webhook_deliveries.held_reason IS 'Set while the delivery is held back and not dialed (pending_verification). NULL once released or for a normal delivery.';
 
 
 --
@@ -1323,8 +1347,43 @@ CREATE TABLE public.webhook_subscriptions (
     events text[] NOT NULL,
     secret text NOT NULL,
     active boolean DEFAULT true NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    disabled_reason text,
+    verification_status text DEFAULT 'pending_verification'::text NOT NULL,
+    verified_at timestamp with time zone,
+    grandfathered boolean DEFAULT false NOT NULL,
+    verification_attempted_at timestamp with time zone,
+    verification_error text,
+    CONSTRAINT webhook_subscriptions_verification_status_check CHECK ((verification_status = ANY (ARRAY['pending_verification'::text, 'verified'::text])))
 );
+
+
+--
+-- Name: COLUMN webhook_subscriptions.disabled_reason; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.webhook_subscriptions.disabled_reason IS 'Why the platform disabled this subscription (needs_https). NULL for a subscription the platform has not disabled.';
+
+
+--
+-- Name: COLUMN webhook_subscriptions.verification_status; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.webhook_subscriptions.verification_status IS 'pending_verification until the endpoint echoes the ownership challenge; only verified subscriptions receive events.';
+
+
+--
+-- Name: COLUMN webhook_subscriptions.grandfathered; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.webhook_subscriptions.grandfathered IS 'Marked verified by migration 125 without a handshake (predates CASA 7.1.2). Cleared by a successful re-verification.';
+
+
+--
+-- Name: COLUMN webhook_subscriptions.verification_error; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.webhook_subscriptions.verification_error IS 'Why the last handshake failed. NULL after a success.';
 
 
 --
@@ -1500,6 +1559,14 @@ ALTER TABLE ONLY public.groups
 
 ALTER TABLE ONLY public.identities
     ADD CONSTRAINT identities_org_id_external_id_key UNIQUE (org_id, external_id);
+
+
+--
+-- Name: identities identities_org_id_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.identities
+    ADD CONSTRAINT identities_org_id_id_key UNIQUE (org_id, id);
 
 
 --
@@ -1903,10 +1970,10 @@ CREATE UNIQUE INDEX identities_org_user_unique ON public.identities USING btree 
 
 
 --
--- Name: idx_api_keys_org; Type: INDEX; Schema: public; Owner: -
+-- Name: idx_api_keys_org_identity; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX idx_api_keys_org ON public.api_keys USING btree (org_id);
+CREATE INDEX idx_api_keys_org_identity ON public.api_keys USING btree (org_id, identity_id);
 
 
 --
@@ -2288,6 +2355,13 @@ CREATE INDEX idx_pending_checkouts_user ON public.pending_checkouts USING btree 
 
 
 --
+-- Name: idx_pending_mcp_elicit_agent_cancelled; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_pending_mcp_elicit_agent_cancelled ON public.pending_mcp_elicitations USING btree (agent_identity_id, completed_at) WHERE (status = 'cancelled'::text);
+
+
+--
 -- Name: idx_pending_mcp_elicit_session; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2561,19 +2635,19 @@ CREATE TRIGGER events_notify_trigger AFTER INSERT ON public.events FOR EACH ROW 
 
 
 --
--- Name: api_keys api_keys_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.api_keys
-    ADD CONSTRAINT api_keys_identity_id_fkey FOREIGN KEY (identity_id) REFERENCES public.identities(id) ON DELETE CASCADE;
-
-
---
 -- Name: api_keys api_keys_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.api_keys
     ADD CONSTRAINT api_keys_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
+
+
+--
+-- Name: api_keys api_keys_org_id_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.api_keys
+    ADD CONSTRAINT api_keys_org_id_identity_id_fkey FOREIGN KEY (org_id, identity_id) REFERENCES public.identities(org_id, id) ON DELETE CASCADE;
 
 
 --
@@ -3356,5 +3430,5 @@ ALTER TABLE ONLY public.webhook_subscriptions
 -- PostgreSQL database dump complete
 --
 
-\unrestrict VeJjLWgpX0zHeRI6jPdnuguwh5zra0DSWpgdtS7uMn5IDYXj1fAAdE1K7oioO0n
+\unrestrict c4ZOwNzpn1YqvUvZuguiaNIKICNL7i6say5iMyjrzQpjImZ1lV1UyxBIEteL3f4
 

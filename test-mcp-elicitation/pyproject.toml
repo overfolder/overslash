@@ -4,7 +4,14 @@ version = "0.1.0"
 description = "Mock MCP server that probes elicitation + (eventually) tasks support in Claude Code / Codex / other MCP clients."
 requires-python = ">=3.11"
 dependencies = [
-    "mcp>=1.10.0",
+    # Pinned to the 1.x line. The low-level `Server` API this probe is built on
+    # (`@server.list_tools()`, `@server.call_tool()`, hand-registered
+    # `request_handlers[...]`) was reshaped in mcp 2.x, so an unpinned
+    # `>=1.10.0` silently resolves to 2.x and the server dies at import with
+    # `'Server' object has no attribute 'list_tools'`. Porting to 2.x is only
+    # worth it when we need to probe the 2026-07-28 protocol revision; 1.x
+    # already negotiates 2025-11-25, which is what Claude Code offers today.
+    "mcp>=1.10.0,<2",
 ]
 
 [project.scripts]

@@ -16,3 +16,6 @@ tracing = { workspace = true }
 [dev-dependencies]
 tokio = { workspace = true }
 tower = "0.5"
+
+[lints]
+workspace = true

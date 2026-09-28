@@ -29,15 +29,18 @@ struct Cli {
 enum Command {
     /// Start the REST API only (cloud mode — dashboard hosted separately).
     Serve {
-        #[arg(long, env = "HOST", default_value = "0.0.0.0")]
-        host: String,
-        #[arg(long, env = "PORT", default_value = "8080")]
-        port: u16,
+        /// Address to bind on. Precedence: --host > HOST > 0.0.0.0.
+        #[arg(long)]
+        host: Option<String>,
+        /// Port to bind on. Precedence: --port > PORT > 8080.
+        #[arg(long)]
+        port: Option<u16>,
     },
     /// Start the REST API and serve the embedded dashboard same-origin (self-hosted mode).
     Web {
-        #[arg(long, env = "HOST", default_value = "0.0.0.0")]
-        host: String,
+        /// Address to bind on. Precedence: --host > HOST > 0.0.0.0.
+        #[arg(long)]
+        host: Option<String>,
         /// Port to bind on. Precedence: --port > OVERSLASH_WEB_PORT > PORT > 7171.
         #[arg(long)]
         port: Option<u16>,
@@ -243,17 +246,28 @@ enum McpCommand {
     },
 }
 
-/// Parse a port env var, returning `None` when unset or unparseable.
+/// Parse a port env var, returning `None` when unset, empty or unparseable.
 fn env_port(name: &str) -> Option<u16> {
-    std::env::var(name).ok().and_then(|v| v.parse().ok())
+    overslash_env::parse_opt(name)
+}
+
+/// Resolve the bind address: flag, then `HOST`, then the default.
+///
+/// Deliberately *not* clap's `env = "HOST"`. Clap treats `HOST=""` as a value
+/// and lets it beat `default_value`, which binds the server to `":8080"` —
+/// the same empty-means-present bug the rest of the config boundary was
+/// fixed for, arriving through the argument parser instead.
+fn resolve_host(flag: Option<String>) -> String {
+    flag.filter(|h| !h.trim().is_empty())
+        .or_else(|| overslash_env::optional("HOST"))
+        .unwrap_or_else(|| "0.0.0.0".into())
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Load .env BEFORE clap parses, so flags with `env = "…"` fallbacks
-    // (e.g. --port / PORT) see values from the dotenv file. Otherwise clap
-    // only sees the real process env, falls back to `default_value`, and
-    // the CLI silently ignores .env overrides.
+    // Load .env BEFORE the args are resolved, so the env fallbacks behind
+    // --host / --port (and clap's own `env = "…"` flags elsewhere) see values
+    // from the dotenv file rather than only the real process env.
     //
     // Load .env.local first and .env second: dotenvy is first-wins (it never
     // overwrites an existing env var), so a worktree's .env.local (written by
@@ -263,10 +277,13 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Serve { host, port } => {
+            let host = resolve_host(host);
+            let port = port.or_else(|| env_port("PORT")).unwrap_or(8080);
             common::bootstrap_server();
             serve::run(host, port).await
         }
         Command::Web { host, port } => {
+            let host = resolve_host(host);
             common::bootstrap_server();
             // Precedence (CLI convention: explicit flag wins over env):
             //   1. --port (from the user)
@@ -397,6 +414,7 @@ fn fields_into_call_args(fields: CallFields) -> anyhow::Result<services::CallArg
 mod cli_tests {
     use super::*;
     use clap::Parser;
+    use std::sync::Mutex;
 
     fn parse(args: &[&str]) -> Cli {
         Cli::try_parse_from(args).unwrap_or_else(|e| panic!("parse {args:?}: {e}"))
@@ -406,8 +424,10 @@ mod cli_tests {
     fn serve_parses_with_defaults() {
         let cli = parse(&["overslash", "serve"]);
         if let Command::Serve { host, port } = cli.command {
-            assert_eq!(host, "0.0.0.0");
-            assert_eq!(port, 8080);
+            // Both `None` so `HOST` / `PORT` can still participate; the
+            // defaults live in `resolve_host` / the `unwrap_or` at the call.
+            assert_eq!(host, None);
+            assert_eq!(port, None);
         } else {
             panic!("expected Serve");
         }
@@ -424,8 +444,8 @@ mod cli_tests {
             "9001",
         ]);
         if let Command::Serve { host, port } = cli.command {
-            assert_eq!(host, "127.0.0.1");
-            assert_eq!(port, 9001);
+            assert_eq!(host.as_deref(), Some("127.0.0.1"));
+            assert_eq!(port, Some(9001));
         } else {
             panic!("expected Serve");
         }
@@ -589,5 +609,73 @@ mod cli_tests {
     fn bad_subcommand_errors() {
         let r = Cli::try_parse_from(["overslash", "bogus"]);
         assert!(r.is_err());
+    }
+
+    /// `resolve_host` exists because clap's `env = "HOST"` treats `HOST=""`
+    /// as a value and lets it beat `default_value`, binding the server to
+    /// `":8080"`. These cover the precedence it replaces that with:
+    /// `--host` > `HOST` > `0.0.0.0`.
+    ///
+    /// Every case pins `HOST` explicitly. The function falls through to the
+    /// variable whenever the flag is blank, so a `HOST` inherited from the
+    /// runner's shell would otherwise decide the result.
+    fn with_host<R>(host: Option<&str>, f: impl FnOnce() -> R) -> R {
+        static HOST_LOCK: Mutex<()> = Mutex::new(());
+        let guard = HOST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // SAFETY: HOST_LOCK serialises env mutation across this cohort.
+        unsafe {
+            match host {
+                Some(v) => std::env::set_var("HOST", v),
+                None => std::env::remove_var("HOST"),
+            }
+        }
+        let out = f();
+        unsafe {
+            std::env::remove_var("HOST");
+        }
+        // Released before the caller asserts: a panic inside the guard would
+        // poison the mutex and mask the real failure in every sibling.
+        drop(guard);
+        out
+    }
+
+    #[test]
+    fn resolve_host_prefers_the_flag_over_the_variable() {
+        let got = with_host(Some("10.0.0.1"), || resolve_host(Some("127.0.0.1".into())));
+        assert_eq!(got, "127.0.0.1");
+    }
+
+    #[test]
+    fn resolve_host_uses_the_variable_when_there_is_no_flag() {
+        let got = with_host(Some("10.0.0.1"), || resolve_host(None));
+        assert_eq!(got, "10.0.0.1");
+    }
+
+    #[test]
+    fn resolve_host_falls_back_to_the_default_for_a_blank_flag() {
+        // `--host ""` and `--host "   "` are both "the operator said nothing",
+        // so the variable gets its turn — and with none set, the default.
+        let (empty, spaces) = with_host(None, || {
+            (
+                resolve_host(Some(String::new())),
+                resolve_host(Some("   ".into())),
+            )
+        });
+        assert_eq!(empty, "0.0.0.0");
+        assert_eq!(spaces, "0.0.0.0");
+    }
+
+    #[test]
+    fn resolve_host_treats_an_empty_variable_as_unset() {
+        // The bug this replaced: clap let `HOST=""` beat `default_value`,
+        // and the server bound to ":8080".
+        let got = with_host(Some(""), || resolve_host(None));
+        assert_eq!(got, "0.0.0.0");
+    }
+
+    #[test]
+    fn resolve_host_defaults_when_neither_flag_nor_variable_is_set() {
+        let got = with_host(None, || resolve_host(None));
+        assert_eq!(got, "0.0.0.0");
     }
 }

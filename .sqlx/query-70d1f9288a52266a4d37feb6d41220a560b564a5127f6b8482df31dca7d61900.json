@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT EXISTS(\n            SELECT 1 FROM pending_mcp_elicitations\n             WHERE agent_identity_id = $1\n               AND status = 'cancelled'\n               AND completed_at > now() - make_interval(secs => $2)\n         )",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "exists",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Float8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "70d1f9288a52266a4d37feb6d41220a560b564a5127f6b8482df31dca7d61900"
+}

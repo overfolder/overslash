@@ -1,0 +1,1012 @@
+# Figma over its REST API v1, curated down from the ~45 operations Figma
+# publishes (https://github.com/figma/rest-api-spec) to the 24 an agent that is
+# implementing a design actually reaches for.
+#
+# The shape of the set: everything needed to read a design — the document tree,
+# individual nodes, rendered images, metadata, version history, and the
+# components, styles and variables that make up a design system — plus the two
+# write surfaces that belong to a coding agent's workflow. Comments, because
+# leaving a note on a frame is how an agent asks a designer a question. Dev
+# resources, because attaching the PR or the component file to the frame it
+# implements is the link nobody remembers to make by hand.
+#
+# Nothing here edits the canvas. Figma's design-mutating surface lives in its
+# MCP server, not the REST API, and a template that could redraw a file is a
+# different review from one that can leave a comment on it.
+openapi: 3.1.0
+info:
+  title: Figma
+  key: figma
+  category: Design
+  description: >-
+    Figma's REST API — read files, nodes, rendered images, version history and
+    design-system metadata (components, styles, variables), and write the two
+    things that belong beside code: comments on a frame, and dev resources
+    linking a node to the code that implements it. Access is bounded by what
+    the connected Figma account can already see; a token grants no more than
+    the person does.
+servers:
+  - url: https://api.figma.com
+components:
+  # Figma accepts either a personal access token or an OAuth access token on
+  # the same host and the same paths, so the two are alternatives rather than
+  # companions — an instance picks one at creation and uses it for every call.
+  #
+  # `security:` on the operations below stays what it is everywhere in this
+  # gateway: the *scopes* an OAuth connection needs. It is not the alternation
+  # — it has nowhere to carry a display label or a stable key, and a token mode
+  # has no scopes to declare. That is what this block is for.
+  x-overslash-auth-modes:
+    oauth:
+      label: Sign in with Figma
+      description: >-
+        Connect a Figma account. Access is bounded by the scopes granted at
+        connect time, and the token refreshes itself.
+      default: true
+      schemes: [oauth]
+    token:
+      label: Personal access token
+      description: >-
+        Paste a token generated under Figma → Settings → Security → Personal
+        access tokens. Scoped by what you tick when creating it, and it does
+        not expire until you revoke it.
+      schemes: [token]
+  securitySchemes:
+    token:
+      type: apiKey
+      in: header
+      # Figma's own header, not `Authorization` — a PAT sent as a bearer is
+      # rejected.
+      name: X-Figma-Token
+      x-overslash-label: Figma personal access token
+      description: >-
+        A Figma personal access token. Grants exactly what the account can
+        already see, bounded by the scopes ticked when the token was made.
+      default_secret_name: figma_pat
+    oauth:
+      type: oauth2
+      # Resolves the Figma OAuth provider row seeded in migration
+      # 120_add_figma_oauth_provider: HTTP Basic on the token request
+      # (`client_secret_basic`), PKCE with S256, `/v1/me` as the userinfo
+      # endpoint, and — uniquely so far — a refresh endpoint of its own,
+      # separate from the token endpoint.
+      provider: figma
+      flows:
+        authorizationCode:
+          authorizationUrl: https://www.figma.com/oauth
+          tokenUrl: https://api.figma.com/v1/oauth/token
+          # The union of every per-operation scope below. Each operation
+          # declares its own *minimum* in `security:`, so a connection granted
+          # only the read scopes keeps every read action rather than losing the
+          # service. Figma's legacy blanket `files:read` is deliberately not
+          # requested: it covers files, comments, versions and users at once,
+          # which is exactly the granularity this gateway exists to avoid.
+          scopes:
+            current_user:read: ""
+            file_content:read: ""
+            file_metadata:read: ""
+            file_versions:read: ""
+            file_comments:read: ""
+            file_comments:write: ""
+            file_dev_resources:read: ""
+            file_dev_resources:write: ""
+            file_variables:read: ""
+            library_content:read: ""
+            team_library_content:read: ""
+            projects:read: ""
+paths:
+  # --- Account -------------------------------------------------------------
+  /v1/me:
+    get:
+      operationId: get_me
+      summary: Get the authenticated Figma user
+      # The credential probe. Zero parameters, no file access needed, and it is
+      # the same endpoint the OAuth callback reads to name the connection, so a
+      # token that fails here is a token that cannot label itself either.
+      test: true
+      risk: read
+      security:
+        - oauth:
+            - current_user:read
+      description: >-
+        The account this service is connected as — id, email, handle and avatar.
+        Use it to confirm *which* Figma account an action will act as before
+        acting.
+
+  # --- Files ---------------------------------------------------------------
+  /v1/files/{file_key}:
+    parameters:
+      - name: file_key
+        in: path
+        required: true
+        description: >-
+          File key, the segment after /design/ or /file/ in a Figma URL
+          (https://www.figma.com/design/{file_key}/{title}). A branch key works
+          too.
+        schema:
+          type: string
+    get:
+      operationId: get_file
+      summary: "Get the document tree of file {file_key}"
+      risk: read
+      scope_param: file_key
+      security:
+        - oauth:
+            - file_content:read
+      description: >-
+        The file as a JSON document tree. Bounded by `depth`, which defaults to
+        2 here — pages and their top-level frames. Omitting depth upstream
+        returns *every* node in the file, which on a real design file is tens
+        of megabytes and past the response size cap, so the default is sent on
+        every call you do not override. Walk down by raising `depth` one level
+        at a time, or jump straight to what you want with `get_file_nodes` once
+        you know the node ids.
+      parameters:
+        - name: depth
+          in: query
+          description: >-
+            How deep into the document tree to traverse. 1 returns pages only,
+            2 pages plus each page's top-level objects. Defaults to 2 — see the
+            action description before raising it.
+          schema:
+            type: number
+            default: 2
+        - name: ids
+          in: query
+          description: >-
+            Comma-separated node ids to narrow the document to. Top-level
+            canvas nodes come back regardless, and a listed node's subtree and
+            dependencies come with it.
+          schema:
+            type: string
+        - name: version
+          in: query
+          description: A specific version id, from `list_file_versions`. Omit for current.
+          schema:
+            type: string
+        - name: geometry
+          in: query
+          description: Set to `paths` to include vector geometry. Substantially larger.
+          schema:
+            type: string
+        - name: branch_data
+          in: query
+          description: >-
+            Include branch metadata — the main file's key if this is a branch,
+            and the branches' keys if it has any.
+          schema:
+            type: boolean
+            default: false
+  /v1/files/{file_key}/nodes:
+    parameters:
+      - name: file_key
+        in: path
+        required: true
+        description: File key, as in `get_file`.
+        schema:
+          type: string
+    get:
+      operationId: get_file_nodes
+      summary: "Get nodes {ids} of file {file_key}"
+      risk: read
+      scope_param: file_key
+      security:
+        - oauth:
+            - file_content:read
+      description: >-
+        Just the nodes you name, rather than the whole document. This is the
+        targeted alternative to `get_file`: once `get_file` at depth 2 has told
+        you which frame you care about, ask for it by id here. `depth` defaults
+        to 2 for the same size reason, but relative to each requested node, so
+        raising it is far cheaper than raising it on `get_file`.
+      parameters:
+        - name: ids
+          in: query
+          required: true
+          description: Comma-separated node ids to return.
+          schema:
+            type: string
+        - name: depth
+          in: query
+          description: How deep below each requested node to traverse.
+          schema:
+            type: number
+            default: 2
+        - name: version
+          in: query
+          description: A specific version id. Omit for current.
+          schema:
+            type: string
+        - name: geometry
+          in: query
+          description: Set to `paths` to include vector geometry.
+          schema:
+            type: string
+  /v1/files/{file_key}/meta:
+    parameters:
+      - name: file_key
+        in: path
+        required: true
+        description: File key. Must be a main file key, not a branch key.
+        schema:
+          type: string
+    get:
+      operationId: get_file_meta
+      summary: "Get metadata for file {file_key}"
+      risk: read
+      scope_param: file_key
+      security:
+        - oauth:
+            - file_metadata:read
+      description: >-
+        Name, containing folder, editor type, creator, last editor and last
+        touched time — without reading a single node. The cheap way to confirm
+        a file key points where you think it does.
+  /v1/files/{file_key}/versions:
+    parameters:
+      - name: file_key
+        in: path
+        required: true
+        description: File key, as in `get_file`.
+        schema:
+          type: string
+    get:
+      operationId: list_file_versions
+      summary: "List the version history of file {file_key}"
+      # Figma answers with `{versions, pagination: {next_page, prev_page}}`,
+      # where `next_page` is a whole URL rather than a bare token — the `link`
+      # style with `from:`. `param: after` names the continuation key, which
+      # page one never sends and would otherwise be dropped as an argument the
+      # caller did not choose.
+      pagination:
+        page_size:
+          param: page_size
+          default: 30
+          max: 50
+        next:
+          style: link
+          from: pagination.next_page
+          param: after
+        items: versions
+      risk: read
+      scope_param: file_key
+      security:
+        - oauth:
+            - file_versions:read
+      description: >-
+        Named and autosaved versions of the file, newest first. A version id
+        from here is what `get_file` and `render_images` take as `version` to
+        read the file as it was.
+      parameters:
+        - name: page_size
+          in: query
+          description: Versions per page (max 50).
+          schema:
+            type: number
+        - name: after
+          in: query
+          description: Return versions after this version id. Exclusive with `before`.
+          schema:
+            type: number
+        - name: before
+          in: query
+          description: Return versions before this version id. Exclusive with `after`.
+          schema:
+            type: number
+  /v1/images/{file_key}:
+    parameters:
+      - name: file_key
+        in: path
+        required: true
+        description: File key, as in `get_file`.
+        schema:
+          type: string
+    get:
+      operationId: render_images
+      summary: "Render nodes {ids} of file {file_key} as images"
+      risk: read
+      scope_param: file_key
+      security:
+        - oauth:
+            - file_content:read
+      description: >-
+        Render the named nodes and get back a map of node id to image URL. The
+        URLs are temporary — Figma expires them after 30 days — and the bytes
+        are never proxied through here, so this is cheap regardless of how
+        large the render is. `svg` is the format to ask for when the output is
+        going into code.
+      parameters:
+        - name: ids
+          in: query
+          required: true
+          description: Comma-separated node ids to render.
+          schema:
+            type: string
+        - name: format
+          in: query
+          description: Output format.
+          schema:
+            type: string
+            enum: [jpg, png, svg, pdf]
+            default: png
+        - name: scale
+          in: query
+          description: Render scale, 0.01 to 4.
+          schema:
+            type: number
+        - name: version
+          in: query
+          description: A specific version id. Omit for current.
+          schema:
+            type: string
+        - name: use_absolute_bounds
+          in: query
+          description: >-
+            Render the node at its full dimensions rather than cropped to its
+            visible bounds — what you want for a node clipped by its parent.
+          schema:
+            type: boolean
+  /v1/files/{file_key}/images:
+    parameters:
+      - name: file_key
+        in: path
+        required: true
+        description: File key, as in `get_file`.
+        schema:
+          type: string
+    get:
+      operationId: get_image_fills
+      summary: "Get the image fills of file {file_key}"
+      risk: read
+      scope_param: file_key
+      security:
+        - oauth:
+            - file_content:read
+      description: >-
+        Download URLs for the images *placed in* the file, keyed by the image
+        ref a node's fill points at. Distinct from `render_images`, which
+        rasterises nodes; this returns the source bitmaps a designer dropped in.
+
+  # --- Teams, projects and files -------------------------------------------
+  /v1/teams/{team_id}/projects:
+    parameters:
+      - name: team_id
+        in: path
+        required: true
+        description: >-
+          Team id, the segment after /team/ in a Figma team URL. Figma exposes
+          no endpoint that lists your teams — take it from the URL.
+        schema:
+          type: string
+    get:
+      operationId: list_team_projects
+      summary: "List projects in team {team_id}"
+      risk: read
+      scope_param: team_id
+      security:
+        - oauth:
+            - projects:read
+      description: >-
+        The projects (folders) in a team. Start here when you have a team and
+        need to find a file: projects here, then `list_project_files`.
+  /v1/projects/{project_id}/files:
+    parameters:
+      - name: project_id
+        in: path
+        required: true
+        description: Project id, from `list_team_projects`.
+        schema:
+          type: string
+    get:
+      operationId: list_project_files
+      summary: "List files in project {project_id}"
+      risk: read
+      scope_param: project_id
+      security:
+        - oauth:
+            - projects:read
+      description: >-
+        Files in a project, with their keys, names and thumbnails. The file
+        keys here are what every file action takes.
+      parameters:
+        - name: branch_data
+          in: query
+          description: Include each file's branch metadata.
+          schema:
+            type: boolean
+            default: false
+
+  # --- Comments ------------------------------------------------------------
+  /v1/files/{file_key}/comments:
+    parameters:
+      - name: file_key
+        in: path
+        required: true
+        description: File key, as in `get_file`.
+        schema:
+          type: string
+    get:
+      operationId: list_comments
+      summary: "List comments on file {file_key}"
+      risk: read
+      scope_param: file_key
+      security:
+        - oauth:
+            - file_comments:read
+      description: >-
+        Every comment on the file, threaded by `parent_id`. Read this before
+        posting: a reply on an existing thread is usually what you want, not a
+        new root comment.
+      parameters:
+        - name: as_md
+          in: query
+          description: Return comment bodies as Markdown where applicable.
+          schema:
+            type: boolean
+    post:
+      operationId: post_comment
+      summary: "Comment on file {file_key}"
+      # A comment on a shared design file notifies the whole file's watchers
+      # and cannot be edited afterwards — only deleted. That is a write worth
+      # routing through approval when the permission chain does not cover it.
+      risk: write
+      scope_param: file_key
+      security:
+        - oauth:
+            - file_comments:write
+      disclose:
+        - label: File
+          primary: true
+          filter: .params.file_key
+        - label: Comment
+          primary: true
+          filter: .body.message
+          max_chars: 2000
+        # Presence test rather than `//`: `// empty` yields its right-hand side
+        # for `false` and `null` too, so an explicitly-null `comment_id` would
+        # render as nothing — and "new thread" versus "reply" is exactly what a
+        # reviewer is deciding on.
+        - label: Reply to comment
+          filter: 'if (.body | has("comment_id")) then .body.comment_id else empty end'
+      description: >-
+        Post a comment. Without `comment_id` this starts a new thread; with it,
+        the comment is a reply to that thread's root. Comments cannot be edited
+        after posting — only deleted — so the text is final.
+      parameters:
+        # Re-declared here rather than on the shared path item: a resolver runs
+        # on every call, so one on the path block would make `list_comments`
+        # fetch the file's metadata too. Operation-level wins on name collision.
+        - name: file_key
+          in: path
+          required: true
+          description: File key, as in `get_file`.
+          schema:
+            type: string
+          resolve:
+            get: /v1/files/{file_key}/meta
+            pick: file.name
+            cache_ttl: 300
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [message]
+              properties:
+                message:
+                  type: string
+                  description: The text of the comment.
+                comment_id:
+                  type: string
+                  description: >-
+                    Root comment to reply to. Must be a root comment — Figma
+                    does not allow replying to a reply.
+                client_meta:
+                  type: object
+                  description: >-
+                    Where to pin the comment. A canvas point `{x, y}`, or a
+                    frame offset `{node_id, node_offset: {x, y}}` to pin it to
+                    a node. Omit for a file-level comment.
+  /v1/files/{file_key}/comments/{comment_id}:
+    parameters:
+      - name: file_key
+        in: path
+        required: true
+        description: File key, as in `get_file`.
+        schema:
+          type: string
+      - name: comment_id
+        in: path
+        required: true
+        description: Id of the comment to delete, from `list_comments`.
+        schema:
+          type: string
+    delete:
+      operationId: delete_comment
+      summary: "Delete comment {comment_id} on file {file_key}"
+      risk: delete
+      scope_param: file_key
+      security:
+        - oauth:
+            - file_comments:write
+      disclose:
+        - label: File
+          primary: true
+          filter: .params.file_key
+        - label: Comment
+          primary: true
+          filter: .params.comment_id
+      description: >-
+        Delete a comment. Deleting a thread's root deletes its replies with it,
+        and nothing here is recoverable — Figma has no undo for this.
+      parameters:
+        # This path has no sibling read today, so the resolver could sit on the
+        # path item — it is kept on the operation for uniformity with the paths
+        # that do, and so adding a GET here later cannot silently inherit it.
+        - name: file_key
+          in: path
+          required: true
+          description: File key, as in `get_file`.
+          schema:
+            type: string
+          resolve:
+            get: /v1/files/{file_key}/meta
+            pick: file.name
+            cache_ttl: 300
+  /v1/files/{file_key}/comments/{comment_id}/reactions:
+    parameters:
+      - name: file_key
+        in: path
+        required: true
+        description: File key, as in `get_file`.
+        schema:
+          type: string
+      - name: comment_id
+        in: path
+        required: true
+        description: Id of the comment, from `list_comments`.
+        schema:
+          type: string
+    get:
+      operationId: list_comment_reactions
+      summary: "List reactions on comment {comment_id}"
+      # Same body-borne next URL as list_file_versions; the continuation key
+      # here is `cursor` rather than `after`.
+      pagination:
+        next:
+          style: link
+          from: pagination.next_page
+          param: cursor
+        items: reactions
+      risk: read
+      scope_param: file_key
+      security:
+        - oauth:
+            - file_comments:read
+      description: Reactions left on a comment, with who left each one.
+      parameters:
+        - name: cursor
+          in: query
+          description: Pagination cursor from a previous response.
+          schema:
+            type: string
+    post:
+      operationId: post_comment_reaction
+      summary: "React to comment {comment_id} on file {file_key}"
+      risk: write
+      scope_param: file_key
+      security:
+        - oauth:
+            - file_comments:write
+      disclose:
+        - label: File
+          filter: .params.file_key
+        - label: Comment
+          primary: true
+          filter: .params.comment_id
+        - label: Emoji
+          primary: true
+          filter: .body.emoji
+      description: >-
+        Add an emoji reaction to a comment, as the connected account. The emoji
+        is a shortcode without colons, e.g. `eyes` or `+1`.
+      parameters:
+        # Re-declared here rather than on the shared path item: a resolver runs
+        # on every call, so one on the path block would make
+        # `list_comment_reactions` fetch the file's metadata too.
+        # Operation-level wins on name collision.
+        - name: file_key
+          in: path
+          required: true
+          description: File key, as in `get_file`.
+          schema:
+            type: string
+          resolve:
+            get: /v1/files/{file_key}/meta
+            pick: file.name
+            cache_ttl: 300
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [emoji]
+              properties:
+                emoji:
+                  type: string
+                  description: Emoji shortcode without colons, e.g. `eyes`.
+    delete:
+      operationId: delete_comment_reaction
+      summary: "Remove reaction from comment {comment_id}"
+      risk: delete
+      scope_param: file_key
+      security:
+        - oauth:
+            - file_comments:write
+      disclose:
+        - label: File
+          filter: .params.file_key
+        - label: Comment
+          primary: true
+          filter: .params.comment_id
+        - label: Emoji
+          primary: true
+          filter: .params.emoji
+      description: Remove one of the connected account's own reactions from a comment.
+      parameters:
+        # See the note on post_comment: re-declared so the resolver does not
+        # also run on this path's GET.
+        - name: file_key
+          in: path
+          required: true
+          description: File key, as in `get_file`.
+          schema:
+            type: string
+          resolve:
+            get: /v1/files/{file_key}/meta
+            pick: file.name
+            cache_ttl: 300
+        - name: emoji
+          in: query
+          required: true
+          description: Emoji shortcode without colons, e.g. `eyes`.
+          schema:
+            type: string
+
+  # --- Design system: components, styles, variables ------------------------
+  /v1/files/{file_key}/components:
+    parameters:
+      - name: file_key
+        in: path
+        required: true
+        description: File key, as in `get_file`.
+        schema:
+          type: string
+    get:
+      operationId: list_file_components
+      summary: "List published components in file {file_key}"
+      risk: read
+      scope_param: file_key
+      security:
+        - oauth:
+            - library_content:read
+      description: >-
+        Components published from this file, with their keys, names and
+        descriptions. The file-scoped counterpart to `list_team_components`.
+  /v1/files/{file_key}/styles:
+    parameters:
+      - name: file_key
+        in: path
+        required: true
+        description: File key, as in `get_file`.
+        schema:
+          type: string
+    get:
+      operationId: list_file_styles
+      summary: "List published styles in file {file_key}"
+      risk: read
+      scope_param: file_key
+      security:
+        - oauth:
+            - library_content:read
+      description: Styles (colour, text, effect, grid) published from this file.
+  /v1/teams/{team_id}/components:
+    parameters:
+      - name: team_id
+        in: path
+        required: true
+        description: Team id, as in `list_team_projects`.
+        schema:
+          type: string
+    get:
+      operationId: list_team_components
+      summary: "List published components in team {team_id}"
+      # `{meta: {components, cursor: {before, after}}}` — a cursor under `meta`,
+      # so both the items path and the continuation are dotted.
+      pagination:
+        page_size:
+          param: page_size
+          default: 100
+          max: 1000
+        next:
+          style: cursor
+          param: after
+          from: meta.cursor.after
+        items: meta.components
+      risk: read
+      scope_param: team_id
+      security:
+        - oauth:
+            - team_library_content:read
+      description: >-
+        Every component published to the team's libraries. This is the design
+        system as the team publishes it, across files.
+      parameters:
+        - name: page_size
+          in: query
+          description: Components per page (max 1000).
+          schema:
+            type: number
+        - name: after
+          in: query
+          description: Cursor to continue after. Exclusive with `before`.
+          schema:
+            type: number
+        - name: before
+          in: query
+          description: Cursor to continue before. Exclusive with `after`.
+          schema:
+            type: number
+  /v1/teams/{team_id}/styles:
+    parameters:
+      - name: team_id
+        in: path
+        required: true
+        description: Team id, as in `list_team_projects`.
+        schema:
+          type: string
+    get:
+      operationId: list_team_styles
+      summary: "List published styles in team {team_id}"
+      # Same envelope as list_team_components, one collection over.
+      pagination:
+        page_size:
+          param: page_size
+          default: 100
+          max: 1000
+        next:
+          style: cursor
+          param: after
+          from: meta.cursor.after
+        items: meta.styles
+      risk: read
+      scope_param: team_id
+      security:
+        - oauth:
+            - team_library_content:read
+      description: Every style published to the team's libraries.
+      parameters:
+        - name: page_size
+          in: query
+          description: Styles per page (max 1000).
+          schema:
+            type: number
+        - name: after
+          in: query
+          description: Cursor to continue after. Exclusive with `before`.
+          schema:
+            type: number
+        - name: before
+          in: query
+          description: Cursor to continue before. Exclusive with `after`.
+          schema:
+            type: number
+  /v1/files/{file_key}/variables/local:
+    parameters:
+      - name: file_key
+        in: path
+        required: true
+        description: File key, as in `get_file`. Must be a main file key.
+        schema:
+          type: string
+    get:
+      operationId: get_local_variables
+      summary: "Get design variables defined in file {file_key}"
+      risk: read
+      scope_param: file_key
+      security:
+        - oauth:
+            - file_variables:read
+      description: >-
+        The variables and variable collections defined in this file — the
+        design tokens, with every mode's value. This is the single most direct
+        route from a design system to code.
+
+        Enterprise plans only. On any other plan Figma answers 403 for every
+        caller, which reads like a permission problem but is a plan limit; the
+        scope cannot be granted at all.
+
+  # --- Dev resources -------------------------------------------------------
+  /v1/files/{file_key}/dev_resources:
+    parameters:
+      - name: file_key
+        in: path
+        required: true
+        description: File key, as in `get_file`. Must be a main file key, not a branch.
+        schema:
+          type: string
+    get:
+      operationId: list_dev_resources
+      summary: "List dev resources in file {file_key}"
+      risk: read
+      scope_param: file_key
+      security:
+        - oauth:
+            - file_dev_resources:read
+      description: >-
+        Links attached to nodes in the file — the PR, the component source, the
+        ticket. Read this before attaching another to avoid duplicating one
+        that is already there.
+      parameters:
+        - name: node_ids
+          in: query
+          description: >-
+            Comma-separated node ids to filter by. Omit for every dev resource
+            in the file.
+          schema:
+            type: string
+  /v1/dev_resources:
+    post:
+      operationId: create_dev_resources
+      summary: Attach dev resources to design nodes
+      # Unscoped on purpose, and worth stating plainly: the file each resource
+      # attaches to lives at an array-indexed position in the body, and the
+      # dotted-path grammar takes no indices (the same limit stripe.yaml
+      # documents for `starting_after`). So there is no `scope_param` that
+      # could bound this to one file, and a grant covers every file the token
+      # can reach. The disclosure carries the whole array for that reason — the
+      # blast radius is the list, so the reviewer is shown the list.
+      risk: write
+      security:
+        - oauth:
+            - file_dev_resources:write
+      disclose:
+        - label: Links
+          primary: true
+          filter: '[.body.dev_resources[] | "\(.name) → \(.url)"] | join("\n")'
+          max_chars: 2000
+        - label: Files
+          primary: true
+          filter: '[.body.dev_resources[].file_key] | unique | join(", ")'
+        - label: Nodes
+          filter: '[.body.dev_resources[].node_id] | join(", ")'
+      description: >-
+        Attach links to nodes — a pull request, a component's source file, a
+        ticket. Each entry names its own `file_key` and `node_id`, so one call
+        can write across several files; a permission grant for this action
+        therefore covers every file the connection can reach, and cannot be
+        narrowed to one. Read `list_dev_resources` first: Figma rejects a
+        duplicate URL on the same node.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [dev_resources]
+              properties:
+                dev_resources:
+                  type: array
+                  description: >-
+                    Dev resources to create. Each entry names its own file and
+                    node, which is why this action cannot be scoped to one file.
+                  items:
+                    type: object
+                    required: [name, url, file_key, node_id]
+                    properties:
+                      name:
+                        type: string
+                        description: Label shown on the node in Figma.
+                      url:
+                        type: string
+                        description: Where the link points — a PR, a source file, a ticket.
+                      file_key:
+                        type: string
+                        description: File key, as in `get_file`. Must be a main file key, not a branch.
+                      node_id:
+                        type: string
+                        description: Node to attach to, e.g. `1:23`.
+    put:
+      operationId: update_dev_resources
+      summary: Update attached dev resources
+      # Unscoped for the same array-body reason as create_dev_resources.
+      risk: write
+      security:
+        - oauth:
+            - file_dev_resources:write
+      disclose:
+        - label: Links
+          primary: true
+          filter: '[.body.dev_resources[] | "\(.id): \(.name // "—") → \(.url // "—")"] | join("\n")'
+          max_chars: 2000
+        - label: Dev resources
+          primary: true
+          filter: '[.body.dev_resources[].id] | join(", ")'
+      description: >-
+        Rename or re-point existing dev resources, named by id. Only the fields
+        present on an entry are changed. Like `create_dev_resources`, one call
+        can span files, so a grant here cannot be narrowed to one file.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [dev_resources]
+              properties:
+                dev_resources:
+                  type: array
+                  description: >-
+                    Dev resources to update, named by id. Only the fields
+                    present on an entry are changed.
+                  items:
+                    type: object
+                    required: [id]
+                    properties:
+                      id:
+                        type: string
+                        description: Dev-resource id, from `list_dev_resources`.
+                      name:
+                        type: string
+                        description: New label. Omit to leave it.
+                      url:
+                        type: string
+                        description: New target. Omit to leave it.
+  /v1/files/{file_key}/dev_resources/{dev_resource_id}:
+    parameters:
+      - name: file_key
+        in: path
+        required: true
+        description: File key the dev resource is attached to.
+        schema:
+          type: string
+      - name: dev_resource_id
+        in: path
+        required: true
+        description: Id of the dev resource, from `list_dev_resources`.
+        schema:
+          type: string
+    delete:
+      operationId: delete_dev_resource
+      summary: "Remove dev resource {dev_resource_id} from file {file_key}"
+      risk: delete
+      scope_param: file_key
+      security:
+        - oauth:
+            - file_dev_resources:write
+      disclose:
+        - label: File
+          primary: true
+          filter: .params.file_key
+        - label: Dev resource
+          primary: true
+          filter: .params.dev_resource_id
+      description: >-
+        Detach a dev resource from its node. Unlike the bulk create and update,
+        this names its file in the path, so a grant can be bound to one file.
+      parameters:
+        # This path has no sibling read today, so the resolver could sit on the
+        # path item — it is kept on the operation for uniformity with the paths
+        # that do, and so adding a GET here later cannot silently inherit it.
+        - name: file_key
+          in: path
+          required: true
+          description: File key, as in `get_file`.
+          schema:
+            type: string
+          resolve:
+            get: /v1/files/{file_key}/meta
+            pick: file.name
+            cache_ttl: 300

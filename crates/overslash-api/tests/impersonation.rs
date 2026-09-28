@@ -42,17 +42,8 @@ async fn setup() -> (
         .unwrap();
     let org_id: Uuid = org["id"].as_str().unwrap().parse().unwrap();
 
-    let bootstrap: Value = client
-        .post(format!("{base}/v1/api-keys"))
-        .json(&json!({"org_id": org_id, "name": "bootstrap-admin"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let admin_key = bootstrap["key"].as_str().unwrap().to_string();
-    let service_account_id: Uuid = bootstrap["identity_id"].as_str().unwrap().parse().unwrap();
+    let admin_key = org["api_key"].as_str().unwrap().to_string();
+    let service_account_id: Uuid = org["identity_id"].as_str().unwrap().parse().unwrap();
 
     // Create a regular user identity (target)
     let target_user: Value = client
@@ -321,17 +312,8 @@ async fn impersonation_cannot_reach_other_org_identity() {
         .await
         .unwrap();
     let org_a_id: Uuid = org_a["id"].as_str().unwrap().parse().unwrap();
-    let boot_a: Value = client
-        .post(format!("{base}/v1/api-keys"))
-        .json(&json!({"org_id": org_a_id, "name": "admin-a"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let admin_key_a = boot_a["key"].as_str().unwrap().to_string();
-    let sa_a_id: Uuid = boot_a["identity_id"].as_str().unwrap().parse().unwrap();
+    let admin_key_a = org_a["api_key"].as_str().unwrap().to_string();
+    let sa_a_id: Uuid = org_a["identity_id"].as_str().unwrap().parse().unwrap();
 
     // Org B — get an identity to try to impersonate
     let org_b: Value = client
@@ -343,17 +325,7 @@ async fn impersonation_cannot_reach_other_org_identity() {
         .json()
         .await
         .unwrap();
-    let org_b_id: Uuid = org_b["id"].as_str().unwrap().parse().unwrap();
-    let boot_b: Value = client
-        .post(format!("{base}/v1/api-keys"))
-        .json(&json!({"org_id": org_b_id, "name": "admin-b"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let org_b_identity_id: Uuid = boot_b["identity_id"].as_str().unwrap().parse().unwrap();
+    let org_b_identity_id: Uuid = org_b["identity_id"].as_str().unwrap().parse().unwrap();
 
     // Create impersonation key in Org A
     let imp_key = create_impersonation_key(&base, &client, &admin_key_a, org_a_id, sa_a_id).await;
@@ -449,8 +421,13 @@ async fn create_impersonation_key_succeeds_for_admin() {
     );
 }
 
+/// There is no unauthenticated way to mint a key at all any more — the
+/// bootstrap branch that used to authorise itself on a body-supplied `org_id`
+/// is gone, and an org's first admin key comes back from `POST /v1/orgs`
+/// instead. So this refuses one step earlier than it used to: 401 for having
+/// no credential, rather than 403 for asking for a scope it could not have.
 #[tokio::test]
-async fn bootstrap_path_cannot_create_impersonation_key() {
+async fn an_unauthenticated_caller_cannot_create_an_impersonation_key() {
     let pool = common::test_pool().await;
     let (addr, client) = common::start_api(pool).await;
     let base = format!("http://{addr}");
@@ -466,7 +443,7 @@ async fn bootstrap_path_cannot_create_impersonation_key() {
         .unwrap();
     let org_id: Uuid = org["id"].as_str().unwrap().parse().unwrap();
 
-    // Bootstrap path: unauthenticated, but requesting impersonate scope
+    // Unauthenticated, and asking for impersonate scope.
     let resp = client
         .post(format!("{base}/v1/api-keys"))
         .json(&json!({
@@ -479,8 +456,8 @@ async fn bootstrap_path_cannot_create_impersonation_key() {
         .unwrap();
     assert_eq!(
         resp.status().as_u16(),
-        403,
-        "bootstrap path should not allow 'impersonate' scope"
+        401,
+        "minting a key requires a credential, impersonate scope or not"
     );
 }
 

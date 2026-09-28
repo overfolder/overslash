@@ -1,5 +1,5 @@
 // Sign in against the running API via /auth/dev/token, capture the
-// `oss_session` cookie, and return both the cookie string (for plain
+// session cookie, and return both the cookie string (for plain
 // `fetch` calls) and a helper that mirrors it onto a Playwright
 // BrowserContext.
 //
@@ -10,6 +10,15 @@
 // it up). `attachToContext` handles both.
 
 import { resolveEnv } from './env.mjs';
+
+/**
+ * Wire name of the session cookie. The e2e API sets no
+ * `SESSION_COOKIE_DOMAIN`, so it mints the host-only `__Host-` form, which is
+ * `Secure` — browsers and Playwright's request context only store and send
+ * that over plain http on `localhost`, which is why e2e-up.sh serves there.
+ * Mirrors `crates/overslash-api/src/cookies.rs`.
+ */
+export const SESSION_COOKIE = '__Host-oss_session';
 
 /**
  * @typedef {'admin' | 'member' | 'readonly'} DevProfile
@@ -51,13 +60,13 @@ export async function login(profile = 'admin', opts = {}) {
 		throw new Error(`dev login failed: HTTP ${res.status} ${await res.text().catch(() => '')}`);
 	}
 	const setCookies = extractSetCookies(res);
-	const session = setCookies.find((c) => c.name === 'oss_session');
+	const session = setCookies.find((c) => c.name === SESSION_COOKIE);
 	if (!session) {
-		throw new Error('dev login response had no oss_session Set-Cookie');
+		throw new Error(`dev login response had no ${SESSION_COOKIE} Set-Cookie`);
 	}
 
 	const meRes = await fetch(`${apiUrl}/auth/me/identity`, {
-		headers: { cookie: `oss_session=${session.value}` }
+		headers: { cookie: `${SESSION_COOKIE}=${session.value}` }
 	});
 	if (!meRes.ok) {
 		throw new Error(`/auth/me/identity failed: HTTP ${meRes.status}`);
@@ -69,7 +78,7 @@ export async function login(profile = 'admin', opts = {}) {
 		orgSlug: opts.org,
 		apiUrl,
 		dashboardUrl,
-		cookieHeader: `oss_session=${session.value}`,
+		cookieHeader: `${SESSION_COOKIE}=${session.value}`,
 		rawCookieValue: session.value,
 		identityId: me.identity_id,
 		orgId: me.org_id,
@@ -86,12 +95,13 @@ export async function attachToContext(ctx, session) {
 	const dashHost = new URL(session.dashboardUrl).hostname;
 	const hosts = new Set([apiHost, dashHost]);
 	const cookies = Array.from(hosts).map((domain) => ({
-		name: 'oss_session',
+		name: SESSION_COOKIE,
 		value: session.rawCookieValue,
 		domain,
 		path: '/',
 		httpOnly: true,
-		secure: false,
+		// `__Host-` requires it; Chromium treats loopback http as secure.
+		secure: true,
 		sameSite: /** @type {'Lax'} */ ('Lax')
 	}));
 	await ctx.addCookies(cookies);

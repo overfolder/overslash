@@ -6,7 +6,35 @@ info:
 servers:
   - url: https://api.notion.com
 components:
+  # Notion issues two credentials that its API treats identically — an OAuth
+  # access token from the public-integration dance, and the internal
+  # integration secret you copy out of the integration's own settings page.
+  # Both ride in `Authorization: Bearer`, both are bounded by the capabilities
+  # configured on the integration rather than by scopes, and an integration is
+  # one or the other. So: alternatives, chosen per instance.
+  x-overslash-auth-modes:
+    oauth:
+      label: Connect Notion
+      description: >-
+        Authorize a public Notion integration and pick the pages it may reach.
+      default: true
+      schemes: [oauth]
+    token:
+      label: Internal integration secret
+      description: >-
+        Paste the secret from an internal integration's settings page. You
+        still have to share each page or database with the integration from
+        inside Notion.
+      schemes: [token]
   securitySchemes:
+    token:
+      type: http
+      scheme: bearer
+      x-overslash-label: Notion integration secret
+      description: >-
+        An internal integration secret (`ntn_...`). What it can reach is what
+        you have shared with the integration, not what your own account sees.
+      default_secret_name: notion_integration_secret
     oauth:
       type: oauth2
       provider: notion
@@ -115,6 +143,18 @@ paths:
                 sorts:
                   type: array
                   description: "List of sort objects, e.g. [{property: 'Name', direction: 'ascending'}]"
+                  items:
+                    type: object
+                    properties:
+                      property:
+                        type: string
+                        description: "Property name to sort by. Omit when sorting on `timestamp`."
+                      timestamp:
+                        type: string
+                        enum: [created_time, last_edited_time]
+                      direction:
+                        type: string
+                        enum: [ascending, descending]
                 start_cursor:
                   type: string
                   description: Opaque cursor from a previous response for pagination

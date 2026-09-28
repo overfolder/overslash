@@ -5,6 +5,7 @@ use axum::{
     body::Bytes,
     extract::State,
     http::{HeaderMap, StatusCode},
+    response::IntoResponse,
     routing::{get, post},
 };
 use serde_json::{Value, json};
@@ -68,9 +69,14 @@ async fn auth_required(headers: HeaderMap) -> (StatusCode, Json<Value>) {
 async fn receive_webhook(
     State(state): State<SharedState>,
     Json(payload): Json<Value>,
-) -> StatusCode {
+) -> axum::response::Response {
+    // Answer the endpoint-ownership challenge (CASA 7.1.2) so subscriptions
+    // pointed here verify; the handshake itself is not an event.
+    if payload["type"] == "webhook.verification" {
+        return Json(json!({ "challenge": payload["data"]["challenge"] })).into_response();
+    }
     state.lock().await.received_webhooks.push(payload);
-    StatusCode::OK
+    StatusCode::OK.into_response()
 }
 
 async fn list_webhooks(State(state): State<SharedState>) -> Json<Value> {

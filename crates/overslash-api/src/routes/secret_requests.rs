@@ -202,7 +202,7 @@ async fn create_secret_request(
         },
     )
     .await?;
-    crate::services::events::emit(state.db_pool(&ext), state.http_client.clone(), minted.event);
+    crate::services::events::emit(state.db_pool(&ext), minted.event);
     let (req_id, token, url, short_url, expires_at) = (
         minted.request_id,
         minted.token,
@@ -616,7 +616,6 @@ async fn submit_provide(
     .await;
     crate::services::events::emit(
         state.db_pool(&ext),
-        state.http_client.clone(),
         crate::services::events::EventDraft {
             org_id: row.org_id,
             event_type: crate::services::events::EventType::SecretRequestFulfilled,
@@ -663,15 +662,16 @@ fn slot_views(
     instance: &overslash_db::repos::service_instance::ServiceInstanceRow,
     credential_key: &str,
 ) -> (SetupSlotView, Vec<SetupSlotView>) {
-    let slots: Vec<SetupSlotView> = crate::services::service_setup::instance_slots(def)
-        .into_iter()
-        .map(|s| SetupSlotView {
-            bound: crate::services::service_setup::is_bound(&instance.credentials.0, &s.key),
-            label: slot_label(&s),
-            key: s.key,
-            description: s.description,
-        })
-        .collect();
+    let slots: Vec<SetupSlotView> =
+        crate::services::service_setup::instance_slots(def, instance.auth_mode.as_deref())
+            .into_iter()
+            .map(|s| SetupSlotView {
+                bound: crate::services::service_setup::is_bound(&instance.credentials.0, &s.key),
+                label: slot_label(&s),
+                key: s.key,
+                description: s.description,
+            })
+            .collect();
     let slot = slots
         .iter()
         .find(|s| s.key == credential_key)
@@ -842,6 +842,7 @@ async fn bind_setup_slot(
         Ok(template) => Some(
             crate::services::service_setup::unprovisioned_instance_slots(
                 &template,
+                instance.auth_mode.as_deref(),
                 &instance.credentials.0,
                 instance.secret_name.as_deref(),
             ),

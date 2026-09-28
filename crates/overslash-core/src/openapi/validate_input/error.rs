@@ -26,6 +26,13 @@ pub enum ArgError {
         value: String,
         allowed: Vec<String>,
     },
+    /// A param declared `contentMediaType: application/json` was given a
+    /// string that is not JSON.
+    ///
+    /// Enforced even under `additional_properties`: that relaxation exists
+    /// because a transcribed *enum* can go stale, and "is this string JSON"
+    /// cannot.
+    NotJson { field: String },
 }
 
 impl ArgError {
@@ -63,6 +70,9 @@ impl ArgError {
                     .join(", ");
                 format!("argument `{field}` value `{value}` is not one of: {list}")
             }
+            ArgError::NotJson { field } => {
+                format!("argument `{field}` must be a JSON document (or the object/array itself)")
+            }
         }
     }
 }
@@ -90,6 +100,7 @@ pub(super) fn key(e: &ArgError) -> (u8, &str) {
         ArgError::Missing { field } => (0, field.as_str()),
         ArgError::Unknown { field, .. } => (1, field.as_str()),
         ArgError::NotInEnum { field, .. } => (2, field.as_str()),
+        ArgError::NotJson { field } => (3, field.as_str()),
     }
 }
 

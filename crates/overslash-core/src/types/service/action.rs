@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use super::execution::ExecutionMode;
 use super::pagination::PaginationSpec;
+use super::param_shape::ParamShape;
 use super::risk::DeclaredRisk;
 use super::scope::ScopeParams;
 
@@ -149,6 +150,32 @@ pub struct ServiceAction {
     /// surfaces it in the MCP discovery-override flow.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub disabled: bool,
+    /// `x-overslash-additional-properties` — the template author's statement
+    /// that this action's declared parameter set is a floor, not a fence.
+    ///
+    /// When `true`, [`validate_args`](crate::openapi::validate_input::validate_args) stops
+    /// rejecting arguments the template never declared, and stops enforcing
+    /// `enum` membership on the ones it did. `required` is still enforced.
+    /// The default, `false`, is the closed world every existing template gets.
+    ///
+    /// Folded at compile time from the `info`-level default and the operation's
+    /// own value (nearest wins, so an operation may write `false` under a
+    /// service that relaxed globally). Platform actions never set it: their
+    /// param set is one we fully own, so an undeclared argument would pass the
+    /// gate and then be silently dropped by the handler.
+    ///
+    /// The name is borrowed from JSON Schema, where it governs undeclared keys
+    /// only. Here it also makes `enum` advisory — both are the same
+    /// closed-world assumption about a schema we transcribed rather than own.
+    ///
+    /// A service layer cannot set this. `ActionPatch` is restrictive-only,
+    /// and relaxing validation is a capability grant (unlike `timeout_ms`,
+    /// whose D56 exception turns on granting no new capability). An action a
+    /// layer *adds* is compiled from a synthetic document whose operations can
+    /// declare the key themselves; they inherit no `info` default because that
+    /// document has no `info`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub additional_properties: bool,
     /// The operation's declared `requestBody`, parsed at template-load time.
     /// `None` means the operation takes no body at all (e.g. a POST whose only
     /// inputs are path params) — routing then sends neither a body nor a
@@ -621,6 +648,68 @@ pub struct ActionParam {
     /// [`sql_field`](Self::sql_field) param.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sql_database: Option<String>,
+    /// `contentMediaType` on a `string` param: the wire value is a
+    /// *serialized* document of this type, not the document itself.
+    ///
+    /// Only `application/json` is honoured. A caller may then pass structure
+    /// and have it encoded once, and [`shape`](Self::shape) carries the
+    /// schema's `contentSchema` so the encoded document can be checked. What
+    /// this never does is re-encode a string the caller supplied: `serde_json`
+    /// re-sorts object keys on a parse/serialize round trip, so a round trip
+    /// through the gateway would hand the upstream — and the approval record —
+    /// different bytes than the caller sent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_media_type: Option<String>,
+    /// The inner structure of an `object`/`array` param, lowered from the
+    /// schema's own `properties`/`items` — or, on a
+    /// [`content_media_type`](Self::content_media_type) string, from its
+    /// `contentSchema`.
+    ///
+    /// `None` means the template authored no sub-schema — the state every
+    /// parameter was in before this field existed, and still the honest answer
+    /// for a genuinely free-form value. It is deliberately not the same as an
+    /// empty [`ParamShape::Object`], which says "we know the set of keys and it
+    /// is empty".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shape: Option<Box<ParamShape>>,
+}
+
+impl Default for ActionParam {
+    /// An untyped, optional, undescribed parameter.
+    ///
+    /// Exists so the call sites that build one field-by-field — almost all of
+    /// them tests — can name the two or three fields they care about and let
+    /// the rest follow. `param_type` defaults to the empty *sentinel*, not to
+    /// `"string"`: guessing a type is what the sentinel exists to prevent.
+    fn default() -> Self {
+        Self {
+            param_type: String::new(),
+            required: false,
+            description: String::new(),
+            enum_values: None,
+            default: None,
+            resolve: None,
+            aliases: Vec::new(),
+            location: ParamLocation::default(),
+            instance_config: false,
+            sql_field: None,
+            sql_database: None,
+            content_media_type: None,
+            shape: None,
+        }
+    }
+}
+
+impl ActionParam {
+    /// Does this param carry a serialized JSON document as its wire value?
+    ///
+    /// The one question every JSON-string behaviour keys off, asked at the
+    /// point of use rather than precomputed: a parse only ever happens because
+    /// a reader asked for one, so a field nothing reads inside is never parsed
+    /// and its bytes are never at risk of being rewritten.
+    pub fn is_json_string(&self) -> bool {
+        self.content_media_type.as_deref() == Some("application/json")
+    }
 }
 
 #[cfg(test)]
@@ -679,16 +768,8 @@ mod tests {
     fn action_param_omits_default_location() {
         let p = ActionParam {
             param_type: "string".into(),
-            required: false,
-            description: String::new(),
-            enum_values: None,
-            default: None,
-            resolve: None,
-            aliases: Vec::new(),
             location: ParamLocation::Body,
-            instance_config: false,
-            sql_field: None,
-            sql_database: None,
+            ..Default::default()
         };
         let json = serde_json::to_value(&p).unwrap();
         assert!(json.get("location").is_none());

@@ -47,6 +47,18 @@ static BOOTSTRAP_FIXTURES: OnceLock<BootstrapFixtures> = OnceLock::new();
 /// Returns a fresh `PgPool` backed by a clone of the migrated template database.
 /// nextest-safe: each test runs in its own process, all sharing one template.
 pub async fn test_pool() -> PgPool {
+    // Every test fake binds to 127.0.0.1, and the SSRF guard sits under the
+    // action-execution transport, so unless loopback is declared reachable a
+    // Mode A / B / C call to a fake is refused with a 400. This is the one
+    // preamble every
+    // integration test runs — there are seven `Config` constructors in this
+    // integration test runs — there are seven `Config` constructors in this file
+    // and an eighth would be added without thinking about SSRF — and it runs
+    // before any of them, which matters because the base-override parser reads
+    // the same variable. It opens loopback *only*, so a suite that runs with it
+    // set still proves the real refusals in `tests/ssrf_guard.rs`.
+    allow_loopback_ssrf();
+
     let base_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
 
     ensure_template(&base_url).await;
@@ -85,6 +97,8 @@ pub async fn test_pool() -> PgPool {
 /// Each clone has an org, 3 users (admin/write/read-only), keys, and groups
 /// already set up — no HTTP bootstrap needed.
 pub async fn test_pool_bootstrapped() -> (PgPool, BootstrapFixtures) {
+    allow_loopback_ssrf(); // see `test_pool`
+
     let base_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
 
     ensure_template(&base_url).await;
@@ -409,16 +423,7 @@ async fn run_standard_bootstrap(base: &str, client: &Client) -> BootstrapFixture
     let org_id: Uuid = org["id"].as_str().unwrap().parse().unwrap();
 
     // Org-level key
-    let org_key_resp: Value = client
-        .post(format!("{base}/v1/api-keys"))
-        .json(&json!({"org_id": org_id, "name": "org-admin"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let org_key = org_key_resp["key"].as_str().unwrap().to_string();
+    let org_key = org["api_key"].as_str().unwrap().to_string();
 
     // Find system groups
     let groups: Vec<Value> = client
@@ -702,7 +707,7 @@ where
         email_reply_to: None,
         email_api_key: None,
         preview_origin_allowlist: None,
-        overslash_env: None,
+        deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
     };
     customize(&mut config);
@@ -810,7 +815,11 @@ where
         // and expose `/internal/metrics` so tests can assert on emitted
         // series. The recorder is process-global, so assert series
         // *presence*, never exact counts.
-        .merge(overslash_metrics::metrics_router(overslash_metrics::setup()));
+        .merge(overslash_metrics::metrics_router(overslash_metrics::setup()))
+        // Mirror production's outermost security-headers layer.
+        .layer(axum::middleware::from_fn(
+            overslash_api::middleware::security_headers::security_headers,
+        ));
 
     tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
@@ -922,7 +931,7 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         email_reply_to: None,
         email_api_key: None,
         preview_origin_allowlist: None,
-        overslash_env: None,
+        deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
     };
 
@@ -999,7 +1008,10 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         .merge(overslash_api::routes::mcp::router())
         .merge(overslash_api::routes::oauth_mcp_clients::router())
         .merge(overslash_api::routes::unsubscribe::router())
-        .with_state(state);
+        .with_state(state)
+        .layer(axum::middleware::from_fn(
+            overslash_api::middleware::security_headers::security_headers,
+        ));
 
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
@@ -1087,7 +1099,7 @@ pub async fn start_api_with_auth_providers(
         email_reply_to: None,
         email_api_key: None,
         preview_origin_allowlist: None,
-        overslash_env: None,
+        deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
     };
 
@@ -1154,7 +1166,10 @@ pub async fn start_api_with_auth_providers(
         .merge(overslash_api::routes::account_invitations::router())
         .merge(overslash_api::routes::org_members::router())
         .merge(overslash_api::routes::org_oauth_credentials::router())
-        .with_state(state);
+        .with_state(state)
+        .layer(axum::middleware::from_fn(
+            overslash_api::middleware::security_headers::security_headers,
+        ));
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -1259,16 +1274,7 @@ async fn bootstrap_org_identity_inner(
 
     // Bootstrap: first API-key call on a fresh org auto-creates an admin
     // user identity and returns its key (no auth required).
-    let bootstrap_resp: Value = client
-        .post(format!("{base}/v1/api-keys"))
-        .json(&json!({"org_id": org_id, "name": "org-admin"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let org_api_key = bootstrap_resp["key"].as_str().unwrap().to_string();
+    let org_api_key = org["api_key"].as_str().unwrap().to_string();
 
     // Create a "test-user" under the admin, then an agent under test-user.
     // This matches the original flow so tests can find identities by name.
@@ -1438,7 +1444,7 @@ pub fn session_cookie(org_id: Uuid, identity_id: Uuid) -> String {
     };
     let token = overslash_api::services::jwt::mint(&signing_key_bytes(), &claims)
         .expect("mint test session");
-    format!("oss_session={token}")
+    format!("__Host-oss_session={token}")
 }
 
 /// Test helper: the org's Everyone group id. Every user identity in the org is
@@ -1564,17 +1570,28 @@ pub async fn grant_service_to_everyone(
     svc_id
 }
 
-/// Opt the test process out of the SSRF guard so MCP/HTTP stubs bound to
-/// 127.0.0.1 are reachable. The production binary never sets this env var;
-/// the knob exists solely so tests can use loopback stubs without widening
-/// the guard. Idempotent across calls.
+/// Declare loopback reachable for the SSRF guard, so stubs bound to 127.0.0.1
+/// can be called.
+///
+/// Uses `OVERSLASH_SSRF_ALLOWED_CIDRS` — the operator allow-list a self-hosted
+/// deployment uses for its own private network — rather than a test-only
+/// bypass. Two things follow from that. The suite exercises the code path a
+/// real deployment runs, instead of a branch only tests can reach. And it opens
+/// loopback and nothing else, so `tests/ssrf_guard.rs` can prove the guard
+/// refuses link-local, RFC1918 and CGNAT *while the whole suite runs with this
+/// set*.
+///
+/// [`test_pool`] and [`test_pool_bootstrapped`] call this, so no test needs an
+/// explicit call. The existing explicit calls are harmless (it is idempotent)
+/// and are kept where a test reads as documenting its own dependency on
+/// loopback.
 pub fn allow_loopback_ssrf() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
         // SAFETY: runs exactly once, before any thread that might read the
         // env concurrently (Once provides the happens-before).
         unsafe {
-            std::env::set_var("OVERSLASH_SSRF_ALLOW_PRIVATE", "1");
+            std::env::set_var("OVERSLASH_SSRF_ALLOWED_CIDRS", "127.0.0.0/8,::1/128");
         }
     });
 }
@@ -1770,7 +1787,7 @@ where
         email_reply_to: None,
         email_api_key: None,
         preview_origin_allowlist: None,
-        overslash_env: None,
+        deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
     };
     customize(&mut config);
@@ -1845,7 +1862,10 @@ where
         .merge(overslash_api::routes::mcp::router())
         .merge(overslash_api::routes::oauth_mcp_clients::router())
         .merge(overslash_api::routes::search::router())
-        .with_state(state);
+        .with_state(state)
+        .layer(axum::middleware::from_fn(
+            overslash_api::middleware::security_headers::security_headers,
+        ));
 
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
@@ -1942,7 +1962,7 @@ pub async fn start_api_for_search(pool: PgPool) -> (String, Client) {
         email_reply_to: None,
         email_api_key: None,
         preview_origin_allowlist: None,
-        overslash_env: None,
+        deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
     };
 
@@ -1996,7 +2016,10 @@ pub async fn start_api_for_search(pool: PgPool) -> (String, Client) {
         .merge(overslash_api::routes::actions::validate_router())
         .merge(overslash_api::routes::mcp::router())
         .merge(overslash_api::routes::auth::router())
-        .with_state(state);
+        .with_state(state)
+        .layer(axum::middleware::from_fn(
+            overslash_api::middleware::security_headers::security_headers,
+        ));
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -2085,7 +2108,7 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         email_reply_to: None,
         email_api_key: None,
         preview_origin_allowlist: None,
-        overslash_env: None,
+        deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
     };
 
@@ -2158,7 +2181,10 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         .merge(overslash_api::routes::oauth::consent_router())
         .merge(overslash_api::routes::mcp::router())
         .merge(overslash_api::routes::oauth_mcp_clients::router())
-        .with_state(state);
+        .with_state(state)
+        .layer(axum::middleware::from_fn(
+            overslash_api::middleware::security_headers::security_headers,
+        ));
 
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
@@ -2415,7 +2441,7 @@ pub async fn make_app_state(pool: PgPool) -> overslash_api::AppState {
         email_reply_to: None,
         email_api_key: None,
         preview_origin_allowlist: None,
-        overslash_env: None,
+        deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
     };
     // Hand out a 1ms TTL so each test can flip the DB column and immediately

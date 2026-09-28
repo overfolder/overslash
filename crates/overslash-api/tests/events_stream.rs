@@ -592,8 +592,9 @@ async fn stream_events_and_webhooks_carry_the_same_payload() {
         .expect("stream delivered the event")
         .payload();
 
-    // The HTTP delivery fails (nothing is listening on port 9), but the row
-    // records the payload that was signed and sent. Read it from the table:
+    // Nothing listens on port 9, so the subscription never verifies and the
+    // delivery is held rather than sent — but the row records the payload
+    // that would be signed and sent. Read it from the table:
     // `GET /v1/webhooks/{id}/deliveries` deliberately omits the payload.
     let delivered: Value = sqlx::query_scalar!(
         "SELECT payload FROM webhook_deliveries WHERE event = $1 ORDER BY created_at DESC LIMIT 1",
@@ -844,8 +845,9 @@ async fn pending_reaches_webhook_subscribers_too() {
 
     trigger_gated_call(&base, &client, &caller).await;
 
-    // The delivery attempt fails (nothing listens on port 9) but the row
-    // records that the event was routed to webhooks at all.
+    // Nothing listens on port 9, so the delivery is held (the subscription
+    // never verifies) — but the row records that the event was routed to
+    // webhooks at all.
     let mut delivered: Option<Value> = None;
     for _ in 0..50 {
         delivered = sqlx::query_scalar!(

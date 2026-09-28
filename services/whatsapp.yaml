@@ -35,7 +35,7 @@ paths: {}
 x-overslash-mcp:
   # url and secret_name are not set here — operators must provide both when
   # creating a service instance from this template:
-  #   url        — the hosted whatsapp-mcp-docker endpoint (e.g. http://host:8081/mcp)
+  #   url        — the hosted whatsapp-mcp-docker endpoint (e.g. https://host/mcp — plain http is refused)
   #   secret_name — vault key that holds the container's AUTH_TOKEN bearer token
   auth:
     kind: bearer

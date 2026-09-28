@@ -104,9 +104,11 @@ pub(super) async fn validate_action_impl(
     // `invalid_action_args` 400 it would on `/call` — the byte-identical
     // 400 contract is meaningful only when the gates fire in the same
     // order in both endpoints.
-    if let Err(errors) =
-        overslash_core::openapi::validate_input::validate_args(&meta.validation_params, &req.params)
-    {
+    if let Err(errors) = overslash_core::openapi::validate_input::validate_args(
+        &meta.validation_params,
+        &req.params,
+        meta.additional_properties,
+    ) {
         return Err(invalid_action_args_error(&meta.validation_params, errors));
     }
 
@@ -173,12 +175,21 @@ pub(super) async fn validate_action_impl(
     let perm_keys = if let Some(ref verb) = svc.http_verb {
         PermissionKey::from_service_http(&svc.service_key, &verb.method, &verb.path)
     } else {
-        PermissionKey::from_service_action(
-            &svc.service_key,
-            &svc.action_key,
+        // The same evaluator `/call` runs. D55's "a dry run buys no upstream
+        // round trips" does not apply — an extractor is jq over an in-memory
+        // map, not an authenticated fetch — and mirroring it is what makes
+        // `/validate` the place a template author debugs one: the preview
+        // shows the sentinel key rather than hiding the failure until a real
+        // call.
+        let scope = super::resolve_scope_values(
             &svc.scope_param,
             &req.params,
+            std::time::Duration::from_millis(state.config.filter_timeout_ms),
+            &svc.service_key,
+            &svc.action_key,
         )
+        .await;
+        PermissionKey::from_service_action(&svc.service_key, &svc.action_key, &scope)
     };
     let perm_keys = super::merge_sql_keys(perm_keys, svc, sql_policy.as_ref());
     let deny_screen_keys: Vec<PermissionKey> = sql_policy

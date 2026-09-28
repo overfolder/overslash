@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE webhook_deliveries SET held_reason = NULL, next_retry_at = now()\n              WHERE subscription_id = $1 AND held_reason IS NOT NULL AND delivered_at IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "39cf1ee4bef29ba81be5b322eead30dff8978dc38aa951d4102678cc37c3b071"
+}

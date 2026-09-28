@@ -136,7 +136,11 @@ pub(super) async fn compute_approval_detail(
         };
         let mut redacted = projection;
         if !meta.redact.is_empty() {
-            core_disclosure::apply_redactions(&mut redacted, &meta.redact);
+            core_disclosure::apply_redactions(
+                &mut redacted,
+                &meta.redact,
+                &meta.json_string_params,
+            );
         }
         return (disclosed, Some(redacted));
     }
@@ -175,7 +179,7 @@ pub(super) async fn compute_approval_detail(
     };
     let mut redacted = projection;
     if !meta.redact.is_empty() {
-        core_disclosure::apply_redactions(&mut redacted, &meta.redact);
+        core_disclosure::apply_redactions(&mut redacted, &meta.redact, &meta.json_string_params);
     }
     (disclosed, Some(redacted))
 }
@@ -202,6 +206,7 @@ mod tests {
             risk: None,
             disclose: Vec::new(),
             redact: Vec::new(),
+            json_string_params: Default::default(),
             oauth_injected: false,
             download: None,
             upload: None,

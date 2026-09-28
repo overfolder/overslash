@@ -361,7 +361,7 @@ fn shared_config(addr: SocketAddr) -> overslash_api::config::Config {
         email_reply_to: None,
         email_api_key: None,
         preview_origin_allowlist: None,
-        overslash_env: None,
+        deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
     }
 }

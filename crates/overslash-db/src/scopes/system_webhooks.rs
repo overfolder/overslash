@@ -16,13 +16,22 @@ impl SystemScope {
     /// Insert a delivery row for an existing subscription. Used by the
     /// dispatcher fan-out, which has already resolved the subscription
     /// from `find_matching_webhook_subscriptions` on the per-org scope.
+    /// `held_reason` records it undialed (subscription not yet verified).
     pub async fn create_webhook_delivery(
         &self,
         subscription_id: Uuid,
         event: &str,
         payload: serde_json::Value,
+        held_reason: Option<&str>,
     ) -> Result<WebhookDeliveryRow, sqlx::Error> {
-        crate::repos::webhook::create_delivery(self.db(), subscription_id, event, payload).await
+        crate::repos::webhook::create_delivery(
+            self.db(),
+            subscription_id,
+            event,
+            payload,
+            held_reason,
+        )
+        .await
     }
 
     /// Mark a delivery as successfully delivered.

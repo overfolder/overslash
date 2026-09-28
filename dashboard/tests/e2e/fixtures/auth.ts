@@ -4,7 +4,7 @@ export type DevProfile = 'admin' | 'member' | 'readonly';
 
 /**
  * Sign in as the given dev profile by hitting `/auth/dev/token` directly. The
- * server sets the `oss_session` cookie on the response; we copy it into the
+ * server sets the `__Host-oss_session` cookie on the response; we copy it into the
  * Playwright browser context so subsequent page navigations land authenticated.
  *
  * The API base URL is read from `process.env.API_URL`, which `playwright.config.ts`

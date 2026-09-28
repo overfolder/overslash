@@ -176,6 +176,11 @@ pub async fn kernel_create_template(
     )
     .map_err(|report| AppError::TemplateValidationFailed { report })?;
 
+    // The MCP endpoint receives the instance's bearer verbatim (CASA 4.1.1).
+    if let Some(url) = def.mcp.as_ref().and_then(|m| m.url.as_deref()) {
+        crate::services::outbound_tls::check_endpoint("mcp.url", url)?;
+    }
+
     if def.key.is_empty() {
         return Err(AppError::BadRequest(
             "template key is required (set `info.key` or `info.x-overslash-key`)".into(),

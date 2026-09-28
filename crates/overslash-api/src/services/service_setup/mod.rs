@@ -36,8 +36,8 @@ mod conflicts;
 mod slots;
 
 pub use slots::{
-    instance_slots, is_bound, unbound_instance_slots, unprovisioned_instance_slots,
-    validate_binding,
+    all_instance_slots, instance_slots, is_bound, unbound_instance_slots,
+    unprovisioned_instance_slots, validate_binding,
 };
 
 pub use conflicts::{
@@ -468,7 +468,7 @@ pub async fn mint_bundle(
 
     // One call, so a two-slot bundle's events land in the order they were
     // authored rather than racing each other's inserts.
-    crate::services::events::emit_all(db.clone(), http_client.clone(), events);
+    crate::services::events::emit_all(db.clone(), events);
 
     let (setup_url, short_url, expires_at) = first.ok_or_else(|| {
         // Unreachable from `kernel_create_service`, which checks first. A

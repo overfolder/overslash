@@ -1,5 +1,6 @@
 import { sveltekit } from '@sveltejs/kit/vite';
-import { defineConfig, loadEnv } from 'vite';
+import { defineConfig, loadEnv, type Plugin } from 'vite';
+import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 const strict = process.env.SVELTE_STRICT === 'true';
@@ -23,10 +24,31 @@ function resolveApiTarget(mode: string): string {
 	return 'http://localhost:3000';
 }
 
+// Serve vercel.json's catch-all header block from `vite preview` — what
+// `make e2e-up` runs — so e2e runs and screenshots load under the production
+// header set. A plugin rather than `preview.headers`: SvelteKit's preview
+// middleware answers the SPA shell before Vite's own header middleware runs,
+// and this one registers ahead of it (it is listed before `sveltekit()`).
+function vercelHeadersInPreview(): Plugin {
+	const cfg = JSON.parse(readFileSync(resolve(__dirname, 'vercel.json'), 'utf8')) as {
+		headers?: { source: string; headers: { key: string; value: string }[] }[];
+	};
+	const block = cfg.headers?.find((h) => h.source === '/(.*)')?.headers ?? [];
+	return {
+		name: 'overslash:vercel-headers-in-preview',
+		configurePreviewServer(server) {
+			server.middlewares.use((_req, res, next) => {
+				for (const { key, value } of block) res.setHeader(key, value);
+				next();
+			});
+		}
+	};
+}
+
 export default defineConfig(({ mode }) => {
 	const apiTarget = resolveApiTarget(mode);
 	return {
-		plugins: [sveltekit()],
+		plugins: [vercelHeadersInPreview(), sveltekit()],
 		build: {
 			// Emit client source maps on Vercel preview / dev deploys so DevTools
 			// can map minified chunks back to original Svelte/TS sources. Production

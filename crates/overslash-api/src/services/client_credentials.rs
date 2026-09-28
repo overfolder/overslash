@@ -84,12 +84,15 @@ pub async fn resolve(
     }
 
     // 4. Env var fallback — only with explicit opt-in
-    if std::env::var("OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS").is_ok() {
+    if overslash_env::flag("OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS") {
         let (id_name, secret_name) = oauth_secret_names(provider_key);
-        let id_env = std::env::var(&id_name);
-        let secret_env = std::env::var(&secret_name);
+        // An empty half is a missing half: a credential of two empty strings
+        // would short-circuit the whole cascade and then fail at the upstream
+        // token exchange, which is a much worse error to debug than this one.
+        let id_env = overslash_env::optional(&id_name);
+        let secret_env = overslash_env::optional(&secret_name);
         match (id_env, secret_env) {
-            (Ok(client_id), Ok(client_secret)) => {
+            (Some(client_id), Some(client_secret)) => {
                 return Ok(ClientCredentials {
                     client_id,
                     client_secret,
@@ -99,19 +102,19 @@ pub async fn resolve(
             // A half-configured env pair is almost certainly an operator
             // misconfiguration — surface it instead of silently falling
             // through to the generic "not configured" error.
-            (Ok(_), Err(_)) => {
+            (Some(_), None) => {
                 return Err(AppError::BadRequest(format!(
                     "{id_name} is set but {secret_name} is missing — \
                      configure both or remove both."
                 )));
             }
-            (Err(_), Ok(_)) => {
+            (None, Some(_)) => {
                 return Err(AppError::BadRequest(format!(
                     "{secret_name} is set but {id_name} is missing — \
                      configure both or remove both."
                 )));
             }
-            (Err(_), Err(_)) => {}
+            (None, None) => {}
         }
     }
 
@@ -235,9 +238,9 @@ pub async fn describe_source(
         return Ok(CredentialSource::OrgSecret);
     }
 
-    if std::env::var("OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS").is_ok()
-        && std::env::var(&id_name).is_ok()
-        && std::env::var(&secret_name).is_ok()
+    if overslash_env::flag("OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS")
+        && overslash_env::is_set(&id_name)
+        && overslash_env::is_set(&secret_name)
     {
         return Ok(CredentialSource::System);
     }

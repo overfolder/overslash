@@ -39,16 +39,11 @@ pub(crate) struct ServiceEvent<'a> {
 
 /// Resolve the audience and publish. Fire-and-forget past this point: [`emit`]
 /// spawns, so a failure to observe never fails the request that was observed.
-pub(crate) async fn fire_service_event(
-    db: PgPool,
-    http_client: reqwest::Client,
-    ev: ServiceEvent<'_>,
-) {
+pub(crate) async fn fire_service_event(db: PgPool, ev: ServiceEvent<'_>) {
     let scope = OrgScope::new(ev.org_id, db.clone());
     let audience = audience::for_service(&scope, ev.owner_identity_id, ev.actor_identity_id).await;
     emit(
         db,
-        http_client,
         EventDraft {
             org_id: ev.org_id,
             event_type: ev.event_type,

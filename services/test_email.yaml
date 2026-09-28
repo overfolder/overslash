@@ -17,7 +17,7 @@ servers:
   # executed action returns plausible data (the email fields) without a real
   # mail provider. The suite already depends on httpbun (see web-fetch.yaml).
   # For a fully-local/offline echo, run the overslash openapi fake and set
-  #   OVERSLASH_SERVICE_BASE_OVERRIDES=httpbun.com=<fake-url> (+ OVERSLASH_SSRF_ALLOW_PRIVATE=1).
+  #   OVERSLASH_SERVICE_BASE_OVERRIDES=httpbun.com=<fake-url> (+ OVERSLASH_SSRF_ALLOWED_CIDRS=127.0.0.0/8).
   - url: https://httpbun.com
 components:
   securitySchemes:

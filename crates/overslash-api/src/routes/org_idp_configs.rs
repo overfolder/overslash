@@ -132,7 +132,7 @@ async fn create_idp_config(
         key
     } else if let Some(issuer_url) = &req.issuer_url {
         // Custom OIDC — discover endpoints and create/upsert provider
-        let doc = oidc_discovery::discover(&state.http_client, issuer_url)
+        let doc = oidc_discovery::discover(issuer_url)
             .await
             .map_err(|e| AppError::BadRequest(format!("OIDC discovery failed: {e}")))?;
 
@@ -514,11 +514,10 @@ async fn delete_idp_config(
 
 /// Preview OIDC discovery for an issuer URL (no persistence).
 async fn discover_oidc(
-    State(state): State<AppState>,
     _auth: UserOrKeyAuth,
     Json(req): Json<DiscoverRequest>,
 ) -> Result<Json<serde_json::Value>> {
-    let doc = oidc_discovery::discover(&state.http_client, &req.issuer_url)
+    let doc = oidc_discovery::discover(&req.issuer_url)
         .await
         .map_err(|e| AppError::BadRequest(format!("OIDC discovery failed: {e}")))?;
 
@@ -565,11 +564,8 @@ fn slugify_issuer(issuer_url: &str) -> String {
         .filter(|s| !s.is_empty())
         .collect::<Vec<_>>()
         .join("-");
-    // Truncate to keep the key reasonable but preserve uniqueness
-    let key = if collapsed.len() > 80 {
-        &collapsed[..80]
-    } else {
-        &collapsed
-    };
+    // Truncate to keep the key reasonable but preserve uniqueness.
+    // `is_alphanumeric` keeps non-ASCII letters, so snap to a char boundary.
+    let key = &collapsed[..collapsed.floor_char_boundary(80)];
     format!("oidc-{}", key.trim_end_matches('-'))
 }

@@ -8,6 +8,7 @@ pub async fn run(host: String, port: u16) -> anyhow::Result<()> {
         port = %config.port,
         public_url = %config.public_url,
         dashboard_url = %config.dashboard_url,
+        deployment_env = %config.deployment_env,
         dev_auth = %config.dev_auth_enabled,
         google_oauth = %config.google_auth_client_id.is_some(),
         services_dir = %config.services_dir,

@@ -4,6 +4,61 @@ Known workarounds and deferred improvements.
 
 ---
 
+## Webhooks still send the replayable legacy signature
+
+Every webhook attempt carries the timestamped `X-Overslash-Signature-V1`
+(CASA 7.2.3) **and** the pre-existing `X-Overslash-Signature: sha256=<hex>`,
+an HMAC over the body alone. The legacy header is kept so receivers written
+against it — including anyone on `@overslash/sdk`'s `verifyWebhookSignature` —
+did not break on deploy. But as long as it is sent, a receiver that checks only
+it accepts a captured delivery forever; the replay protection is opt-in until
+the header is gone.
+
+Deprecation plan:
+
+1. **Now.** Both headers sent. SPEC, the SDK README and `verifyWebhookSignature`'s
+   `@deprecated` tag point at `v1` / `verifyWebhook`.
+2. **Announce.** The overslash-docs webhook guide gets the `v1` verification
+   section and a removal date; org admins with active subscriptions are told by
+   email. Target: no earlier than 90 days after this ships.
+3. **Remove.** Delete `LEGACY_SIGNATURE_HEADER` from `send_signed`
+   (`services/webhook_dispatcher.rs`) and `verifyWebhookSignature` from the SDK
+   (a major version). The `v1` header name stays as is — no second migration.
+
+We have no signal for which receivers still read the legacy header (it is
+their code, not ours), so the date is a policy call, not a measurement.
+
+---
+
+## A Langfuse instance cannot be re-pointed to another region from the dashboard
+
+`services/langfuse.yaml` resolves its host from
+`${LANGFUSE_URL:https://cloud.langfuse.com}` (D44), so every deployment gets the
+vendor's EU cloud by default and can repoint the *whole* template with
+`OVERSLASH_TEMPLATE_VAR_LANGFUSE_URL`. But Langfuse Cloud also runs US, JP and
+HIPAA regions, and Langfuse is self-hostable — so on a multi-tenant deployment
+two orgs can legitimately need two different hosts, which the deployment
+variable cannot express.
+
+The executor already supports this: `effective_base`
+(`routes/actions/service_resolve.rs`) takes `service_instances.url` ahead of
+`hosts.first()` unconditionally, so `POST /v1/services` with a `url` works
+today and the integration tests rely on it. What does not work is the
+*dashboard*: `configurable_url` (`routes/templates/mod.rs`) renders the URL
+field only for a host-less template, an MCP runtime, or one with an
+`secret_source: org` scheme. Langfuse is none of the three, so a US-region org
+has to call the API directly — which fails rule 6 (vertical integration).
+
+Deliberately not fixed here. The obvious rule — "more than one `servers[]`
+entry means the operator picks" — is wrong for `services/x.yaml`, whose two
+entries (`api.twitter.com`, `api.x.com`) are one service under two domains
+rather than a choice. The honest fix is an explicit opt-in on the template
+(an `x-overslash-*` key saying the endpoint is operator-chosen), which is new
+vendor vocabulary and wants its own decision rather than riding along with a
+service template.
+
+---
+
 ## SDK pins esbuild past tsup's declared range via an npm `override`
 
 `sdk/package.json` carries `overrides: { "esbuild": "^0.28.1" }`. It exists to
@@ -215,7 +270,7 @@ D30 gates automated dependency bumps behind Dependabot's 7-day `cooldown`, but a
 
 D31 pins every third-party action in `.github/workflows/*.yml` to a commit SHA so D30's `cooldown` applies. Two of those pins freeze a *moving pointer* rather than a release tag, and Dependabot's version-update logic tracks tags/releases — so it will not reliably propose bumps for either:
 
-- `dtolnay/rust-toolchain@4be7066` — its ref is the `stable` **branch**, not a semver tag; the branch tip is what we froze. (Overfolder carries the same debt.) Note the branch name no longer selects the toolchain: every step now passes an explicit `toolchain: "1.97"` matching `rust-toolchain.toml`, so only the *action code* rides the branch.
+- `dtolnay/rust-toolchain@4be7066` — its ref is the `stable` **branch**, not a semver tag; the branch tip is what we froze. (Overfolder carries the same debt.) Note the branch name no longer selects the toolchain: every step now passes an explicit `toolchain: "1.98"` matching `rust-toolchain.toml`, so only the *action code* rides the branch.
 - `rui314/setup-mold@9c9c13b` — the repo publishes no semver releases at all, only a mutable `v1` tag that moves.
 
 Both still behave correctly at runtime — rustup installs the toolchain the step asks for; mold installs normally. Only the *action code* is frozen, so upstream fixes won't be picked up automatically and the pins can drift stale silently with no PR. Low risk (both actions are small and stable), but they're untracked pins. Ideal fix: re-pin each to its current tip by hand periodically (e.g. quarterly), or switch to a version-tagged equivalent with the same ergonomics if one appears, so Dependabot can manage it.
@@ -260,33 +315,6 @@ wrong-on-the-wire. To actually support one (a multipart attachment upload is the
 likely first caller), teach `collect_body_parameters` to pick the schema for the
 declared media type and give routing an encoder per type, keyed off
 `RequestBodySpec::content_type`.
-
-## Object-array recipients can't be scoped — `scope_param` names params, not values inside them
-
-`scope_param` now accepts a list with per-entry labels
-(`[to:recipient, cc:recipient, bcc:recipient]` on `services/email.yaml`), which
-gates a send on every address regardless of header. That works because
-`email`'s recipient params are arrays of plain strings.
-
-The other mail/calendar templates cannot use it:
-
-- `outlook.yaml` — `toRecipients`/`ccRecipients`/`bccRecipients` are arrays of
-  `{emailAddress: {address, name}}` objects.
-- `google_calendar.yaml` — `create_event.attendees` is an array of `{email}`.
-- `gmail.yaml` — `send_message` takes one base64url RFC 2822 `raw` blob; there
-  is no recipient param at all (it scopes on `userId`).
-
-Pointing `scope_param` at an object array would derive keys whose value is the
-JSON literal of the object — nothing a rule can match and nothing a human can
-read — so those templates keep their existing service/mailbox-level scoping
-(`outlook` has no `scope_param` on `send_mail`; the others scope on the
-mailbox/calendar id).
-
-Closing it needs a value *extractor* on a scope entry (a jq filter, in the
-shape `disclose` already uses) so a template can say "the scope values are
-`.toRecipients[].emailAddress.address`". That is a bigger change than the
-label syntax: it puts a filter on the permission-derivation path, which today
-is pure string handling and runs before any approval exists.
 
 ## SQL policy: Windows release binary ships without the parser
 

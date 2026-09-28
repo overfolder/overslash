@@ -158,6 +158,7 @@ pub(super) async fn call_action_impl(
     if let Err(errors) = overslash_core::openapi::validate_input::validate_args(
         &pre_meta.validation_params,
         &req.params,
+        pre_meta.additional_properties,
     ) {
         return Err(invalid_action_args_error(
             &pre_meta.validation_params,
@@ -315,12 +316,15 @@ pub(super) async fn call_action_impl(
     let perm_keys = if let Some(ref verb) = scope_meta.http_verb {
         PermissionKey::from_service_http(&scope_meta.service_key, &verb.method, &verb.path)
     } else {
-        PermissionKey::from_service_action(
-            &scope_meta.service_key,
-            &scope_meta.action_key,
+        let scope = resolve_scope_values(
             &scope_meta.scope_param,
             &canonical_scope_params(&req.params, &meta.canonical),
+            std::time::Duration::from_millis(state.config.filter_timeout_ms),
+            &scope_meta.service_key,
+            &scope_meta.action_key,
         )
+        .await;
+        PermissionKey::from_service_action(&scope_meta.service_key, &scope_meta.action_key, &scope)
     };
     // D42: per-table keys join (or, for the bare `:*` fallback, replace)
     // the scope_param keys; column keys ride separately as deny-screen.
@@ -681,7 +685,6 @@ pub(super) async fn call_action_impl(
         // Header phase only — see `http_caller`'s module docs on why a total
         // deadline must not reach a streamed body.
         let upstream = match http_caller::call_streaming(
-            &state.http_client,
             &action_req.method,
             &resolved_url,
             &resolved_headers,
@@ -808,7 +811,6 @@ pub(super) async fn call_action_impl(
 
     // Buffered call path (default)
     let mut result = match http_caller::call(
-        &state.http_client,
         &action_req.method,
         &resolved_url,
         &resolved_headers,

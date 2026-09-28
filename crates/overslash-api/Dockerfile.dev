@@ -1,9 +1,6 @@
 # Stage 1: generate a dependency recipe
-FROM rust:1.97-slim-trixie AS chef
+FROM rust:1.98-slim-trixie AS chef
 WORKDIR /app
-# Cache toolchain layer: only re-downloaded when rust-toolchain.toml changes
-COPY rust-toolchain.toml ./
-RUN rustup show
 RUN cargo install cargo-chef --locked
 # The whole workspace, so cargo-chef derives the dependency recipe itself.
 # This stage re-runs on every source change, but `prepare` only reads
@@ -13,11 +10,8 @@ COPY . .
 RUN cargo chef prepare --recipe-path recipe.json
 
 # Stage 2: build dependencies (cached image layer)
-FROM rust:1.97-slim-trixie AS deps
+FROM rust:1.98-slim-trixie AS deps
 WORKDIR /app
-# Cache toolchain layer: only re-downloaded when rust-toolchain.toml changes
-COPY rust-toolchain.toml ./
-RUN rustup show
 RUN apt-get update && apt-get install -y pkg-config libssl-dev clang mold && rm -rf /var/lib/apt/lists/*
 RUN cargo install cargo-chef --locked
 
@@ -33,13 +27,9 @@ ENV CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS="-C link-arg=-fuse-ld=mold"
 RUN cargo chef cook --recipe-path recipe.json
 
 # Stage 3: dev runtime — deps already in /app/target from the image layer
-FROM rust:1.97-slim-trixie
+FROM rust:1.98-slim-trixie
 
 WORKDIR /app
-
-# Cache toolchain layer: only re-downloaded when rust-toolchain.toml changes
-COPY rust-toolchain.toml ./
-RUN rustup show
 
 RUN apt-get update && apt-get install -y pkg-config libssl-dev clang mold && rm -rf /var/lib/apt/lists/*
 RUN cargo install cargo-watch --locked

@@ -130,6 +130,8 @@ paths:
                 parents:
                   type: array
                   description: "List of parent folder IDs (e.g. ['root'] or a specific folder id)"
+                  items:
+                    type: string
                 description:
                   type: string
                   description: Description of the folder
@@ -293,6 +295,8 @@ paths:
                 parents:
                   type: array
                   description: List of parent folder IDs for the new copy
+                  items:
+                    type: string
   /drive/v3/files/{fileId}/permissions:
     parameters:
       - name: fileId
