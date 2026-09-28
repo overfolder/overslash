@@ -79,7 +79,7 @@ what the product actually renders.
 | — | `SECURITY.md` with a vulnerability disclosure policy and a security contact. Not a numbered CASA requirement, but its absence on a public repo hosting a credential vault is the cheapest possible finding to avoid | `have`: [`SECURITY.md`](../../../SECURITY.md) (contact, response and fix SLAs matching [dependency-vulnerability-policy.md](dependency-vulnerability-policy.md), scope, safe harbor) |
 | — | RFC 9116 `security.txt` publishing the same contact | `have`: `https://app.overslash.com/.well-known/security.txt`, from [`dashboard/static/.well-known/security.txt`](../../../dashboard/static/.well-known/security.txt); `Expires` kept current by `scripts/check-security-txt.sh` in the daily Dependency audit |
 | — | Master-key rotation runbook. [TODO.md](../../../TODO.md) marks it done; no file exists in `docs/runbooks/`, and [STATUS.md](../../../STATUS.md) — authoritative per the repo's Rule 1 — lists it as outstanding | `need` |
-| — | DR plan: RTO/RPO, restore procedure, and a recorded restore drill. PITR is configured (`infra/modules/cloud-sql/main.tf:69-78`) but never exercised | `need` |
+| — | DR plan: RTO/RPO, restore procedure, and a recorded restore drill. PITR is configured (`infra/modules/cloud-sql/main.tf:87-96`) but never exercised | `need` |
 
 ## Scan output
 

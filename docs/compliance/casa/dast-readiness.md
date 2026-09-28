@@ -111,7 +111,7 @@ after a report is issued costs a re-test cycle.
 scanner authenticating as a tenant and firing injection payloads at real upstream
 providers on real OAuth tokens. Before offering it, close the two dev-only deltas that
 would themselves become findings: dev's Cloud SQL has a **public IP with no
-`authorized_networks`** (`infra/env/dev.tfvars:70`, `infra/modules/cloud-sql/main.tf:61-67`),
+`authorized_networks`** (`infra/env/dev.tfvars:70`, `infra/modules/cloud-sql/main.tf:68-85`),
 and `DEV_AUTH` is enabled there, which hands the scanner an unauthenticated admin-session
 endpoint (`routes/auth/dev_token.rs:136-321`). A scanner that finds `/auth/dev/token` will
 report it under 6.2.1 and 1.2.1 regardless of which environment it is in.

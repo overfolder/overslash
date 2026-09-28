@@ -58,17 +58,17 @@ being recreated.
 
 | Setting | **`overslash-prod-db`** | `overslash-dev-db` | Terraform | CASA |
 |---|---|---|---|---|
-| `sslMode` | **`ALLOW_UNENCRYPTED_AND_ENCRYPTED`** | same | unset (`infra/modules/cloud-sql/main.tf:61-67`) | **4.1.1** |
-| `requireSsl` | `false` | `false` | unset | **4.1.1** |
+| `sslMode` | **`ALLOW_UNENCRYPTED_AND_ENCRYPTED`** | same | `ENCRYPTED_ONLY` (`infra/modules/cloud-sql/main.tf:84`), not applied | **4.1.1** |
+| `requireSsl` | `false` | `false` | unset — superseded by `sslMode` | **4.1.1** |
 | `ipv4Enabled` | **`false`** — private IP on `overslash-prod-vpc` | `true`, public IP, **no authorized networks** | `!use_private_vpc` | 6.2.1 |
-| `deletionProtectionEnabled` | **`false`** | `false` | `:49` | — |
-| `availabilityType` | `ZONAL` | `ZONAL` | `:55` | — |
+| `deletionProtectionEnabled` | **`false`** | `false` | `true`, both locks (`:54`, `:62`), not applied | — |
+| `availabilityType` | `ZONAL` | `ZONAL` | `:60` | — |
 | `tier` | `db-f1-micro` | `db-f1-micro` | tfvars | — |
-| `databaseFlags` | `max_connections=100` only | same | `:80-83` | 6.7.1 |
-| Backups / PITR | enabled, 7 retained, PITR on, 7-day transaction logs | same | `:69-78` | — |
+| `databaseFlags` | `max_connections=100` only | same | `:97-140` adds connection logging + pgAudit, not applied | 6.7.1 |
+| Backups / PITR | enabled, 7 retained, PITR on, 7-day transaction logs | same | `:87-96` | — |
 
 Production is correctly private — that half of the dev/prod difference holds. What does
-**not** hold is the SSL posture: `sslMode` is unset in the shared module, so production
+**not** hold is the SSL posture: `sslMode` was unset in the shared module, so production
 accepts unencrypted connections too, and that is what Google rates **HIGH**.
 
 `deletionProtectionEnabled: false` **on the production database** is confirmed live.
@@ -78,6 +78,54 @@ an open database, because GCP denies direct connections when the allowlist is em
 finding is the permissive `sslMode` and the existence of the surface — one
 `authorizedNetworks` entry away from reachable, with no `constraints/sql.restrictPublicIp`
 to prevent that.
+
+**Remediated in code, not yet applied** (`infra/modules/cloud-sql/main.tf`, both
+environments): `ssl_mode = ENCRYPTED_ONLY`, `deletion_protection` in Terraform *and*
+`deletion_protection_enabled` at the API, and the flags `log_connections`,
+`log_disconnections`, `cloudsql.enable_pgaudit`, `pgaudit.log = ddl,role` and
+`cloudsql.pgaudit_mask_literals`. A targeted plan against both live instances on
+2026-09-28 showed exactly that: one in-place update each, nothing added or destroyed.
+Every client was verified to arrive over the Auth Proxy before choosing
+`ENCRYPTED_ONLY`. Apply steps and verification:
+[cloud-sql-hardening.md](../../runbooks/cloud-sql-hardening.md). Re-measure this table
+after the apply; until then the values above are still what is live.
+
+#### Password-policy decision
+
+The two P3 recommendations — `ENABLE_INSTANCE_PASSWORD_POLICY` and
+`ENABLE_USER_PASSWORD_POLICY` — are **declined**, and will stay open in the console on
+purpose. This is the written answer for 1.1.1.
+
+- **No password prompt is reachable without IAM first.** Production has no public IP;
+  dev's has zero authorized networks. The only way to a Postgres handshake is the Cloud
+  SQL Auth Proxy (the Cloud Run volume, the BigQuery connection, `bin/db-shell.sh`), which
+  requires `cloudsql.instances.connect` on the caller's Google identity before a byte of
+  the Postgres protocol is exchanged. Online guessing by anyone without that grant is not
+  possible, so the database password is a second factor behind IAM, not the perimeter.
+- **No human chooses a database password.** The built-in users that log in are
+  `overslash` (32 random alphanumerics, `random_password` in
+  `infra/modules/secret-manager/main.tf`, read from Secret Manager) and `bi` (32 random
+  alphanumerics from `infra/modules/bi`, created by the API). About 190 bits each.
+  Minimum length and complexity rules add nothing to that — and Cloud SQL's default
+  complexity demands a special character, which both generators leave out deliberately
+  (`bi`'s is spliced into `ALTER ROLE` and is refused unless alphanumeric), so turning it
+  on would reject our own credentials at the next rotation.
+- **Lockout and expiry would be self-inflicted outages.** A failed-attempts lockout on
+  `overslash` lets anything with `cloudsql.client` and a wrong password lock the
+  production API out of its own database. Forced expiry without an automated rotation
+  path (the password lives in Terraform state and Secret Manager and is read at boot)
+  is a scheduled outage. Rotation belongs in a procedure, not a timer.
+- **What we rely on instead:** IAM on the proxy, Secret Manager access control on the
+  password, `log_connections` (every authentication attempt, success or failure, now
+  lands in `cloudsql.googleapis.com/postgres.log`) and pgAudit's `role` class for
+  password and privilege changes.
+
+Two residuals, recorded rather than fixed here: humans still authenticate to Postgres
+with the shared `overslash` password once through the proxy — **IAM database
+authentication** for people would remove that shared credential and is the better next
+step; and the default `postgres` built-in user exists on both instances (`gcloud sql users
+list`) outside Terraform, with a password state this read-only scan cannot see. Confirm
+it has none, or set a random one, as part of the 1.2.1 evidence.
 
 ### Memorystore — previously unverified anywhere
 

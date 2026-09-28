@@ -125,7 +125,7 @@ the GitHub button on `/auth/providers` only once both are populated.
 | `iam` | Least-privilege SAs for Cloud Run, Cloud Build, Cloud Scheduler |
 | `artifact-registry` | Docker image repository with cleanup policy (+ optional Docker Hub pull-through mirror) |
 | `secret-manager` | DB password, encryption key, Google + GitHub login + Google services OAuth secrets |
-| `cloud-sql` | PostgreSQL 16 (Auth Proxy or private IP mode) |
+| `cloud-sql` | PostgreSQL 16 (Auth Proxy or private IP mode). TLS-only, deletion-protected, pgAudit on — see [docs/runbooks/cloud-sql-hardening.md](../docs/runbooks/cloud-sql-hardening.md) |
 | `cloud-run` | Overslash API with health checks and secret injection |
 | `cloud-build` | GitHub push trigger: build -> push -> deploy |
 | `infra-scheduler` | (Optional) Stop/start Cloud SQL on cron (Europe/Madrid) |
