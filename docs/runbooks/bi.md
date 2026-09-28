@@ -1,26 +1,36 @@
-# BI: BigQuery federation over the `bi` schema
+# BI: BigQuery federation over prod Postgres
 
 Business questions ("which orgs exist and who owns them?") are answered in
 BigQuery and Looker Studio, never by giving people a prod DB shell.
 
 ```
-Cloud SQL (private IP)
-  └─ schema bi (views, migration 126)   ← read as login role `bi` (created by the API, member of bi_reader only)
-       └─ BigQuery connection <prefix>-pg
-            └─ dataset overslash_bi (EXTERNAL_QUERY views)  ← Looker Studio / BQ console
+infra/modules/bi/sql/<name>.sql ──► BigQuery view overslash_bi.<name>
+                                      = EXTERNAL_QUERY(<prefix>-pg, <that SQL>)
+                                            │ runs live, as Postgres role `bi`
+                                            ▼
+Cloud SQL (private IP): `bi` may SELECT only overslash_db::bi::READABLE_COLUMNS
 ```
 
-- **Live, not copied.** Each BigQuery view runs an `EXTERNAL_QUERY` against
-  the instance at query time. Nothing is replicated, so there is no pipeline
-  to keep healthy and no stale copy of personal data. If analytics ever gets
-  heavy enough to load the primary, move to Datastream replication into
-  BigQuery and keep the same `bi` views as its source.
-- **Curated.** `bi_reader` has no grant on `public`. The views project only
-  non-sensitive columns, so secrets, tokens and encrypted blobs can't reach BI.
-- **Terraform-gated.** The `infra/modules/bi` module is controlled by `enable_bi`,
-  which is on in prod. Access is IAM: project owners, plus `bi_viewers`.
+- **Queries are terraform.** Each file in `infra/modules/bi/sql/` becomes a
+  BigQuery view. Changing a report means editing SQL and running `tofu
+  apply`. No migration and no app release.
+- **The boundary is Rust.** The API creates the `bi` login role at boot and
+  sets its grants to exactly `READABLE_COLUMNS` (`crates/overslash-db/src/bi.rs`):
+  identity, naming, ownership and activity columns, nothing secret or
+  encrypted. `bi` belongs to no role, and in particular not to
+  `cloudsqlsuperuser`, which every `google_sql_user` joins and the app
+  couldn't revoke.
+- **Nothing in the app schema depends on BI.** There are no views, schema or
+  migration, so app migrations can never be blocked by a BI object, and
+  dropping a column simply drops its grant.
+- **CI runs every query.** `tests/bi_views.rs` executes each `sql/*.sql` as
+  `bi` against the migrated schema. A renamed column, or a query reaching past
+  the allow-list, fails the build rather than a dashboard.
+- **Live, not copied.** Nothing is replicated, so there is no pipeline to keep
+  healthy and no stale copy of personal data. If analytics ever gets heavy
+  enough to load the primary, move to Datastream replication into BigQuery.
 
-## Views
+## Queries
 
 | View | One row per | Useful for |
 |------|-------------|------------|
@@ -29,35 +39,34 @@ Cloud SQL (private IP)
 | `org_members` | user identity | membership, admin flag, last activity, archived |
 
 "Owner" means the org's admins (`is_org_admin`). The creator is listed
-separately, because a creator can leave the org and admins can change.
+separately, because a creator can leave the org and admins can change. Cast
+UUIDs to `text`, since BigQuery federation has no UUID type.
 
 ## Enabling in an environment
 
-1. Deploy the API so migration 126 has run.
-2. `make tofu-apply` for that environment, with `enable_bi = true`.
-   Nothing applies terraform automatically.
-3. Nothing to run by hand. The apply mounts the generated password into Cloud
-   Run as `OVERSLASH_BI_DB_PASSWORD`, which rolls out a new revision. At boot,
-   after migrations, `overslash_db::bi::reconcile_bi_user` creates the `bi`
-   LOGIN role, sets its password, and grants it `bi_reader`. The password is
-   re-set on every boot, so rotating the secret only needs a redeploy. The API
-   owns this role instead of terraform because a `google_sql_user` always joins
-   `cloudsqlsuperuser`, and the app can't revoke that. If the reconcile fails,
-   the API logs `bi user reconcile failed`. Confirm with `\du bi`: the only
-   role listed should be `bi_reader`.
-4. Check it in the BigQuery console:
+1. Set `enable_bi = true` in that environment's tfvars and run `make tofu-apply`.
+   Nothing applies terraform automatically. The apply creates the password
+   secret, the BigQuery connection and the views, and mounts the password into
+   Cloud Run as `OVERSLASH_BI_DB_PASSWORD`, which rolls out a new revision.
+2. That revision's boot runs `overslash_db::bi::reconcile_bi_user`: it creates
+   `bi`, sets its password, and replaces its grants with the allow-list. This
+   happens on every boot, so rotating the secret or changing the allow-list
+   only takes a deploy. Failures are logged as `bi user reconcile failed`.
+3. Check it in the BigQuery console:
    `SELECT * FROM overslash_bi.org_summary ORDER BY created_at`.
 
-## Adding a view
+## Adding a query
 
-1. Add a migration with `CREATE VIEW bi.<name> AS …`. The migration 126 default
-   privileges grant `bi_reader` SELECT on it automatically. Select only
-   columns that are safe to show in a dashboard.
-2. Add `<name>` to `local.views` in `infra/modules/bi/main.tf`, then apply.
-3. Extend `crates/overslash-api/tests/bi_views.rs` if the view has logic.
+1. Add `infra/modules/bi/sql/<name>.sql`. Name columns explicitly (no `*`)
+   and cast UUIDs to text.
+2. If it reads a column that isn't in `READABLE_COLUMNS`, add the column
+   there. That is a code change reviewed like any other, and it takes effect
+   on the next API deploy.
+3. `make test` runs it as `bi`, then `tofu apply` publishes it.
 
 ## Looker Studio
 
 In Looker Studio, create a data source with the BigQuery connector, pick
 project `overslash` → `overslash_bi` → a view, and build the report on it. The
-viewer's own credentials are used, so they need BigQuery access (step 2's IAM).
+viewer's own credentials are used, so they need BigQuery access: project
+owner, or listed in `bi_viewers`.

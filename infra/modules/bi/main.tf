@@ -1,13 +1,13 @@
-# BI surface: BigQuery federated queries over the curated `bi` schema in Cloud
-# SQL (migration 126). See docs/runbooks/bi.md.
+# BI surface: BigQuery federated queries over prod Postgres. See
+# docs/runbooks/bi.md.
 #
-# Nothing is copied out of Postgres: each BigQuery view below is an
-# EXTERNAL_QUERY that runs against the live instance as the `bi` login role.
-# The API creates that role at boot (overslash_db::bi) from the password
-# generated here, so it holds only `bi_reader`. A google_sql_user would
-# instead join cloudsqlsuperuser, which the app can't revoke. Cloud SQL on private
-# IP is reachable because the instance sets
-# enable_private_path_for_google_cloud_services.
+# Nothing is copied out of Postgres. Each BigQuery view is an EXTERNAL_QUERY
+# whose inner SQL is a file under sql/, run live against the instance as the
+# Postgres role `bi`. The API creates that role at boot (overslash_db::bi)
+# from the password generated here, and grants it SELECT on an allow-list of
+# columns only. A google_sql_user would join cloudsqlsuperuser instead, which
+# the app can't revoke. Adding a report = a new sql/<name>.sql + tofu apply;
+# the crate test bi_views runs every file as `bi` in CI.
 
 variable "project_id" {
   type = string
@@ -37,15 +37,14 @@ variable "bi_viewers" {
 }
 
 locals {
-  # Every `bi.*` Postgres view exposed to BigQuery. Adding one = a migration
-  # creating the view + its name here.
-  views = ["orgs", "org_members", "org_summary"]
+  # sql/<name>.sql becomes BigQuery view overslash_bi.<name>.
+  views = { for f in fileset("${path.module}/sql", "*.sql") : trimsuffix(f, ".sql") => file("${path.module}/sql/${f}") }
 
   # EXTERNAL_QUERY wants project.location.connection_id, not the resource id.
   external_connection = "${var.project_id}.${var.region}.${google_bigquery_connection.pg.connection_id}"
 }
 
-# --- Password for the `bi` role (created by the API, not here) ---
+# --- Password for the `bi` role (the API creates the role) ---
 
 resource "random_password" "bi" {
   length  = 32
@@ -71,7 +70,7 @@ resource "google_bigquery_connection" "pg" {
   connection_id = "${var.base_prefix}-pg"
   project       = var.project_id
   location      = var.region
-  friendly_name = "Overslash Postgres (bi schema)"
+  friendly_name = "Overslash Postgres (as role bi)"
 
   cloud_sql {
     instance_id = var.sql_connection_name
@@ -96,11 +95,11 @@ resource "google_bigquery_dataset" "bi" {
   dataset_id  = "overslash_bi"
   project     = var.project_id
   location    = var.region
-  description = "Live views over the Overslash `bi` Postgres schema (EXTERNAL_QUERY). See docs/runbooks/bi.md."
+  description = "Live EXTERNAL_QUERY views over Overslash Postgres, read as role bi. See docs/runbooks/bi.md."
 }
 
 resource "google_bigquery_table" "view" {
-  for_each = toset(local.views)
+  for_each = local.views
 
   dataset_id          = google_bigquery_dataset.bi.dataset_id
   project             = var.project_id
@@ -108,7 +107,7 @@ resource "google_bigquery_table" "view" {
   deletion_protection = false
 
   view {
-    query          = "SELECT * FROM EXTERNAL_QUERY(\"${local.external_connection}\", \"SELECT * FROM bi.${each.key}\")"
+    query          = "SELECT * FROM EXTERNAL_QUERY(\"${local.external_connection}\", \"\"\"${each.value}\"\"\")"
     use_legacy_sql = false
   }
 }
