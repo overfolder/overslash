@@ -190,6 +190,10 @@ impl Config {
             connection_return_url_allowed_hosts: parse_connection_return_url_allowed_hosts(
                 env::optional("OVERSLASH_CONNECTION_RETURN_URL_HOSTS").as_deref(),
             ),
+            // Fail-fast like `parse_or_die`: a dropped CIDR would quietly put
+            // every client behind that proxy into one rate-limit bucket.
+            trusted_proxies: crate::services::client_ip::TrustedProxies::from_env()
+                .unwrap_or_else(|e| panic!("{e}")),
         }
     }
 

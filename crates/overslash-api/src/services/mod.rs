@@ -8,6 +8,7 @@ pub mod billing_tier;
 pub mod call_result;
 pub mod call_timeout;
 pub mod client_credentials;
+pub mod client_ip;
 pub mod compact_response;
 pub mod credential_template;
 pub mod deferred_download;

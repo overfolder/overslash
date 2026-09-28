@@ -88,47 +88,50 @@ impl FromRequestParts<AppState> for CallerTransport {
     }
 }
 
-/// Extracts the client IP address from request headers or connection info.
+/// The client's IP address, resolved against the configured trusted proxies
+/// (`Config::trusted_proxies`): the rightmost `X-Forwarded-For` entry this
+/// deployment has no reason to trust, or the socket peer when no proxy is
+/// configured. Never the leftmost header value, which the caller controls.
+/// Every audit `ip_address` and per-IP throttle reads it.
 #[derive(Debug, Clone)]
 pub struct ClientIp(pub Option<String>);
+
+impl ClientIp {
+    /// The resolution itself, for handlers that hold `&Parts` rather than
+    /// extracting.
+    pub fn resolve(parts: &Parts, state: &AppState) -> Self {
+        let peer = parts
+            .extensions
+            .get::<axum::extract::ConnectInfo<SocketAddr>>()
+            .map(|c| c.0.ip());
+        let xff: Vec<&str> = parts
+            .headers
+            .get_all("x-forwarded-for")
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .collect();
+        let secret = parts
+            .headers
+            .get(crate::services::client_ip::PROXY_SECRET_HEADER)
+            .map(|v| v.as_bytes());
+        ClientIp(
+            state
+                .config
+                .trusted_proxies
+                .resolve(peer, &xff, secret)
+                .map(|ip| ip.to_string()),
+        )
+    }
+}
 
 impl FromRequestParts<AppState> for ClientIp {
     type Rejection = std::convert::Infallible;
 
     async fn from_request_parts(
         parts: &mut Parts,
-        _state: &AppState,
+        state: &AppState,
     ) -> std::result::Result<Self, Self::Rejection> {
-        // X-Forwarded-For: first IP in the chain
-        if let Some(forwarded) = parts.headers.get("x-forwarded-for")
-            && let Ok(value) = forwarded.to_str()
-            && let Some(first) = value.split(',').next()
-        {
-            let ip = first.trim();
-            if !ip.is_empty() {
-                return Ok(ClientIp(Some(ip.to_string())));
-            }
-        }
-
-        // X-Real-IP
-        if let Some(real_ip) = parts.headers.get("x-real-ip")
-            && let Ok(value) = real_ip.to_str()
-        {
-            let ip = value.trim();
-            if !ip.is_empty() {
-                return Ok(ClientIp(Some(ip.to_string())));
-            }
-        }
-
-        // Fall back to ConnectInfo
-        if let Some(addr) = parts
-            .extensions
-            .get::<axum::extract::ConnectInfo<SocketAddr>>()
-        {
-            return Ok(ClientIp(Some(addr.0.ip().to_string())));
-        }
-
-        Ok(ClientIp(None))
+        Ok(Self::resolve(parts, state))
     }
 }
 

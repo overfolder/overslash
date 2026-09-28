@@ -1938,6 +1938,7 @@ fn build_config_shape() -> overslash_api::config::Config {
         preview_origin_allowlist: None,
         deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
+        trusted_proxies: Default::default(),
     }
 }
 

@@ -144,6 +144,68 @@ registrar, and Search Console verification of the apex. Full operating notes —
 key rotation, image upgrades, smoke tests — are in
 [docs/runbooks/mailbox-gateway.md](../docs/runbooks/mailbox-gateway.md).
 
+### Client IP & trusted proxies
+
+Every audit row's `ip_address` and every per-IP throttle (magic-link request,
+uploads, downloads) read the `ClientIp` extractor, which resolves the client
+right to left: it walks `X-Forwarded-For` from the socket peer leftwards and
+takes the first address it has no reason to trust. Anything left of that was
+written by the caller and is ignored. With nothing configured, the header is
+ignored entirely and the socket peer is the client. Code and decision table:
+`crates/overslash-api/src/services/client_ip.rs`.
+
+| Variable | tfvar | Meaning |
+|---|---|---|
+| `OVERSLASH_TRUSTED_PROXY_HOPS` | `trusted_proxy_hops` | Addresses, counting the socket peer, trusted by position |
+| `OVERSLASH_TRUSTED_PROXIES` | `trusted_proxy_cidrs` | CIDRs (or bare IPs) trusted wherever they appear |
+| `OVERSLASH_TRUSTED_PROXY_SECRET` | `enable_trusted_proxy_secret` + GSM `overslash-<env>-trusted-proxy-secret` | A request carrying it in `x-overslash-proxy-secret` gets one extra trusted hop |
+
+A malformed value refuses the boot.
+
+What each path looks like at the container, and what gets recorded:
+
+| Path | `X-Forwarded-For` (peer = Google frontend) | Recorded |
+|---|---|---|
+| Agent → `api.dev.overslash.com` / `*.run.app` | `<spoof…>, <client>` | `<client>` (hop 1) |
+| Agent → `api.overslash.com` (GCLB) | `<spoof…>, <client>, 34.36.8.174` | `<client>` (LB by CIDR) |
+| Browser → `app.*` → Vercel rewrite → API | `<client>, <vercel-egress>[, <lb>]` | `<client>` with the secret, `<vercel-egress>` without |
+
+| Env | `trusted_proxy_hops` | `trusted_proxy_cidrs` |
+|---|---|---|
+| prod | `1` | `34.36.8.174/32,35.191.0.0/16,130.211.0.0/22` (LB address, then Google's LB proxy ranges) |
+| dev | `1` | `""` (no LB) |
+
+The prod LB address is a literal because `module.api_lb` depends on
+`module.cloud_run`. If `tofu output` ever shows a different `lb_ip`, update
+`prod.tfvars`. Until then, every request through the LB records the LB's address.
+
+**The Vercel hop.** Vercel overwrites `X-Forwarded-For` with the browser's
+address, then connects from egress IPs it does not publish, so nothing about
+the address can be trusted. `dashboard/middleware.ts` stamps the value of
+`OVERSLASH_TRUSTED_PROXY_SECRET` (the same variable name the API reads) on every path `vercel.json` rewrites to the API (it
+overwrites a client-supplied value, and strips the header when the variable
+is unset). A match trusts exactly that one extra hop. Enabling it, per env:
+
+```bash
+SECRET=$(openssl rand -hex 32)
+printf %s "$SECRET" | gcloud secrets versions add overslash-<env>-trusted-proxy-secret --data-file=- --project <project>
+vercel env add OVERSLASH_TRUSTED_PROXY_SECRET production   # prod value; `preview` for dev
+# prod/dev.tfvars: enable_trusted_proxy_secret = true, then make tofu-apply ENV=<env>
+```
+
+Either order is safe. Until both halves hold the same value, dashboard traffic
+records the Vercel egress address. To rotate, repeat the steps with a new
+value. Dashboard requests record the egress address in the window between the
+two updates.
+
+**Verifying after a deploy.** `curl -si https://app.overslash.com/health | grep
+x-overslash-proxy-mw` should print `1` (the middleware ran and had a secret).
+Then make an audited call directly with a forged header, e.g.
+`curl -X PUT -H 'X-Forwarded-For: 203.0.113.9' -H "Authorization: Bearer $KEY" …/v1/secrets/probe -d '{"value":"x"}'`.
+The `secret.put` row in `/v1/audit` must show your own address, not
+`203.0.113.9`. Do the same from the dashboard: the row should show your
+browser's address, not a Vercel or Google one.
+
 ## Connectivity Modes
 
 - **Auth Proxy (default, `use_private_vpc = false`)**: Cloud SQL has public IP but only accepts Auth Proxy connections (IAM-authenticated). No VPC connector needed. Saves ~$7/month.

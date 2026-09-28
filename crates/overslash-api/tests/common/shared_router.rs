@@ -190,7 +190,12 @@ async fn boot_shared_router() -> SharedHarness {
                     }
                 });
                 let listener = TcpListener::from_std(std_listener).unwrap();
-                axum::serve(listener, app).await.unwrap();
+                axum::serve(
+                    listener,
+                    app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+                )
+                .await
+                .unwrap();
             });
         })
         .expect("shared-router thread spawns");
@@ -363,5 +368,6 @@ fn shared_config(addr: SocketAddr) -> overslash_api::config::Config {
         preview_origin_allowlist: None,
         deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
+        trusted_proxies: Default::default(),
     }
 }

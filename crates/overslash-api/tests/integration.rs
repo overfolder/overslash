@@ -96,6 +96,7 @@ async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         preview_origin_allowlist: None,
         deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
+        trusted_proxies: Default::default(),
     };
 
     // Build the app with the test pool directly
@@ -1843,6 +1844,7 @@ async fn test_service_registry_api() {
         preview_origin_allowlist: None,
         deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
+        trusted_proxies: Default::default(),
     };
 
     // services/ is at workspace root; tests run from crate dir
@@ -2878,6 +2880,7 @@ async fn start_api_with_registry(
         preview_origin_allowlist: None,
         deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
+        trusted_proxies: Default::default(),
     };
 
     let state = overslash_api::AppState {
