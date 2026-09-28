@@ -1098,7 +1098,7 @@ Flow B (task-augmented `tools/call`) stays rejected with its revisit condition u
 
 **Fail-closed on parse, fail-safe on absence.** A dropped CIDR would silently collapse every client behind that proxy into one bucket, so a typo refuses the boot rather than warning. An unset config is the safe direction, since nothing forged is ever believed, so prod only warns about it.
 
-## D-NEXT: `/mcp` also speaks MCP 2026-07-28, and its approval dialogs are multi round-trip requests with a signed `requestState` over the existing row
+## D103: `/mcp` also speaks MCP 2026-07-28, and its approval dialogs are multi round-trip requests with a signed `requestState` over the existing row
 
 **Date**: 2026-09-26
 **Decision**: `POST /mcp` is dual-era.

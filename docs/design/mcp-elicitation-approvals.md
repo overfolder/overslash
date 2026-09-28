@@ -1,6 +1,6 @@
 # MCP Elicitation as Approval Surface
 
-**Status:** Adopted for Flow A, on by default (2026-09-22, D95). Flow B (tasks-augmented) still rejected — its revisit condition is unmet. URL mode is available client-side: Codex 0.157.0 offers it on `2025-06-18`, Claude Code 2.1.282 only on `2026-07-28` — which `/mcp` now speaks (D-NEXT), with approval dialogs as multi round-trip requests; URL mode itself is the next step. Codex works interactively; **headless** Codex auto-declines, which D95 reads as a real denial — see the probed Codex section.
+**Status:** Adopted for Flow A, on by default (2026-09-22, D95). Flow B (tasks-augmented) still rejected — its revisit condition is unmet. URL mode is available client-side: Codex 0.157.0 offers it on `2025-06-18`, Claude Code 2.1.282 only on `2026-07-28` — which `/mcp` now speaks (D103), with approval dialogs as multi round-trip requests; URL mode itself is the next step. Codex works interactively; **headless** Codex auto-declines, which D95 reads as a real denial — see the probed Codex section.
 **Date:** 2026-04-24, revised 2026-09-22 and 2026-09-25
 **Related:** [`overslash.md`](overslash.md), [`mcp-integration.md`](mcp-integration.md), [`mcp-oauth-transport.md`](mcp-oauth-transport.md), [`agent-self-management.md`](agent-self-management.md)
 
@@ -93,7 +93,7 @@ condition is met the upgrade stays additive: URL-reject remains the fallback, an
 augmentation lets the model keep working while the approval pends.
 
 URL mode is a different story as of 2026-09-25: it shipped in Claude Code 2.1.282, on
-`2026-07-28` connections. `/mcp` now serves that era alongside `2025-06-18` (D-NEXT, see
+`2026-07-28` connections. `/mcp` now serves that era alongside `2025-06-18` (D103, see
 *Flow A on 2026-07-28* below), so the transport blocker is gone; sensitive flows (provider
 OAuth, credential entry) still live in the dashboard until URL mode itself is wired up. See
 *Correction: URL mode is live* below.
@@ -478,7 +478,7 @@ future negative result from it:
 `routes/mcp/initialize.rs` answered every handshake with a hardcoded `"protocolVersion":
 "2025-06-18"`, so an Overslash connection never reached the era where *Claude Code* offers
 `url`. Supporting `2026-07-28` turned out to be real work — a different wire schema, not a
-constant bump — and landed separately under D-NEXT; see *Flow A on 2026-07-28* below.
+constant bump — and landed separately under D103; see *Flow A on 2026-07-28* below.
 
 **This does not generalise, and the first draft of this block wrongly implied it did.** Codex
 0.157.0 declares `elicitation: { form: {}, url: {} }` on `2025-06-18` — see the probed Codex
@@ -505,7 +505,7 @@ human-in-the-loop dialog applies."* That is half true: no dialog applies **to th
 every one of those envelopes ends with a human opening a URL. Worth rewording whenever URL mode
 is picked up, because as written it reads as a design decision rather than a client limitation.
 
-### Flow A on 2026-07-28 (D-NEXT)
+### Flow A on 2026-07-28 (D103)
 
 `2026-07-28` removes `initialize`, sessions and every server-to-client request. What that
 means on the wire, as Claude Code 2.1.282+ drives it (`routes/mcp/modern.rs`):
