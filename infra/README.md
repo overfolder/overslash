@@ -158,7 +158,7 @@ ignored entirely and the socket peer is the client. Code and decision table:
 |---|---|---|
 | `OVERSLASH_TRUSTED_PROXY_HOPS` | `trusted_proxy_hops` | Addresses, counting the socket peer, trusted by position |
 | `OVERSLASH_TRUSTED_PROXIES` | `trusted_proxy_cidrs` | CIDRs (or bare IPs) trusted wherever they appear |
-| `OVERSLASH_TRUSTED_PROXY_SECRET` | `enable_trusted_proxy_secret` + GSM `overslash-<env>-trusted-proxy-secret` | A request carrying it in `x-overslash-proxy-secret` gets one extra trusted hop |
+| `OVERSLASH_TRUSTED_PROXY_SECRET` | `enable_trusted_proxy_secret` + GSM `overslash-<env>-trusted-proxy-secret` | A request carrying it in `x-overslash-proxy-secret` has its client taken from `x-overslash-client-ip` in place of the proxy hop |
 
 A malformed value refuses the boot.
 
@@ -179,12 +179,18 @@ The prod LB address is a literal because `module.api_lb` depends on
 `module.cloud_run`. If `tofu output` ever shows a different `lb_ip`, update
 `prod.tfvars`. Until then, every request through the LB records the LB's address.
 
-**The Vercel hop.** Vercel overwrites `X-Forwarded-For` with the browser's
-address, then connects from egress IPs it does not publish, so nothing about
-the address can be trusted. `dashboard/middleware.ts` stamps the value of
-`OVERSLASH_TRUSTED_PROXY_SECRET` (the same variable name the API reads) on every path `vercel.json` rewrites to the API (it
-overwrites a client-supplied value, and strips the header when the variable
-is unset). A match trusts exactly that one extra hop. Enabling it, per env:
+**The Vercel hop.** Vercel connects to the API from egress IPs it does not
+publish, so its address can't be trusted by range. And the `X-Forwarded-For`
+it sends upstream on an external rewrite is **not** its own observation: it
+forwards the browser's header and does not reliably apply a middleware
+override of it (measured on dev). So `dashboard/middleware.ts`, on every path
+`vercel.json` rewrites to the API, stamps two headers of its own:
+`x-overslash-proxy-secret` (the value of `OVERSLASH_TRUSTED_PROXY_SECRET`, the
+same variable name the API reads) and `x-overslash-client-ip` (the address
+Vercel saw, `x-real-ip`). Both are set, never passed through. Without an
+address or the variable, both are stripped. On a secret match the API takes
+the client from `x-overslash-client-ip` and never reads XFF further left.
+Enabling it, per env:
 
 ```bash
 SECRET=$(openssl rand -hex 32)

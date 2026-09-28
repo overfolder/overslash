@@ -47,8 +47,10 @@ proxies (`Config::trusted_proxies`, `services/client_ip.rs`). It walks the
 chain `[socket peer, X-Forwarded-For right to left]` and returns the first
 address that is not trusted: the rightmost untrusted address. An address is
 trusted by position (`OVERSLASH_TRUSTED_PROXY_HOPS`), by range
-(`OVERSLASH_TRUSTED_PROXIES`), or, for exactly one hop, by the proxy's shared
-secret (`OVERSLASH_TRUSTED_PROXY_SECRET`). With nothing configured the
+(`OVERSLASH_TRUSTED_PROXIES`). A proxy with no stable address vouches with a
+shared secret (`OVERSLASH_TRUSTED_PROXY_SECRET`) and names the client in
+`x-overslash-client-ip`; on a match that name stands in for the proxy's hop,
+and nothing left of it is read. With nothing configured the
 socket peer is the client and `X-Forwarded-For` is ignored. `X-Real-IP` is
 never read. Deployment values are in `infra/README.md` ("Client IP & trusted
 proxies").
