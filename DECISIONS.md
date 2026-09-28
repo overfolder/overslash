@@ -1193,12 +1193,12 @@ The client's accept or decline arrives on a separate POST and crosses replicas t
 
 **Refusals recorded in the browser end the wait at once and are reported as `declined`,** with the reason in `url_elicitation_error`:
 - `access_denied`: the provider's own Deny. The callback now accepts an `error=` redirect with no `code` instead of rejecting it at the query extractor, which used to leave the call waiting out its timeout.
-- `cancelled_by_user`: the consent interstitial's Cancel, now a `POST /connect-authorize/cancel` that needs a session.
+- `cancelled_by_user`: the consent interstitial's Cancel, now a `POST /connect-authorize/cancel`. It runs the same connect-gate check as confirm, so only someone who could have continued the flow can cancel it.
 - `declined_on_page`: the provide page's Deny, now `POST /public/secrets/provide/{id}/decline`. It uses the link's own token and is advisory: a later submission still fulfils the request.
 
 Other callback failures are reported as `failed` with a coarse, allow-listed reason, stored on the flow (migration 127). A provider error code is relayed only if it fits RFC 6749's character set.
 
-**An auth link is re-run rather than handed back** when its browser side ended: refused, failed or timed out. The flow was consumed when the user opened it, so the original `auth_url` is dead. Re-running mints a fresh one, and the note rides on the new envelope. Only the client's own decline or dismissal, where the link was never opened, returns the original link.
+**An auth link is re-run rather than handed back** when it can no longer be opened: it was refused, it failed, or it was opened and then abandoned. The flow was consumed when the user opened it, so the original `auth_url` is dead. Re-running mints a fresh one, and the note rides on the new envelope. A link that is still openable goes back as it is: the client declined it, or it timed out without anyone opening it. That way no second flow is minted and no first one is orphaned.
 
 **Old-protocol clients get `notifications/elicitation/complete` whenever the out-of-band part ended**, whether it succeeded, was refused, failed or timed out. Previously this happened only on success.
 

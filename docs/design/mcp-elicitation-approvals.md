@@ -539,7 +539,7 @@ request's `_meta` on 2026-07-28, the `initialize` capabilities on 2025 — indep
 | Client declines / dismisses the prompt | `declined` / `cancelled` | — | the original (never opened) |
 | Provider Deny, consent-page Cancel, provide-page Deny | `declined` | `access_denied` / `cancelled_by_user` / `declined_on_page` | auth links: a fresh one (call re-run) |
 | Callback error, flow or request expired, target gone | `failed` | coarse reason (`bad_request`, `expired`, `not_found`, …) | auth links: a fresh one |
-| Nothing within 300s | `timed_out` | — | auth links: a fresh one |
+| Nothing within 300s | `timed_out` | — | auth links: the original if never opened, else a fresh one |
 | Retry after the `requestState` expired (≤24h) | form: D95 envelope; URL: `timed_out` | — | as above; nothing acted on |
 
 Legacy streams send `notifications/elicitation/complete` on every browser-side ending, not

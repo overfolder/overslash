@@ -136,12 +136,24 @@ pub(super) async fn connect_authorize_cancel(
     headers: HeaderMap,
     Form(params): Form<ConfirmParams>,
 ) -> Result<Response> {
-    if read_session(&state, &headers).is_err() {
-        return Err(AppError::Unauthorized("missing session".into()));
-    }
+    let session = match read_session(&state, &headers) {
+        Ok(s) => s,
+        Err(SessionError::Missing) => return Err(AppError::Unauthorized("missing session".into())),
+        Err(SessionError::Invalid) => {
+            return Err(AppError::Unauthorized("invalid session cookie".into()));
+        }
+    };
     let Some(flow) = oauth_connection_flow::get_by_id(state.db(&ext), &params.id).await? else {
         return Ok(gone_html("This OAuth link is invalid or has been revoked."));
     };
+    // Only someone who could have *continued* this flow may cancel it: the
+    // same gate the confirm POST runs, so a signed-in user of another org who
+    // learns a flow id cannot end it. No re-mint — a cancel changes no
+    // session, so there is nothing to re-scope.
+    match evaluate_connect_gate(&state, &ext, &session, &flow, false).await? {
+        ConnectGateOutcome::Deny => return Ok(mismatch_html()),
+        ConnectGateOutcome::Allow { .. } | ConnectGateOutcome::NeedsConsent { .. } => {}
+    }
     if flow.consumed_at.is_none() {
         oauth_connection_flow::mark_finished(state.db(&ext), &flow.id, Err("cancelled_by_user"))
             .await?;

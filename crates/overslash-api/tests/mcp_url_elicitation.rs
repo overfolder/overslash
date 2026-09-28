@@ -115,7 +115,6 @@ struct XFx {
     pool: sqlx::PgPool,
     agent_key: String,
     org_id: Uuid,
-    agent_id: Uuid,
 }
 
 /// The bundled `x` template with no connection: every call answers
@@ -157,7 +156,6 @@ async fn x_setup() -> XFx {
         pool,
         agent_key,
         org_id,
-        agent_id: ident_id,
     }
 }
 
@@ -372,10 +370,40 @@ async fn cancel_on_the_consent_page_ends_the_wait_as_declined() {
         .unwrap();
     assert_eq!(resp.status(), 401);
 
+    // A signed-in user who could not have continued this flow — here, one
+    // from another org — cannot cancel it either.
     let resp = fx
         .client
         .post(format!("{}/connect-authorize/cancel", fx.base))
-        .header("Cookie", common::session_cookie(fx.org_id, fx.agent_id))
+        .header(
+            "Cookie",
+            common::session_cookie(Uuid::new_v4(), Uuid::new_v4()),
+        )
+        .form(&[("id", flow_id.as_str())])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 403, "{:?}", resp.text().await);
+    let flow = db::oauth_connection_flow::completion(&fx.pool, &flow_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        flow.failed_at.is_none(),
+        "a stranger's cancel records nothing"
+    );
+
+    // The flow's owner, signed in, can.
+    let owner = db::oauth_connection_flow::get_by_id(&fx.pool, &flow_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .identity_id;
+
+    let resp = fx
+        .client
+        .post(format!("{}/connect-authorize/cancel", fx.base))
+        .header("Cookie", common::session_cookie(fx.org_id, owner))
         .form(&[("id", flow_id.as_str())])
         .send()
         .await
@@ -387,16 +415,38 @@ async fn cancel_on_the_consent_page_ends_the_wait_as_declined() {
     assert_fresh_link(&done, &flow_id, "declined", Some("cancelled_by_user"));
 }
 
-/// Retrying after the state expired gets an answer, not a JSON-RPC error.
+/// Retrying after the state expired gets an answer, not a JSON-RPC error. The
+/// link was never opened, so it is still good and comes back as it was —
+/// no second flow minted, none orphaned.
 #[tokio::test]
 async fn a_late_retry_gets_the_fallback_not_an_error() {
     let fx = x_setup().await;
     let first = fx.first().await;
-    let flow_id = flow_id_of(&asked_url(&first));
+    let link = asked_url(&first);
     let mut late = first.clone();
     late["requestState"] = json!(expire(first["requestState"].as_str().unwrap()));
     let done = fx.retry(&late, "accept").await;
     assert!(done.get("error").is_none(), "{done}");
+    let env = text_of(&done["result"]);
+    assert_eq!(env["url_elicitation"], "timed_out", "{env}");
+    assert_eq!(env["auth_url"], json!(link), "unopened, so still usable");
+}
+
+/// Timed out after the user *opened* the link: the flow is consumed, so the
+/// agent gets a fresh link rather than the spent one.
+#[tokio::test]
+async fn a_link_opened_then_abandoned_is_replaced_on_timeout() {
+    let fx = x_setup().await;
+    let first = fx.first().await;
+    let flow_id = flow_id_of(&asked_url(&first));
+    // What the gate does when the user opens the link.
+    db::oauth_connection_flow::consume(&fx.pool, &flow_id)
+        .await
+        .unwrap()
+        .expect("consumable");
+    let mut late = first.clone();
+    late["requestState"] = json!(expire(first["requestState"].as_str().unwrap()));
+    let done = fx.retry(&late, "accept").await;
     assert_fresh_link(&done, &flow_id, "timed_out", None);
 }
 

@@ -537,14 +537,18 @@ pub(super) async fn finish(ctx: &Ctx, plan: &Plan) -> Reply {
 
 /// A hand-off did not complete: the original body, with a note saying why.
 ///
-/// Except for an auth link whose browser side ended — refused at the
-/// provider, failed, or run out: its flow was consumed when the user opened
-/// it (or is about to expire), so the original `auth_url` is dead, and handing
-/// it back would send the agent round a loop with a broken link. The call is
-/// run again instead, which mints a fresh one, and the note rides on that.
+/// Except for an auth link that can no longer be opened — refused at the
+/// provider, failed, or opened and then abandoned: its flow was consumed when
+/// the user opened it, so the original `auth_url` is dead, and handing it back
+/// would send the agent round a loop with a broken link. The call is run again
+/// instead, which mints a fresh one, and the note rides on that. A link that
+/// timed out unopened is still good and goes back as it is.
 pub(super) async fn stop(ctx: &Ctx, plan: &Plan, stopped: Stopped) -> Reply {
     retire_approval_row(ctx, plan, false).await;
-    if plan.then == Then::Replay && stopped.ended_in_browser() {
+    if plan.then == Then::Replay
+        && stopped.ended_in_browser()
+        && !original_link_usable(ctx, plan).await
+    {
         return match redispatch(ctx).await {
             Ok(ForwardOutcome::TypedError(envelope)) => {
                 Reply::Result(tool_error_result(&noted(&envelope, &stopped)))
@@ -571,6 +575,25 @@ pub(super) fn fallback(plan: &Plan, stopped: &Stopped) -> Reply {
     } else {
         Reply::Result(text_result(&body))
     }
+}
+
+/// Can the plan's auth link still be opened? True only for a flow nobody has
+/// opened, that has not failed and has not expired — the `timed_out` case
+/// where the user simply never clicked. Then the original goes back as it is,
+/// rather than minting a second flow and orphaning the first. Anything else
+/// (opened, refused, failed, expired, unknown) means the link is spent.
+async fn original_link_usable(ctx: &Ctx, plan: &Plan) -> bool {
+    let Some(Watch::OauthFlow { id }) = plan.handoffs.first().map(|h| &h.watch) else {
+        return false;
+    };
+    matches!(
+        overslash_db::repos::oauth_connection_flow::completion(ctx.state.db(&ctx.ext), id).await,
+        Ok(Some(f)) if f.org_id == ctx.auth.org_id
+            && f.consumed_at.is_none()
+            && f.failed_at.is_none()
+            && f.completed_at.is_none()
+            && f.expires_at > time::OffsetDateTime::now_utc()
+    )
 }
 
 async fn redispatch(ctx: &Ctx) -> Result<ForwardOutcome, String> {
