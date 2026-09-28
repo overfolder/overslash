@@ -1085,7 +1085,7 @@ Flow B (task-augmented `tools/call`) stays rejected with its revisit condition u
 
 **Numbering**: allocated D95 by #661, then #657's merge indented this heading, so the allocator stopped seeing it and gave #657's decision D95 as well. This entry moved instead of that one because every other citation of D95 means the elicitation decision.
 
-## D-NEXT: Client IP is the rightmost untrusted address; the Vercel hop is trusted by a shared secret, not by address
+## D102: Client IP is the rightmost untrusted address; the Vercel hop is trusted by a shared secret, not by address
 
 **Date**: 2026-09-26
 **Decision**: `ClientIp` walks `[socket peer, X-Forwarded-For right to left]` and returns the first address it has no reason to trust. An address is trusted by position (`OVERSLASH_TRUSTED_PROXY_HOPS`, which is 1 on Cloud Run), by range (`OVERSLASH_TRUSTED_PROXIES`, the GCLB address), or, for exactly one hop, because the request carries `OVERSLASH_TRUSTED_PROXY_SECRET` in `x-overslash-proxy-secret`, which the dashboard's Vercel Routing Middleware stamps on every rewrite to the API. With nothing configured, the header is ignored and the socket peer is the client. `X-Real-IP` is not read. All three variables are parsed at boot, and a malformed one refuses the boot.
