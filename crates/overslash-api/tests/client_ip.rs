@@ -10,7 +10,7 @@
 
 use crate::common::{self, auth, bootstrap_org_identity, start_api, start_api_with};
 
-use overslash_api::services::client_ip::{PROXY_SECRET_HEADER, TrustedProxies};
+use overslash_api::services::client_ip::{CLIENT_IP_HEADER, PROXY_SECRET_HEADER, TrustedProxies};
 use reqwest::{Client, StatusCode};
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -123,6 +123,7 @@ async fn registered_ip(
     pool: &sqlx::PgPool,
     xff: &str,
     secret: Option<&str>,
+    named: Option<&str>,
 ) -> Option<String> {
     let mut req = client
         .post(format!("{base}/oauth/register"))
@@ -135,6 +136,9 @@ async fn registered_ip(
     if let Some(s) = secret {
         req = req.header(PROXY_SECRET_HEADER, s);
     }
+    if let Some(n) = named {
+        req = req.header(CLIENT_IP_HEADER, n);
+    }
     let resp = req.send().await.unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
     let body: Value = resp.json().await.unwrap();
@@ -146,24 +150,30 @@ async fn registered_ip(
 }
 
 #[tokio::test]
-async fn proxy_secret_vouches_for_exactly_one_more_hop() {
+async fn proxy_secret_makes_the_named_client_the_client() {
     let pool = common::test_pool().await;
     let (addr, client) = start_api_with(pool.clone(), |c| {
         c.trusted_proxies = loopback_proxy(Some(SECRET));
     })
     .await;
     let base = format!("http://{addr}");
-    // 76.76.21.21 plays the Vercel egress: not in any trusted range.
-    let xff = "198.51.100.1, 203.0.113.9, 76.76.21.21";
+    // 76.76.21.21 plays the Vercel egress: not in any trusted range. To its
+    // left, what Vercel really forwards: the browser's own forged XFF.
+    let xff = "203.0.113.66, 76.76.21.21";
+    let named = Some("128.140.96.98");
 
-    let ip = registered_ip(&base, &client, &pool, xff, Some(SECRET)).await;
-    assert_eq!(ip.as_deref(), Some("203.0.113.9"));
+    let ip = registered_ip(&base, &client, &pool, xff, Some(SECRET), named).await;
+    assert_eq!(ip.as_deref(), Some("128.140.96.98"));
 
-    let wrong = "ffffffffffffffffffffffffffffffff";
-    let ip = registered_ip(&base, &client, &pool, xff, Some(wrong)).await;
+    // Vouched but naming nobody: stop at the egress, never read its left.
+    let ip = registered_ip(&base, &client, &pool, xff, Some(SECRET), None).await;
     assert_eq!(ip.as_deref(), Some("76.76.21.21"));
 
-    let ip = registered_ip(&base, &client, &pool, xff, None).await;
+    // A forged name without the secret buys nothing.
+    let wrong = "ffffffffffffffffffffffffffffffff";
+    let ip = registered_ip(&base, &client, &pool, xff, Some(wrong), named).await;
+    assert_eq!(ip.as_deref(), Some("76.76.21.21"));
+    let ip = registered_ip(&base, &client, &pool, xff, None, named).await;
     assert_eq!(ip.as_deref(), Some("76.76.21.21"));
 }
 
@@ -172,6 +182,14 @@ async fn oauth_register_ignores_spoofed_xff_by_default() {
     let pool = common::test_pool().await;
     let (addr, client) = start_api(pool.clone()).await;
     let base = format!("http://{addr}");
-    let ip = registered_ip(&base, &client, &pool, "203.0.113.9", Some(SECRET)).await;
+    let ip = registered_ip(
+        &base,
+        &client,
+        &pool,
+        "203.0.113.9",
+        Some(SECRET),
+        Some("203.0.113.8"),
+    )
+    .await;
     assert_eq!(ip.as_deref(), Some("127.0.0.1"));
 }

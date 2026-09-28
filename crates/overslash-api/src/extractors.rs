@@ -110,15 +110,19 @@ impl ClientIp {
             .iter()
             .filter_map(|v| v.to_str().ok())
             .collect();
-        let secret = parts
-            .headers
-            .get(crate::services::client_ip::PROXY_SECRET_HEADER)
-            .map(|v| v.as_bytes());
+        use crate::services::client_ip::{CLIENT_IP_HEADER, PROXY_SECRET_HEADER, ProxyStamp};
+        let stamp = ProxyStamp {
+            secret: parts.headers.get(PROXY_SECRET_HEADER).map(|v| v.as_bytes()),
+            client: parts
+                .headers
+                .get(CLIENT_IP_HEADER)
+                .and_then(|v| v.to_str().ok()),
+        };
         ClientIp(
             state
                 .config
                 .trusted_proxies
-                .resolve(peer, &xff, secret)
+                .resolve(peer, &xff, stamp)
                 .map(|ip| ip.to_string()),
         )
     }
