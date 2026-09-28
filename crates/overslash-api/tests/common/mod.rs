@@ -791,6 +791,7 @@ where
         .merge(overslash_api::routes::org_service_keys::router())
         .merge(overslash_api::routes::groups::router())
         .merge(overslash_api::routes::directory_groups::router())
+        .merge(overslash_api::routes::google_directory::router())
         .merge(overslash_api::routes::rate_limits::router())
         .merge(overslash_api::routes::preferences::router())
         .merge(overslash_api::mcp_oauth_routes(&state))
@@ -1010,6 +1011,7 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         .merge(overslash_api::routes::org_service_keys::router())
         .merge(overslash_api::routes::groups::router())
         .merge(overslash_api::routes::directory_groups::router())
+        .merge(overslash_api::routes::google_directory::router())
         .merge(overslash_api::routes::rate_limits::router())
         .merge(overslash_api::routes::preferences::router())
         .merge(overslash_api::mcp_oauth_routes(&state))
@@ -1042,7 +1044,24 @@ pub async fn start_api_with_auth_providers(
     github_creds: Option<(String, String)>,
     public_url: &str,
 ) -> (String, Client) {
-    let config = overslash_api::config::Config {
+    start_api_with_auth_providers_customized(pool, google_creds, github_creds, public_url, |_| {})
+        .await
+}
+
+/// [`start_api_with_auth_providers`] with a hook to tweak the `Config` before
+/// the server starts — e.g. `service_base_overrides` pointing an upstream
+/// Google API at a fake.
+pub async fn start_api_with_auth_providers_customized<F>(
+    pool: PgPool,
+    google_creds: Option<(String, String)>,
+    github_creds: Option<(String, String)>,
+    public_url: &str,
+    customize: F,
+) -> (String, Client)
+where
+    F: FnOnce(&mut overslash_api::config::Config),
+{
+    let mut config = overslash_api::config::Config {
         async_execution: Default::default(),
         call_stream_idle_timeout_ms: 30_000,
         call_timeout_max_ms: 110_000,
@@ -1120,6 +1139,7 @@ pub async fn start_api_with_auth_providers(
         connection_return_url_allowed_hosts: Vec::new(),
         trusted_proxies: Default::default(),
     };
+    customize(&mut config);
 
     let state = overslash_api::AppState {
         db: pool,
@@ -1186,6 +1206,7 @@ pub async fn start_api_with_auth_providers(
         .merge(overslash_api::routes::org_oauth_credentials::router())
         .merge(overslash_api::routes::groups::router())
         .merge(overslash_api::routes::directory_groups::router())
+        .merge(overslash_api::routes::google_directory::router())
         .with_state(state)
         .layer(axum::middleware::from_fn(
             overslash_api::middleware::security_headers::security_headers,
@@ -1884,6 +1905,7 @@ where
         .merge(overslash_api::routes::org_service_keys::router())
         .merge(overslash_api::routes::groups::router())
         .merge(overslash_api::routes::directory_groups::router())
+        .merge(overslash_api::routes::google_directory::router())
         .merge(overslash_api::routes::rate_limits::router())
         .merge(overslash_api::routes::preferences::router())
         .merge(overslash_api::mcp_oauth_routes(&state))
@@ -2043,6 +2065,7 @@ pub async fn start_api_for_search(pool: PgPool) -> (String, Client) {
         .merge(overslash_api::routes::api_keys::router())
         .merge(overslash_api::routes::groups::router())
         .merge(overslash_api::routes::directory_groups::router())
+        .merge(overslash_api::routes::google_directory::router())
         .merge(overslash_api::routes::services::router())
         .merge(overslash_api::routes::templates::router())
         .merge(overslash_api::routes::connections::router())
@@ -2222,6 +2245,7 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         .merge(overslash_api::routes::org_service_keys::router())
         .merge(overslash_api::routes::groups::router())
         .merge(overslash_api::routes::directory_groups::router())
+        .merge(overslash_api::routes::google_directory::router())
         .merge(overslash_api::routes::rate_limits::router())
         .merge(overslash_api::routes::preferences::router())
         .merge(overslash_api::mcp_oauth_routes(&state))

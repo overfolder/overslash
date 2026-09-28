@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE org_google_directory_configs\n            SET sync_requested_at = now()\n          WHERE org_id = $1 AND enabled AND sync_requested_at IS NULL\n          RETURNING org_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "org_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "org_google_directory_configs",
+            "name": "org_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "206f35158c05a245db21432b3f7803c48c82a83977ac4e2f92ea43d7c8c0db58"
+}

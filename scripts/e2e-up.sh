@@ -177,6 +177,7 @@ STRIPE_URL=$(python3    -c "import json,sys; print(json.load(open('$FAKES_STATE_
 MCP_URL=$(python3       -c "import json,sys; print(json.load(open('$FAKES_STATE_FILE'))['mcp'])")
 AUTH0_TENANT_URL=$(python3 -c "import json; print(json.load(open('$FAKES_STATE_FILE'))['auth0']['tenant_url'])")
 OKTA_TENANT_URL=$(python3  -c "import json; print(json.load(open('$FAKES_STATE_FILE'))['okta']['tenant_url'])")
+GOOGLE_DIRECTORY_URL=$(python3 -c "import json; print(json.load(open('$FAKES_STATE_FILE'))['google_directory'])")
 # Per-variant URLs: emitted as `MCP_VARIANT_<NAME>_URL` env vars (kebab-case
 # names get uppercased + dashes-to-underscores) so the env file is safe to
 # `source` from bash without the JSON braces being mistaken for brace
@@ -225,6 +226,10 @@ DASH_URL="http://localhost:$DASH_PORT"
 # the upstream hostnames the shipped service templates use. Add more as needed.
 OPENAPI_HOST=$(python3 -c "from urllib.parse import urlparse; import sys; print(urlparse('$OPENAPI_URL').netloc.split(':')[0])")
 OVERRIDES="api.github.com=$OPENAPI_URL,api.slack.com=$OPENAPI_URL,api.stripe.com=$STRIPE_URL"
+# Google Workspace Directory sync: the JWT-bearer token exchange and the Admin
+# SDK both land on one fake. Nothing else in the API dials these two hosts
+# through the override table.
+OVERRIDES="$OVERRIDES,oauth2.googleapis.com=$GOOGLE_DIRECTORY_URL,admin.googleapis.com=$GOOGLE_DIRECTORY_URL"
 # `services/email.yaml` resolves `servers[0]` from ${MAILBOX_HOST} (D44) and
 # has no default, so without this the whole `email` template is skipped at load
 # and every mail story 404s. The value itself is never dialed: the e2e suite
@@ -433,6 +438,7 @@ MCP_URL=$MCP_URL
 MCP_PUPPET_URL=$MCP_PUPPET_URL
 AUTH0_TENANT_URL=$AUTH0_TENANT_URL
 OKTA_TENANT_URL=$OKTA_TENANT_URL
+GOOGLE_DIRECTORY_URL=$GOOGLE_DIRECTORY_URL
 APP_HOST_SUFFIX=$APP_HOST_SUFFIX
 API_HOST_SUFFIX=$API_HOST_SUFFIX
 OVERFWD_URL=$OVERFWD_URL

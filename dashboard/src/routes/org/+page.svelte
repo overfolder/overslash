@@ -22,6 +22,7 @@
 	import type { OrgPageData, OrgSubscription } from './+page';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
+	import GoogleDirectoryCard from '$lib/components/org/GoogleDirectoryCard.svelte';
 	import { absoluteTime } from '$lib/utils/time';
 	import { invalidateAllowedDomains } from '$lib/orgDomains';
 
@@ -1623,6 +1624,8 @@
 				</form>
 			{/if}
 		</section>
+
+		<GoogleDirectoryCard />
 
 		<!-- OAuth App Credentials -->
 		<section class="card" id="oauth-app-credentials">

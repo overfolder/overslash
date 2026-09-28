@@ -97,13 +97,27 @@ export interface DirectoryGroup {
 	org_id: string;
 	/** The IdP config that reported it, when it came from a login. */
 	idp_config_id?: string;
-	/** 'oidc_claim' today; widened as Admin SDK / SCIM sources land. */
+	/** 'oidc_claim' (a sign-in group claim) or 'google_directory' (the
+	 *  Google Workspace Admin SDK pull). */
 	source: string;
-	/** The claim value — a name from Okta, an object GUID from Entra. */
+	/** The claim value — a name from Okta, an object GUID from Entra — or,
+	 *  for Google, the group's stable id. */
 	external_id: string;
 	display_name: string;
 	first_seen_at: string;
 	last_seen_at: string;
+}
+
+/** Human label for a directory group's `source`. */
+export function directorySourceLabel(source: string): string {
+	switch (source) {
+		case 'oidc_claim':
+			return 'Sign-in group claim';
+		case 'google_directory':
+			return 'Google Workspace';
+		default:
+			return source;
+	}
 }
 
 export interface DirectoryGroupSummary extends DirectoryGroup {

@@ -1,0 +1,264 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO org_google_directory_configs\n             (org_id, encrypted_service_account_key, service_account_email,\n              service_account_key_id, admin_subject, customer_id, domains, enabled,\n              sync_interval_hours)\n         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)\n         RETURNING org_id, encrypted_service_account_key, service_account_email,\n                   service_account_key_id, admin_subject, customer_id, domains, enabled,\n                   sync_interval_hours, next_sync_at, sync_requested_at, lease_owner,\n                   lease_expires_at, last_sync_started_at, last_sync_finished_at,\n                   last_sync_status, last_sync_error, last_sync_stats, created_at, updated_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "org_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "org_google_directory_configs",
+            "name": "org_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "encrypted_service_account_key",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "org_google_directory_configs",
+            "name": "encrypted_service_account_key"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "service_account_email",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "org_google_directory_configs",
+            "name": "service_account_email"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "service_account_key_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "org_google_directory_configs",
+            "name": "service_account_key_id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "admin_subject",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "org_google_directory_configs",
+            "name": "admin_subject"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "customer_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "org_google_directory_configs",
+            "name": "customer_id"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "domains",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "org_google_directory_configs",
+            "name": "domains"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "enabled",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "org_google_directory_configs",
+            "name": "enabled"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "sync_interval_hours",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "org_google_directory_configs",
+            "name": "sync_interval_hours"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "next_sync_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "org_google_directory_configs",
+            "name": "next_sync_at"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "sync_requested_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "org_google_directory_configs",
+            "name": "sync_requested_at"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "lease_owner",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "org_google_directory_configs",
+            "name": "lease_owner"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "lease_expires_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "org_google_directory_configs",
+            "name": "lease_expires_at"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "last_sync_started_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "org_google_directory_configs",
+            "name": "last_sync_started_at"
+          }
+        }
+      },
+      {
+        "ordinal": 14,
+        "name": "last_sync_finished_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "org_google_directory_configs",
+            "name": "last_sync_finished_at"
+          }
+        }
+      },
+      {
+        "ordinal": 15,
+        "name": "last_sync_status",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "org_google_directory_configs",
+            "name": "last_sync_status"
+          }
+        }
+      },
+      {
+        "ordinal": 16,
+        "name": "last_sync_error",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "org_google_directory_configs",
+            "name": "last_sync_error"
+          }
+        }
+      },
+      {
+        "ordinal": 17,
+        "name": "last_sync_stats",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "org_google_directory_configs",
+            "name": "last_sync_stats"
+          }
+        }
+      },
+      {
+        "ordinal": 18,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "org_google_directory_configs",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 19,
+        "name": "updated_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "org_google_directory_configs",
+            "name": "updated_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Bytea",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "TextArray",
+        "Bool",
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "36f7036e26f751583abd8e468c0f4b49ca866fab96528c1d57999112db81696b"
+}

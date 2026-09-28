@@ -66,6 +66,7 @@ mod free_unlimited;
 mod github;
 mod gmail;
 mod google_calendar;
+mod google_directory_sync;
 mod google_drive;
 mod google_keep;
 mod google_tasks;

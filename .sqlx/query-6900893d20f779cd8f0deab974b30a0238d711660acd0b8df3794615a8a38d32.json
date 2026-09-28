@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM directory_groups WHERE org_id = $1 AND source = 'google_directory'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "6900893d20f779cd8f0deab974b30a0238d711660acd0b8df3794615a8a38d32"
+}

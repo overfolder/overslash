@@ -20,7 +20,7 @@ pub struct DirectoryGroupRow {
     /// The IdP config whose login produced this row. `None` for sources that
     /// do not ride a login (Google Admin SDK, SCIM) once those land.
     pub idp_config_id: Option<Uuid>,
-    /// `'oidc_claim'` today; widened as new sources arrive.
+    /// `'oidc_claim'` (a sign-in claim) or `'google_directory'` (the Admin SDK pull).
     pub source: String,
     /// The claim value, verbatim — a name from Okta, an object GUID from Entra.
     pub external_id: String,

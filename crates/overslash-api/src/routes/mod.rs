@@ -13,6 +13,7 @@ pub mod directory_groups;
 pub mod downloads;
 pub mod events;
 pub mod executions;
+pub mod google_directory;
 pub mod groups;
 pub mod health;
 pub mod icons;

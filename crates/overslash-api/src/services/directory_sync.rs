@@ -20,15 +20,22 @@
 
 use uuid::Uuid;
 
+use overslash_core::crypto;
 use overslash_db::repos::audit::AuditEntry;
+use overslash_db::repos::google_directory_config::GoogleDirectoryConfigRow;
 use overslash_db::repos::org_idp_config;
 use overslash_db::scopes::OrgScope;
 
+use crate::services::google_directory;
 use crate::{AppState, error::Result};
 
-/// The `directory_groups.source` this module writes. Google Admin SDK and
-/// SCIM will write the same tables under their own values.
+/// The `directory_groups.source` the sign-in claim path writes.
 pub const SOURCE_OIDC_CLAIM: &str = "oidc_claim";
+/// The `directory_groups.source` the Google Workspace Directory pull writes.
+/// Its rows carry no `idp_config_id`: the credential is the org's, not a
+/// login's, and the reconcile is scoped on `(source, NULL)` so the two sources
+/// can never revoke each other's memberships.
+pub const SOURCE_GOOGLE_DIRECTORY: &str = "google_directory";
 
 /// What one sign-in changed, for logging and tests.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -117,6 +124,7 @@ pub async fn sync_identity_groups(
                 resource_type: Some("identity"),
                 resource_id: Some(identity_id),
                 detail: serde_json::json!({
+                    "source": SOURCE_OIDC_CLAIM,
                     "provider_key": provider_key,
                     "idp_config_id": config.id,
                     "group_claim": config.group_claim,
@@ -137,6 +145,195 @@ pub async fn sync_identity_groups(
         removed,
         ran: true,
     })
+}
+
+// ── Google Workspace Directory ───────────────────────────────────────
+
+/// What one Google Directory sweep did, stored as `last_sync_stats`.
+#[derive(Debug, Default, serde::Serialize, PartialEq, Eq)]
+pub struct GoogleSyncStats {
+    /// Groups Google listed.
+    pub groups: usize,
+    /// Humans in the configured domains that the sweep reconciled.
+    pub identities: usize,
+    /// Of those, how many the directory places in at least one group.
+    pub matched: usize,
+    /// Membership rows added and removed across all identities.
+    pub added: usize,
+    pub removed: usize,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum GoogleSyncError {
+    #[error("{0}")]
+    Directory(#[from] google_directory::DirectoryError),
+    #[error("database error")]
+    Database(#[from] sqlx::Error),
+    #[error("could not decrypt the stored service account key")]
+    Crypto(#[from] overslash_core::crypto::CryptoError),
+    #[error("the stored service account key is unreadable: {0}")]
+    StoredKey(String),
+}
+
+/// Decrypt and parse the org's stored key.
+pub(crate) fn stored_key(
+    state: &AppState,
+    config: &GoogleDirectoryConfigRow,
+) -> std::result::Result<google_directory::ServiceAccountKey, GoogleSyncError> {
+    let keyring = state.config.keyring()?;
+    let plain = crypto::decrypt(&keyring, &config.encrypted_service_account_key)?;
+    let json = String::from_utf8(plain).map_err(|e| GoogleSyncError::StoredKey(e.to_string()))?;
+    google_directory::ServiceAccountKey::parse(&json)
+        .map_err(|e| GoogleSyncError::StoredKey(e.to_string()))
+}
+
+/// The lower-cased domain of an email, judged by its last `@`.
+pub fn email_domain(email: &str) -> Option<String> {
+    email
+        .rsplit_once('@')
+        .map(|(_, d)| d.trim().to_lowercase())
+        .filter(|d| !d.is_empty())
+}
+
+/// Full sweep: every group in the Workspace, every member of each, then an
+/// authoritative reconcile of every human in the configured domains.
+///
+/// **A partial listing never revokes.** Every page of every call must succeed
+/// before a single membership row is touched; any error returns before the
+/// reconcile. This is D107's "an absent claim is not an empty claim" in the
+/// shape a pull takes — a 500 on page two of one group's members must not
+/// read as "these people left".
+///
+/// Groups are upserted before the reconcile (the membership rows are FK'd to
+/// them), which is harmless on a failed run: a discovered group confers
+/// nothing until an admin maps it.
+pub async fn sync_google_directory_full(
+    state: &AppState,
+    org_id: Uuid,
+) -> std::result::Result<GoogleSyncStats, GoogleSyncError> {
+    let scope = OrgScope::new(org_id, state.db.clone());
+    let Some(config) = scope.get_google_directory_config().await? else {
+        return Ok(GoogleSyncStats::default());
+    };
+    let key = stored_key(state, &config)?;
+    let client =
+        google_directory::DirectoryClient::connect(state, &key, &config.admin_subject).await?;
+
+    let groups = client.list_groups(&config.customer_id).await?;
+    let mut members_by_group = Vec::with_capacity(groups.len());
+    for group in &groups {
+        members_by_group.push(client.list_member_emails(&group.id).await?);
+    }
+
+    // Everything listed. From here on the directory's word is complete — but
+    // an admin may have disconnected while we were listing, and writing now
+    // would resurrect the groups that DELETE just removed.
+    if scope.get_google_directory_config().await?.is_none() {
+        return Ok(GoogleSyncStats::default());
+    }
+    let mut groups_by_email: std::collections::HashMap<String, Vec<Uuid>> =
+        std::collections::HashMap::new();
+    for (group, members) in groups.iter().zip(members_by_group) {
+        let row = scope
+            .upsert_directory_group(None, SOURCE_GOOGLE_DIRECTORY, &group.id, group.label())
+            .await?;
+        for email in members {
+            groups_by_email.entry(email).or_default().push(row.id);
+        }
+    }
+
+    let candidates = scope
+        .list_google_directory_candidates(&config.domains)
+        .await?;
+    let mut stats = GoogleSyncStats {
+        groups: groups.len(),
+        identities: candidates.len(),
+        ..Default::default()
+    };
+    for candidate in candidates {
+        let mut ids = groups_by_email.remove(&candidate.email).unwrap_or_default();
+        ids.sort();
+        ids.dedup();
+        if !ids.is_empty() {
+            stats.matched += 1;
+        }
+        let (added, removed) =
+            reconcile_google(&scope, org_id, candidate.identity_id, &ids).await?;
+        stats.added += added;
+        stats.removed += removed;
+    }
+    Ok(stats)
+}
+
+/// Per-user pull at sign-in: the groups Google places `email` in directly.
+///
+/// Runs on a spawned task — the caller never waits on Google. Does nothing
+/// without an enabled config, or for an email outside the configured domains:
+/// a Workspace credential speaks for its own domains' users and nobody else,
+/// whichever IdP they signed in through.
+pub async fn sync_google_directory_for_identity(
+    state: &AppState,
+    org_id: Uuid,
+    identity_id: Uuid,
+    email: &str,
+) -> std::result::Result<bool, GoogleSyncError> {
+    let scope = OrgScope::new(org_id, state.db.clone());
+    let Some(config) = scope.get_google_directory_config().await? else {
+        return Ok(false);
+    };
+    let email = email.trim().to_lowercase();
+    let in_domain = email_domain(&email).is_some_and(|d| config.domains.contains(&d));
+    if !config.enabled || !in_domain {
+        return Ok(false);
+    }
+    let key = stored_key(state, &config)?;
+    let client =
+        google_directory::DirectoryClient::connect(state, &key, &config.admin_subject).await?;
+    let groups = client.list_user_groups(&email).await?;
+
+    let mut ids = Vec::with_capacity(groups.len());
+    for group in &groups {
+        let row = scope
+            .upsert_directory_group(None, SOURCE_GOOGLE_DIRECTORY, &group.id, group.label())
+            .await?;
+        ids.push(row.id);
+    }
+    ids.sort();
+    ids.dedup();
+    reconcile_google(&scope, org_id, identity_id, &ids).await?;
+    Ok(true)
+}
+
+/// Reconcile one identity to exactly `ids` under the Google source, auditing
+/// a real delta. Returns `(added, removed)` counts.
+async fn reconcile_google(
+    scope: &OrgScope,
+    org_id: Uuid,
+    identity_id: Uuid,
+    ids: &[Uuid],
+) -> std::result::Result<(usize, usize), sqlx::Error> {
+    let (added, removed) = scope
+        .replace_directory_memberships(identity_id, None, SOURCE_GOOGLE_DIRECTORY, ids)
+        .await?;
+    if !added.is_empty() || !removed.is_empty() {
+        let _ = scope
+            .log_audit(AuditEntry {
+                org_id,
+                identity_id: Some(identity_id),
+                action: "identity.directory_groups_synced",
+                resource_type: Some("identity"),
+                resource_id: Some(identity_id),
+                detail: serde_json::json!({
+                    "source": SOURCE_GOOGLE_DIRECTORY,
+                    "added": added,
+                    "removed": removed,
+                }),
+                description: None,
+                ip_address: None,
+            })
+            .await;
+    }
+    Ok((added.len(), removed.len()))
 }
 
 /// Read the configured claim, distinguishing "the IdP said nothing" from "the
