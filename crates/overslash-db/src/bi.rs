@@ -40,19 +40,19 @@ async fn reconcile(db: &PgPool) -> Result<(), sqlx::Error> {
     if !row.get::<bool, _>("has_user") {
         return Ok(());
     }
-    if !row.get::<bool, _>("has_reader") {
-        tracing::warn!("`{BI_USER}` exists but `bi_reader` does not; BI stays disabled");
-        return Ok(());
-    }
-    if !row.get::<bool, _>("granted") {
-        sqlx::raw_sql("GRANT bi_reader TO bi").execute(db).await?;
-        tracing::info!("granted bi_reader to `{BI_USER}`");
-    }
+    // Strip the excess first: it matters even when there is no bi_reader to
+    // grant, e.g. a deployment whose migration couldn't create the role.
     if row.get::<bool, _>("superuser") {
         sqlx::raw_sql("REVOKE cloudsqlsuperuser FROM bi")
             .execute(db)
             .await?;
         tracing::info!("revoked cloudsqlsuperuser from `{BI_USER}`");
+    }
+    if !row.get::<bool, _>("has_reader") {
+        tracing::warn!("`{BI_USER}` exists but `bi_reader` does not; BI stays disabled");
+    } else if !row.get::<bool, _>("granted") {
+        sqlx::raw_sql("GRANT bi_reader TO bi").execute(db).await?;
+        tracing::info!("granted bi_reader to `{BI_USER}`");
     }
     Ok(())
 }
