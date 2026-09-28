@@ -550,7 +550,15 @@ pub(super) async fn stop(ctx: &Ctx, plan: &Plan, stopped: Stopped) -> Reply {
                 Reply::Result(tool_error_result(&noted(&envelope, &stopped)))
             }
             // Recovered some other way meanwhile: the result is the answer.
-            other => render(other),
+            Ok(ok @ ForwardOutcome::Ok(_)) => render(Ok(ok)),
+            // The re-run itself failed (transport, upstream). Still answer
+            // with the noted original rather than a bare JSON-RPC error: its
+            // link may be spent, but the agent keeps the envelope, the reason,
+            // and the note — enough to call again for a fresh one.
+            Err(e) => {
+                tracing::warn!("url elicitation re-run failed, answering with the original: {e}");
+                fallback(plan, &stopped)
+            }
         };
     }
     fallback(plan, &stopped)
