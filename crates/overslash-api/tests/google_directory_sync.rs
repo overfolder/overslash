@@ -545,3 +545,50 @@ async fn sign_in_syncs_the_user_without_waiting_on_google() {
     assert_eq!(gfake.with(|s| s.user_group_requests), 1);
     drop(fake_server);
 }
+
+// ── Regressions ──────────────────────────────────────────────────────
+
+/// Two identities can share an email; each is owed the directory's answer.
+/// Consuming the lookup on the first would have revoked the second.
+#[tokio::test]
+async fn identities_sharing_an_email_get_the_same_groups() {
+    let e = env().await;
+    e.fake.set_groups(three_groups());
+    let first = e.human("bob@acme.com").await;
+    let second = e.human("Bob@acme.com").await;
+    e.configure().await;
+    e.run_worker().await;
+    assert_eq!(google_memberships(&e.pool, first).await, ["g-all", "g-eng"]);
+    assert_eq!(
+        google_memberships(&e.pool, second).await,
+        ["g-all", "g-eng"]
+    );
+}
+
+/// Disconnect is atomic against an in-flight sweep: a Google row cannot be
+/// written for an org with no config, so a sweep that finishes listing after
+/// the DELETE fails instead of resurrecting the groups.
+#[tokio::test]
+async fn a_google_group_cannot_outlive_its_config() {
+    let e = env().await;
+    let orphan = sqlx::query(
+        "INSERT INTO directory_groups \
+             (org_id, source, external_id, display_name, google_directory_org_id) \
+         VALUES ($1, 'google_directory', 'g-late', 'Late', $1)",
+    )
+    .bind(e.org_id)
+    .execute(&e.pool)
+    .await;
+    assert!(orphan.is_err(), "no config row, so the FK must refuse it");
+
+    // And the pairing is enforced both ways.
+    e.configure().await;
+    let unpaired = sqlx::query(
+        "INSERT INTO directory_groups (org_id, source, external_id, display_name) \
+         VALUES ($1, 'google_directory', 'g-x', 'X')",
+    )
+    .bind(e.org_id)
+    .execute(&e.pool)
+    .await;
+    assert!(unpaired.is_err(), "a Google row must name its config");
+}

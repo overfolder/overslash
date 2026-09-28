@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict aRq9ixdjrZwiwCBa32hxJljJIVoHk3wSFsJBG90yNYgDQod3b6bt6nu9XL1d0ff
+\restrict uGAvzortgMj4WdMbkpZY6Iyb7tGMPzFtygmAF2gfRSYGOauhBjAzzOXuzoV6FAH
 
 -- Dumped from database version 16.14 (Debian 16.14-1.pgdg12+1)
 -- Dumped by pg_dump version 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1)
@@ -279,6 +279,8 @@ CREATE TABLE public.directory_groups (
     display_name text NOT NULL,
     first_seen_at timestamp with time zone DEFAULT now() NOT NULL,
     last_seen_at timestamp with time zone DEFAULT now() NOT NULL,
+    google_directory_org_id uuid,
+    CONSTRAINT directory_groups_google_directory_org_check CHECK (((source = 'google_directory'::text) = (google_directory_org_id IS NOT NULL))),
     CONSTRAINT directory_groups_source_check CHECK ((source = ANY (ARRAY['oidc_claim'::text, 'google_directory'::text])))
 );
 
@@ -2249,6 +2251,13 @@ CREATE INDEX idx_connections_provider ON public.connections USING btree (org_id,
 
 
 --
+-- Name: idx_directory_groups_google_directory_org; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_directory_groups_google_directory_org ON public.directory_groups USING btree (google_directory_org_id) WHERE (google_directory_org_id IS NOT NULL);
+
+
+--
 -- Name: idx_directory_groups_idp_config; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3009,6 +3018,14 @@ ALTER TABLE ONLY public.connections
 
 
 --
+-- Name: directory_groups directory_groups_google_directory_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.directory_groups
+    ADD CONSTRAINT directory_groups_google_directory_org_id_fkey FOREIGN KEY (google_directory_org_id) REFERENCES public.org_google_directory_configs(org_id) ON DELETE CASCADE;
+
+
+--
 -- Name: directory_groups directory_groups_idp_config_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3724,5 +3741,5 @@ ALTER TABLE ONLY public.webhook_subscriptions
 -- PostgreSQL database dump complete
 --
 
-\unrestrict aRq9ixdjrZwiwCBa32hxJljJIVoHk3wSFsJBG90yNYgDQod3b6bt6nu9XL1d0ff
+\unrestrict uGAvzortgMj4WdMbkpZY6Iyb7tGMPzFtygmAF2gfRSYGOauhBjAzzOXuzoV6FAH
 

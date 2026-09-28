@@ -175,28 +175,19 @@ pub(crate) async fn update(
 
 /// Remove the config and everything it reported.
 ///
-/// Deleting the `google_directory` directory groups cascades to their
-/// memberships and to any mapping an admin drew, so the derived access is
-/// revoked in the same transaction the credential disappears in. Leaving them
-/// would freeze whatever the last sync said, with nothing left to update it.
+/// The `google_directory` directory groups reference the config through
+/// `google_directory_org_id ON DELETE CASCADE`, so this one statement also
+/// removes them, their memberships and any mapping an admin drew: derived
+/// access is revoked atomically with the credential. The same FK makes a
+/// sweep that is mid-flight fail on its next upsert rather than resurrect them.
 pub(crate) async fn delete(pool: &PgPool, org_id: Uuid) -> Result<bool, sqlx::Error> {
-    let mut tx = pool.begin().await?;
-    let deleted = sqlx::query!(
+    let result = sqlx::query!(
         "DELETE FROM org_google_directory_configs WHERE org_id = $1",
         org_id,
     )
-    .execute(&mut *tx)
-    .await?
-    .rows_affected()
-        > 0;
-    sqlx::query!(
-        "DELETE FROM directory_groups WHERE org_id = $1 AND source = 'google_directory'",
-        org_id,
-    )
-    .execute(&mut *tx)
+    .execute(pool)
     .await?;
-    tx.commit().await?;
-    Ok(deleted)
+    Ok(result.rows_affected() > 0)
 }
 
 /// Queue a manual run. Returns `false` when one is already queued (or the

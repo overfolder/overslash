@@ -58,6 +58,22 @@ CREATE TABLE org_google_directory_configs (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Google rows hang off the config that reported them. Set by
+-- `directory_group::upsert` for `source = 'google_directory'` only; the CHECK
+-- holds the two in lockstep. The FK is what makes Disconnect atomic against an
+-- in-flight sweep: deleting the config cascades to its groups (and from them
+-- to memberships and mappings), and a sweep's upsert landing after the DELETE
+-- fails on the missing parent instead of resurrecting the groups.
+ALTER TABLE directory_groups
+    ADD COLUMN google_directory_org_id UUID
+        REFERENCES org_google_directory_configs(org_id) ON DELETE CASCADE,
+    ADD CONSTRAINT directory_groups_google_directory_org_check
+        CHECK ((source = 'google_directory') = (google_directory_org_id IS NOT NULL));
+
+CREATE INDEX idx_directory_groups_google_directory_org
+    ON directory_groups(google_directory_org_id)
+    WHERE google_directory_org_id IS NOT NULL;
+
 CREATE INDEX idx_org_google_directory_configs_due
     ON org_google_directory_configs(next_sync_at)
     WHERE enabled;

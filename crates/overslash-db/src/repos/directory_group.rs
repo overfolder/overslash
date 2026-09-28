@@ -77,9 +77,14 @@ pub(crate) async fn upsert(
 ) -> Result<DirectoryGroupRow, sqlx::Error> {
     sqlx::query_as!(
         DirectoryGroupRow,
+        // A Google row points at its org's config, which is what lets a
+        // Disconnect cascade atomically (migration 129). Derived from `source`
+        // here so no caller can get the pairing wrong.
         "INSERT INTO directory_groups
-             (org_id, idp_config_id, source, external_id, display_name)
-         VALUES ($1, $2, $3, $4, $5)
+             (org_id, idp_config_id, source, external_id, display_name,
+              google_directory_org_id)
+         VALUES ($1, $2, $3, $4, $5,
+                 CASE WHEN $3::text = 'google_directory' THEN $1::uuid END)
          ON CONFLICT (org_id, source, idp_config_id, external_id) DO UPDATE
              SET display_name = EXCLUDED.display_name,
                  last_seen_at = now()

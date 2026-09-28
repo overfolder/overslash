@@ -225,9 +225,11 @@ pub async fn sync_google_directory_full(
         members_by_group.push(client.list_member_emails(&group.id).await?);
     }
 
-    // Everything listed. From here on the directory's word is complete — but
-    // an admin may have disconnected while we were listing, and writing now
-    // would resurrect the groups that DELETE just removed.
+    // Everything listed. From here on the directory's word is complete. An
+    // admin may have disconnected while we were listing: bail early if so.
+    // This is only a shortcut — the guarantee is the foreign key from
+    // `directory_groups.google_directory_org_id` (migration 129), which makes
+    // an upsert after the DELETE fail rather than resurrect the groups.
     if scope.get_google_directory_config().await?.is_none() {
         return Ok(GoogleSyncStats::default());
     }
@@ -251,7 +253,13 @@ pub async fn sync_google_directory_full(
         ..Default::default()
     };
     for candidate in candidates {
-        let mut ids = groups_by_email.remove(&candidate.email).unwrap_or_default();
+        // `get`, not `remove`: two identities can share an email, and each is
+        // owed the same answer — a consumed entry would read as "no groups"
+        // and revoke the second one.
+        let mut ids = groups_by_email
+            .get(&candidate.email)
+            .cloned()
+            .unwrap_or_default();
         ids.sort();
         ids.dedup();
         if !ids.is_empty() {

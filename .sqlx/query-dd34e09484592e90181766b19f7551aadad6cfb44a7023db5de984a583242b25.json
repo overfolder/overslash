@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "INSERT INTO directory_groups\n             (org_id, idp_config_id, source, external_id, display_name)\n         VALUES ($1, $2, $3, $4, $5)\n         ON CONFLICT (org_id, source, idp_config_id, external_id) DO UPDATE\n             SET display_name = EXCLUDED.display_name,\n                 last_seen_at = now()\n         RETURNING id, org_id, idp_config_id, source, external_id, display_name,\n                   first_seen_at, last_seen_at",
+  "query": "INSERT INTO directory_groups\n             (org_id, idp_config_id, source, external_id, display_name,\n              google_directory_org_id)\n         VALUES ($1, $2, $3, $4, $5,\n                 CASE WHEN $3::text = 'google_directory' THEN $1::uuid END)\n         ON CONFLICT (org_id, source, idp_config_id, external_id) DO UPDATE\n             SET display_name = EXCLUDED.display_name,\n                 last_seen_at = now()\n         RETURNING id, org_id, idp_config_id, source, external_id, display_name,\n                   first_seen_at, last_seen_at",
   "describe": {
     "columns": [
       {
@@ -112,5 +112,5 @@
       false
     ]
   },
-  "hash": "3b311c6b210a3aab64ef2f0ee9a3e8b096fe52697d3dbfe9980bfc5b2defcea3"
+  "hash": "dd34e09484592e90181766b19f7551aadad6cfb44a7023db5de984a583242b25"
 }
