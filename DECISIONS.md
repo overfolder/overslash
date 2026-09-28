@@ -1233,7 +1233,7 @@ Other callback failures are reported as `failed` with a coarse, allow-listed rea
 
 **A stale state is answered, but never acted on.** Its signature proves the server issued it to this caller for this call, so returning the fallback it carries leaks nothing. Acting on it would let an answer outlive the window the spec requires the state to be bounded by.
 
-## D-NEXT: Every credential is metered where it authenticates; the pre-credential OAuth surface is metered per IP
+## D108: Every credential is metered where it authenticates; the pre-credential OAuth surface is metered per IP
 
 **Date**: 2026-09
 **Decision**: The `/v1` rate-limit middleware now charges the same principal the auth extractors resolve, in the same order — session cookie, then bearer — not just `osk_` keys. An **MCP access token** is charged exactly like an agent key: the owner-user bucket plus the agent's identity cap. A **dashboard session** is charged to a bucket of its own, `rl:{org}:session:{identity}`, sized by the same user-budget resolution chain (per-user → group → org → `DEFAULT_RATE_LIMIT`) and exempt from the identity cap. The `/oauth/*` + `/.well-known/oauth-*` + `/mcp` subrouter gets a separate layer (`middleware/ingress_rate_limit.rs`): per client IP on the OAuth handshake (`OAUTH_RATE_LIMIT`, 120/60s), a stricter per-IP cap on `POST /oauth/register` (`OAUTH_REGISTER_RATE_LIMIT`, 20/3600s), and per MCP client on `/mcp` (`MCP_RATE_LIMIT`, 600/60s), falling back to the IP bucket when `/mcp` carries no attributable credential. Those three are instance-wide env settings, `0` turns one off, and an unparseable value stops the boot.
