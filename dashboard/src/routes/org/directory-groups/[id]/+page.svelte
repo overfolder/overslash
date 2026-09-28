@@ -176,8 +176,13 @@
 				<span class="count">{memberIds.length}</span>
 			</div>
 			<p class="hint">
-				Refreshed each time one of them signs in. Add or remove people in your identity
-				provider, not here.
+				{#if directoryGroup.source === 'google_directory'}
+					Synced from Google Workspace when someone signs in, on a schedule, and on demand.
+					Add or remove people in Google Workspace, not here.
+				{:else}
+					Refreshed each time one of them signs in. Add or remove people in your identity
+					provider, not here.
+				{/if}
 			</p>
 			{#if memberIds.length === 0}
 				<p class="muted">
