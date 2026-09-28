@@ -1097,3 +1097,42 @@ Flow B (task-augmented `tools/call`) stays rejected with its revisit condition u
 **The secret buys one hop, not a trusted range.** Vercel publishes no egress ranges, so without the secret every dashboard request would record a Vercel address and share one magic-link bucket per egress IP. Vercel overwrites XFF with the browser's address, so the one entry behind a vouched hop is trustworthy. The one after it is not, which is why a valid secret skips exactly one untrusted address. The middleware overwrites any client-supplied value and strips the header when unset, so a browser cannot forward its own. We didn't use a Vercel-specific header: `x-vercel-*` request headers can be forged by anyone who calls the API directly.
 
 **Fail-closed on parse, fail-safe on absence.** A dropped CIDR would silently collapse every client behind that proxy into one bucket, so a typo refuses the boot rather than warning. An unset config is the safe direction, since nothing forged is ever believed, so prod only warns about it.
+
+## D-NEXT: `/mcp` also speaks MCP 2026-07-28, and its approval dialogs are multi round-trip requests with a signed `requestState` over the existing row
+
+**Date**: 2026-09-26
+**Decision**: `POST /mcp` is dual-era.
+- **Which era a request uses.** A request that carries `_meta["io.modelcontextprotocol/protocolVersion"]`, or is `server/discover`, is served as 2026-07-28 (`routes/mcp/modern.rs`). Everything else, `initialize` included, takes the unchanged `2025-06-18` path.
+- **What a modern request must carry.** The version must be `2026-07-28` (otherwise 400 `-32022`), and `MCP-Protocol-Version` / `Mcp-Method` / `Mcp-Name` must mirror the body (otherwise 400 `-32020`).
+- **What a modern request gets back.**
+  - `server/discover` advertises `["2026-07-28", "2025-06-18"]`.
+  - Every result carries `resultType` and `serverInfo`.
+  - `tools/list` and `server/discover` carry `ttlMs` plus `cacheScope: "private"`, because both are per caller.
+  - An unknown method is a 404 `-32601`.
+  - No session id is minted.
+- **Approval dialogs on a modern request.** The dialog is a multi round-trip request, not an SSE `elicitation/create`:
+  - The gated `tools/call` returns `input_required`, with the D99 decision form under `inputRequests.decision` and a `requestState`.
+  - The client retries with `inputResponses`.
+  - The retry runs the same `complete_from_elicitation` the legacy receiver runs, and answers with the result, the `isError` denial, the D99 follow-up (a second `input_required` under `remember`), or the D95 `pending_approval` envelope.
+- **What `requestState` is.** An HS256 token (`kind: "mcp_request_state"`) holding:
+  - the agent, and the MCP client;
+  - the elicitation row id and the step;
+  - a SHA-256 of the tool name plus key-sorted arguments;
+  - the `pending_approval` envelope;
+  - an expiry at the legacy 300s poll ceiling.
+- **What the retry checks.** The signature, `kind`, expiry, principal and digest, then that the row still belongs to the agent. The retry never dispatches the call a second time.
+- **Capabilities.** Eligibility reads the request's own `_meta` capabilities, and they are also recorded on `oauth_mcp_clients` for the dashboard. A client that lists elicitation modes gets a form only if it lists `form`, in both eras.
+
+**Rationale**: Claude Code (2.1.282+) declares `elicitation: { form, url }` only on a 2026-07-28 connection. It reaches that by probing `server/discover` first, and falls back to `initialize` on any non-modern answer. So URL-mode elicitation for Claude Code starts with speaking this era. That era has no server-to-client requests, which means the approval dialogs had to move onto the multi round-trip request (MRTR) shape before anything else could.
+
+**The dialogs keep the `pending_mcp_elicitations` row rather than going fully stateless.** The row already does jobs a `requestState` cannot:
+- it suppresses the approval's auto-call while a dialog is open;
+- a `cancel` on it starts D95's cooldown;
+- disconnect retires it;
+- it makes a duplicate retry idempotent, since `claim` lets only one retry resolve.
+
+The token adds what the retry needs to be served by any replica: the principal binding the spec requires, the envelope for the fallback and the follow-up, and the request digest. The digest stops a genuine state from being pasted onto a different call.
+
+**A modern row nobody retries is left to the existing sweeper.** Until it is reaped, the approval's auto-call stays suppressed for up to the same 360s a dead legacy originator already costs.
+
+**Verified against the real client.** Claude Code 2.1.283 negotiated 2026-07-28 against a local build. In headless mode it cancelled the dialog and got the envelope. Driven as an SDK host answering "Allow once", its retry executed the call. Codex 0.157.0 still negotiates `2025-06-18`, where nothing changed.

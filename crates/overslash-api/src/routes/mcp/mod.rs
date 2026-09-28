@@ -61,11 +61,12 @@ use crate::{
 mod dispatch;
 mod elicitation;
 mod initialize;
+mod modern;
 mod roster;
 mod tools_call;
 
 use initialize::{initialize_response, tools_list_response};
-use tools_call::tools_call;
+use tools_call::{Reply, tools_call};
 
 pub fn router() -> Router<AppState> {
     Router::new().route("/mcp", post(post_mcp).get(get_mcp))
@@ -254,11 +255,13 @@ async fn post_mcp(
         if req.jsonrpc != "2.0" {
             return rpc_error_response(req.id, INVALID_REQUEST, "jsonrpc must be \"2.0\"");
         }
-        return match req.method.as_str() {
-            "initialize" => initialize_response(&state, &ext, &auth, &req).await,
-            "tools/list" => tools_list_response(&state, &ext, &auth, req.id).await,
-            "tools/call" => {
-                tools_call(
+        // A 2026-07-28 request carries its protocol version in `_meta` and
+        // has no session; it gets its own dispatcher. Everything else is the
+        // `initialize`-era protocol, served exactly as before.
+        let modern = match modern::classify(&headers, &req) {
+            Ok(Some(m)) => m,
+            Ok(None) => {
+                return legacy_request(
                     &state,
                     &ext,
                     &auth,
@@ -267,20 +270,70 @@ async fn post_mcp(
                     req_session_id,
                     accepts_sse,
                 )
-                .await
+                .await;
             }
-            "notifications/initialized" => (StatusCode::NO_CONTENT, "").into_response(),
-            other => rpc_error_response(
-                req.id,
-                METHOD_NOT_FOUND,
-                format!("unknown method `{other}`"),
-            ),
+            Err(rejection) => return rejection,
         };
+        return modern::dispatch(&state, &ext, &auth, &req, bearer.as_deref(), &modern).await;
     }
 
     // Bare-response delivery (server-initiated elicitation answer). Schema:
     //   { jsonrpc: "2.0", id: "elicit_<uuid>", result|error: ... }
-    if let Ok(resp) = serde_json::from_str::<Value>(&body)
+    //
+    // Legacy-only by construction: a 2026-07-28 client never sends a bare
+    // response, because that era has no server-to-client requests to answer.
+    respond_to_elicitation(&state, &ext, &auth, &body).await
+}
+
+/// Serve one request on an `initialize`-era (`2025-06-18`) connection.
+async fn legacy_request(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    auth: &AuthContext,
+    req: JsonRpcRequest,
+    bearer: Option<&str>,
+    req_session_id: Option<Uuid>,
+    accepts_sse: bool,
+) -> Response {
+    match req.method.as_str() {
+        "initialize" => initialize_response(state, ext, auth, &req).await,
+        "tools/list" => tools_list_response(state, ext, auth, req.id).await,
+        "tools/call" => {
+            let reply = tools_call(
+                state,
+                ext,
+                auth,
+                &req,
+                bearer,
+                req_session_id,
+                accepts_sse,
+                None,
+            )
+            .await;
+            match reply {
+                Reply::Result(result) => rpc_ok_response(req.id, result),
+                Reply::Error(code, message) => rpc_error_response(req.id, code, message),
+                Reply::Stream(response) => response,
+            }
+        }
+        "notifications/initialized" => (StatusCode::NO_CONTENT, "").into_response(),
+        other => rpc_error_response(
+            req.id,
+            METHOD_NOT_FOUND,
+            format!("unknown method `{other}`"),
+        ),
+    }
+}
+
+/// A client's answer to a server-initiated `elicitation/create` (legacy SSE
+/// flow), delivered as a bare JSON-RPC response on `POST /mcp`.
+async fn respond_to_elicitation(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    auth: &AuthContext,
+    body: &str,
+) -> Response {
+    if let Ok(resp) = serde_json::from_str::<Value>(body)
         && let Some(id) = resp.get("id").and_then(Value::as_str)
         && id.starts_with("elicit_")
     {
@@ -289,7 +342,7 @@ async fn post_mcp(
         // Only the agent that owns the elicitation row may answer
         // it — otherwise a caller in another tenant who learns the
         // id could drive the victim's resolve+call as the victim.
-        let owner_ok = match overslash_db::repos::mcp_elicitation::get(state.db(&ext), id).await {
+        let owner_ok = match overslash_db::repos::mcp_elicitation::get(state.db(ext), id).await {
             Ok(Some(row)) => Some(row.agent_identity_id) == auth.identity_id,
             Ok(None) => false,
             Err(e) => {
@@ -310,7 +363,7 @@ async fn post_mcp(
         );
         let st = state.clone();
         let ext_c = ext.clone();
-        let db = state.db_pool(&ext);
+        let db = state.db_pool(ext);
         let id_owned = id.to_string();
         tokio::spawn(async move {
             complete_elicitation_and_retire(&st, &ext_c, &db, &id_owned, &result).await;
@@ -353,19 +406,14 @@ fn rpc_ok_response(id: Value, result: Value) -> Response {
 /// array contract is `text | image | resource`, and `text` is what every
 /// model-facing client (Claude.ai, Claude Code, Openclaw) actually surfaces
 /// to the model.
-fn rpc_tool_error_response(id: Value, envelope: &Value) -> Response {
-    let body = json!({
-        "jsonrpc": "2.0",
-        "id": id,
-        "result": {
-            "content": [{
-                "type": "text",
-                "text": serde_json::to_string(envelope).unwrap_or_default(),
-            }],
-            "isError": true,
-        },
-    });
-    (StatusCode::OK, Json(body)).into_response()
+fn tool_error_result(envelope: &Value) -> Value {
+    json!({
+        "content": [{
+            "type": "text",
+            "text": serde_json::to_string(envelope).unwrap_or_default(),
+        }],
+        "isError": true,
+    })
 }
 
 /// Result of a `forward()` call. The split lets the MCP layer distinguish

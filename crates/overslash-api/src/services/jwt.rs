@@ -161,6 +161,67 @@ pub fn verify_secret_request(secret: &[u8], token: &str) -> Result<SecretRequest
     Ok(data.claims)
 }
 
+/// Claims for the `requestState` of an MCP 2026-07-28 `input_required`
+/// result — the server's half of a multi round-trip request, carried by the
+/// client between the first `tools/call` and its retry.
+///
+/// The spec makes `requestState` attacker-controlled input that must be
+/// integrity-protected and bound to the principal, a short expiry, and the
+/// originating request. `agent` + `client` are the principal, `exp` the
+/// expiry, `digest` the request. `envelope` is the `pending_approval` body the
+/// first leg produced: the retry needs it to render the follow-up dialog and
+/// the unanswered fallback, and carrying it here is what keeps the retry from
+/// depending on anything but its own request.
+///
+/// Deliberately has no `sub` / `org` / `email` / `aud`, so it can never
+/// deserialize as a session or MCP [`Claims`]; and `kind` is asserted on
+/// verify, so no other token signed with the same key decodes as one of these.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct McpRequestStateClaims {
+    pub kind: String,
+    /// The agent identity the elicitation belongs to.
+    pub agent: Uuid,
+    /// The MCP OAuth client the first leg arrived through.
+    #[serde(default)]
+    pub client: Option<String>,
+    /// The `pending_mcp_elicitations` row this state continues.
+    pub elicit_id: String,
+    /// Which dialog the `inputRequests` asked: `decision` or `remember`.
+    pub step: String,
+    /// Hex SHA-256 of the tool name and its canonicalised arguments.
+    pub digest: String,
+    pub envelope: serde_json::Value,
+    pub iat: i64,
+    pub exp: i64,
+}
+
+pub const MCP_REQUEST_STATE_KIND: &str = "mcp_request_state";
+
+pub fn mint_mcp_request_state(
+    secret: &[u8],
+    claims: &McpRequestStateClaims,
+) -> Result<String, JwtError> {
+    let key = EncodingKey::from_secret(secret);
+    Ok(jsonwebtoken::encode(&Header::default(), claims, &key)?)
+}
+
+pub fn verify_mcp_request_state(
+    secret: &[u8],
+    token: &str,
+) -> Result<McpRequestStateClaims, JwtError> {
+    let key = DecodingKey::from_secret(secret);
+    let mut validation = Validation::new(Algorithm::HS256);
+    validation.set_required_spec_claims(&["exp"]);
+    validation.validate_aud = false;
+    let data = jsonwebtoken::decode::<McpRequestStateClaims>(token, &key, &validation)?;
+    if data.claims.kind != MCP_REQUEST_STATE_KIND {
+        return Err(JwtError::Token(
+            jsonwebtoken::errors::ErrorKind::InvalidToken.into(),
+        ));
+    }
+    Ok(data.claims)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -243,5 +304,55 @@ mod tests {
         .unwrap();
         assert!(verify(&secret, &token, AUD_SESSION).is_err());
         assert!(verify(&secret, &token, AUD_MCP).is_ok());
+    }
+
+    fn request_state_claims() -> McpRequestStateClaims {
+        let now = time::OffsetDateTime::now_utc().unix_timestamp();
+        McpRequestStateClaims {
+            kind: MCP_REQUEST_STATE_KIND.into(),
+            agent: Uuid::new_v4(),
+            client: Some("osc_x".into()),
+            elicit_id: "elicit_x".into(),
+            step: "decision".into(),
+            digest: "00".into(),
+            envelope: serde_json::json!({ "status": "pending_approval" }),
+            iat: now,
+            exp: now + 300,
+        }
+    }
+
+    /// The request state rides through the client and is signed with the
+    /// same key as every other token here, so it must not be spendable as
+    /// one of them — nor they as it.
+    #[test]
+    fn request_state_is_not_interchangeable_with_other_tokens() {
+        let secret = test_secret();
+        let state = mint_mcp_request_state(&secret, &request_state_claims()).unwrap();
+        assert!(verify_mcp_request_state(&secret, &state).is_ok());
+        assert!(verify(&secret, &state, AUD_SESSION).is_err());
+        assert!(verify(&secret, &state, AUD_MCP).is_err());
+        assert!(verify_secret_request(&secret, &state).is_err());
+
+        let session = mint(&secret, &test_claims()).unwrap();
+        assert!(verify_mcp_request_state(&secret, &session).is_err());
+        let mcp = mint_mcp(
+            &secret,
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            "u@example.com".into(),
+            3600,
+            None,
+        )
+        .unwrap();
+        assert!(verify_mcp_request_state(&secret, &mcp).is_err());
+    }
+
+    #[test]
+    fn expired_request_state_rejected() {
+        let secret = test_secret();
+        let mut claims = request_state_claims();
+        claims.exp = time::OffsetDateTime::now_utc().unix_timestamp() - 3600;
+        let state = mint_mcp_request_state(&secret, &claims).unwrap();
+        assert!(verify_mcp_request_state(&secret, &state).is_err());
     }
 }

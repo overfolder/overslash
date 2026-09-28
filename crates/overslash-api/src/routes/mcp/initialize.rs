@@ -44,11 +44,47 @@ pub(super) async fn initialize_response(
         }
     }
 
+    let instructions = server_instructions(state, ext, auth).await;
+
+    let body = json!({
+        "jsonrpc": "2.0",
+        "id": req.id,
+        "result": {
+            "protocolVersion": super::modern::LEGACY_PROTOCOL_VERSION,
+            "capabilities": { "tools": {} },
+            "serverInfo": server_info(),
+            "instructions": instructions,
+        }
+    });
+    (
+        StatusCode::OK,
+        [("Mcp-Session-Id", session_id.to_string())],
+        Json(body),
+    )
+        .into_response()
+}
+
+/// `name` + `version`, as `initialize` reports it and as a 2026-07-28 result
+/// carries it under `_meta["io.modelcontextprotocol/serverInfo"]`.
+pub(super) fn server_info() -> Value {
+    json!({
+        "name": "overslash",
+        "version": build_info().version,
+    })
+}
+
+/// The server-level guidance both handshakes hand over: `initialize` on a
+/// legacy connection, `server/discover` on a 2026-07-28 one.
+pub(super) async fn server_instructions(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    auth: &AuthContext,
+) -> String {
     // Same caller-derived roster the tool descriptions carry. Clients that
     // surface `instructions` but not per-tool descriptions get the answer to
     // "what can Overslash reach for me" once, at handshake.
     let roster = roster::connected_template_keys(state, ext, auth).await;
-    let instructions = format!(
+    format!(
         "Overslash MCP server. Use overslash_search to discover services, \
          overslash_read to invoke read-class actions (the server rejects \
          writes/deletes routed through it), overslash_call to invoke any \
@@ -61,27 +97,7 @@ pub(super) async fn initialize_response(
          for an OAuth template, `setup.setup_url` for one that takes an API \
          key. Hand it over verbatim; you never see the credential.{}",
         roster::roster_sentence(&roster).unwrap_or_default()
-    );
-
-    let body = json!({
-        "jsonrpc": "2.0",
-        "id": req.id,
-        "result": {
-            "protocolVersion": "2025-06-18",
-            "capabilities": { "tools": {} },
-            "serverInfo": {
-                "name": "overslash",
-                "version": build_info().version,
-            },
-            "instructions": instructions,
-        }
-    });
-    (
-        StatusCode::OK,
-        [("Mcp-Session-Id", session_id.to_string())],
-        Json(body),
     )
-        .into_response()
 }
 
 /// Static half of `overslash_search`'s description. The caller's connected
@@ -94,6 +110,15 @@ pub(super) async fn tools_list_response(
     auth: &AuthContext,
     id: Value,
 ) -> Response {
+    rpc_ok_response(id, tools_list_result(state, ext, auth).await)
+}
+
+/// The `tools/list` result, before either era's framing is applied.
+pub(super) async fn tools_list_result(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    auth: &AuthContext,
+) -> Value {
     // The two `overslash_approve_*` tools both forward to the same resolve
     // endpoint; the split exists so Claude Code permission rules can
     // separately allowlist `overslash_approve` (the always-on downstream-only
@@ -328,5 +353,5 @@ pub(super) async fn tools_list_response(
         }));
     }
 
-    rpc_ok_response(id, json!({ "tools": tools }))
+    json!({ "tools": tools })
 }
