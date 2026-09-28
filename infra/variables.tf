@@ -155,6 +155,12 @@ variable "enable_bi" {
   default     = false
 }
 
+variable "bi_publish_views" {
+  description = "Create the overslash_bi BigQuery views. Second step after enable_bi: turn on once an API release containing overslash_db::bi has booted with enable_bi applied (docs/runbooks/bi.md)."
+  type        = bool
+  default     = false
+}
+
 variable "bi_viewers" {
   description = "IAM members (e.g. user:a@b.com) allowed to query overslash_bi. Project owners already can."
   type        = list(string)
