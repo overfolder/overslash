@@ -6,6 +6,7 @@ import {
 	deleteOrg,
 	freshOrgSlug,
 	login,
+	sessionFromContext,
 	setManagedSignin
 } from '../../scenarios/index.mjs';
 
@@ -45,8 +46,11 @@ test('an invited user sees the invitation in the sidebar and can accept it', asy
 		// because the org is now a membership, not an invitation.
 		await expect(section).toHaveCount(0, { timeout: 20_000 });
 
+		// The switch re-scoped the server-side session and replaced the
+		// browser's cookie; the copy `login()` captured is now refused.
+		const switched = await sessionFromContext(page.context(), invitee);
 		const memberships = await api<{ memberships: { org_id: string; role: string }[] }>(
-			invitee,
+			switched,
 			'/v1/account/memberships'
 		);
 		const joined = memberships.memberships.find((m) => m.org_id === acme.orgId);

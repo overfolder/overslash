@@ -113,6 +113,30 @@ export async function attachToContext(ctx, session) {
 }
 
 /**
+ * `session` re-pointed at the session cookie the browser holds *now*.
+ *
+ * Anything the page does that re-scopes the session — Accept on an
+ * invitation, the org switcher — moves the server-side session to another
+ * org and hands the browser a replacement cookie. The copy `login()` captured
+ * is then superseded and refused (401), exactly like a stale cookie a real
+ * browser has already overwritten. Call this after such a step before making
+ * further API calls as the same user.
+ *
+ * @param {import('playwright').BrowserContext} ctx
+ * @param {Session} session
+ * @returns {Promise<Session>}
+ */
+export async function sessionFromContext(ctx, session) {
+	const current = (await ctx.cookies(session.apiUrl)).find((c) => c.name === SESSION_COOKIE);
+	if (!current) throw new Error(`browser context holds no ${SESSION_COOKIE} for ${session.apiUrl}`);
+	return {
+		...session,
+		rawCookieValue: current.value,
+		cookieHeader: `${SESSION_COOKIE}=${current.value}`
+	};
+}
+
+/**
  * A slug for a run-private org. Short and collision-proof enough that two
  * concurrent workers (or a re-run against a warm stack) can't meet.
  *
