@@ -62,7 +62,19 @@ pub(super) async fn elicitation_eligible(
     // be promoted, and fails closed: the fallback is the URL-reject envelope,
     // which is never *wrong*, only less convenient — whereas a wrong `true`
     // here can leave a headless call waiting on a dialog nobody will answer.
-    matches!(
+    !in_cancel_cooldown(state, ext, agent_id).await
+}
+
+/// Did this agent leave a dialog unanswered within `CANCEL_COOLDOWN`? Also
+/// holds off the URL-mode approval hand-off: a human who just dismissed one
+/// prompt does not want the model's retry to raise another in a new form.
+/// Fails closed (a lookup error reads as "in cooldown").
+pub(super) async fn in_cancel_cooldown(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    agent_id: Uuid,
+) -> bool {
+    !matches!(
         overslash_db::repos::mcp_elicitation::cancelled_recently_for_agent(
             state.db(ext),
             agent_id,

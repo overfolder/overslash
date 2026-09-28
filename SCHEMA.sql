@@ -688,6 +688,20 @@ CREATE TABLE public.mcp_upstream_tokens (
 
 
 --
+-- Name: mcp_url_elicitations; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.mcp_url_elicitations (
+    elicit_id text NOT NULL,
+    agent_identity_id uuid NOT NULL,
+    action text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    answered_at timestamp with time zone,
+    CONSTRAINT mcp_url_elicitations_action_check CHECK ((action = ANY (ARRAY['accept'::text, 'decline'::text, 'cancel'::text])))
+);
+
+
+--
 -- Name: media_descriptors; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -737,8 +751,24 @@ CREATE TABLE public.oauth_connection_flows (
     return_url text,
     upgrade_connection_id uuid,
     service_instance_id uuid,
-    pin_service_instance_ids uuid[] DEFAULT '{}'::uuid[] NOT NULL
+    pin_service_instance_ids uuid[] DEFAULT '{}'::uuid[] NOT NULL,
+    completed_at timestamp with time zone,
+    failed_at timestamp with time zone
 );
+
+
+--
+-- Name: COLUMN oauth_connection_flows.completed_at; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.oauth_connection_flows.completed_at IS 'Set by the OAuth callback when the flow produced a connection. Polled by URL-mode MCP elicitation.';
+
+
+--
+-- Name: COLUMN oauth_connection_flows.failed_at; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.oauth_connection_flows.failed_at IS 'Set by the OAuth callback when the flow ended in an error. Polled by URL-mode MCP elicitation.';
 
 
 --
@@ -1658,6 +1688,14 @@ ALTER TABLE ONLY public.mcp_upstream_tokens
 
 
 --
+-- Name: mcp_url_elicitations mcp_url_elicitations_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mcp_url_elicitations
+    ADD CONSTRAINT mcp_url_elicitations_pkey PRIMARY KEY (elicit_id);
+
+
+--
 -- Name: media_descriptors media_descriptors_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2275,6 +2313,13 @@ CREATE INDEX idx_mcp_upstream_flows_identity ON public.mcp_upstream_flows USING 
 --
 
 CREATE UNIQUE INDEX idx_mcp_upstream_tokens_current ON public.mcp_upstream_tokens USING btree (connection_id) WHERE (superseded_at IS NULL);
+
+
+--
+-- Name: idx_mcp_url_elicitations_created; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_mcp_url_elicitations_created ON public.mcp_url_elicitations USING btree (created_at);
 
 
 --
@@ -3067,6 +3112,14 @@ ALTER TABLE ONLY public.mcp_upstream_tokens
 
 
 --
+-- Name: mcp_url_elicitations mcp_url_elicitations_agent_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mcp_url_elicitations
+    ADD CONSTRAINT mcp_url_elicitations_agent_identity_id_fkey FOREIGN KEY (agent_identity_id) REFERENCES public.identities(id) ON DELETE CASCADE;
+
+
+--
 -- Name: media_descriptors media_descriptors_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3429,6 +3482,6 @@ ALTER TABLE ONLY public.webhook_subscriptions
 --
 -- PostgreSQL database dump complete
 --
-
 \unrestrict c4ZOwNzpn1YqvUvZuguiaNIKICNL7i6say5iMyjrzQpjImZ1lV1UyxBIEteL3f4
+
 

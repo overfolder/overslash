@@ -107,6 +107,16 @@ pub(super) async fn oauth_callback(
     )
     .await;
 
+    // Record how the flow ended. An MCP tool call that handed this link to
+    // its user as a URL-mode elicitation is polling for it. Best-effort: the
+    // connection itself is already written, and a missed stamp only means
+    // that caller waits out its timeout and falls back to the link.
+    if let Err(e) =
+        oauth_connection_flow::mark_finished(state.db(&ext), flow_id, outcome.is_ok()).await
+    {
+        tracing::warn!(flow_id, "failed to record oauth flow outcome: {e}");
+    }
+
     match (outcome, redirect_target) {
         (Ok(payload), Some(redir)) => success_redirect(redir, &payload),
         (Ok(payload), None) => Json(callback_success_json(&payload)).into_response(),

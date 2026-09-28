@@ -419,6 +419,16 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
                     |n| tracing::info!("Purged {n} stale MCP elicitations"),
                 )
                 .await;
+                // URL-mode answers: read only while the stream that opened
+                // them is alive, which the same poll ceiling bounds.
+                instrumented_step(
+                    "mcp_url_elicitation_purge",
+                    async {
+                        overslash_db::repos::mcp_url_elicitation::purge(&db, elicit_retention).await
+                    },
+                    |n| tracing::info!("Purged {n} stale MCP URL elicitations"),
+                )
+                .await;
             }
         });
 

@@ -37,6 +37,7 @@ pub mod mcp_refresh_token;
 pub mod mcp_upstream_connection;
 pub mod mcp_upstream_flow;
 pub mod mcp_upstream_token;
+pub mod mcp_url_elicitation;
 pub mod media_descriptor;
 pub mod membership;
 pub mod oauth_connection_flow;

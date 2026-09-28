@@ -999,7 +999,8 @@
 										right there instead of sending you to the dashboard. Clients that can't
 										show a prompt &mdash; headless or <code>--print</code> sessions &mdash;
 										fall back to the approval link automatically; nothing is denied on your
-										behalf.
+										behalf. Turned off, a client that can open links offers the approval page
+										instead, and the call finishes on its own once you approve.
 									</div>
 									{#if !detail.mcp.elicitation_supported}
 										<div class="opt-desc">

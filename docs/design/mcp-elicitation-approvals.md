@@ -1,6 +1,6 @@
 # MCP Elicitation as Approval Surface
 
-**Status:** Adopted for Flow A, on by default (2026-09-22, D95). Flow B (tasks-augmented) still rejected — its revisit condition is unmet. URL mode is available client-side: Codex 0.157.0 offers it on `2025-06-18`, Claude Code 2.1.282 only on `2026-07-28` — which `/mcp` now speaks (D103), with approval dialogs as multi round-trip requests; URL mode itself is the next step. Codex works interactively; **headless** Codex auto-declines, which D95 reads as a real denial — see the probed Codex section.
+**Status:** Adopted for Flow A, on by default (2026-09-22, D95). Flow B (tasks-augmented) still rejected — its revisit condition is unmet. URL mode is available client-side: Codex 0.157.0 offers it on `2025-06-18`, Claude Code 2.1.282 only on `2026-07-28` — which `/mcp` now speaks (D103), with approval dialogs as multi round-trip requests. URL mode is wired for both eras (D-NEXT): auth, credential-entry, connect and opted-out approval links are handed over through the client and the call finishes when the browser flow does. Codex works interactively; **headless** Codex auto-declines, which D95 reads as a real denial — see the probed Codex section.
 **Date:** 2026-04-24, revised 2026-09-22 and 2026-09-25
 **Related:** [`overslash.md`](overslash.md), [`mcp-integration.md`](mcp-integration.md), [`mcp-oauth-transport.md`](mcp-oauth-transport.md), [`agent-self-management.md`](agent-self-management.md)
 
@@ -95,8 +95,8 @@ augmentation lets the model keep working while the approval pends.
 URL mode is a different story as of 2026-09-25: it shipped in Claude Code 2.1.282, on
 `2026-07-28` connections. `/mcp` now serves that era alongside `2025-06-18` (D103, see
 *Flow A on 2026-07-28* below), so the transport blocker is gone; sensitive flows (provider
-OAuth, credential entry) still live in the dashboard until URL mode itself is wired up. See
-*Correction: URL mode is live* below.
+OAuth, credential entry) now reach the user as URL-mode elicitations (D-NEXT, see *URL mode*
+below). See *Correction: URL mode is live* below.
 
 ---
 
@@ -485,9 +485,9 @@ constant bump — and landed separately under D103; see *Flow A on 2026-07-28* b
 section above — so for a Codex-connected agent URL mode needs no protocol work at all. The era
 gate is a Claude Code property, not a property of URL mode.
 
-What that would unlock, when someone picks it up — the URL-returning paths that form mode can
-never serve, because the spec forbids credentials and OAuth in a form and because a browser
-round trip needs `notifications/elicitation/complete` to report back:
+What that unlocked (now built, D-NEXT) — the URL-returning paths that form mode can never
+serve, because the spec forbids credentials and OAuth in a form. The table is kept as it was
+written; *URL mode* below says how each row was resolved:
 
 | Path | Envelope | Note |
 |---|---|---|
@@ -499,11 +499,42 @@ round trip needs `notifications/elicitation/complete` to report back:
 `approval_url` already moved, under D95. It was the only one of the set that is a pure
 structured decision with no secret in it, which is exactly why it was reachable in form mode.
 
-One line in the code reads differently in this light. `routes/mcp/tools_call.rs` says the typed
+One line in the code read differently in this light. `routes/mcp/tools_call.rs` said the typed
 envelopes bypass elicitation because *"the agent has structured branching info already, no
-human-in-the-loop dialog applies."* That is half true: no dialog applies **to the agent**, but
-every one of those envelopes ends with a human opening a URL. Worth rewording whenever URL mode
-is picked up, because as written it reads as a design decision rather than a client limitation.
+human-in-the-loop dialog applies."* That was half true: no dialog applies **to the agent**, but
+every one of those envelopes ends with a human opening a URL. It was reworded when URL mode
+landed.
+
+### URL mode (D-NEXT)
+
+`routes/mcp/url_elicitation.rs`. Eligible when the client declares `elicitation.url` — the
+request's `_meta` on 2026-07-28, the `initialize` capabilities on 2025 — independent of the
+"Approve in your client" toggle.
+
+- **Plan.** A forwarded outcome becomes a list of hand-offs (link + message + what to watch)
+  and what completing them earns: `auth_url` envelopes **replay** the call once the OAuth
+  callback stamps the flow (`oauth_connection_flows.completed_at`, migration 126); credential
+  and connect links from platform results **report** the original result with
+  `url_elicitation: "completed"`; an approval whose form dialog is unavailable **calls** the
+  approved action once the dashboard resolves it. Multi-slot setup bundles walk their
+  `requests[]` one link at a time — the wrinkle in the table above, resolved by sequencing.
+- **Fallback.** Declined / cancelled / failed / timed out → the original body plus a
+  `url_elicitation` note. A URL elicitation never resolves or denies anything by itself.
+- **2025 transport.** One SSE stream: `elicitation/create { mode: "url", elicitationId }` per
+  link, `notifications/elicitation/complete` after each, then the result. The answer arrives on
+  another POST and crosses replicas via `mcp_url_elicitations`.
+- **2026-07-28 transport.** `input_required` with the link under `inputRequests.url` (no
+  `elicitationId`; that revision dropped it); the plan in the signed `requestState`. The
+  retry after "accept" waits for the flow on an SSE response with keep-alives. Waiting, not
+  "call again later", because a model's immediate retry would otherwise mint a fresh link and
+  a second prompt.
+- **Approvals.** The link holds the approval's auto-call off with the same
+  `pending_mcp_elicitations` row a form uses, retired `withdrawn` (no cooldown) if the link is
+  not completed. The post-cancel cooldown does suppress the link, as it does the form.
+
+Verified against Claude Code 2.1.283 on 2026-09-28: the approval arrived as a `url` mode
+elicitation, the retry held on the keep-alive stream until the dashboard approved, and the
+call executed exactly once with auto-call on.
 
 ### Flow A on 2026-07-28 (D103)
 

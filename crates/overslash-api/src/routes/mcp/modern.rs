@@ -35,6 +35,7 @@ use super::elicitation::{
 };
 use super::initialize::{server_info, server_instructions, tools_list_result};
 use super::tools_call::{Reply, pending_approval_result, tools_call};
+use super::url_elicitation::{self as url_elicit, PlanState};
 use super::*;
 
 /// The one modern revision this server speaks.
@@ -71,6 +72,9 @@ const STEP_DECISION: &str = "decision";
 /// `inputRequests` key — and `requestState.step` — of the "Allow & remember"
 /// follow-up (scope + duration).
 const STEP_REMEMBER: &str = "remember";
+/// `inputRequests` key — and `requestState.step` — of a URL-mode hand-off
+/// (`url_elicitation`).
+pub(super) const STEP_URL: &str = "url";
 
 /// What a modern request's `_meta` declared.
 pub(super) struct ModernRequest {
@@ -216,6 +220,7 @@ pub(super) async fn dispatch(
     auth: &AuthContext,
     req: &JsonRpcRequest,
     bearer: Option<&str>,
+    accepts_sse: bool,
     modern: &ModernRequest,
 ) -> Response {
     match req.method.as_str() {
@@ -240,21 +245,35 @@ pub(super) async fn dispatch(
             modern_result(&req.id, result)
         }
         "tools/call" => {
-            let reply = tools_call(state, ext, auth, req, bearer, None, false, Some(modern)).await;
+            let reply = tools_call(
+                state,
+                ext,
+                auth,
+                req,
+                bearer,
+                None,
+                accepts_sse,
+                Some(modern),
+            )
+            .await;
             match reply {
-                Reply::Result(result) => modern_result(&req.id, result),
-                Reply::Error(code, message) => {
-                    modern_error(StatusCode::OK, &req.id, code, message, None)
+                // A retry that waits on a browser flow. Streamed so the
+                // keep-alives hold the connection open through the wait; the
+                // only event is the final response, which ends the stream.
+                Reply::Deferred(pending) if accepts_sse => {
+                    let id = req.id.clone();
+                    let event = stream::once(async move {
+                        let body = reply_body(&id, pending.await);
+                        Ok::<_, Infallible>(Event::default().json_data(body).unwrap_or_default())
+                    });
+                    Sse::new(event)
+                        .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
+                        .into_response()
                 }
-                // Only the legacy elicitation path streams; `Some(modern)`
-                // never reaches it. Answer rather than hang if that changes.
-                Reply::Stream(_) => modern_error(
-                    StatusCode::OK,
-                    &req.id,
-                    INTERNAL_ERROR,
-                    "unexpected stream on a 2026-07-28 request".into(),
-                    None,
-                ),
+                Reply::Deferred(pending) => {
+                    (StatusCode::OK, Json(reply_body(&req.id, pending.await))).into_response()
+                }
+                other => (StatusCode::OK, Json(reply_body(&req.id, other))).into_response(),
             }
         }
         other => modern_error(
@@ -295,7 +314,11 @@ async fn remember_client(
 
 /// A modern JSON-RPC success: `result` gains the required `resultType`
 /// (`complete` unless the caller already typed it) and the server's identity.
-fn modern_result(id: &Value, mut result: Value) -> Response {
+fn modern_result(id: &Value, result: Value) -> Response {
+    (StatusCode::OK, Json(result_body(id, result))).into_response()
+}
+
+fn result_body(id: &Value, mut result: Value) -> Value {
     if let Value::Object(map) = &mut result {
         map.entry("resultType")
             .or_insert_with(|| Value::String("complete".into()));
@@ -304,8 +327,23 @@ fn modern_result(id: &Value, mut result: Value) -> Response {
             meta.insert(META_SERVER_INFO.into(), server_info());
         }
     }
-    let body = json!({ "jsonrpc": "2.0", "id": id, "result": result });
-    (StatusCode::OK, Json(body)).into_response()
+    json!({ "jsonrpc": "2.0", "id": id, "result": result })
+}
+
+/// The JSON-RPC body a `tools/call` reply renders to on this era.
+fn reply_body(id: &Value, reply: Reply) -> Value {
+    match reply {
+        Reply::Result(result) => result_body(id, result),
+        Reply::Error(code, message) => {
+            json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
+        }
+        // Only the legacy elicitation path streams, and a deferred reply
+        // never resolves to another; answer rather than hang if that changes.
+        Reply::Stream(_) | Reply::Deferred(_) => json!({
+            "jsonrpc": "2.0", "id": id,
+            "error": { "code": INTERNAL_ERROR, "message": "unexpected nested reply on a 2026-07-28 request" },
+        }),
+    }
 }
 
 fn modern_error(
@@ -327,23 +365,30 @@ fn modern_error(
 // Elicitation as a multi round-trip request
 // ---------------------------------------------------------------------------
 
-/// First leg: `overslash_call` hit a permission gap. Ask the decision dialog
-/// as an `input_required` result, or — when the dialog is not reachable —
-/// return the `pending_approval` envelope exactly as the legacy path would.
-pub(super) async fn begin_elicitation(
+/// Is the approval form dialog reachable for this modern request?
+pub(super) async fn form_eligible(
     state: &AppState,
     ext: &axum::http::Extensions,
     auth: &AuthContext,
     modern: &ModernRequest,
+) -> bool {
+    elicitation_eligible(state, ext, auth, Some(&modern.capabilities)).await
+}
+
+/// First leg: `overslash_call` hit a permission gap and [`form_eligible`]
+/// said yes. Ask the decision dialog as an `input_required` result, or — if
+/// the dialog cannot be set up — return the `pending_approval` envelope
+/// exactly as the legacy path would.
+pub(super) async fn begin_elicitation(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    auth: &AuthContext,
     tool_name: &str,
     args: &Value,
     pending_outcome: &Value,
 ) -> Reply {
     let fallback = || Reply::Result(pending_approval_result(pending_outcome));
 
-    if !elicitation_eligible(state, ext, auth, Some(&modern.capabilities)).await {
-        return fallback();
-    }
     let Some(approval_id) = pending_outcome
         .get("approval_id")
         .and_then(Value::as_str)
@@ -398,10 +443,12 @@ pub(super) async fn begin_elicitation(
 /// Retry leg: the client came back with the dialog's answer. Drive it through
 /// the same resolve + call the legacy receiver runs, then turn the settled row
 /// into this call's result — or into the next dialog, for "Allow & remember".
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn continue_elicitation(
     state: &AppState,
     ext: &axum::http::Extensions,
     auth: &AuthContext,
+    bearer: &str,
     tool_name: &str,
     args: &Value,
     request_state: &str,
@@ -425,6 +472,32 @@ pub(super) async fn continue_elicitation(
             INVALID_PARAMS,
             "requestState does not belong to this request".into(),
         );
+    }
+
+    // A URL hand-off: the plan rides in the state, not in a dialog row.
+    if claims.step == STEP_URL {
+        let Some(plan_state) = claims
+            .url_plan
+            .and_then(|v| serde_json::from_value::<PlanState>(v).ok())
+        else {
+            return Reply::Error(INVALID_PARAMS, "requestState carries no URL plan".into());
+        };
+        let ctx = url_elicit::Ctx {
+            state: state.clone(),
+            ext: ext.clone(),
+            auth: auth.clone(),
+            bearer: bearer.to_string(),
+            tool_name: tool_name.to_string(),
+            args: args.clone(),
+        };
+        let answer = input_responses
+            .and_then(|r| r.get(STEP_URL))
+            .filter(|a| a.is_object());
+        return match answer {
+            Some(answer) => url_elicit::modern_continue(ctx, plan_state, answer),
+            // Asked again, as the spec wants, for a retry without the answer.
+            None => url_elicit::modern_ask(&ctx, plan_state.plan, plan_state.index),
+        };
     }
 
     // Defence in depth over the signature: the row must still be this
@@ -533,12 +606,38 @@ fn mint_state(
         step: step.to_string(),
         digest: digest.to_string(),
         envelope: pending_outcome.clone(),
+        url_plan: None,
         iat: now,
         // No longer than a legacy originator would have waited: past this the
         // sweeper may already have retired the row.
         exp: now + mcp_session::DEFAULT_TIMEOUT.as_secs() as i64,
     };
     jwt::mint_mcp_request_state(&jwt::signing_key_bytes(&state.config.signing_key), &claims)
+}
+
+/// Sign the state of a URL-mode plan: bound to the same principal and call
+/// digest as the form dialogs' state, with the plan in `url_plan`.
+pub(super) fn mint_url_state(
+    ctx: &url_elicit::Ctx,
+    plan_state: &PlanState,
+) -> Result<String, jwt::JwtError> {
+    let now = time::OffsetDateTime::now_utc().unix_timestamp();
+    let claims = jwt::McpRequestStateClaims {
+        kind: jwt::MCP_REQUEST_STATE_KIND.into(),
+        agent: ctx.auth.identity_id.unwrap_or_default(),
+        client: ctx.auth.mcp_client_id.clone(),
+        elicit_id: plan_state.plan.approval_row.clone().unwrap_or_default(),
+        step: STEP_URL.into(),
+        digest: request_digest(&ctx.tool_name, &ctx.args),
+        envelope: Value::Null,
+        url_plan: serde_json::to_value(plan_state).ok(),
+        iat: now,
+        exp: now + mcp_session::DEFAULT_TIMEOUT.as_secs() as i64,
+    };
+    jwt::mint_mcp_request_state(
+        &jwt::signing_key_bytes(&ctx.state.config.signing_key),
+        &claims,
+    )
 }
 
 /// Identify the call a `requestState` belongs to: the tool name plus its

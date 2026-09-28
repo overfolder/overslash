@@ -1138,3 +1138,38 @@ The token adds what the retry needs to be served by any replica: the principal b
 **A modern row nobody retries is left to the existing sweeper.** Until it is reaped, the approval's auto-call stays suppressed for up to the same 360s a dead legacy originator already costs.
 
 **Verified against the real client.** Claude Code 2.1.283 negotiated 2026-07-28 against a local build. In headless mode it cancelled the dialog and got the envelope. Driven as an SDK host answering "Allow once", its retry executed the call. Codex 0.157.0 still negotiates `2025-06-18`, where nothing changed.
+
+## D-NEXT: Links the user must open become URL-mode elicitations that wait for the browser flow, and a declined link is never an answer
+
+**Date**: 2026-09-28
+**Decision**: When the client declares `elicitation.url`, every tool result that ends with a human opening a browser link is handed to the user as a URL-mode elicitation (`routes/mcp/url_elicitation.rs`), and the call answers only once that browser flow finishes. This is on by default wherever the client can do it. It does not depend on the "Approve in your client" toggle, because that toggle is about answering approvals *inside* the client, and URL mode sends the user out of it.
+
+| Link | Source | Done when | Then |
+|---|---|---|---|
+| `auth_url` | `needs_authentication`, `reauth_required`, `missing_scopes` | the OAuth callback stamps the flow `completed_at` (migration 126) | the call is **replayed** |
+| `provide_url` / setup `requests[]` | `request_secret`, `create_service` | the secret request is fulfilled | the original result is **reported**, marked `url_elicitation: "completed"` |
+| `connect.auth_url` | `create_service`, `create_connection` | the flow completes | reported |
+| `approval_url` | a permission gap whose form dialog is unavailable (opted out, form not declared) | the approval leaves `pending` | the approved action is **called** |
+
+- **Multiple links.** A multi-slot setup bundle hands over its links one at a time.
+- **Which links count.** Auth links count only when they are this server's own `/connect-authorize` URL. Setup and connect links count only from `service: "overslash"` platform results, so upstream data is never mistaken for one.
+- **When a hand-off does not complete.** A declined, dismissed, failed or timed-out hand-off (300s, the elicitation ceiling) returns the original body with a `url_elicitation` note: `declined`, `cancelled`, `failed` or `timed_out`.
+- **Nothing is resolved by a URL elicitation itself.** A declined approval link leaves the approval `pending`.
+- **Approval links and the form dialog.** An approval link holds the approval's auto-call off with the same `pending_mcp_elicitations` row a form dialog uses. It retires that row as `withdrawn` rather than `cancelled`, so it never starts the form cooldown. The cooldown does hold off the approval link, though.
+
+**On a 2025-era connection** the tool call's response is one SSE stream:
+- one `elicitation/create { mode: "url", elicitationId }` per link;
+- `notifications/elicitation/complete` after each;
+- then the result.
+
+The client's accept or decline arrives on a separate POST and crosses replicas through the `mcp_url_elicitations` table (migration 126, purged on the existing elicitation sweep).
+
+**On 2026-07-28** the call answers `input_required` with the link under `inputRequests.url` (no `elicitationId`, which that revision removed), and the plan rides in the signed `requestState` (`url_plan`). The client's retry after accepting waits for the flow, rendered as an SSE response with keep-alives, and answers with the next link or the result.
+
+**Rationale**: Every one of these envelopes already ended with the agent relaying a link and the user coming back to say "done". MCP forbids credentials and OAuth in a form dialog, so URL mode is the only in-client path for them.
+
+**Why the retry waits instead of answering at once.** Answering immediately with "link opened, call again" keeps no connection open. But the model tends to retry at once, and would mint a fresh link and a second prompt. That is what the prompt is meant to prevent. Instead, a connection is held only while a human is actively in the browser flow, bounded by the same ceiling the form dialogs use.
+
+**Why the fallback carries a note.** It is the original envelope rather than an error, so the agent keeps its link, and the note tells it that the user already saw the prompt. Only a real answer (a denial on the dashboard, a failed OAuth callback) ends the call as anything other than that fallback.
+
+**Verified against the real client.** Claude Code 2.1.283, driven as an SDK host on a local build, received the approval as a `mode: "url"` elicitation with no `elicitationId`. Its retry waited on the keep-alive stream until the approval was granted on the dashboard. The call then executed exactly once, even with auto-call on.

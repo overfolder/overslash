@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE mcp_url_elicitations SET action = $2, answered_at = now()\n          WHERE elicit_id = $1 AND action IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "72d016649e9ab24d7611d7643da4c2c4f8b398aaf689f39a17f3a672a5468632"
+}
