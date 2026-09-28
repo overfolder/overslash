@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO identity_directory_groups (identity_id, directory_group_id)\n         SELECT $1, dg.id\n           FROM directory_groups dg\n          WHERE dg.id = ANY($2) AND dg.org_id = $3\n         ON CONFLICT DO NOTHING\n         RETURNING directory_group_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "directory_group_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "identity_directory_groups",
+            "name": "directory_group_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "UuidArray",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "51e4ea9e4e1c9bee593999f0f704d1c4afe570b6b3fa6f2af5256e33df8efea7"
+}

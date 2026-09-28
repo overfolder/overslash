@@ -349,11 +349,16 @@ pub(super) async fn provider_callback(
     .map_err(|e| AppError::Internal(format!("token exchange failed: {e}")))?;
 
     // Fetch user info (provider-specific)
+    // The ID token is passed alongside the access token because group claims
+    // land in one or the other depending on the IdP. `state_nonce_expected` is
+    // the nonce this login minted — it binds the ID token to this exchange.
     let userinfo = fetch_userinfo(
         &state.http_client,
         &provider,
         &provider_key,
         &tokens.access_token,
+        tokens.id_token.as_deref(),
+        Some(state_nonce_expected.as_str()),
     )
     .await?;
 

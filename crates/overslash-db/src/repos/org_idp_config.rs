@@ -17,10 +17,19 @@ pub struct OrgIdpConfigRow {
     /// Designated default IdP for the org's `/oauth/authorize` bounce. At
     /// most one row per org has `is_default = true` (partial unique index).
     pub is_default: bool,
+    /// Mirror this IdP's group claim into directory groups at each sign-in.
+    /// Off by default — an existing org's logins are unchanged until an admin
+    /// opts in.
+    pub group_sync_enabled: bool,
+    /// Which claim carries group membership. No cross-IdP convention exists:
+    /// Okta and Entra both use `groups` (names vs object GUIDs), Auth0 needs a
+    /// namespaced claim such as `https://acme.com/groups`.
+    pub group_claim: String,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn create(
     pool: &PgPool,
     org_id: Uuid,
@@ -29,18 +38,22 @@ pub(crate) async fn create(
     encrypted_client_secret: Option<&[u8]>,
     enabled: bool,
     allowed_email_domains: &[String],
+    group_sync_enabled: bool,
+    group_claim: Option<&str>,
 ) -> Result<OrgIdpConfigRow, sqlx::Error> {
     sqlx::query_as!(
         OrgIdpConfigRow,
-        "INSERT INTO org_idp_configs (org_id, provider_key, encrypted_client_id, encrypted_client_secret, enabled, allowed_email_domains)
-         VALUES ($1, $2, $3, $4, $5, $6)
-         RETURNING id, org_id, provider_key, encrypted_client_id, encrypted_client_secret, enabled, allowed_email_domains, is_default, created_at, updated_at",
+        "INSERT INTO org_idp_configs (org_id, provider_key, encrypted_client_id, encrypted_client_secret, enabled, allowed_email_domains, group_sync_enabled, group_claim)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, 'groups'))
+         RETURNING id, org_id, provider_key, encrypted_client_id, encrypted_client_secret, enabled, allowed_email_domains, is_default, group_sync_enabled, group_claim, created_at, updated_at",
         org_id,
         provider_key,
         encrypted_client_id,
         encrypted_client_secret,
         enabled,
         allowed_email_domains,
+        group_sync_enabled,
+        group_claim,
     )
     .fetch_one(pool)
     .await
@@ -53,7 +66,7 @@ pub(crate) async fn get_by_id(
 ) -> Result<Option<OrgIdpConfigRow>, sqlx::Error> {
     sqlx::query_as!(
         OrgIdpConfigRow,
-        "SELECT id, org_id, provider_key, encrypted_client_id, encrypted_client_secret, enabled, allowed_email_domains, is_default, created_at, updated_at
+        "SELECT id, org_id, provider_key, encrypted_client_id, encrypted_client_secret, enabled, allowed_email_domains, is_default, group_sync_enabled, group_claim, created_at, updated_at
          FROM org_idp_configs WHERE id = $1 AND org_id = $2",
         id,
         org_id,
@@ -74,7 +87,7 @@ pub async fn get_by_org_and_provider(
 ) -> Result<Option<OrgIdpConfigRow>, sqlx::Error> {
     sqlx::query_as!(
         OrgIdpConfigRow,
-        "SELECT id, org_id, provider_key, encrypted_client_id, encrypted_client_secret, enabled, allowed_email_domains, is_default, created_at, updated_at
+        "SELECT id, org_id, provider_key, encrypted_client_id, encrypted_client_secret, enabled, allowed_email_domains, is_default, group_sync_enabled, group_claim, created_at, updated_at
          FROM org_idp_configs WHERE org_id = $1 AND provider_key = $2",
         org_id,
         provider_key,
@@ -92,7 +105,7 @@ pub async fn get_by_org_and_provider(
 pub async fn list_by_org(pool: &PgPool, org_id: Uuid) -> Result<Vec<OrgIdpConfigRow>, sqlx::Error> {
     sqlx::query_as!(
         OrgIdpConfigRow,
-        "SELECT id, org_id, provider_key, encrypted_client_id, encrypted_client_secret, enabled, allowed_email_domains, is_default, created_at, updated_at
+        "SELECT id, org_id, provider_key, encrypted_client_id, encrypted_client_secret, enabled, allowed_email_domains, is_default, group_sync_enabled, group_claim, created_at, updated_at
          FROM org_idp_configs WHERE org_id = $1 ORDER BY created_at",
         org_id,
     )
@@ -107,7 +120,7 @@ pub(crate) async fn find_by_email_domain(
 ) -> Result<Vec<OrgIdpConfigRow>, sqlx::Error> {
     sqlx::query_as!(
         OrgIdpConfigRow,
-        "SELECT id, org_id, provider_key, encrypted_client_id, encrypted_client_secret, enabled, allowed_email_domains, is_default, created_at, updated_at
+        "SELECT id, org_id, provider_key, encrypted_client_id, encrypted_client_secret, enabled, allowed_email_domains, is_default, group_sync_enabled, group_claim, created_at, updated_at
          FROM org_idp_configs WHERE $1 = ANY(allowed_email_domains) AND enabled = true
          ORDER BY created_at",
         domain,
@@ -129,6 +142,7 @@ pub enum CredentialsUpdate<'a> {
     UseOrgCredentials,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn update(
     pool: &PgPool,
     id: Uuid,
@@ -136,6 +150,8 @@ pub(crate) async fn update(
     creds: CredentialsUpdate<'_>,
     enabled: Option<bool>,
     allowed_email_domains: Option<&[String]>,
+    group_sync_enabled: Option<bool>,
+    group_claim: Option<&str>,
 ) -> Result<Option<OrgIdpConfigRow>, sqlx::Error> {
     // Encode the tri-state into two parallel columns:
     //   force_set: explicit overwrite happens (NULL when Unchanged)
@@ -160,9 +176,11 @@ pub(crate) async fn update(
             encrypted_client_secret = CASE WHEN $3 THEN $5 ELSE encrypted_client_secret END,
             enabled = COALESCE($6, enabled),
             allowed_email_domains = COALESCE($7, allowed_email_domains),
+            group_sync_enabled = COALESCE($8, group_sync_enabled),
+            group_claim = COALESCE($9, group_claim),
             updated_at = now()
          WHERE id = $1 AND org_id = $2
-         RETURNING id, org_id, provider_key, encrypted_client_id, encrypted_client_secret, enabled, allowed_email_domains, is_default, created_at, updated_at",
+         RETURNING id, org_id, provider_key, encrypted_client_id, encrypted_client_secret, enabled, allowed_email_domains, is_default, group_sync_enabled, group_claim, created_at, updated_at",
         id,
         org_id,
         force_set,
@@ -170,6 +188,8 @@ pub(crate) async fn update(
         new_secret,
         enabled,
         allowed_email_domains,
+        group_sync_enabled,
+        group_claim,
     )
     .fetch_optional(pool)
     .await
@@ -196,7 +216,7 @@ pub(crate) async fn set_default(
         OrgIdpConfigRow,
         "UPDATE org_idp_configs SET is_default = true, updated_at = now()
          WHERE id = $1 AND org_id = $2
-         RETURNING id, org_id, provider_key, encrypted_client_id, encrypted_client_secret, enabled, allowed_email_domains, is_default, created_at, updated_at",
+         RETURNING id, org_id, provider_key, encrypted_client_id, encrypted_client_secret, enabled, allowed_email_domains, is_default, group_sync_enabled, group_claim, created_at, updated_at",
         id,
         org_id,
     )
@@ -216,7 +236,7 @@ pub(crate) async fn clear_default(
         OrgIdpConfigRow,
         "UPDATE org_idp_configs SET is_default = false, updated_at = now()
          WHERE id = $1 AND org_id = $2
-         RETURNING id, org_id, provider_key, encrypted_client_id, encrypted_client_secret, enabled, allowed_email_domains, is_default, created_at, updated_at",
+         RETURNING id, org_id, provider_key, encrypted_client_id, encrypted_client_secret, enabled, allowed_email_domains, is_default, group_sync_enabled, group_claim, created_at, updated_at",
         id,
         org_id,
     )

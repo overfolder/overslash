@@ -368,7 +368,7 @@ pub(crate) async fn resolve_by_name(
              WHERE si.org_id = $1 AND si.name = $2 AND si.status = 'active' \
                AND EXISTS ( \
                  SELECT 1 FROM group_grants gg \
-                 JOIN identity_groups ig ON ig.group_id = gg.group_id \
+                 JOIN effective_identity_groups ig ON ig.group_id = gg.group_id \
                  JOIN identities i ON i.id = ig.identity_id \
                  JOIN groups g ON g.id = gg.group_id \
                  WHERE ig.identity_id = $3 \
@@ -477,7 +477,7 @@ pub async fn resolve_by_name_any_status(
              WHERE si.org_id = $1 AND si.name = $2 \
                AND EXISTS ( \
                  SELECT 1 FROM group_grants gg \
-                 JOIN identity_groups ig ON ig.group_id = gg.group_id \
+                 JOIN effective_identity_groups ig ON ig.group_id = gg.group_id \
                  JOIN identities i ON i.id = ig.identity_id \
                  JOIN groups g ON g.id = gg.group_id \
                  WHERE ig.identity_id = $3 \

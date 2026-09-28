@@ -337,6 +337,17 @@ print(json.dumps({
             "client_id": "okta-e2e-client-id",
             "client_secret": "okta-e2e-client-secret",
             "allowed_email_domains": ["orgb.example"],
+            # The Okta fake already returns a top-level `groups` claim, so
+            # turning sync on here makes the e2e stack exercise directory group
+            # provisioning end to end: Bob's sign-in creates `org-b-members`
+            # and `everyone` as directory groups in org-b. They confer nothing
+            # until an admin maps one onto a real group (D-NEXT).
+            "group_sync_enabled": True,
+            # Bob is the Okta org's admin, so the admin surfaces (Groups,
+            # Directory groups) are reachable in e2e. Pre-created as an admin
+            # identity and adopted by email at his first sign-in — the ordinary
+            # invite path, not a seed-only shortcut.
+            "admin_emails": ["bob@orgb.example"],
         },
     ],
 }))

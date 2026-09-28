@@ -121,6 +121,20 @@ pub struct SeedOrg {
     pub client_id: String,
     pub client_secret: String,
     pub allowed_email_domains: Vec<String>,
+    /// Mirror this IdP's group claim into directory groups at sign-in.
+    /// Defaults off, matching a real config.
+    #[serde(default)]
+    pub group_sync_enabled: bool,
+    /// Claim name carrying group membership. `None` keeps the `groups` default.
+    #[serde(default)]
+    pub group_claim: Option<String>,
+    /// Emails to pre-create as org admins, exactly as an admin invite does:
+    /// a `kind = 'user'` identity with `is_org_admin`, adopted by email at the
+    /// holder's first sign-in. Without this a seeded org has no admin at all —
+    /// `bootstrap_org(.., None)` creates none — so every IdP-provisioned member
+    /// lands as a plain member and the admin surfaces are unreachable in e2e.
+    #[serde(default)]
+    pub admin_emails: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -207,6 +221,42 @@ async fn seed_e2e_idps(
 
         overslash_db::repos::org_bootstrap::bootstrap_org(state.db(&ext), org_row.id, None).await?;
 
+        // Pre-create admin identities. Same three steps as an admin invite in
+        // `routes/org_invites.rs`, so first sign-in adopts by email through the
+        // ordinary path rather than anything seed-specific.
+        let scope = overslash_db::OrgScope::new(org_row.id, state.db_pool(&ext));
+        for email in &o.admin_emails {
+            let name = email.split('@').next().unwrap_or(email).to_string();
+            let existing = scope.find_user_identity_by_email_in_org(email).await?;
+            let identity = match existing {
+                Some(row) => row,
+                None => {
+                    scope
+                        .create_identity_with_email(
+                            &name,
+                            "user",
+                            None,
+                            Some(email),
+                            serde_json::json!({ "seeded_by": "dev_e2e" }),
+                        )
+                        .await?
+                }
+            };
+            overslash_db::repos::org_bootstrap::bootstrap_user_in_org(
+                state.db(&ext),
+                org_row.id,
+                identity.id,
+            )
+            .await?;
+            overslash_db::repos::identity::set_is_org_admin(
+                state.db(&ext),
+                org_row.id,
+                identity.id,
+                true,
+            )
+            .await?;
+        }
+
         let enc_id = crypto::encrypt(&enc_key, o.client_id.as_bytes())
             .map_err(|e| AppError::Internal(format!("encrypt client_id: {e}")))?;
         let enc_secret = crypto::encrypt(&enc_key, o.client_secret.as_bytes())
@@ -218,7 +268,6 @@ async fn seed_e2e_idps(
         let existing =
             org_idp_config::get_by_org_and_provider(state.db(&ext), org_row.id, &o.provider_key)
                 .await?;
-        let scope = overslash_db::OrgScope::new(org_row.id, state.db_pool(&ext));
         let cfg_id = if let Some(cfg) = existing {
             scope
                 .update_org_idp_config(
@@ -229,6 +278,8 @@ async fn seed_e2e_idps(
                     },
                     Some(true),
                     Some(o.allowed_email_domains.as_slice()),
+                    Some(o.group_sync_enabled),
+                    o.group_claim.as_deref(),
                 )
                 .await?;
             cfg.id
@@ -240,6 +291,8 @@ async fn seed_e2e_idps(
                     Some(enc_secret.as_slice()),
                     true,
                     o.allowed_email_domains.as_slice(),
+                    o.group_sync_enabled,
+                    o.group_claim.as_deref(),
                 )
                 .await
                 .map_err(|e| {

@@ -188,6 +188,9 @@ pub(super) async fn verify_magic_link(
         email: row.email.clone(),
         name: None,
         picture: None,
+        // A magic link proves control of a mailbox. It is not an IdP making
+        // assertions about group structure, so it carries no claims.
+        claims: serde_json::Map::new(),
     };
     let (org_id, identity_id, user_id, email) =
         find_or_provision_user(&state, &ext, &userinfo, None).await?;

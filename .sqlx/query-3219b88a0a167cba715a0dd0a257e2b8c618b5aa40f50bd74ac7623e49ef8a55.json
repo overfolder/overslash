@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT i.id AS \"id!\"\n             FROM identity_directory_groups idg\n             JOIN directory_groups dg ON dg.id = idg.directory_group_id\n             JOIN identities i ON i.id = idg.identity_id\n            WHERE idg.directory_group_id = $1\n              AND dg.org_id = $2\n              AND i.org_id = $2\n            ORDER BY i.name",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "identities",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "3219b88a0a167cba715a0dd0a257e2b8c618b5aa40f50bd74ac7623e49ef8a55"
+}
