@@ -1,5 +1,38 @@
 # Changelog
 
+## [0.13.0](https://github.com/overfolder/overslash/compare/v0.12.0...v0.13.0) (2026-09-28)
+
+
+### Features
+
+* **config:** boot interlocks for DEV_AUTH, weak keys and production log level (CASA 6.2.1, 1.2.1) ([#674](https://github.com/overfolder/overslash/issues/674)) ([5abed59](https://github.com/overfolder/overslash/commit/5abed59e41507cc2421e44cf4e9017bb7d681e69))
+* **mcp:** ask scope and duration in a follow-up elicitation dialog ([#671](https://github.com/overfolder/overslash/issues/671)) ([b4f0717](https://github.com/overfolder/overslash/commit/b4f0717510ab1cdd2aa14c31c72753b6824e0621))
+* **mcp:** elicitation approvals on by default, and an unanswered dialog falls back to the approval URL ([#657](https://github.com/overfolder/overslash/issues/657)) ([3f8ea36](https://github.com/overfolder/overslash/commit/3f8ea36ce4e715c8d2f71b432480a6618feeffdd))
+* **oauth-upstream:** require TLS on every MCP OAuth upstream hop (CASA 4.1.1) ([#673](https://github.com/overfolder/overslash/issues/673)) ([af74dfc](https://github.com/overfolder/overslash/commit/af74dfce8b62fdee3602ded78261a707fab2fb76))
+* **security:** security headers on the API and the dashboard (CASA 4.x/6.x) ([#663](https://github.com/overfolder/overslash/issues/663)) ([aa57cd0](https://github.com/overfolder/overslash/commit/aa57cd023a39a277230f43a30bfd7fab35fd640a))
+* **services:** a Figma service template, and a provider that refreshes where it does not mint ([#647](https://github.com/overfolder/overslash/issues/647)) ([4033b27](https://github.com/overfolder/overslash/commit/4033b2708473d582e3005d6096b5022f4ab1ab9a))
+* **services:** a Langfuse service template, built against v4 only ([#656](https://github.com/overfolder/overslash/issues/656)) ([8fc2614](https://github.com/overfolder/overslash/commit/8fc2614fc5c1c65625193795be6669a0f9d4dd2a))
+* **services:** a template can offer OAuth or a token, and the instance picks ([#651](https://github.com/overfolder/overslash/issues/651)) ([98eb682](https://github.com/overfolder/overslash/commit/98eb68280958965a2c8463da50c246c228d36925))
+* **templates:** let a template relax argument validation per service and action ([#643](https://github.com/overfolder/overslash/issues/643)) ([3ba6ada](https://github.com/overfolder/overslash/commit/3ba6adafd330542348314e2e0942ee59a3e329e3))
+* **templates:** nested parameter schemas, JSON-carrying fields, and scope extractors ([#648](https://github.com/overfolder/overslash/issues/648)) ([e530a86](https://github.com/overfolder/overslash/commit/e530a868a8631275b1634a9388a18bb3cb68438c))
+* **webhooks:** signed per-attempt timestamps on outbound webhooks (CASA 7.2.3) ([#669](https://github.com/overfolder/overslash/issues/669)) ([8a96efc](https://github.com/overfolder/overslash/commit/8a96efc9c2bbaf0d9df07ee819da196f71f4dd2c))
+* **webhooks:** verify endpoint ownership before delivery (CASA 7.1.2) ([#666](https://github.com/overfolder/overslash/issues/666)) ([04a502f](https://github.com/overfolder/overslash/commit/04a502f8c2c309e25956504487ded068f22efe01))
+
+
+### Bug Fixes
+
+* **api-keys:** take the org from the credential, not the request body ([#654](https://github.com/overfolder/overslash/issues/654)) ([1904e99](https://github.com/overfolder/overslash/commit/1904e99652963b582c702a28e194b336c002af0b))
+* **auth:** Secure + __Host-/__Secure- prefixes on every auth cookie (CASA 2.3.1) ([#660](https://github.com/overfolder/overslash/issues/660)) ([90b44df](https://github.com/overfolder/overslash/commit/90b44df0a0eb51cb4946ac7316a98c82c78d3972))
+* **config:** treat an empty env var as unset everywhere ([#655](https://github.com/overfolder/overslash/issues/655)) ([ddbb065](https://github.com/overfolder/overslash/commit/ddbb06570a8c33cc09c5be6041e87c9c57127462))
+* **docs:** renumber the hidden duplicate D95, and lint indented headings ([#680](https://github.com/overfolder/overslash/issues/680)) ([19aac5b](https://github.com/overfolder/overslash/commit/19aac5bf9fa5a96c5b482f32cb7ef44292531645))
+* **oauth:** parse DCR redirect_uris at the boundary (CASA 3.2.2) ([#658](https://github.com/overfolder/overslash/issues/658)) ([420a863](https://github.com/overfolder/overslash/commit/420a863e36178c35dc92dab2ad09d78288339ea9))
+* **security:** require TLS on outbound service requests (CASA 4.1.1) ([#662](https://github.com/overfolder/overslash/issues/662)) ([31102ee](https://github.com/overfolder/overslash/commit/31102ee73baf63681d6f1c4e24f76c52512ffda3))
+* **security:** route action execution and webhook delivery through the SSRF guard ([#653](https://github.com/overfolder/overslash/issues/653)) ([3064f0d](https://github.com/overfolder/overslash/commit/3064f0da9567a8989fbe8a320f44501695721bf5))
+* **security:** route OIDC issuer discovery through the SSRF guard ([#659](https://github.com/overfolder/overslash/issues/659)) ([3fd5a93](https://github.com/overfolder/overslash/commit/3fd5a93aae7b081d379e2788122ee13e986b9b13))
+* **validate-input:** don't coerce a serialized array into an object param ([#684](https://github.com/overfolder/overslash/issues/684)) ([1644faf](https://github.com/overfolder/overslash/commit/1644faf6278a96a5442a379ee7aa384cfb332a19))
+* **webhooks:** http://localhost registers only if both loopback families are allowed ([#685](https://github.com/overfolder/overslash/issues/685)) ([73ac8de](https://github.com/overfolder/overslash/commit/73ac8de7039b6ce473bb89b0903df70fd94f42ba))
+* **webhooks:** HTTPS-only endpoints (CASA 7.1.1) ([#664](https://github.com/overfolder/overslash/issues/664)) ([508b3fe](https://github.com/overfolder/overslash/commit/508b3fec2b7ef4ec7c68ab68ea9eadbae9e84942))
+
 ## [0.12.0](https://github.com/overfolder/overslash/compare/v0.11.0...v0.12.0) (2026-09-21)
 
 
