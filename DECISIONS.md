@@ -1174,7 +1174,7 @@ The client's accept or decline arrives on a separate POST and crosses replicas t
 
 **Verified against the real client.** Claude Code 2.1.283, driven as an SDK host on a local build, received the approval as a `mode: "url"` elicitation with no `elicitationId`. Its retry waited on the keep-alive stream until the approval was granted on the dashboard. The call then executed exactly once, even with auto-call on.
 
-## D-NEXT: BI is terraform-owned queries, federated into BigQuery, read as a column-allow-listed `bi` role
+## D105: BI is terraform-owned queries, federated into BigQuery, read as a column-allow-listed `bi` role
 
 **Date**: 2026-09-28
 **Decision**: Business-intelligence queries over prod data run in BigQuery, against the `overslash_bi` dataset. Each view there is an `EXTERNAL_QUERY` whose inner SQL is a file in `infra/modules/bi/sql/`, run live against Cloud SQL as the Postgres role `bi`. The API creates that role at boot, using a terraform-generated password mounted as `OVERSLASH_BI_DB_PASSWORD`, and replaces its grants with column-level SELECT on `overslash_db::bi::READABLE_COLUMNS`. `bi` belongs to no role. There is no migration, schema or view in Postgres. `tests/bi_views.rs` runs every BI query as `bi` in CI. Dashboards are built in Looker Studio. The whole surface is gated by `enable_bi`. Runbook: `docs/runbooks/bi.md`.
