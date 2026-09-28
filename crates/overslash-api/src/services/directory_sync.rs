@@ -231,11 +231,17 @@ pub async fn sync_google_directory_full(
     }
 
     // Everything listed. From here on the directory's word is complete. An
-    // admin may have disconnected while we were listing: bail early if so.
-    // This is only a shortcut — the guarantee is the foreign key from
-    // `directory_groups.google_directory_org_id` (migration 129), which makes
-    // an upsert after the DELETE fail rather than resurrect the groups.
-    if scope.get_google_directory_config().await?.is_none() {
+    // admin may have paused or disconnected while we were listing: stop if
+    // so. For a disconnect this is only a shortcut — the guarantee is the
+    // foreign key from `directory_groups.google_directory_org_id` (migration
+    // 129), which makes an upsert after the DELETE fail rather than resurrect
+    // the groups. A pause landing after this point lets one already-fetched,
+    // complete snapshot land, which is harmless: pausing keeps memberships.
+    if !scope
+        .get_google_directory_config()
+        .await?
+        .is_some_and(|c| c.enabled)
+    {
         return Ok(GoogleSyncStats::default());
     }
     let mut groups_by_email: std::collections::HashMap<String, Vec<Uuid>> =
