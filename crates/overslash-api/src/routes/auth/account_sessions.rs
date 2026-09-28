@@ -85,10 +85,13 @@ pub(super) async fn revoke_session(
 
     let mut headers = HeaderMap::new();
     if id == current {
-        cookies::append_all(
-            &mut headers,
-            [cookies::clear_for(&state, cookies::SESSION, "/")],
-        );
+        // Same clears as logout: the configured name, plus the host-only
+        // `__Host-` fallback (preview handoff) when a Domain is configured.
+        let mut clears = vec![cookies::clear_for(&state, cookies::SESSION, "/")];
+        if state.config.session_cookie_domain.is_some() {
+            clears.push(cookies::clear(cookies::SESSION, None, "/"));
+        }
+        cookies::append_all(&mut headers, clears);
     }
     Ok((headers, axum::Json(json!({ "revoked": 1 }))))
 }
