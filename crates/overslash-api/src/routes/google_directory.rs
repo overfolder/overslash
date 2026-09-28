@@ -354,6 +354,21 @@ async fn request_sync(
         ));
     }
     if !scope.request_google_directory_sync().await? {
+        // Nothing was queued: either a run already is, or the config was
+        // paused (or removed) since the check above. Say which.
+        match scope.get_google_directory_config().await? {
+            Some(c) if c.enabled => {}
+            Some(_) => {
+                return Err(AppError::Conflict(
+                    "Google Directory sync is disabled; enable it first".into(),
+                ));
+            }
+            None => {
+                return Err(AppError::NotFound(
+                    "Google Directory sync is not configured".into(),
+                ));
+            }
+        }
         return Ok((
             StatusCode::OK,
             Json(json!({ "queued": false, "already_queued": true })),

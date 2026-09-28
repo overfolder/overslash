@@ -215,6 +215,11 @@ pub async fn sync_google_directory_full(
     let Some(config) = scope.get_google_directory_config().await? else {
         return Ok(GoogleSyncStats::default());
     };
+    // Claimed while enabled, but an admin may have paused it since. Pausing
+    // means "stop syncing", so honour it even for a run already leased.
+    if !config.enabled {
+        return Ok(GoogleSyncStats::default());
+    }
     let key = stored_key(state, &config)?;
     let client =
         google_directory::DirectoryClient::connect(state, &key, &config.admin_subject).await?;

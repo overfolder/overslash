@@ -592,3 +592,23 @@ async fn a_google_group_cannot_outlive_its_config() {
     .await;
     assert!(unpaired.is_err(), "a Google row must name its config");
 }
+
+/// A run leased before an admin paused the config must not sweep: pausing
+/// means stop, even mid-lease. Drives the sweep directly, as the worker would
+/// after its claim.
+#[tokio::test]
+async fn a_sweep_honours_a_pause_that_lands_after_the_claim() {
+    let e = env().await;
+    e.fake.set_groups(three_groups());
+    let alice = e.human("alice@acme.com").await;
+    e.configure().await;
+    let (status, _) = e.put(json!({ "enabled": false })).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let stats =
+        overslash_api::services::directory_sync::sync_google_directory_full(&e.state, e.org_id)
+            .await
+            .unwrap();
+    assert_eq!(stats.groups, 0);
+    assert!(google_memberships(&e.pool, alice).await.is_empty());
+}
