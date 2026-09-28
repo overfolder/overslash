@@ -741,14 +741,11 @@ async fn refresh_user_profile(
     let before = user_repo::get_by_id(state.db(ext), user_id)
         .await?
         .and_then(|u| u.email);
-    if let Err(e) =
-        user_repo::refresh_profile(state.db(ext), user_id, Some(email), Some(display_name)).await
-    {
-        // Was fire-and-forget before sessions depended on it; stay that way
-        // for the profile write itself.
-        tracing::warn!(%user_id, "profile refresh failed: {e}");
-        return Ok(());
-    }
+    // Revoke *before* recording the new address. The stored email is the only
+    // memory that a change happened: written first, a revoke that then failed
+    // would leave nothing for a retry to detect, and the old sessions would
+    // survive for good. This order fails safe — a failed profile write after
+    // the revoke just means the next sign-in revokes again.
     if let Some(before) = before
         && !before.eq_ignore_ascii_case(email)
     {
@@ -760,6 +757,13 @@ async fn refresh_user_profile(
             user_sessions::reason::IDENTITY_CHANGED,
         )
         .await?;
+    }
+    if let Err(e) =
+        user_repo::refresh_profile(state.db(ext), user_id, Some(email), Some(display_name)).await
+    {
+        // Was fire-and-forget before sessions depended on it; stay that way
+        // for the profile write itself.
+        tracing::warn!(%user_id, "profile refresh failed: {e}");
     }
     Ok(())
 }
