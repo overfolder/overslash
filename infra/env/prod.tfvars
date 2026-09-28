@@ -57,7 +57,7 @@ enable_dns       = false
 enable_shortener = true
 
 # BI: BigQuery federation over the Postgres `bi` schema (docs/runbooks/bi.md).
-# The next API boot grants `bi` its bi_reader role (runbook step 3).
+# Rolls a Cloud Run revision whose boot creates the `bi` role; nothing manual.
 enable_bi = true
 
 # Shared overfwd Mailbox Gateway. This hostname is what `services/email.yaml`

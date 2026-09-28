@@ -285,6 +285,12 @@ variable "trusted_proxy_secret_secret_id" {
   description = "GSM secret ID holding the value the dashboard's Vercel middleware stamps in x-overslash-proxy-secret."
 }
 
+variable "bi_db_password_secret_id" {
+  type        = string
+  default     = ""
+  description = "GSM secret ID holding the `bi` Postgres role's password (modules/bi). Mounted as OVERSLASH_BI_DB_PASSWORD; the API creates the role at boot."
+}
+
 variable "email_api_key_secret_id" {
   type        = string
   default     = ""
@@ -452,6 +458,7 @@ locals {
   )
 
   env_secrets = merge(
+    var.bi_db_password_secret_id != "" ? { OVERSLASH_BI_DB_PASSWORD = var.bi_db_password_secret_id } : {},
     {
       DB_PASSWORD                = var.db_password_secret_id
       OAUTH_GOOGLE_CLIENT_ID     = var.google_services_client_id_secret_id

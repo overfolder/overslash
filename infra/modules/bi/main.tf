@@ -2,11 +2,10 @@
 # SQL (migration 126). See docs/runbooks/bi.md.
 #
 # Nothing is copied out of Postgres: each BigQuery view below is an
-# EXTERNAL_QUERY that runs against the live instance as the `bi` login user,
-# which holds only `bi_reader`: the API's boot reconcile
-# (overslash_db::bi) grants it and strips Cloud SQL's default
-# cloudsqlsuperuser, since no migration can act on a user terraform
-# creates afterwards. Cloud SQL on private
+# EXTERNAL_QUERY that runs against the live instance as the `bi` login role.
+# The API creates that role at boot (overslash_db::bi) from the password
+# generated here, so it holds only `bi_reader`. A google_sql_user would
+# instead join cloudsqlsuperuser, which the app can't revoke. Cloud SQL on private
 # IP is reachable because the instance sets
 # enable_private_path_for_google_cloud_services.
 
@@ -19,10 +18,6 @@ variable "region" {
 }
 
 variable "base_prefix" {
-  type = string
-}
-
-variable "sql_instance_name" {
   type = string
 }
 
@@ -50,7 +45,7 @@ locals {
   external_connection = "${var.project_id}.${var.region}.${google_bigquery_connection.pg.connection_id}"
 }
 
-# --- Postgres login user for the connection ---
+# --- Password for the `bi` role (created by the API, not here) ---
 
 resource "random_password" "bi" {
   length  = 32
@@ -70,13 +65,6 @@ resource "google_secret_manager_secret_version" "bi_db_password" {
   secret_data = random_password.bi.result
 }
 
-resource "google_sql_user" "bi" {
-  name     = "bi"
-  instance = var.sql_instance_name
-  project  = var.project_id
-  password = random_password.bi.result
-}
-
 # --- BigQuery connection ---
 
 resource "google_bigquery_connection" "pg" {
@@ -90,7 +78,7 @@ resource "google_bigquery_connection" "pg" {
     database    = var.sql_database
     type        = "POSTGRES"
     credential {
-      username = google_sql_user.bi.name
+      username = "bi"
       password = random_password.bi.result
     }
   }
@@ -153,6 +141,11 @@ resource "google_bigquery_connection_iam_member" "viewer_connection" {
 
 output "dataset_id" {
   value = google_bigquery_dataset.bi.dataset_id
+}
+
+output "db_password_secret_id" {
+  description = "Mounted into Cloud Run as OVERSLASH_BI_DB_PASSWORD."
+  value       = google_secret_manager_secret.bi_db_password.secret_id
 }
 
 output "connection" {

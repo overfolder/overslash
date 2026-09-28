@@ -5,7 +5,7 @@ BigQuery and Looker Studio, never by giving people a prod DB shell.
 
 ```
 Cloud SQL (private IP)
-  └─ schema bi (views, migration 126)   ← read as login user `bi` (role bi_reader)
+  └─ schema bi (views, migration 126)   ← read as login role `bi` (created by the API, member of bi_reader only)
        └─ BigQuery connection <prefix>-pg
             └─ dataset overslash_bi (EXTERNAL_QUERY views)  ← Looker Studio / BQ console
 ```
@@ -36,19 +36,15 @@ separately, because a creator can leave the org and admins can change.
 1. Deploy the API so migration 126 has run.
 2. `make tofu-apply` for that environment, with `enable_bi = true`.
    Nothing applies terraform automatically.
-3. Wait for the next API boot (any deploy or restart). After migrations,
-   `overslash_db::bi::reconcile_bi_user` grants `bi_reader` to `bi`. It also
-   revokes `cloudsqlsuperuser`, which Cloud SQL gives every user created
-   through its API, so `bi` ends up holding `bi_reader` and nothing else.
-   It is idempotent and never fails the boot; problems show up as a
-   `bi user reconcile failed` warning in the API logs. To skip the wait, run
-   the same statements by hand:
-   ```bash
-   bin/db-shell.sh prod
-   GRANT bi_reader TO bi;
-   REVOKE cloudsqlsuperuser FROM bi;
-   ```
-   Then confirm with `\du bi`: the only role listed should be `bi_reader`.
+3. Nothing to run by hand. The apply mounts the generated password into Cloud
+   Run as `OVERSLASH_BI_DB_PASSWORD`, which rolls out a new revision. At boot,
+   after migrations, `overslash_db::bi::reconcile_bi_user` creates the `bi`
+   LOGIN role, sets its password, and grants it `bi_reader`. The password is
+   re-set on every boot, so rotating the secret only needs a redeploy. The API
+   owns this role instead of terraform because a `google_sql_user` always joins
+   `cloudsqlsuperuser`, and the app can't revoke that. If the reconcile fails,
+   the API logs `bi user reconcile failed`. Confirm with `\du bi`: the only
+   role listed should be `bi_reader`.
 4. Check it in the BigQuery console:
    `SELECT * FROM overslash_bi.org_summary ORDER BY created_at`.
 
