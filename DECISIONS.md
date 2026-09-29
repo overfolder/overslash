@@ -1259,3 +1259,9 @@ Other callback failures are reported as `failed` with a coarse, allow-listed rea
 
 **At most one queued manual run, structurally.** The queue is one nullable column that a click sets only if unset and a claim clears. Repeated clicks cannot pile up sweeps against Google's quota, and a click during a run still gets its follow-up.
 
+## D109: A rate-limit deny is logged once per bucket per window, under a global budget
+
+**Date**: 2026-09
+**Decision**: Every deny is counted in `overslash_rate_limit_decisions_total`. It is logged only when it is the request that takes its bucket over the limit (`RateLimitResult::first_denied`, `count == max + 1`), and then only while a fleet-wide budget of 60 lines a minute lasts. The budget is `rl:deny-log-budget` in the same store. A line dropped for budget increments `overslash_rate_limit_deny_log_suppressed_total{scope}`. Per-IP throttles key an IPv6 client on its /64.
+
+**Rationale**: A log line per deny lets whoever is being throttled decide how much we log, which turns the limiter into a log-flooding tool. The metric can count every deny because a counter costs the same at any volume, but it can't say *who*: an org or IP label would create one series per org or IP. The crossing request is the natural "once": both stores increment and then compare, so exactly one request per window sees `max + 1`. That holds across instances, because Valkey's `INCR` is atomic, and it needs no state of its own and no eviction. It bounds the logs only as far as buckets are bounded, though. Credential buckets exist only for credentials that verified, but IP buckets can be minted at will. The global budget closes that, and the suppressed counter makes the closing visible. The /64 is the IPv6 unit because one subscriber is handed a whole /64 and can source from any address in it, so a per-address key limits neither the requests nor the log lines.

@@ -172,6 +172,8 @@
 - Fixed window counter algorithm with configurable window size
 - Dashboard sessions (own per-identity bucket, sized from the user budget) and MCP access tokens (owner-user bucket + identity cap) are metered, not only `osk_` keys
 - `/oauth/*`, `/.well-known/oauth-*` and `/mcp` throttled by `middleware/ingress_rate_limit.rs`: per client IP on the handshake, a stricter per-IP cap on `POST /oauth/register`, per MCP client on `/mcp` (`OAUTH_`, `OAUTH_REGISTER_`, `MCP_RATE_LIMIT` / `_RATE_WINDOW_SECS`)
+- A deny logs once per bucket per window (the request that crosses the limit), under a fleet-wide 60 lines/min budget; drops count in `overslash_rate_limit_deny_log_suppressed_total`
+- Per-IP throttles key IPv6 clients by /64
 
 ### Org Slug Subdomains (`<org>.app|api.overslash.com`)
 
