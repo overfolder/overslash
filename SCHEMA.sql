@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict 1fhpRDtbPpXJXaNQEFiKjlsmSrEFqeEchKgJyTTmoFWmTTUYKL0bnwtDfcAK1du
+\restrict uGAvzortgMj4WdMbkpZY6Iyb7tGMPzFtygmAF2gfRSYGOauhBjAzzOXuzoV6FAH
 
 -- Dumped from database version 16.14 (Debian 16.14-1.pgdg12+1)
 -- Dumped by pg_dump version 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1)
@@ -279,7 +279,9 @@ CREATE TABLE public.directory_groups (
     display_name text NOT NULL,
     first_seen_at timestamp with time zone DEFAULT now() NOT NULL,
     last_seen_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT directory_groups_source_check CHECK ((source = 'oidc_claim'::text))
+    google_directory_org_id uuid,
+    CONSTRAINT directory_groups_google_directory_org_check CHECK (((source = 'google_directory'::text) = (google_directory_org_id IS NOT NULL))),
+    CONSTRAINT directory_groups_source_check CHECK ((source = ANY (ARRAY['oidc_claim'::text, 'google_directory'::text])))
 );
 
 
@@ -926,6 +928,37 @@ CREATE TABLE public.oauth_providers (
 --
 
 COMMENT ON COLUMN public.oauth_providers.refresh_endpoint IS 'Where the refresh grant is posted, when the provider does not accept it at token_endpoint. NULL means refresh at token_endpoint.';
+
+
+--
+-- Name: org_google_directory_configs; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.org_google_directory_configs (
+    org_id uuid NOT NULL,
+    encrypted_service_account_key bytea NOT NULL,
+    service_account_email text NOT NULL,
+    service_account_key_id text NOT NULL,
+    admin_subject text NOT NULL,
+    customer_id text DEFAULT 'my_customer'::text NOT NULL,
+    domains text[] NOT NULL,
+    enabled boolean DEFAULT true NOT NULL,
+    sync_interval_hours integer DEFAULT 8 NOT NULL,
+    next_sync_at timestamp with time zone DEFAULT now() NOT NULL,
+    sync_requested_at timestamp with time zone,
+    lease_owner text,
+    lease_expires_at timestamp with time zone,
+    last_sync_started_at timestamp with time zone,
+    last_sync_finished_at timestamp with time zone,
+    last_sync_status text,
+    last_sync_error text,
+    last_sync_stats jsonb,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT org_google_directory_configs_domains_check CHECK ((cardinality(domains) > 0)),
+    CONSTRAINT org_google_directory_configs_last_sync_status_check CHECK ((last_sync_status = ANY (ARRAY['ok'::text, 'error'::text]))),
+    CONSTRAINT org_google_directory_configs_sync_interval_hours_check CHECK (((sync_interval_hours >= 1) AND (sync_interval_hours <= 168)))
+);
 
 
 --
@@ -1856,6 +1889,14 @@ ALTER TABLE ONLY public.oauth_providers
 
 
 --
+-- Name: org_google_directory_configs org_google_directory_configs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.org_google_directory_configs
+    ADD CONSTRAINT org_google_directory_configs_pkey PRIMARY KEY (org_id);
+
+
+--
 -- Name: org_idp_configs org_idp_configs_org_id_provider_key_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2210,6 +2251,13 @@ CREATE INDEX idx_connections_provider ON public.connections USING btree (org_id,
 
 
 --
+-- Name: idx_directory_groups_google_directory_org; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_directory_groups_google_directory_org ON public.directory_groups USING btree (google_directory_org_id) WHERE (google_directory_org_id IS NOT NULL);
+
+
+--
 -- Name: idx_directory_groups_idp_config; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2508,6 +2556,13 @@ CREATE INDEX idx_oauth_mcp_clients_org ON public.oauth_mcp_clients USING btree (
 --
 
 CREATE INDEX idx_oauth_preview_origins_expires ON public.oauth_preview_origins USING btree (expires_at);
+
+
+--
+-- Name: idx_org_google_directory_configs_due; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_org_google_directory_configs_due ON public.org_google_directory_configs USING btree (next_sync_at) WHERE enabled;
 
 
 --
@@ -2963,6 +3018,14 @@ ALTER TABLE ONLY public.connections
 
 
 --
+-- Name: directory_groups directory_groups_google_directory_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.directory_groups
+    ADD CONSTRAINT directory_groups_google_directory_org_id_fkey FOREIGN KEY (google_directory_org_id) REFERENCES public.org_google_directory_configs(org_id) ON DELETE CASCADE;
+
+
+--
 -- Name: directory_groups directory_groups_idp_config_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3363,6 +3426,14 @@ ALTER TABLE ONLY public.oauth_mcp_clients
 
 
 --
+-- Name: org_google_directory_configs org_google_directory_configs_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.org_google_directory_configs
+    ADD CONSTRAINT org_google_directory_configs_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
+
+
+--
 -- Name: org_idp_configs org_idp_configs_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3670,5 +3741,5 @@ ALTER TABLE ONLY public.webhook_subscriptions
 -- PostgreSQL database dump complete
 --
 
-\unrestrict 1fhpRDtbPpXJXaNQEFiKjlsmSrEFqeEchKgJyTTmoFWmTTUYKL0bnwtDfcAK1du
+\unrestrict uGAvzortgMj4WdMbkpZY6Iyb7tGMPzFtygmAF2gfRSYGOauhBjAzzOXuzoV6FAH
 

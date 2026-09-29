@@ -1240,6 +1240,25 @@ Other callback failures are reported as `failed` with a coarse, allow-listed rea
 
 **Rationale**: The session is a separate bucket, not the user's shared one, because the shared bucket is the one a runaway agent drains, and the dashboard is where its owner goes to stop it. The session still gets a ceiling, just not one an agent can exhaust. MCP tool calls are charged at `/v1` and not at `/mcp` because `routes::mcp::forward` re-issues each one as a loopback `/v1` request carrying the client's own bearer. Charging there counts each call once, against the same budget as that user's other agents. The advisory `x-overslash-transport` header can't be used to skip the second count, because any caller can set it. The `/mcp` bucket is therefore a transport ceiling on top, and it is what bounds `tools/list`, `ping` and `initialize`, which never reach `/v1`. The OAuth limits are instance-level rather than org settings because the traffic mostly arrives before the caller has proven an org: DCR in particular is anonymous, and every success writes a row. They key on `ClientIp`, so behind a configured trusted proxy a forged `X-Forwarded-For` does not buy a fresh bucket. DCR is checked before the handshake bucket so that a refused registration doesn't spend the budget the rest of that client's flow needs.
 
+## D-NEXT: Google Workspace groups are pulled with a delegated service account, bounded by domain, and a partial pull never revokes
+
+**Date**: 2026-09
+**Decision**: This refines D107 for a second source. Google releases no group claim, so a Workspace org's groups are read from the Admin SDK Directory API and written to the same `directory_groups` / `identity_directory_groups` tables under `source = 'google_directory'`, `idp_config_id = NULL`. The credential is a service account with domain-wide delegation for `admin.directory.group.readonly` alone, impersonating an admin the org names. It is stored encrypted in `org_google_directory_configs` (migration 129), one row per org, and never returned. Sync runs three ways: a per-user pull spawned at sign-in that the callback never waits on, a sweep every `sync_interval_hours` (default 8), and an admin's *Sync now*, of which at most one can be queued. Mapping is unchanged: a Google group grants nothing until an admin draws the edge. Full design in [docs/design/directory-group-sync.md](docs/design/directory-group-sync.md).
+
+**Rationale**: D107's "login-time only" held because the claim path had no credential to sweep with; this source does, so the stale window no longer has to be a session lifetime, and removals in Google land without the removed person signing in. Everything else follows from keeping D107's guarantees under a writer that pulls instead of being told.
+
+**A service account, not an admin's OAuth consent.** Consent binds sync to one person: it stops when they leave or lose the admin role, and a sweep has nobody signed in to refresh as. Delegation is granted by the org's Workspace admin, scoped to one read-only scope, and outlives any individual.
+
+**The key's `token_uri` is ignored.** Assertions are exchanged only at `https://oauth2.googleapis.com/token`. Honouring the field would let whoever uploads a key send a signed, replayable assertion for the org's Workspace to a host of their choosing.
+
+**Domains, not sign-in path, bound whom it speaks about.** D107 limits the claim path to an org's own IdP because the claim rides a login. A delegated credential is already the org's own, so it may speak about the org's humans whichever IdP they signed in through — but only those whose email falls under a configured domain. Anyone else is never touched.
+
+**A partial listing never revokes.** The sweep is authoritative, so it must distinguish "Google says no" from "Google did not answer" exactly as D107 distinguishes an empty claim from an absent one. Every page of every listing must succeed before any membership row changes; otherwise the run records its error and revokes nothing.
+
+**Direct membership only.** The per-user endpoint reports direct groups; expanding nesting in the sweep alone would make membership flap between sign-in and sweep. It also keeps D107's single hop.
+
+**At most one queued manual run, structurally.** The queue is one nullable column that a click sets only if unset and a claim clears. Repeated clicks cannot pile up sweeps against Google's quota, and a click during a run still gets its follow-up.
+
 ## D109: A rate-limit deny is logged once per bucket per window, under a global budget
 
 **Date**: 2026-09

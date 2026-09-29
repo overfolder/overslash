@@ -18,6 +18,8 @@ pub mod email;
 pub mod embedding_backfill;
 pub mod events;
 pub mod execution_access;
+pub mod google_directory;
+pub mod google_directory_worker;
 pub mod group_ceiling;
 pub mod http_caller;
 pub mod https_policy;

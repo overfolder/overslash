@@ -6,6 +6,7 @@
 	import {
 		groupsApi,
 		directoryGroupsApi,
+		directorySourceLabel,
 		identitiesApi,
 		type Group,
 		type DirectoryGroupSummary,
@@ -262,12 +263,12 @@
 	{/if}
 
 	{#if directoryGroups.length > 0}
-		<section class="directory">
+		<section class="directory" id="directory-groups">
 			<header class="section-header">
 				<h2>Directory groups</h2>
 				<p class="subtitle">
-					Groups your identity provider reports, refreshed each time someone signs in. They
-					grant nothing on their own — map one onto a group above to give its members that
+					Groups your identity provider reports at sign-in, or that sync from Google Workspace.
+					They grant nothing on their own — map one onto a group above to give its members that
 					group's access.
 				</p>
 			</header>
@@ -287,7 +288,9 @@
 						<tr>
 							<td>
 								<a href="/org/directory-groups/{d.id}" class="name-link">{d.display_name}</a>
-								{#if d.display_name !== d.external_id}
+								{#if d.source === 'google_directory'}
+									<span class="source-tag">{directorySourceLabel(d.source)}</span>
+								{:else if d.display_name !== d.external_id}
 									<span class="muted mono">{d.external_id}</span>
 								{/if}
 							</td>
@@ -543,5 +546,17 @@
 		background: rgba(230, 56, 54, 0.06);
 		color: var(--color-danger);
 		font: var(--text-body-sm);
+	}
+	.source-tag {
+		display: inline-block;
+		margin-left: 0.4rem;
+		padding: 0.05rem 0.4rem;
+		border-radius: 4px;
+		font-size: 0.7rem;
+		font-weight: 600;
+		letter-spacing: 0.02em;
+		background: var(--color-bg);
+		border: 1px solid var(--color-border);
+		color: var(--color-text-muted);
 	}
 </style>

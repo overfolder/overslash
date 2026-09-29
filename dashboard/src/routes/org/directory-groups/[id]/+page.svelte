@@ -5,6 +5,7 @@
 	import {
 		groupsApi,
 		directoryGroupsApi,
+		directorySourceLabel,
 		identitiesApi,
 		type Group,
 		type DirectoryGroupSummary,
@@ -117,7 +118,9 @@
 			<div>
 				<h1>{directoryGroup.display_name}</h1>
 				<p class="subtitle">
-					Reported by your identity provider. Membership here is what the directory says —
+					Reported by {directoryGroup.source === 'google_directory'
+						? 'Google Workspace'
+						: 'your identity provider'}. Membership here is what the directory says —
 					it grants nothing until you map it onto a group.
 				</p>
 			</div>
@@ -127,12 +130,12 @@
 			<h2>Details</h2>
 			<dl class="facts">
 				<div>
-					<dt>Claim value</dt>
+					<dt>{directoryGroup.source === 'google_directory' ? 'Google group id' : 'Claim value'}</dt>
 					<dd class="mono">{directoryGroup.external_id}</dd>
 				</div>
 				<div>
 					<dt>Source</dt>
-					<dd>{directoryGroup.source === 'oidc_claim' ? 'Sign-in group claim' : directoryGroup.source}</dd>
+					<dd>{directorySourceLabel(directoryGroup.source)}</dd>
 				</div>
 				<div>
 					<dt>First seen</dt>
@@ -173,8 +176,13 @@
 				<span class="count">{memberIds.length}</span>
 			</div>
 			<p class="hint">
-				Refreshed each time one of them signs in. Add or remove people in your identity
-				provider, not here.
+				{#if directoryGroup.source === 'google_directory'}
+					Synced from Google Workspace when someone signs in, on a schedule, and on demand.
+					Add or remove people in Google Workspace, not here.
+				{:else}
+					Refreshed each time one of them signs in. Add or remove people in your identity
+					provider, not here.
+				{/if}
 			</p>
 			{#if memberIds.length === 0}
 				<p class="muted">

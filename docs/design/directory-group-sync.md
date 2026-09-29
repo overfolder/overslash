@@ -1,13 +1,15 @@
 # Directory group sync
 
-**Status**: Implemented (OIDC claim source)
+**Status**: Implemented (OIDC claim source, Google Workspace Directory source)
 
 Automatic provisioning of Overslash groups from an external directory. This
-document covers the OIDC `groups`-claim source that ships now, and the shape
-the Google Admin SDK and SCIM sources drop into later.
+document covers the two sources that ship — the OIDC `groups` claim read at
+sign-in, and a Google Workspace Directory pull — and the shape SCIM drops into
+later.
 
-Binding decision: D107, *A directory group is a membership source, not a
-ceiling*.
+Binding decisions: D107, *A directory group is a membership source, not a
+ceiling*; and the Google Directory decision that refines it (see
+[Google Workspace Directory source](#google-workspace-directory-source)).
 
 ---
 
@@ -196,16 +198,108 @@ seen. The list row answers none of those beyond a count, and the mapping edge
 is the one place a directory group turns into access, so it deserves a page
 rather than a cell.
 
+## Google Workspace Directory source
+
+Google never releases group membership in its ID token or on `/userinfo`, so an
+org that signs in with Google gets nothing from the claim path. This source
+reads the Admin SDK Directory API instead and writes the same two tables under
+`source = 'google_directory'`, `idp_config_id = NULL`. Mapping, the view, and
+the rule that discovery grants nothing are all unchanged — it is a second
+writer, not a second model.
+
+### Credential
+
+A service account with **domain-wide delegation** for exactly one scope,
+`admin.directory.group.readonly`, impersonating a Workspace admin the org
+names (`admin_subject`). The JSON key is stored AES-256-GCM encrypted in
+`org_google_directory_configs` (one row per org) and never returned; the API
+shows its client email and key id.
+
+Chosen over an admin's OAuth consent because a delegated service account does
+not stop working when the person who clicked "connect" leaves or loses the
+admin role, and because the sweep runs with nobody signed in.
+
+The key's own `token_uri` is **ignored**. Assertions are always exchanged at
+`https://oauth2.googleapis.com/token`; honouring the field would let whoever
+uploads a key send a signed, replayable assertion for the org's Workspace to a
+host of their choosing.
+
+`PUT /v1/google-directory` proves the credential before saving — a token and
+one page of groups — so a missing delegation grant is a 400 carrying Google's
+reason, not a config that fails every sweep.
+
+### Who it may speak about
+
+**The configured domains are the trust boundary**, not the sign-in path. The
+credential is the org's own, so it may speak about the org regardless of which
+IdP a human signed in through — but only about humans whose email is under one
+of `domains` (default: the admin subject's domain). Anyone else is never
+touched, whatever Google reports. Matching is by lower-cased email, judged by
+the part after the last `@`.
+
+### Three triggers
+
+| Trigger | Scope | Blocking? |
+|---|---|---|
+| Sign-in | that user: `groups?userKey=<email>` | no — spawned; the callback never waits on Google |
+| Periodic sweep | the whole directory | background, every `sync_interval_hours` (default 8, 1–168) |
+| **Sync now** | the whole directory | queues a sweep; at most one can be queued |
+
+Sweeps go through one worker loop per replica
+(`services/google_directory_worker.rs`) that leases due rows with
+`FOR UPDATE SKIP LOCKED`, so replicas share work without two of them sweeping
+the same org. A 15-minute lease covers a replica that dies mid-sweep.
+
+**The manual queue is one nullable column**, `sync_requested_at`. Clicking sets
+it only if it is `NULL`, so no number of clicks queues a second run — the API
+answers `already_queued` and writes nothing. The claim clears it, so a click
+that lands *during* a sweep queues exactly one follow-up instead of being
+swallowed by the run in progress. The dashboard disables the button while a
+run is queued.
+
+### Direct membership only
+
+Both paths read direct membership: nested groups (`type = GROUP`) are skipped
+and `includeDerivedMembership` is not used. If the sweep expanded nesting but
+`userKey` did not, membership would flap between sign-in and sweep. It also
+keeps a directory group one hop from a ceiling, as above.
+
+### A partial listing never revokes
+
+The sweep is authoritative — someone Google no longer lists in a group loses
+the membership — so it applies the same rule the claim path does: an absent
+answer is not an empty one. Every page of every listing must succeed before a
+single membership row changes. A 500 on page two of one group's members fails
+the run (`last_sync_status = 'error'`, with Google's message) and revokes
+nothing. A group deleted in Google keeps its row, and so the admin's mapping,
+but loses its members; `last_seen_at` shows the staleness.
+
+**Pausing** (`enabled = false`) stops syncing and keeps what the last sync
+established. **Disconnecting** (`DELETE`) removes the key and every
+`google_directory` directory group, which cascades to memberships and
+mappings: derived access is revoked at once.
+
+### Surface
+
+| Method | Path | Auth |
+|---|---|---|
+| `GET` | `/v1/google-directory` | admin; 404 when not configured |
+| `PUT` | `/v1/google-directory` | admin; creates (201) or updates (200), probing Google first |
+| `DELETE` | `/v1/google-directory` | admin |
+| `POST` | `/v1/google-directory/sync` | admin; 202 `queued`, or 200 `already_queued` |
+
+Dashboard: a *Google Workspace Directory* card on `/org` (setup with the
+delegation instructions, status of the last sync, *Sync now*, pause,
+disconnect), and a *Google Workspace* tag on its groups in the *Directory
+groups* list.
+
 ## Deliberately not built
 
-- **Google Admin SDK / Cloud Identity pull.** Writes the same tables with
-  `source = 'google_directory'`. Needs a stored org-level credential and a
-  sensitive-scope review; the `source` column and the nullable `idp_config_id`
-  exist for it.
 - **SCIM 2.0 push.** Same tables, `source = 'scim'`. Also the natural home for
   the offboarding half of the user-stories gap.
-- **A periodic sweep.** The stale window today is a session lifetime. The
-  anchored-claim pattern in `services/webhook_digest.rs` is the model.
+- **A periodic sweep for the claim source.** Its stale window is a session
+  lifetime, and it has no credential to sweep with. The Google source has one.
+- **Nested Google groups.** See *Direct membership only* above.
 - **General group-in-group nesting.** Would make the view recursive and needs
   cycle detection. Nothing here blocks it.
 - **ID-token signature verification.** See TECH_DEBT.md.

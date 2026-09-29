@@ -34,6 +34,19 @@ async fn org_with_idp(
     group_sync_enabled: bool,
     group_claim: Option<&str>,
 ) -> (String, Client, PgPool, String, Uuid, String, String) {
+    org_with_idp_customized(group_sync_enabled, group_claim, |_| {}).await
+}
+
+/// [`org_with_idp`] with a hook on the API's `Config`. The Google Directory
+/// tests use it to point Google's hosts at their fake.
+pub(crate) async fn org_with_idp_customized<F>(
+    group_sync_enabled: bool,
+    group_claim: Option<&str>,
+    customize: F,
+) -> (String, Client, PgPool, String, Uuid, String, String)
+where
+    F: FnOnce(&mut overslash_api::config::Config),
+{
     let pool = common::test_pool().await;
     let mock_addr = common::start_mock().await;
 
@@ -48,11 +61,12 @@ async fn org_with_idp(
     .await
     .unwrap();
 
-    let (base, client) = common::start_api_with_auth_providers(
+    let (base, client) = common::start_api_with_auth_providers_customized(
         pool.clone(),
         Some(("env_id".into(), "env_secret".into())),
         None,
         "http://localhost:3000",
+        customize,
     )
     .await;
 
@@ -118,7 +132,7 @@ async fn set_claims(client: &Client, mock_addr: &str, claims: Option<Value>) {
 
 /// Drive one sign-in, asserting it succeeded. `nonce` must differ per call
 /// within a test — it is the anti-replay binding.
-async fn sign_in(client: &Client, base: &str, org_slug: &str, nonce: &str) {
+pub(crate) async fn sign_in(client: &Client, base: &str, org_slug: &str, nonce: &str) {
     let state_param = format!("login:google:{nonce}");
     let resp = client
         .get(format!(
@@ -141,7 +155,7 @@ async fn sign_in(client: &Client, base: &str, org_slug: &str, nonce: &str) {
     }
 }
 
-async fn synced_identity_id(pool: &PgPool, org_id: Uuid) -> Uuid {
+pub(crate) async fn synced_identity_id(pool: &PgPool, org_id: Uuid) -> Uuid {
     sqlx::query_scalar::<_, Uuid>(
         "SELECT id FROM identities WHERE org_id = $1 AND email = 'testuser@example.com' \
          AND kind = 'user'",
@@ -168,7 +182,7 @@ async fn directory_memberships(pool: &PgPool, identity_id: Uuid) -> Vec<String> 
     rows
 }
 
-async fn create_group(client: &Client, base: &str, admin_key: &str, name: &str) -> Uuid {
+pub(crate) async fn create_group(client: &Client, base: &str, admin_key: &str, name: &str) -> Uuid {
     let body: Value = client
         .post(format!("{base}/v1/groups"))
         .header("authorization", format!("Bearer {admin_key}"))
@@ -194,7 +208,7 @@ async fn list_directory_groups(client: &Client, base: &str, admin_key: &str) -> 
         .unwrap()
 }
 
-async fn map_source(
+pub(crate) async fn map_source(
     client: &Client,
     base: &str,
     admin_key: &str,

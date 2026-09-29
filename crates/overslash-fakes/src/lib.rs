@@ -15,6 +15,7 @@ use std::net::SocketAddr;
 use axum::{extract::Query, response::Redirect};
 
 pub mod combined;
+pub mod google_directory;
 pub mod idp;
 pub mod mcp;
 pub mod oauth;

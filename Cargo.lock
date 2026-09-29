@@ -3391,6 +3391,7 @@ dependencies = [
  "futures-util",
  "hex",
  "hmac 0.13.0",
+ "jsonwebtoken",
  "reqwest 0.13.5",
  "serde",
  "serde_json",

@@ -306,6 +306,25 @@ async fn provision_org_subdomain(
         Err(e) => tracing::warn!(%identity_id, error = %e, "directory group sync failed"),
     }
 
+    // Google Workspace Directory: a per-user pull, spawned so the sign-in
+    // never waits on Google. It runs whichever IdP the user came through —
+    // the credential is the org's own, and the domain check inside is what
+    // bounds whom it may speak about.
+    let spawned = state.for_spawn(ext);
+    let email = userinfo.email.clone();
+    tokio::spawn(async move {
+        if let Err(e) = crate::services::directory_sync::sync_google_directory_for_identity(
+            &spawned,
+            org_id,
+            identity_id,
+            &email,
+        )
+        .await
+        {
+            tracing::warn!(%identity_id, error = %e, "google directory sign-in sync failed");
+        }
+    });
+
     Ok(resolved)
 }
 

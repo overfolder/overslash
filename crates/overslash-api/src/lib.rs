@@ -452,6 +452,15 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
             state.config.public_url.clone(),
         ));
 
+        // Google Workspace Directory group sync: the periodic sweep and the
+        // "Sync now" queue. Replicas share work through row leases on
+        // `org_google_directory_configs`. See services::google_directory_worker.
+        {
+            let mut worker_state = state.clone();
+            worker_state.db = background_db.clone();
+            tokio::spawn(services::google_directory_worker::spawn_loop(worker_state));
+        }
+
         // Rate limit eviction loop. The config/billing caches always need
         // eviction — their resolve paths only check TTL on read, so stale
         // entries otherwise accumulate for the life of the process (slow
@@ -585,6 +594,7 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
         .merge(routes::org_service_keys::router())
         .merge(routes::groups::router())
         .merge(routes::directory_groups::router())
+        .merge(routes::google_directory::router())
         .merge(routes::rate_limits::router())
         .merge(billing_api_routes)
         .layer(axum::middleware::from_fn_with_state(

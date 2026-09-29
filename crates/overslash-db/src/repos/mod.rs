@@ -29,6 +29,7 @@ pub mod email_unsubscribe_token;
 pub mod enabled_global_template;
 pub mod event;
 pub mod execution;
+pub mod google_directory_config;
 pub mod group;
 pub mod identity;
 pub mod magic_link_token;
