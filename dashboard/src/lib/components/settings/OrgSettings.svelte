@@ -1545,7 +1545,7 @@
 			</div>
 			<p class="section-desc">
 				Controls <strong>how users log in to Overslash</strong>. Separate from the
-				<a href="#oauth-app-credentials">OAuth App Credentials</a> below, which power service
+				<a href="/org/oauth">OAuth App Credentials</a>, which power service
 				connections (Google Calendar, Drive, Gmail, etc.). Rows marked <span class="badge badge-env">env</span>
 				come from environment variables — they appear automatically when the instance is launched with
 				<code>GOOGLE_AUTH_CLIENT_ID</code> / <code>GITHUB_AUTH_CLIENT_ID</code> set, and aren't affected
