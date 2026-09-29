@@ -144,13 +144,16 @@
 	// ── Sub-nav ────────────────────────────────────────────────────────────
 	// One section renders at a time. A section hidden for this org (Billing on
 	// a personal org, say) falls back to General rather than a blank page.
+	// Read `data` directly, not the local mirrors above: those are filled by an
+	// $effect after first render, and a deep link like /org/billing would
+	// otherwise flash General before settling.
 	const groups = $derived(
 		visibleGroups({
-			isPersonalOrg,
+			isPersonalOrg: data.org?.is_personal === true,
 			isInstanceAdmin,
-			hasOrg: org !== null,
-			hasSubscription: subscription !== null,
-			hasManagedSignin: managedSigninSettings !== null
+			hasOrg: data.org !== null,
+			hasSubscription: data.subscription !== null,
+			hasManagedSignin: data.managedSigninSettings !== null
 		})
 	);
 	const active = $derived(
