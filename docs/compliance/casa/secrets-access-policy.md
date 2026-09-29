@@ -6,7 +6,7 @@ logged and watched. This is the "documented access-control policy" CASA 6.7.1 as
 describes are Terraform in [`infra/modules/audit-logging/`](../../../infra/modules/audit-logging/),
 not a paper process.
 
-Adopted 2026-09-28. The retention, lock and alerting choices are recorded as D-NEXT in
+Adopted 2026-09-28. The retention, lock and alerting choices are recorded as D112 in
 [DECISIONS.md](../../../DECISIONS.md).
 
 > **Status: written, not yet applied.** Infra is never auto-applied
