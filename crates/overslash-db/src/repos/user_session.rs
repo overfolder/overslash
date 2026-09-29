@@ -1,4 +1,4 @@
-//! `user_sessions` — one row per dashboard sign-in (migration 129).
+//! `user_sessions` — one row per dashboard sign-in (migration 130).
 //!
 //! The session JWT's `jti` is this row's id. A session is live iff its row
 //! exists, is unrevoked and is unexpired; the API checks that on every
@@ -12,6 +12,17 @@
 use sqlx::PgPool;
 use time::OffsetDateTime;
 use uuid::Uuid;
+
+/// Why a session ended (`revoked_reason`).
+pub mod reason {
+    pub const LOGOUT: &str = "logout";
+    pub const REPLACED: &str = "replaced";
+    pub const TERMINATED: &str = "terminated";
+    pub const TERMINATED_BY_OTHER: &str = "terminated_by_other_session";
+    pub const IDENTITY_CHANGED: &str = "identity_changed";
+    pub const MEMBER_REMOVED: &str = "member_removed";
+    pub const IDENTITY_ARCHIVED: &str = "identity_archived";
+}
 
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct UserSessionRow {
@@ -193,8 +204,12 @@ pub async fn revoke_all_for_user(
 /// `org_id` — an admin removing or archiving a member. Sessions the same
 /// human holds in other orgs are not this org's to end. Returns the revoked
 /// ids.
-pub async fn revoke_for_identities(
-    pool: &PgPool,
+///
+/// Takes any executor so a state change can revoke inside its own
+/// transaction: an admin removal or email rewrite that commits without its
+/// revocation would, on retry, find nothing left to trigger one.
+pub async fn revoke_for_identities<'e>(
+    executor: impl sqlx::PgExecutor<'e>,
     org_id: Uuid,
     identity_ids: &[Uuid],
     reason: &str,
@@ -206,6 +221,23 @@ pub async fn revoke_for_identities(
         org_id,
         identity_ids,
         reason,
+    )
+    .fetch_all(executor)
+    .await
+}
+
+/// Every session id (live or not) ever scoped to one of `identity_ids` in
+/// `org_id` — what to evict from the validation cache after a revocation that
+/// ran inside someone else's transaction.
+pub async fn ids_for_identities(
+    pool: &PgPool,
+    org_id: Uuid,
+    identity_ids: &[Uuid],
+) -> Result<Vec<Uuid>, sqlx::Error> {
+    sqlx::query_scalar!(
+        "SELECT id FROM user_sessions WHERE org_id = $1 AND identity_id = ANY($2)",
+        org_id,
+        identity_ids,
     )
     .fetch_all(pool)
     .await

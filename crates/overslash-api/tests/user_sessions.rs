@@ -332,7 +332,7 @@ async fn identity_of(body: &Value) -> Uuid {
 #[tokio::test]
 async fn removing_a_member_ends_their_sessions() {
     let pool = common::test_pool().await;
-    let (base, client) = common::start_api_with_dev_auth(pool).await;
+    let (base, client) = common::start_api_with_dev_auth(pool.clone()).await;
     let (admin, _) = dev_login(&base, &client, "admin").await;
     let (member, member_body) = dev_login(&base, &client, "member").await;
     assert_eq!(me(&base, &client, &member).await, StatusCode::OK);
@@ -355,6 +355,15 @@ async fn removing_a_member_ends_their_sessions() {
 
     assert_eq!(me(&base, &client, &member).await, StatusCode::UNAUTHORIZED);
     assert_eq!(me(&base, &client, &admin).await, StatusCode::OK);
+
+    // Revoked inside the removal's own transaction, so the two cannot part:
+    // a retry would find the member already detached and revoke nothing.
+    let jti = jwt::verify(&common::signing_key_bytes(), &member, jwt::AUD_SESSION)
+        .unwrap()
+        .jti
+        .unwrap();
+    let row = user_session::get(&pool, jti).await.unwrap().unwrap();
+    assert_eq!(row.revoked_reason.as_deref(), Some("member_removed"));
 }
 
 #[tokio::test]

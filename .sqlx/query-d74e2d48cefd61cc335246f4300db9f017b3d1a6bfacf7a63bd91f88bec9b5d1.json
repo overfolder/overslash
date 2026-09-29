@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT depth, external_id FROM identities WHERE id = $1 AND org_id = $2",
+  "query": "SELECT depth, external_id, email FROM identities WHERE id = $1 AND org_id = $2",
   "describe": {
     "columns": [
       {
@@ -24,6 +24,17 @@
             "name": "external_id"
           }
         }
+      },
+      {
+        "ordinal": 2,
+        "name": "email",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "identities",
+            "name": "email"
+          }
+        }
       }
     ],
     "parameters": {
@@ -34,8 +45,9 @@
     },
     "nullable": [
       false,
+      true,
       true
     ]
   },
-  "hash": "001d7f345053b33393679f33965de29444429e3d0754335446ad56ab7326f9b0"
+  "hash": "d74e2d48cefd61cc335246f4300db9f017b3d1a6bfacf7a63bd91f88bec9b5d1"
 }

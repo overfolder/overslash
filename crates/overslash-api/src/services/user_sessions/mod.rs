@@ -64,15 +64,8 @@ pub const RETENTION_SECS: i64 = 30 * 24 * 3600;
 /// Display-only columns are cut to this many bytes.
 const MAX_ORIGIN_LEN: usize = 512;
 
-pub mod reason {
-    pub const LOGOUT: &str = "logout";
-    pub const REPLACED: &str = "replaced";
-    pub const TERMINATED: &str = "terminated";
-    pub const TERMINATED_BY_OTHER: &str = "terminated_by_other_session";
-    pub const IDENTITY_CHANGED: &str = "identity_changed";
-    pub const MEMBER_REMOVED: &str = "member_removed";
-    pub const IDENTITY_ARCHIVED: &str = "identity_archived";
-}
+/// Why a session ended (`user_sessions.revoked_reason`).
+pub use repo::reason;
 
 /// Who a session is for.
 pub struct Subject {
@@ -240,6 +233,26 @@ pub async fn revoke_for_identities(
     let ids = repo::revoke_for_identities(state.db(ext), org_id, identity_ids, reason).await?;
     state.session_cache.invalidate(&ids).await;
     Ok(ids.len())
+}
+
+/// Evict every session of these identities from the validation cache, after
+/// a revocation that ran inside the repo's own transaction (admin removal,
+/// email rewrite). Best effort, like every eviction: a failure leaves at most
+/// [`CACHE_TTL`] of a revoked session answering from cache.
+pub async fn forget_identities(
+    state: &AppState,
+    ext: &Extensions,
+    org_id: Uuid,
+    identity_ids: &[Uuid],
+) {
+    match repo::ids_for_identities(state.db(ext), org_id, identity_ids).await {
+        Ok(ids) => state.session_cache.invalidate(&ids).await,
+        Err(e) => tracing::error!(
+            "session cache eviction lookup failed; revoked sessions may answer from cache \
+             for up to {}s: {e}",
+            CACHE_TTL.as_secs()
+        ),
+    }
 }
 
 /// The `jti` of the session cookie on this request, if it verifies. By the

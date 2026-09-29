@@ -209,18 +209,11 @@ pub(super) async fn update_identity(
         }
     };
 
-    // The email is who may sign in as this member (the login path adopts by
-    // it), so rewriting it is an identity change: end the member's sessions
-    // here rather than let them outlive the address they were issued for.
-    if email.is_some() && email.as_deref() != target.email.as_deref() {
-        user_sessions::revoke_for_identities(
-            &state,
-            &ext,
-            scope.org_id(),
-            &[id],
-            user_sessions::reason::IDENTITY_CHANGED,
-        )
-        .await?;
+    // Rewriting the email is an identity change, and `apply_identity_patch`
+    // revoked the member's sessions in the same transaction. What is left is
+    // evicting them from the validation cache.
+    if email.is_some() {
+        user_sessions::forget_identities(&state, &ext, scope.org_id(), &[id]).await;
     }
 
     let _ = scope
@@ -327,38 +320,34 @@ async fn remove_user_from_org(
         ));
     }
 
-    let (user_id, archived_count, was_admin) = match scope.remove_user_from_org(id).await? {
-        RemoveUserOutcome::Removed {
-            user_id,
-            archived_count,
-            was_admin,
-        } => (user_id, archived_count, was_admin),
-        RemoveUserOutcome::LastAdmin => {
-            return Err(AppError::BadRequest(
-                "cannot remove the last admin of the org".into(),
-            ));
-        }
-        RemoveUserOutcome::NotApplicable => {
-            return Err(AppError::Conflict(
-                "identity is not a removable org member".into(),
-            ));
-        }
-        RemoveUserOutcome::NotFound => {
-            return Err(AppError::NotFound("identity not found".into()));
-        }
-    };
+    let (user_id, archived_count, was_admin, revoked_sessions) =
+        match scope.remove_user_from_org(id).await? {
+            RemoveUserOutcome::Removed {
+                user_id,
+                archived_count,
+                was_admin,
+                revoked_sessions,
+            } => (user_id, archived_count, was_admin, revoked_sessions),
+            RemoveUserOutcome::LastAdmin => {
+                return Err(AppError::BadRequest(
+                    "cannot remove the last admin of the org".into(),
+                ));
+            }
+            RemoveUserOutcome::NotApplicable => {
+                return Err(AppError::Conflict(
+                    "identity is not a removable org member".into(),
+                ));
+            }
+            RemoveUserOutcome::NotFound => {
+                return Err(AppError::NotFound("identity not found".into()));
+            }
+        };
 
-    // Removal takes effect now, not when their cookie expires. Only the
-    // sessions scoped to this org: the org's admin has no say over the
-    // human's sessions elsewhere.
-    let revoked_sessions = user_sessions::revoke_for_identities(
-        state,
-        ext,
-        scope.org_id(),
-        &[id],
-        user_sessions::reason::MEMBER_REMOVED,
-    )
-    .await?;
+    // Removal takes effect now, not when their cookie expires: the member's
+    // sessions in this org were revoked inside the removal's transaction (the
+    // org's admin has no say over the human's sessions elsewhere). Evict them
+    // from the validation cache.
+    user_sessions::forget_identities(state, ext, scope.org_id(), &[id]).await;
 
     let _ = scope
         .log_audit(AuditEntry {

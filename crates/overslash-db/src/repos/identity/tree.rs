@@ -111,7 +111,7 @@ pub(crate) async fn apply_patch(
     // Re-read the moved row's depth under the lock — and its `external_id`,
     // which decides whether an email patch is still allowed to land.
     let current = sqlx::query!(
-        "SELECT depth, external_id FROM identities WHERE id = $1 AND org_id = $2",
+        "SELECT depth, external_id, email FROM identities WHERE id = $1 AND org_id = $2",
         id,
         org_id,
     )
@@ -124,6 +124,23 @@ pub(crate) async fn apply_patch(
     if let Some(email) = patch.email {
         if current.external_id.is_some() {
             return Ok(ApplyPatchOutcome::EmailLocked);
+        }
+        // The address decides who may sign in as this member, so rewriting
+        // it ends their sessions — in this transaction, so the new address
+        // can never commit without the revocation (a retry would see no
+        // change and skip it).
+        if !current
+            .email
+            .as_deref()
+            .is_some_and(|old| old.eq_ignore_ascii_case(email))
+        {
+            crate::repos::user_session::revoke_for_identities(
+                &mut *tx,
+                org_id,
+                &[id],
+                crate::repos::user_session::reason::IDENTITY_CHANGED,
+            )
+            .await?;
         }
         sqlx::query!(
             "UPDATE identities SET email = lower($3), updated_at = now()
