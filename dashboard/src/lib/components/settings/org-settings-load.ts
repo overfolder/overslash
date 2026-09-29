@@ -1,7 +1,9 @@
 /**
- * Loader shared by `/org` and `/org/[section]`. It never reads `params`, so
- * SvelteKit does not re-run it when the user moves between settings sections
- * — the 12-call fan-out happens once per visit, not once per click.
+ * Loader for the single `/org/[[section]]` route (which also serves bare
+ * `/org`). It never reads `params`, so SvelteKit does not re-run it when the
+ * user moves between settings sections — the 12-call fan-out happens once per
+ * visit, not once per click. Keep every section on that one route: a second
+ * route would remount the page and refetch on every crossing.
  */
 import { ApiError, session, type MeIdentity } from '$lib/session';
 import type {
@@ -55,11 +57,16 @@ export interface OrgPageData {
 }
 
 export const loadOrgSettings = async ({
-	parent
+	parent,
+	untrack
 }: {
 	parent: () => Promise<Record<string, unknown>>;
+	untrack: <T>(fn: () => T) => T;
 }): Promise<OrgPageData> => {
-	const layoutData = (await parent()) as { user: MeIdentity | null };
+	// The root layout load reads `url`, so it re-runs on every navigation and a
+	// tracked `parent()` would drag this loader along with it. The identity it
+	// provides only changes on an org switch, which hard-reloads the page.
+	const layoutData = (await untrack(() => parent())) as { user: MeIdentity | null };
 	const orgId = layoutData.user?.org_id;
 	const isOrgAdmin = layoutData.user?.is_org_admin === true;
 
