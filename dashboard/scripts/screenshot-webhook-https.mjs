@@ -52,7 +52,7 @@ try {
 		  WHERE id = '${legacy.id}'`
 	);
 
-	const { page, ctx } = await snap.navigateAndSnap('webhook-https-page', '/org', {
+	const { page, ctx } = await snap.navigateAndSnap('webhook-https-page', '/org/webhooks', {
 		viewport: { width: 1400, height: 1000 },
 		fullPage: false,
 		waitFor: async (p) => {

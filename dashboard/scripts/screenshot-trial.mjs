@@ -71,7 +71,7 @@ try {
 
 	// 2. Active-trial banner + instance-admin panel on /org.
 	{
-		const { page, ctx } = await snap.navigateAndSnap('trial-org-active', '/org', {
+		const { page, ctx } = await snap.navigateAndSnap('trial-org-active', '/org/trial', {
 			viewport: { width: 1400, height: 1100 },
 			fullPage: false,
 			waitFor: async (p) => {
@@ -93,7 +93,7 @@ try {
 	//    org row via /auth/me/identity, so no cache wait needed).
 	{
 		psql(`UPDATE orgs SET trial_ends_at = now() - interval '1 day' WHERE id = '${orgId}'`);
-		const { page, ctx } = await snap.navigateAndSnap('trial-org-expired', '/org', {
+		const { page, ctx } = await snap.navigateAndSnap('trial-org-expired', '/org/trial', {
 			viewport: { width: 1400, height: 700 },
 			fullPage: false,
 			waitFor: async (p) => {

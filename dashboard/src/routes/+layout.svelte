@@ -22,6 +22,7 @@
 	import TrialBanner from '$lib/components/shell/TrialBanner.svelte';
 	import DevEnvBanner from '$lib/components/shell/DevEnvBanner.svelte';
 	import Toaster from '$lib/components/Toaster.svelte';
+	import { isSettingsPath } from '$lib/components/settings/sections';
 
 	let { children, data }: { children: Snippet; data: { user: MeIdentity | null } } = $props();
 
@@ -36,15 +37,15 @@
 
 	// Effective sidebar width for the main content's left margin.
 	//   mobile  : 0   (drawer overlays content)
-	//   tablet  : 64  (sidebar visually collapsed regardless of preference)
-	//   desktop : 64 / 240 depending on user preference
+	//   tablet  : 76  (icon rail regardless of preference)
+	//   desktop : 76 / 240 depending on user preference
 	const sidebarWidth = $derived(
 		$viewport === 'mobile'
 			? '0px'
 			: $viewport === 'tablet'
-				? 'var(--sidebar-width-collapsed, 64px)'
+				? 'var(--sidebar-width-collapsed, 76px)'
 				: $sidebarCollapsed
-					? 'var(--sidebar-width-collapsed, 64px)'
+					? 'var(--sidebar-width-collapsed, 76px)'
 					: 'var(--sidebar-width-expanded, 240px)'
 	);
 
@@ -98,6 +99,9 @@
 	// full-bleed canvas, and its `overflow-y: auto` would let the graph push
 	// the page taller instead of being clipped to it.
 	const fullBleed = $derived($page.url.pathname.startsWith('/map'));
+	// Org Settings docks its own sub-nav against the sidebar rail, so its
+	// routes take the content area edge to edge (but still scroll normally).
+	const flush = $derived(isSettingsPath($page.url.pathname));
 
 	// Build identity of the API, shown in the sidebar footer. Fetched once per
 	// session rather than per navigation — it cannot change without a reload of
@@ -183,7 +187,7 @@
 				{#if data?.user?.trial}
 					<TrialBanner trial={data.user.trial} {isAdmin} />
 				{/if}
-				<main class="content" class:full-bleed={fullBleed}>
+				<main class="content" class:full-bleed={fullBleed} class:flush>
 					{@render children()}
 				</main>
 			</div>
@@ -230,6 +234,9 @@
 	.app.full-bleed .main-col {
 		height: 100%;
 		min-height: 0;
+	}
+	.content.flush {
+		padding: 0;
 	}
 	.content.full-bleed {
 		display: flex;

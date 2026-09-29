@@ -11,6 +11,7 @@
 	} from './nav-items';
 	import Logo from './Logo.svelte';
 	import NavItem from './NavItem.svelte';
+	import NavIcon from './NavIcon.svelte';
 	import OrgSwitcher from './OrgSwitcher.svelte';
 	import PendingInvites from './PendingInvites.svelte';
 	import CreateOrgModal from '$lib/components/CreateOrgModal.svelte';
@@ -76,7 +77,7 @@
 	let createOrgOpen = $state(false);
 
 	// Build stamp. The collapsed rail shows the version alone — the short SHA
-	// would win the 64px of space without being the thing anyone recognises —
+	// would win the 76px of space without being the thing anyone recognises —
 	// and both widths surface the full commit on hover.
 	const label = $derived(buildLabel(buildInfo, collapsed));
 	const title = $derived(buildTitle(buildInfo, true));
@@ -146,15 +147,15 @@
 		{/if}
 
 		{#if isAdmin}
-			{#if !collapsed}<div class="section-label">ADMIN</div>{:else}<div class="divider"></div>{/if}
+			<div class="section-label">ADMIN</div>
 			{#each ADMIN_NAV_ITEMS as item (item.href)}
 				<NavItem
-				href={item.href}
-				label={item.label}
-				icon={item.icon}
-				{collapsed}
-				{activeHref}
-			/>
+					href={item.href}
+					label={item.label}
+					icon={item.icon}
+					{collapsed}
+					{activeHref}
+				/>
 			{/each}
 		{/if}
 	</nav>
@@ -184,8 +185,15 @@
 			/>
 		{/if}
 		{#if !isMobile && $viewport !== 'tablet'}
-			<button class="collapse-btn" type="button" onclick={toggle} aria-label="Toggle sidebar">
-				{collapsed ? '»' : '«'}
+			<button
+				class="collapse-btn"
+				type="button"
+				onclick={toggle}
+				aria-label="Toggle sidebar"
+				title={collapsed ? 'Expand' : 'Collapse'}
+			>
+				<NavIcon name={collapsed ? 'chevrons-right' : 'chevrons-left'} size={16} />
+				{#if !collapsed}<span>Collapse</span>{/if}
 			</button>
 		{/if}
 		{#if buildInfo}
@@ -217,8 +225,12 @@
 			transform 0.2s ease;
 	}
 	.sidebar.collapsed {
-		width: var(--sidebar-width-collapsed, 64px);
-		padding: 1rem 0.5rem;
+		width: var(--sidebar-width-collapsed, 76px);
+		padding: 1rem 6px;
+	}
+	.sidebar.collapsed .top {
+		display: flex;
+		justify-content: center;
 	}
 	.sidebar.mobile {
 		/* Drawer: always full-label width on mobile, slide in from the left. */
@@ -259,14 +271,14 @@
 	.section-label {
 		font-size: 0.6875rem;
 		font-weight: 600;
-		letter-spacing: 0.06em;
+		letter-spacing: 0.08em;
 		color: var(--color-text-muted);
-		padding: 0.75rem 0.75rem 0.25rem;
+		padding: 1rem 0.75rem 0.375rem;
 	}
-	.divider {
-		height: 1px;
-		background: var(--color-border);
-		margin: 0.5rem 0.25rem;
+	.sidebar.collapsed .section-label {
+		padding: 0.75rem 0 0.25rem;
+		text-align: center;
+		font-size: 9.5px;
 	}
 	.footer {
 		display: flex;
@@ -276,16 +288,23 @@
 		padding-top: 0.5rem;
 	}
 	.collapse-btn {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
 		background: transparent;
 		border: none;
 		color: var(--color-text-muted);
 		cursor: pointer;
-		padding: 0.4rem;
-		border-radius: 6px;
-		font-size: 0.9rem;
+		padding: 0.5rem 0.75rem;
+		border-radius: 8px;
+		font: var(--text-label);
+	}
+	.sidebar.collapsed .collapse-btn {
+		justify-content: center;
+		padding: 0.5rem 0;
 	}
 	.collapse-btn:hover {
-		background: var(--color-neutral-100, var(--color-border));
+		background: color-mix(in srgb, var(--color-text) 6%, transparent);
 		color: var(--color-text);
 	}
 	.create-org-btn {
@@ -312,7 +331,7 @@
 		letter-spacing: 0.02em;
 		padding: 0.15rem 0.25rem 0;
 		text-align: center;
-		/* The collapsed rail is 64px wide; never let a long version string
+		/* The collapsed rail is 76px wide; never let a long version string
 		   push the sidebar or wrap onto a second line. */
 		overflow: hidden;
 		text-overflow: ellipsis;

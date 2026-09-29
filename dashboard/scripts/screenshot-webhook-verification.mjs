@@ -72,7 +72,7 @@ try {
 		 VALUES ('${pending.id}', 'approval.created', '{}'::jsonb, now(), 'pending_verification')`
 	);
 
-	const { page, ctx } = await snap.navigateAndSnap('webhook-verification-page', '/org', {
+	const { page, ctx } = await snap.navigateAndSnap('webhook-verification-page', '/org/webhooks', {
 		viewport: { width: 1400, height: 1000 },
 		fullPage: false,
 		waitFor: async (p) => {

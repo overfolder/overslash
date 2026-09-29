@@ -157,7 +157,7 @@ try {
 	});
 
 	// 5. Org settings: the per-IdP Group sync column.
-	await snap.navigateAndSnap('directory-groups-idp-settings', '/org', {
+	await snap.navigateAndSnap('directory-groups-idp-settings', '/org/idp', {
 		viewport: { width: 1280, height: 900 },
 		waitFor: async (p) => {
 			await p.getByText('Identity Providers').first().waitFor({ timeout: 15000 });

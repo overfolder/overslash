@@ -25,7 +25,7 @@ try {
 		allow_overslash_managed_signin: true,
 		require_invite_admission: true
 	});
-	let { page, ctx } = await snap.navigateAndSnap('managed-signin-invite-only', '/org', {
+	let { page, ctx } = await snap.navigateAndSnap('managed-signin-invite-only', '/org/signin', {
 		viewport: { width: 1400, height: 1200 },
 		fullPage: false,
 		waitFor: async (p) => {
@@ -45,7 +45,7 @@ try {
 		require_invite_admission: false,
 		managed_signin_allowed_domains: ['reveni.io', 'reveni.com']
 	});
-	({ page, ctx } = await snap.navigateAndSnap('managed-signin-domain-admit', '/org', {
+	({ page, ctx } = await snap.navigateAndSnap('managed-signin-domain-admit', '/org/signin', {
 		viewport: { width: 1400, height: 1200 },
 		fullPage: false,
 		waitFor: async (p) => {
@@ -62,7 +62,7 @@ try {
 		require_invite_admission: false,
 		managed_signin_allowed_domains: []
 	});
-	({ page, ctx } = await snap.navigateAndSnap('managed-signin-domain-empty', '/org', {
+	({ page, ctx } = await snap.navigateAndSnap('managed-signin-domain-empty', '/org/signin', {
 		viewport: { width: 1400, height: 1200 },
 		fullPage: false,
 		waitFor: async (p) => {
