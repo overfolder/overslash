@@ -52,7 +52,7 @@ async fn provision_root(
     )
     .await?
     {
-        refresh_user_profile(state, ext, user.id, &userinfo.email, display_name).await?;
+        refresh_user_profile(state, ext, user.id, &userinfo.email, display_name).await;
         let personal_org_id = user.personal_org_id.ok_or_else(|| {
             AppError::Internal(
                 "Overslash-backed user has no personal_org_id; backfill incomplete".into(),
@@ -208,7 +208,7 @@ async fn provision_root_contents(
             .ok_or_else(|| {
                 AppError::Internal("race: winner has no identity in their personal org yet".into())
             })?;
-            refresh_user_profile(state, ext, winner.id, &userinfo.email, display_name).await?;
+            refresh_user_profile(state, ext, winner.id, &userinfo.email, display_name).await;
             return Ok((
                 personal_org_id,
                 identity.id,
@@ -351,7 +351,7 @@ async fn provision_org_subdomain_inner(
                 "org-identity missing user_id; migration 040 backfill incomplete".into(),
             )
         })?;
-        refresh_user_profile(state, ext, user_id, &userinfo.email, display_name).await?;
+        refresh_user_profile(state, ext, user_id, &userinfo.email, display_name).await;
         return Ok((target_org.id, existing.id, user_id, userinfo.email.clone()));
     }
 
@@ -410,7 +410,7 @@ async fn provision_org_subdomain_inner(
         let _ = scope
             .update_identity_profile(existing.id, display_name, metadata)
             .await;
-        refresh_user_profile(state, ext, user.id, &userinfo.email, display_name).await?;
+        refresh_user_profile(state, ext, user.id, &userinfo.email, display_name).await;
         return Ok((target_org.id, existing.id, user.id, userinfo.email.clone()));
     }
 
@@ -433,7 +433,7 @@ async fn provision_org_subdomain_inner(
         // match, else a fresh org-only user for a never-signed-in invite.
         let user_id = match existing.user_id {
             Some(uid) => {
-                refresh_user_profile(state, ext, uid, &userinfo.email, display_name).await?;
+                refresh_user_profile(state, ext, uid, &userinfo.email, display_name).await;
                 uid
             }
             // The adopt-by-user branch above already proved this account has
@@ -441,7 +441,7 @@ async fn provision_org_subdomain_inner(
             // `identities_org_user_unique`.
             None => match &overslash_user {
                 Some(u) => {
-                    refresh_user_profile(state, ext, u.id, &userinfo.email, display_name).await?;
+                    refresh_user_profile(state, ext, u.id, &userinfo.email, display_name).await;
                     u.id
                 }
                 None => {
@@ -615,7 +615,7 @@ async fn provision_org_subdomain_inner(
     // fresh row below is this human's first actor here.
     let user_id = match &overslash_user {
         Some(u) => {
-            refresh_user_profile(state, ext, u.id, &userinfo.email, display_name).await?;
+            refresh_user_profile(state, ext, u.id, &userinfo.email, display_name).await;
             u.id
         }
         None => {
@@ -731,39 +731,48 @@ fn generate_personal_slug() -> String {
 /// changed underneath us, that is an identity change: every session the human
 /// already holds was issued to the old address, so it ends here — before the
 /// caller starts the session for this sign-in.
+///
+/// Never fails the sign-in: the profile refresh has always been best-effort,
+/// and a database blip here must not lock the human out. What it must not do
+/// instead is *forget* a change it could not act on. The stored email is the
+/// only record that a change happened, so it is written only after the revoke
+/// has succeeded — if the read or the revoke fails, the old address stays and
+/// the next sign-in detects the change and revokes again.
 async fn refresh_user_profile(
     state: &AppState,
     ext: &axum::http::Extensions,
     user_id: Uuid,
     email: &str,
     display_name: &str,
-) -> Result<(), AppError> {
-    let before = user_repo::get_by_id(state.db(ext), user_id)
-        .await?
-        .and_then(|u| u.email);
-    // Revoke *before* recording the new address. The stored email is the only
-    // memory that a change happened: written first, a revoke that then failed
-    // would leave nothing for a retry to detect, and the old sessions would
-    // survive for good. This order fails safe — a failed profile write after
-    // the revoke just means the next sign-in revokes again.
+) {
+    let before = match user_repo::get_by_id(state.db(ext), user_id).await {
+        Ok(user) => user.and_then(|u| u.email),
+        Err(e) => {
+            tracing::warn!(%user_id, "profile refresh skipped, user read failed: {e}");
+            return;
+        }
+    };
     if let Some(before) = before
         && !before.eq_ignore_ascii_case(email)
-    {
-        user_sessions::revoke_all_for_user(
+        && let Err(e) = user_sessions::revoke_all_for_user(
             state,
             ext,
             user_id,
             None,
             user_sessions::reason::IDENTITY_CHANGED,
         )
-        .await?;
+        .await
+    {
+        tracing::error!(
+            %user_id,
+            "email changed at sign-in but revoking the old sessions failed; \
+             keeping the old address so the next sign-in retries: {e}"
+        );
+        return;
     }
     if let Err(e) =
         user_repo::refresh_profile(state.db(ext), user_id, Some(email), Some(display_name)).await
     {
-        // Was fire-and-forget before sessions depended on it; stay that way
-        // for the profile write itself.
         tracing::warn!(%user_id, "profile refresh failed: {e}");
     }
-    Ok(())
 }
