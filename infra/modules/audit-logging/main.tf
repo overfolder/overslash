@@ -145,7 +145,10 @@ resource "google_monitoring_alert_policy" "unexpected_secret_access" {
     display_name = "AccessSecretVersion by a non-runtime principal"
 
     condition_threshold {
-      filter          = "metric.type = \"logging.googleapis.com/user/${google_logging_metric.unexpected_secret_access.name}\""
+      # Monitoring refuses a threshold filter without a resource.type. A
+      # log-based metric's series carry the matched entry's resource, and
+      # Secret Manager audit entries are all `audited_resource`.
+      filter          = "metric.type = \"logging.googleapis.com/user/${google_logging_metric.unexpected_secret_access.name}\" AND resource.type = \"audited_resource\""
       comparison      = "COMPARISON_GT"
       threshold_value = 0
       duration        = "0s"
