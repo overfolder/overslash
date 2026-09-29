@@ -146,6 +146,41 @@ async fn dcr_cap_keys_on_the_resolved_client_ip() {
 }
 
 #[tokio::test]
+async fn ipv6_clients_are_bucketed_by_their_64() {
+    let pool = common::test_pool().await;
+    let (addr, client) = common::start_api_with(pool, |c| {
+        c.ingress_rate_limits = IngressRateLimits {
+            oauth_register_ip: limit(1, 3600),
+            ..IngressRateLimits::disabled()
+        };
+        c.trusted_proxies = TrustedProxies::parse(None, Some("127.0.0.1"), None).unwrap();
+    })
+    .await;
+    let base = format!("http://{addr}");
+
+    assert_eq!(
+        register(&base, &client, Some("2001:db8:1:2::1"))
+            .await
+            .status(),
+        StatusCode::CREATED
+    );
+    // Walking the rest of the /64 buys nothing…
+    assert_eq!(
+        register(&base, &client, Some("2001:db8:1:2:dead:beef:0:7"))
+            .await
+            .status(),
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    // …a different /64 is a different subscriber.
+    assert_eq!(
+        register(&base, &client, Some("2001:db8:1:3::1"))
+            .await
+            .status(),
+        StatusCode::CREATED
+    );
+}
+
+#[tokio::test]
 async fn spoofed_xff_without_a_trusted_proxy_shares_one_bucket() {
     let (base, client) = start(IngressRateLimits {
         oauth_register_ip: limit(1, 3600),

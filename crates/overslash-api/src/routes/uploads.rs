@@ -24,6 +24,7 @@
 //! token, already-consumed token and deleted identity all return the same bare
 //! `404`.
 
+use crate::services::rate_limit::refuse;
 use axum::{
     Router,
     extract::{Path, State},
@@ -98,25 +99,15 @@ async fn redeem(
     // Anonymous, so the global rate-limit middleware (which keys on the API-key
     // prefix) skips it entirely. Throttle here on the shared store, the same
     // way the download and magic-link endpoints do.
+    // Full address for the audit row; the throttle keys on its /64.
     let ip = client_ip.0.as_deref().unwrap_or("unknown");
+    let key = format!("up:redeem:ip:{}", client_ip.rate_limit_subject());
     let rl = state
         .rate_limiter(&ext)
-        .check_and_increment(
-            &format!("up:redeem:ip:{ip}"),
-            UPLOAD_IP_MAX,
-            UPLOAD_IP_WINDOW_SECS,
-        )
+        .check_and_increment(&key, UPLOAD_IP_MAX, UPLOAD_IP_WINDOW_SECS)
         .await;
     if !rl.allowed {
-        let retry_after = rl
-            .reset_at
-            .saturating_sub(crate::services::rate_limit::now_unix());
-        return crate::error::AppError::RateLimited {
-            limit: rl.limit,
-            reset_at: rl.reset_at,
-            retry_after,
-        }
-        .into_response();
+        return refuse(state.rate_limiter(&ext), "upload_ip", &key, &rl).await;
     }
 
     let not_found = || (StatusCode::NOT_FOUND, "unknown or expired token").into_response();

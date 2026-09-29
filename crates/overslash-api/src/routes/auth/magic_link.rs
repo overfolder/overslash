@@ -2,6 +2,7 @@
 
 use super::provisioning::*;
 use super::*;
+use crate::services::rate_limit::refuse;
 
 // ---------------------------------------------------------------------------
 // Passwordless email magic-link login (root apex)
@@ -73,24 +74,16 @@ pub(super) async fn request_magic_link(
     //   - per-email: stops bombing a victim's inbox (and burning Resend
     //     quota) → handled *silently* below so a 429 can't reveal that a
     //     given address is being targeted.
-    let ip = client_ip.as_deref().unwrap_or("unknown");
+    let key = format!(
+        "ml:req:ip:{}",
+        crate::services::client_ip::rate_limit_subject(client_ip.as_deref())
+    );
     let ip_rl = state
         .rate_limiter(&ext)
-        .check_and_increment(
-            &format!("ml:req:ip:{ip}"),
-            MAGIC_LINK_REQ_IP_MAX,
-            MAGIC_LINK_REQ_IP_WINDOW_SECS,
-        )
+        .check_and_increment(&key, MAGIC_LINK_REQ_IP_MAX, MAGIC_LINK_REQ_IP_WINDOW_SECS)
         .await;
     if !ip_rl.allowed {
-        let retry_after = ip_rl
-            .reset_at
-            .saturating_sub(crate::services::rate_limit::now_unix());
-        return Err(AppError::RateLimited {
-            limit: ip_rl.limit,
-            reset_at: ip_rl.reset_at,
-            retry_after,
-        });
+        return Ok(refuse(state.rate_limiter(&ext), "magic_link_ip", &key, &ip_rl).await);
     }
 
     let Some(email) = normalize_login_email(&body.email) else {

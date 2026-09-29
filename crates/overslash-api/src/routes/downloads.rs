@@ -17,6 +17,7 @@
 //! distinguishable "expired" would confirm to someone probing that a given
 //! token string was once real.
 
+use crate::services::rate_limit::refuse;
 use axum::{
     Router,
     extract::{Path, State},
@@ -56,25 +57,15 @@ async fn redeem(
     // the API-key prefix — so it skips requests without one entirely. Throttle
     // here on the shared store directly, the same way the magic-link endpoints
     // do.
+    // Full address for the audit row; the throttle keys on its /64.
     let ip = client_ip.0.as_deref().unwrap_or("unknown");
+    let key = format!("dl:redeem:ip:{}", client_ip.rate_limit_subject());
     let rl = state
         .rate_limiter(&ext)
-        .check_and_increment(
-            &format!("dl:redeem:ip:{ip}"),
-            DOWNLOAD_IP_MAX,
-            DOWNLOAD_IP_WINDOW_SECS,
-        )
+        .check_and_increment(&key, DOWNLOAD_IP_MAX, DOWNLOAD_IP_WINDOW_SECS)
         .await;
     if !rl.allowed {
-        let retry_after = rl
-            .reset_at
-            .saturating_sub(crate::services::rate_limit::now_unix());
-        return crate::error::AppError::RateLimited {
-            limit: rl.limit,
-            reset_at: rl.reset_at,
-            retry_after,
-        }
-        .into_response();
+        return refuse(state.rate_limiter(&ext), "download_ip", &key, &rl).await;
     }
 
     let not_found = || (StatusCode::NOT_FOUND, "unknown or expired token").into_response();

@@ -25,7 +25,7 @@ use crate::extractors::ClientIp;
 use crate::middleware::rate_limit::{
     osk_prefix, resolve_identity, verify_mcp_bearer, verify_session_cookie,
 };
-use crate::services::rate_limit::{RateLimitConfig, too_many_requests};
+use crate::services::rate_limit::{RateLimitConfig, refuse};
 
 pub async fn ingress_rate_limit_middleware(
     State(state): State<AppState>,
@@ -64,8 +64,7 @@ pub async fn ingress_rate_limit_middleware(
             .check_and_increment(&key, cfg.max_requests, cfg.window_seconds)
             .await;
         if !result.allowed {
-            overslash_metrics::rate_limit::record_decision(scope, "deny");
-            return too_many_requests(&result);
+            return refuse(state.rate_limiter(ext), scope, &key, &result).await;
         }
         overslash_metrics::rate_limit::record_decision(scope, "allow");
     }
@@ -74,11 +73,8 @@ pub async fn ingress_rate_limit_middleware(
 }
 
 fn ip_key(bucket: &str, state: &AppState, request: &Request<axum::body::Body>) -> String {
-    // Same "unknown" fallback as the other per-IP throttles
-    // (`routes::downloads`): no socket peer only happens off the real
-    // listener, and one shared bucket is the safe failure.
-    let ip = ClientIp::resolve_from(request.headers(), request.extensions(), state).0;
-    format!("rl:ip:{bucket}:{}", ip.as_deref().unwrap_or("unknown"))
+    let ip = ClientIp::resolve_from(request.headers(), request.extensions(), state);
+    format!("rl:ip:{bucket}:{}", ip.rate_limit_subject())
 }
 
 /// The bucket for an authenticated `/mcp` caller: its MCP client when the

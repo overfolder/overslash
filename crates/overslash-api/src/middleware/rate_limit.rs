@@ -1,14 +1,12 @@
 use axum::http::{Extensions, HeaderMap, HeaderValue};
-use axum::response::IntoResponse;
 use axum::{extract::State, http::Request, middleware::Next, response::Response};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::AppState;
 use crate::cookies;
-use crate::error::AppError;
 use crate::services::jwt;
-use crate::services::rate_limit::now_unix;
+use crate::services::rate_limit::refuse;
 
 /// Who a `/v1` request is charged to. Resolved the same way the auth
 /// extractors resolve the caller — session cookie first, then the bearer — so
@@ -178,15 +176,13 @@ pub async fn rate_limit_middleware(
             .check_and_increment(&bucket_key, budget.max_requests, budget.window_seconds)
             .await;
         if !result.allowed {
-            overslash_metrics::rate_limit::record_decision(user_scope_label, "deny");
-            let now = now_unix();
-            let retry_after = result.reset_at.saturating_sub(now);
-            return AppError::RateLimited {
-                limit: result.limit,
-                reset_at: result.reset_at,
-                retry_after,
-            }
-            .into_response();
+            return refuse(
+                state.rate_limiter(request.extensions()),
+                user_scope_label,
+                &bucket_key,
+                &result,
+            )
+            .await;
         }
         overslash_metrics::rate_limit::record_decision(user_scope_label, "allow");
         Some(result)
@@ -208,15 +204,13 @@ pub async fn rate_limit_middleware(
             .check_and_increment(&key, cap.max_requests, cap.window_seconds)
             .await;
         if !result.allowed {
-            overslash_metrics::rate_limit::record_decision("identity_cap", "deny");
-            let now = now_unix();
-            let retry_after = result.reset_at.saturating_sub(now);
-            return AppError::RateLimited {
-                limit: result.limit,
-                reset_at: result.reset_at,
-                retry_after,
-            }
-            .into_response();
+            return refuse(
+                state.rate_limiter(request.extensions()),
+                "identity_cap",
+                &key,
+                &result,
+            )
+            .await;
         }
         overslash_metrics::rate_limit::record_decision("identity_cap", "allow");
     }

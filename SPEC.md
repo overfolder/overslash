@@ -1810,6 +1810,13 @@ The `/oauth/*`, `/.well-known/oauth-*` and `/mcp` routes sit outside the `/v1` l
 
 The client IP is `ClientIp`, resolved against the trusted-proxy configuration. `0` disables a limit, and a value that doesn't parse stops the boot.
 
+Every per-IP throttle — these, and the in-handler magic-link, download and upload buckets — keys an IPv6 client on its **/64**, since one subscriber can source from any address in it; an IPv4-mapped address counts as its IPv4 address. Audit rows keep the full address.
+
+### Observability
+
+- **Metric**: `overslash_rate_limit_decisions_total{scope, decision}` counts every check, including every deny. `scope` names the limiter (`user`, `session`, `identity_cap`, `org`, `mcp_client`, `oauth_ip`, `oauth_register_ip`, `magic_link_ip`, `download_ip`, `upload_ip`); it carries no org or IP label, which would be unbounded.
+- **Log**: one `warn` per bucket per window — the request that takes the bucket over its limit (`count == max + 1`, exactly one request even across instances, since Valkey's `INCR` is atomic) — naming the bucket key, and so the org/identity/MCP client or IP. Later denies in the window are not logged. A fleet-wide budget of 60 such lines a minute caps the total however many buckets an attacker can mint; a line dropped for budget increments `overslash_rate_limit_deny_log_suppressed_total{scope}` instead.
+
 ### Behavior
 
 - **Algorithm**: Fixed window counter.

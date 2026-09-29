@@ -34,6 +34,28 @@ use std::net::{IpAddr, SocketAddr};
 use overslash_env as env;
 use subtle::ConstantTimeEq;
 
+/// The subject a per-IP throttle counts against: the address itself for
+/// IPv4, its **/64** for IPv6. One IPv6 subscriber is handed a whole /64 and
+/// can source from any of its 2^64 addresses, so a per-address bucket is no
+/// bucket at all. An IPv4-mapped IPv6 address counts as the IPv4 address it
+/// carries. `unknown` when there is no address (or it does not parse), so the
+/// failure is one shared bucket rather than none.
+///
+/// For throttle keys only — audit rows keep the full address.
+pub fn rate_limit_subject(ip: Option<&str>) -> String {
+    match ip.and_then(|s| s.parse::<IpAddr>().ok()) {
+        Some(IpAddr::V4(v4)) => v4.to_string(),
+        Some(IpAddr::V6(v6)) => match v6.to_ipv4_mapped() {
+            Some(v4) => v4.to_string(),
+            None => {
+                let s = v6.segments();
+                format!("{:x}:{:x}:{:x}:{:x}::/64", s[0], s[1], s[2], s[3])
+            }
+        },
+        None => "unknown".to_string(),
+    }
+}
+
 /// The request header a secret-bearing proxy stamps. Overwritten, not
 /// appended, by the Vercel middleware, so a client cannot pre-seed it.
 pub const PROXY_SECRET_HEADER: &str = "x-overslash-proxy-secret";
@@ -468,5 +490,30 @@ mod tests {
         let t = tp("1", "", Some(SECRET));
         let out = format!("{t:?} {}", t.summary());
         assert!(!out.contains(SECRET), "{out}");
+    }
+
+    #[test]
+    fn rate_limit_subject_groups_ipv6_by_64() {
+        assert_eq!(rate_limit_subject(Some("203.0.113.9")), "203.0.113.9");
+        assert_eq!(
+            rate_limit_subject(Some("2001:db8:1:2:aaaa::1")),
+            "2001:db8:1:2::/64"
+        );
+        // Every address in the /64 is one subject…
+        assert_eq!(
+            rate_limit_subject(Some("2001:db8:1:2:ffff:ffff:ffff:ffff")),
+            rate_limit_subject(Some("2001:db8:1:2::"))
+        );
+        // …and the neighbouring /64 is another.
+        assert_ne!(
+            rate_limit_subject(Some("2001:db8:1:3::1")),
+            rate_limit_subject(Some("2001:db8:1:2::1"))
+        );
+        assert_eq!(
+            rate_limit_subject(Some("::ffff:203.0.113.9")),
+            "203.0.113.9"
+        );
+        assert_eq!(rate_limit_subject(None), "unknown");
+        assert_eq!(rate_limit_subject(Some("not-an-ip")), "unknown");
     }
 }

@@ -97,6 +97,12 @@ impl FromRequestParts<AppState> for CallerTransport {
 pub struct ClientIp(pub Option<String>);
 
 impl ClientIp {
+    /// The subject a per-IP throttle keys on — see
+    /// [`crate::services::client_ip::rate_limit_subject`] (IPv6 by /64).
+    pub fn rate_limit_subject(&self) -> String {
+        crate::services::client_ip::rate_limit_subject(self.0.as_deref())
+    }
+
     /// The resolution itself, for handlers that hold `&Parts` rather than
     /// extracting.
     pub fn resolve(parts: &Parts, state: &AppState) -> Self {
