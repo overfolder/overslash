@@ -9,6 +9,7 @@ request restricted OAuth scopes.
 | [evidence-index.md](evidence-index.md) | What the lab will ask for, and where each artifact comes from |
 | [dast-readiness.md](dast-readiness.md) | The authenticated-scan problem, and how to answer it |
 | [dependency-vulnerability-policy.md](dependency-vulnerability-policy.md) | 6.1.1: what is scanned and when, severity SLAs, who triages, and the time-boxed exception register |
+| [secrets-access-policy.md](secrets-access-policy.md) | 6.7.1: who may read server-side secrets and through which path, how every read is logged (400-day, locked in prod) and alerted on |
 | [gcp-posture.md](gcp-posture.md) | Live Google Recommender findings + measured configuration, **both** `overslash` and `overslash-dev` |
 
 ---

@@ -73,8 +73,8 @@ what the product actually renders.
 
 | For | Document | Status |
 |-----|----------|--------|
-| 6.7.1 | A documented access-control policy for server-side secrets: who can read what, through which path, and how access is logged and monitored | `need` |
-| 6.7.1 | Evidence that secret access is logged — requires `google_project_iam_audit_config` for Secret Manager Data Access logs plus a sink with locked retention | `need` |
+| 6.7.1 | A documented access-control policy for server-side secrets: who can read what, through which path, and how access is logged and monitored | `have`: [secrets-access-policy.md](secrets-access-policy.md) |
+| 6.7.1 | Evidence that secret access is logged — Secret Manager Data Access logs plus a sink with locked retention | `need` — the config is written (`infra/modules/audit-logging/`); once applied, capture the output of the "Verifying the controls" commands in [secrets-access-policy.md](secrets-access-policy.md): `auditConfigs`, the locked 400-day bucket, and a sample `AccessSecretVersion` entry naming its caller |
 | 6.1.1 | A dependency-update and vulnerability-response policy: scan cadence, severity triage, patch SLA, and the justified-exception process for `rsa` and `paste` | `have`: [dependency-vulnerability-policy.md](dependency-vulnerability-policy.md), with the exceptions as config in `deny.toml` / `osv-scanner.toml` |
 | — | `SECURITY.md` with a vulnerability disclosure policy and a security contact. Not a numbered CASA requirement, but its absence on a public repo hosting a credential vault is the cheapest possible finding to avoid | `have`: [`SECURITY.md`](../../../SECURITY.md) (contact, response and fix SLAs matching [dependency-vulnerability-policy.md](dependency-vulnerability-policy.md), scope, safe harbor) |
 | — | RFC 9116 `security.txt` publishing the same contact | `have`: `https://app.overslash.com/.well-known/security.txt`, from [`dashboard/static/.well-known/security.txt`](../../../dashboard/static/.well-known/security.txt); `Expires` kept current by `scripts/check-security-txt.sh` in the daily Dependency audit |
