@@ -19,6 +19,16 @@ import {
 // pending identity carrying that same email in another org can be picked
 // instead of the real one. Minting the session up front sidesteps it — and
 // it's why these orgs are all run-private rather than the shared `dev-org`.
+//
+// The invitation cards only render in the expanded sidebar — the default rail
+// collapses them to a count — so every test pins the expanded state.
+test.beforeEach(async ({ page }) => {
+	await page.addInitScript(() => {
+		try {
+			window.localStorage.setItem('ovs_sidebar_collapsed', 'false');
+		} catch {}
+	});
+});
 
 test('an invited user sees the invitation in the sidebar and can accept it', async ({ page }) => {
 	const homeSlug = freshOrgSlug('inv-home');
