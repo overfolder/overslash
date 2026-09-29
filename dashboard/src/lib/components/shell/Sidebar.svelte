@@ -226,7 +226,8 @@
 	}
 	.sidebar.collapsed {
 		width: var(--sidebar-width-collapsed, 76px);
-		padding: 1rem 6px;
+		/* Tight gutters: the longest rail label ("Connections") needs ~64px. */
+		padding: 1rem 4px;
 	}
 	.sidebar.collapsed .top {
 		display: flex;

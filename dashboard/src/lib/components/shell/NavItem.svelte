@@ -72,7 +72,7 @@
 	.nav-item.collapsed {
 		flex-direction: column;
 		gap: 4px;
-		padding: 8px 2px;
+		padding: 8px 0;
 	}
 	.nav-item.collapsed .label {
 		flex: none;
