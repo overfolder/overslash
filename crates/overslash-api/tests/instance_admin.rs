@@ -37,6 +37,7 @@ fn mint_session_with_user(org_id: Uuid, identity_id: Uuid, user_id: Uuid) -> Str
         exp: now + 3600,
         user_id: Some(user_id),
         mcp_client_id: None,
+        jti: None,
     };
     jwt::mint(&secret, &claims).expect("mint jwt")
 }

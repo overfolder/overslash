@@ -243,6 +243,10 @@ fn build_shared_router(state: AppState) -> axum::Router {
         .merge(routes::oauth::consent_router())
         .merge(routes::oauth_mcp_clients::router())
         .merge(routes::unsubscribe::router())
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            overslash_api::middleware::session_gate::session_gate,
+        ))
         // Test-pool middleware runs BEFORE subdomain_middleware so
         // the subdomain resolver (which calls state.db(...)) picks
         // up the correct per-test pool.
@@ -285,6 +289,7 @@ fn build_shared_state(registry: Arc<SharedRouterRegistry>, addr: SocketAddr) -> 
         mailer: Arc::new(overslash_core::email::NoopMailer),
         event_bus: overslash_api::services::events::EventBus::new(),
         resolve_cache: overslash_api::services::resolve_cache::in_memory(10_000),
+        session_cache: overslash_api::services::user_sessions::cache::in_memory(),
         test_resources: Some(registry),
         background_db: None,
     }

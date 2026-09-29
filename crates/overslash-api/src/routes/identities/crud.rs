@@ -97,6 +97,7 @@ async fn resolve_email_patch(
 
 pub(super) async fn update_identity(
     State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     AdminAcl(acl): AdminAcl,
     scope: OrgScope,
     ip: ClientIp,
@@ -208,6 +209,13 @@ pub(super) async fn update_identity(
         }
     };
 
+    // Rewriting the email is an identity change, and `apply_identity_patch`
+    // revoked the member's sessions in the same transaction. What is left is
+    // evicting them from the validation cache.
+    if email.is_some() {
+        user_sessions::forget_identities(&state, &ext, scope.org_id(), &[id]).await;
+    }
+
     let _ = scope
         .log_audit(AuditEntry {
             org_id: acl.org_id,
@@ -231,6 +239,8 @@ pub(super) async fn update_identity(
 }
 
 pub(super) async fn delete_identity(
+    State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
     AdminAcl(acl): AdminAcl,
     scope: OrgScope,
     ip: ClientIp,
@@ -252,7 +262,7 @@ pub(super) async fn delete_identity(
         .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
 
     if target.kind == "user" && target.user_id.is_some() {
-        return remove_user_from_org(acl, scope, ip, id).await;
+        return remove_user_from_org(&state, &ext, acl, scope, ip, id).await;
     }
 
     // Atomic delete: holds FOR UPDATE on the parent row so concurrent
@@ -292,6 +302,8 @@ pub(super) async fn delete_identity(
 /// `user_org_memberships` row, and detaches the archived identity from the user
 /// — all atomically. Guards against removing yourself or the org's last admin.
 async fn remove_user_from_org(
+    state: &AppState,
+    ext: &axum::http::Extensions,
     acl: crate::extractors::OrgAcl,
     scope: OrgScope,
     ip: ClientIp,
@@ -308,26 +320,34 @@ async fn remove_user_from_org(
         ));
     }
 
-    let (user_id, archived_count, was_admin) = match scope.remove_user_from_org(id).await? {
-        RemoveUserOutcome::Removed {
-            user_id,
-            archived_count,
-            was_admin,
-        } => (user_id, archived_count, was_admin),
-        RemoveUserOutcome::LastAdmin => {
-            return Err(AppError::BadRequest(
-                "cannot remove the last admin of the org".into(),
-            ));
-        }
-        RemoveUserOutcome::NotApplicable => {
-            return Err(AppError::Conflict(
-                "identity is not a removable org member".into(),
-            ));
-        }
-        RemoveUserOutcome::NotFound => {
-            return Err(AppError::NotFound("identity not found".into()));
-        }
-    };
+    let (user_id, archived_count, was_admin, revoked_sessions) =
+        match scope.remove_user_from_org(id).await? {
+            RemoveUserOutcome::Removed {
+                user_id,
+                archived_count,
+                was_admin,
+                revoked_sessions,
+            } => (user_id, archived_count, was_admin, revoked_sessions),
+            RemoveUserOutcome::LastAdmin => {
+                return Err(AppError::BadRequest(
+                    "cannot remove the last admin of the org".into(),
+                ));
+            }
+            RemoveUserOutcome::NotApplicable => {
+                return Err(AppError::Conflict(
+                    "identity is not a removable org member".into(),
+                ));
+            }
+            RemoveUserOutcome::NotFound => {
+                return Err(AppError::NotFound("identity not found".into()));
+            }
+        };
+
+    // Removal takes effect now, not when their cookie expires: the member's
+    // sessions in this org were revoked inside the removal's transaction (the
+    // org's admin has no say over the human's sessions elsewhere). Evict them
+    // from the validation cache.
+    user_sessions::forget_identities(state, ext, scope.org_id(), &[id]).await;
 
     let _ = scope
         .log_audit(AuditEntry {
@@ -344,6 +364,7 @@ async fn remove_user_from_org(
                 "archived_count": archived_count,
                 "was_admin": was_admin,
                 "removed_by_admin": true,
+                "revoked_sessions": revoked_sessions,
             }),
             description: Some("Admin removed a member from the org"),
             ip_address: ip.0.as_deref(),

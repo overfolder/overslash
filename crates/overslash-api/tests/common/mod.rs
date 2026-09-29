@@ -752,6 +752,7 @@ where
         mailer,
         event_bus: event_bus.clone(),
         resolve_cache: overslash_api::services::resolve_cache::in_memory(10_000),
+        session_cache: overslash_api::services::user_sessions::cache::in_memory(),
         test_resources: None,
         background_db: None,
     };
@@ -812,6 +813,10 @@ where
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             overslash_api::middleware::subdomain::subdomain_middleware,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            overslash_api::middleware::session_gate::session_gate,
         ))
         .with_state(state)
         // Mirror production (lib.rs): install the global Prometheus recorder
@@ -974,6 +979,7 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         mailer: std::sync::Arc::new(overslash_core::email::NoopMailer),
         event_bus: overslash_api::services::events::EventBus::new(),
         resolve_cache: overslash_api::services::resolve_cache::in_memory(10_000),
+        session_cache: overslash_api::services::user_sessions::cache::in_memory(),
         test_resources: None,
         background_db: None,
     };
@@ -1019,6 +1025,10 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         .merge(overslash_api::routes::oauth_upstream::router())
         .merge(overslash_api::routes::oauth_mcp_clients::router())
         .merge(overslash_api::routes::unsubscribe::router())
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            overslash_api::middleware::session_gate::session_gate,
+        ))
         .with_state(state)
         .layer(axum::middleware::from_fn(
             overslash_api::middleware::security_headers::security_headers,
@@ -1172,6 +1182,7 @@ where
         mailer: std::sync::Arc::new(overslash_core::email::NoopMailer),
         event_bus: overslash_api::services::events::EventBus::new(),
         resolve_cache: overslash_api::services::resolve_cache::in_memory(10_000),
+        session_cache: overslash_api::services::user_sessions::cache::in_memory(),
         test_resources: None,
         background_db: None,
     };
@@ -1207,6 +1218,10 @@ where
         .merge(overslash_api::routes::groups::router())
         .merge(overslash_api::routes::directory_groups::router())
         .merge(overslash_api::routes::google_directory::router())
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            overslash_api::middleware::session_gate::session_gate,
+        ))
         .with_state(state)
         .layer(axum::middleware::from_fn(
             overslash_api::middleware::security_headers::security_headers,
@@ -1489,6 +1504,7 @@ pub fn session_cookie(org_id: Uuid, identity_id: Uuid) -> String {
         exp: now + 3600,
         user_id: Some(identity_id),
         mcp_client_id: None,
+        jti: None,
     };
     let token = overslash_api::services::jwt::mint(&signing_key_bytes(), &claims)
         .expect("mint test session");
@@ -1870,6 +1886,7 @@ where
         mailer: std::sync::Arc::new(overslash_core::email::NoopMailer),
         event_bus: overslash_api::services::events::EventBus::new(),
         resolve_cache: overslash_api::services::resolve_cache::in_memory(10_000),
+        session_cache: overslash_api::services::user_sessions::cache::in_memory(),
         test_resources: None,
         background_db: None,
     };
@@ -1912,6 +1929,10 @@ where
         .merge(overslash_api::routes::oauth::consent_router())
         .merge(overslash_api::routes::oauth_mcp_clients::router())
         .merge(overslash_api::routes::search::router())
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            overslash_api::middleware::session_gate::session_gate,
+        ))
         .with_state(state)
         .layer(axum::middleware::from_fn(
             overslash_api::middleware::security_headers::security_headers,
@@ -2053,6 +2074,7 @@ pub async fn start_api_for_search(pool: PgPool) -> (String, Client) {
         mailer: std::sync::Arc::new(overslash_core::email::NoopMailer),
         event_bus: overslash_api::services::events::EventBus::new(),
         resolve_cache: overslash_api::services::resolve_cache::in_memory(10_000),
+        session_cache: overslash_api::services::user_sessions::cache::in_memory(),
         test_resources: None,
         background_db: None,
     };
@@ -2077,6 +2099,10 @@ pub async fn start_api_for_search(pool: PgPool) -> (String, Client) {
         .merge(overslash_api::routes::actions::validate_router())
         .merge(overslash_api::routes::auth::router())
         .merge(overslash_api::mcp_oauth_routes(&state))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            overslash_api::middleware::session_gate::session_gate,
+        ))
         .with_state(state)
         .layer(axum::middleware::from_fn(
             overslash_api::middleware::security_headers::security_headers,
@@ -2210,6 +2236,7 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         mailer: std::sync::Arc::new(overslash_core::email::NoopMailer),
         event_bus: overslash_api::services::events::EventBus::new(),
         resolve_cache: overslash_api::services::resolve_cache::in_memory(10_000),
+        session_cache: overslash_api::services::user_sessions::cache::in_memory(),
         test_resources: None,
         background_db: None,
     };
@@ -2251,6 +2278,10 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         .merge(overslash_api::mcp_oauth_routes(&state))
         .merge(overslash_api::routes::oauth::consent_router())
         .merge(overslash_api::routes::oauth_mcp_clients::router())
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            overslash_api::middleware::session_gate::session_gate,
+        ))
         .with_state(state)
         .layer(axum::middleware::from_fn(
             overslash_api::middleware::security_headers::security_headers,
@@ -2553,6 +2584,7 @@ pub async fn make_app_state(pool: PgPool) -> overslash_api::AppState {
         mailer: std::sync::Arc::new(overslash_core::email::NoopMailer),
         event_bus: overslash_api::services::events::EventBus::new(),
         resolve_cache: overslash_api::services::resolve_cache::in_memory(10_000),
+        session_cache: overslash_api::services::user_sessions::cache::in_memory(),
         test_resources: None,
         background_db: None,
     }

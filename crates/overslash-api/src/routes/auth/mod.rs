@@ -17,7 +17,7 @@ use crate::{
     AppState, cookies,
     error::AppError,
     extractors::{ClientIp, ReqExt},
-    services::{jwt, oauth, org_signin},
+    services::{jwt, oauth, org_signin, user_sessions},
 };
 use base64::Engine as _;
 use overslash_db::repos::audit::AuditEntry;
@@ -35,6 +35,7 @@ const PREVIEW_ORIGIN_TTL_SECS: i64 = 600;
 /// the redirect URL is ever logged or intercepted.
 const PREVIEW_HANDOFF_CODE_TTL_SECS: i64 = 60;
 
+mod account_sessions;
 mod dev_token;
 mod magic_link;
 mod providers;
@@ -42,6 +43,7 @@ mod provisioning;
 mod session;
 mod userinfo;
 
+use account_sessions::{list_sessions, revoke_other_sessions, revoke_session};
 use dev_token::dev_token;
 use magic_link::{request_magic_link, verify_magic_link};
 use providers::{
@@ -88,6 +90,16 @@ pub fn router() -> Router<AppState> {
         .route(
             "/v1/account/email-preferences",
             get(get_email_preferences).put(put_email_preferences),
+        )
+        // Server-side sessions: list, end one, end all others (CASA 2.2.2).
+        .route("/v1/account/sessions", get(list_sessions))
+        .route(
+            "/v1/account/sessions/revoke-others",
+            post(revoke_other_sessions),
+        )
+        .route(
+            "/v1/account/sessions/{id}",
+            axum::routing::delete(revoke_session),
         )
 }
 

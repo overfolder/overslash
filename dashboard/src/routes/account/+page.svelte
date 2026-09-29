@@ -3,6 +3,7 @@
 	import { session, type MembershipSummary, type MeIdentity } from '$lib/session';
 	import { switchOrg } from '$lib/api/account';
 	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
+	import SessionsCard from '$lib/components/account/SessionsCard.svelte';
 
 	interface EmailPreferences {
 		welcome_emails?: boolean;
@@ -114,7 +115,7 @@
 <section class="page">
 	<header>
 		<h1>Account</h1>
-		<p class="subtitle">Your Overslash account and org memberships.</p>
+		<p class="subtitle">Your Overslash account, sessions and org memberships.</p>
 	</header>
 
 	{#if loading}
@@ -170,6 +171,8 @@
 				<p class="error">{emailPrefsError}</p>
 			{/if}
 		</div>
+
+		<SessionsCard />
 
 		<div class="card">
 			<h2>Organizations</h2>

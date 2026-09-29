@@ -82,7 +82,16 @@ pub(super) async fn create_org(
         "bootstrap_user_id": session_user_id.map(|u| u.to_string()),
     });
 
-    finalize_new_org(&state, &ext, org, session_user_id, audit_detail, ip).await
+    finalize_new_org(
+        &state,
+        &ext,
+        &headers,
+        org,
+        session_user_id,
+        audit_detail,
+        ip,
+    )
+    .await
 }
 
 /// Shared tail for org-creation handlers: provisions contents (with
@@ -100,6 +109,7 @@ pub(super) async fn create_org(
 async fn finalize_new_org(
     state: &AppState,
     ext: &axum::http::Extensions,
+    headers: &axum::http::HeaderMap,
     org: overslash_db::repos::org::OrgRow,
     bootstrap_user_id: Option<Uuid>,
     audit_detail: serde_json::Value,
@@ -178,23 +188,22 @@ async fn finalize_new_org(
     // round-trip. Anonymous creators keep no session.
     let mut response_headers = HeaderMap::new();
     if let (Some(user_id), Some(identity_id)) = (bootstrap_user_id, bootstrap_identity_id) {
-        let jwt_secret = signing_key_bytes(&state.config.signing_key);
-        let now = OffsetDateTime::now_utc().unix_timestamp();
-        let claims = jwt::Claims {
-            sub: identity_id,
-            org: resp.id,
-            email: user_repo::get_by_id(state.db(ext), user_id)
-                .await?
-                .and_then(|u| u.email)
-                .unwrap_or_default(),
-            aud: jwt::AUD_SESSION.into(),
-            iat: now,
-            exp: now + 7 * 24 * 3600,
-            user_id: Some(user_id),
-            mcp_client_id: None,
-        };
-        let token = jwt::mint(&jwt_secret, &claims)
-            .map_err(|e| AppError::Internal(format!("jwt mint failed: {e}")))?;
+        let email = user_repo::get_by_id(state.db(ext), user_id)
+            .await?
+            .and_then(|u| u.email)
+            .unwrap_or_default();
+        let token = crate::services::user_sessions::rescope(
+            state,
+            ext,
+            headers,
+            crate::services::user_sessions::Subject {
+                identity_id,
+                org_id: resp.id,
+                user_id: Some(user_id),
+                email,
+            },
+        )
+        .await?;
         response_headers.insert(header::SET_COOKIE, session_cookie(state, &token)?);
     }
 
@@ -214,6 +223,7 @@ pub(super) async fn create_free_unlimited_org(
     State(state): State<AppState>,
     ReqExt(ext): ReqExt,
     ip: ClientIp,
+    headers: axum::http::HeaderMap,
     Json(req): Json<CreateOrgRequest>,
 ) -> Result<axum::response::Response> {
     if !state.config.allow_org_creation {
@@ -247,7 +257,16 @@ pub(super) async fn create_free_unlimited_org(
         "created_by_instance_admin": admin.user_id.to_string(),
     });
 
-    finalize_new_org(&state, &ext, org, Some(admin.user_id), audit_detail, ip).await
+    finalize_new_org(
+        &state,
+        &ext,
+        &headers,
+        org,
+        Some(admin.user_id),
+        audit_detail,
+        ip,
+    )
+    .await
 }
 
 /// Flip `allow_overslash_managed_signin` to `true` for a freshly-created

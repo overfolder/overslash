@@ -1398,6 +1398,11 @@ A top-level page scoped to the human, not any one org — always reachable from 
 - Display name, email (last value the IdP returned, informational)
 - `User ID` (a UUID, in a monospaced chip) so the user can reference their own account when filing support
 
+**Sessions card** (between Email preferences and Organizations): every live sign-in of this human, across all their orgs — `GET /v1/account/sessions`, most recently active first.
+- Each row: a device label parsed from the User-Agent ("Chrome on macOS"; raw string on hover), the org the session is currently scoped to, the client IP, "Active <relative>" and "Signed in <relative>" (absolute time on hover). The caller's own row carries a **This session** tag and reads "Active now".
+- Per-row action: **End session** — `DELETE /v1/account/sessions/{id}`; that browser is signed out on its next request. On the caller's own row the button reads **Sign out**, and success navigates to `/login`.
+- **Sign out all other sessions** (card header, only when there are others) — confirms in a modal naming how many, then `POST /v1/account/sessions/revoke-others` and reloads the list.
+
 **Organizations card**:
 - List of the user's memberships, one per row
 - Each row shows the org name, the role (`admin` / `member`), and a `personal` tag for the user's own personal org

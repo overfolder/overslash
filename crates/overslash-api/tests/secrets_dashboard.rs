@@ -27,6 +27,7 @@ fn mint_session_cookie(org_id: Uuid, identity_id: Uuid) -> String {
         // walk the subtree under this user.
         user_id: Some(identity_id),
         mcp_client_id: None,
+        jti: None,
     };
     jwt::mint(&secret, &claims).expect("mint jwt")
 }

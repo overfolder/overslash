@@ -55,3 +55,27 @@ export async function switchOrg(orgId: string): Promise<void> {
 		window.location.reload();
 	}
 }
+
+/** One live dashboard session of the signed-in human (a browser sign-in). */
+export interface AccountSession {
+	id: string;
+	/** The org this session is currently scoped to. */
+	org_id: string;
+	org_name: string;
+	created_at: string;
+	last_seen_at: string;
+	expires_at: string;
+	user_agent: string | null;
+	ip_address: string | null;
+	/** The session this page is running in. */
+	current: boolean;
+}
+
+export const listSessions = (signal?: AbortSignal) =>
+	session.get<{ sessions: AccountSession[] }>('/v1/account/sessions', signal);
+
+export const revokeSession = (id: string) =>
+	session.delete<{ revoked: number }>(`/v1/account/sessions/${encodeURIComponent(id)}`);
+
+export const revokeOtherSessions = () =>
+	session.post<{ revoked: number }>('/v1/account/sessions/revoke-others');

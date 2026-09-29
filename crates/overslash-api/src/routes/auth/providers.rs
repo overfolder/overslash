@@ -369,21 +369,19 @@ pub(super) async fn provider_callback(
     let (org_id, identity_id, resolved_user_id, email) =
         find_or_provision_user(&state, &ext, &userinfo, org_slug.as_deref()).await?;
 
-    // Mint JWT
-    let jwt_secret = signing_key_bytes(&state.config.signing_key);
-    let now = time::OffsetDateTime::now_utc().unix_timestamp();
-    let claims = jwt::Claims {
-        sub: identity_id,
-        org: org_id,
-        email: email.clone(),
-        aud: jwt::AUD_SESSION.into(),
-        iat: now,
-        exp: now + 7 * 24 * 3600,
-        user_id: Some(resolved_user_id),
-        mcp_client_id: None,
-    };
-    let token = jwt::mint(&jwt_secret, &claims)
-        .map_err(|e| AppError::Internal(format!("jwt mint failed: {e}")))?;
+    // Start a server-side session and mint its JWT.
+    let token = user_sessions::start(
+        &state,
+        &ext,
+        &headers,
+        user_sessions::Subject {
+            identity_id,
+            org_id,
+            user_id: Some(resolved_user_id),
+            email: email.clone(),
+        },
+    )
+    .await?;
 
     // Vercel preview-deployment handoff branch. The session cookie can't
     // be set on `api.dev.overslash.com` and read on `<preview>.vercel.app`

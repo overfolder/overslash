@@ -21,7 +21,7 @@ use crate::{
     AppState,
     error::{AppError, Result},
     extractors::{AdminAcl, AuthContext, ClientIp, ReqExt, WriteAcl},
-    services::agent_icon,
+    services::{agent_icon, user_sessions},
 };
 use std::collections::HashMap;
 

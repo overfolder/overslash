@@ -219,6 +219,8 @@ pub enum RemoveUserOutcome {
         user_id: Uuid,
         archived_count: u64,
         was_admin: bool,
+        /// Sessions scoped to this identity, revoked in the same transaction.
+        revoked_sessions: u64,
     },
     /// No identity with this id in this org.
     NotFound,
@@ -281,6 +283,18 @@ pub(crate) async fn remove_user_from_org(
         return Ok(RemoveUserOutcome::LastAdmin);
     }
 
+    // End the member's sessions in this org. Inside the transaction, so the
+    // removal can never commit without them — a retry would find the identity
+    // already detached and have nothing left to trigger a revoke.
+    let revoked_sessions = crate::repos::user_session::revoke_for_identities(
+        &mut *tx,
+        org_id,
+        &[id],
+        crate::repos::user_session::reason::MEMBER_REMOVED,
+    )
+    .await?
+    .len() as u64;
+
     // Cascade-archive the subtree (revokes keys, expires approvals).
     let outcome = archive_identity_tx(&mut tx, org_id, id, Some(ARCHIVED_REASON_MANUAL)).await?;
     let archived_count = outcome.map(|o| o.archived_count).unwrap_or(0);
@@ -312,6 +326,7 @@ pub(crate) async fn remove_user_from_org(
         user_id,
         archived_count,
         was_admin,
+        revoked_sessions,
     })
 }
 

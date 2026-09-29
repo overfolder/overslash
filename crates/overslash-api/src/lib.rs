@@ -190,6 +190,8 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
     let (resolve_cache, in_memory_resolve_cache) =
         services::resolve_cache::create_resolve_cache(&config).await;
 
+    let session_cache = services::user_sessions::cache::create_session_cache(&config).await;
+
     let (embedder, embeddings_available) = init_embeddings(&db).await;
 
     // Parse the egress allow-list now, so "your outbound reach is wider than
@@ -220,6 +222,7 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
         mailer,
         event_bus: event_bus.clone(),
         resolve_cache,
+        session_cache,
         test_resources: None,
         background_db: Some(background_db.clone()),
     };
@@ -250,6 +253,7 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
         let elicit_reap_after = state.config.mcp_elicitation_reap_after_secs();
         let elicit_retention = state.config.mcp_elicitation_retention_secs();
         let setup_draft_retention = state.config.setup_draft_retention_secs();
+        let sessions_db = db.clone();
         tokio::spawn(async move {
             // Approval expiry loop: expire stale pending approvals every 60s
             loop {
@@ -325,6 +329,15 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
                 instrumented_step("subagent_purge", system.purge_archived_subagents(), |n| {
                     tracing::info!("Purged {n} archived sub-agent identities")
                 })
+                .await;
+                instrumented_step(
+                    "user_session_purge",
+                    overslash_db::repos::user_session::purge_stale(
+                        &sessions_db,
+                        services::user_sessions::RETENTION_SECS,
+                    ),
+                    |n| tracing::info!("Purged {n} ended dashboard sessions"),
+                )
                 .await;
                 // Service instances whose setup nobody finished. Same kind of
                 // sweep as the two above — delete a row whose owner never came
@@ -690,6 +703,12 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
     let app = Router::new()
         .merge(mcp_oauth_routes)
         .merge(global_routes)
+        // Inside the subdomain layer: a dead session cookie is gone from the
+        // request before any extractor, limiter or handler reads it.
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            middleware::session_gate::session_gate,
+        ))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             middleware::subdomain::subdomain_middleware,

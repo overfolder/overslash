@@ -552,6 +552,9 @@ pub struct SessionAuth {
     /// they expire, at which point the user signs in again and gets the
     /// new claim.
     pub user_id: Option<Uuid>,
+    /// The server-side session (`user_sessions.id`, the JWT's `jti`). `None`
+    /// only for short-lived stateless tokens the API mints for itself.
+    pub session_id: Option<Uuid>,
 }
 
 impl FromRequestParts<AppState> for SessionAuth {
@@ -572,6 +575,7 @@ impl FromRequestParts<AppState> for SessionAuth {
             org_id: claims.org,
             identity_id: claims.sub,
             user_id: claims.user_id,
+            session_id: claims.jti,
         })
     }
 }

@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM user_sessions\n         WHERE LEAST(revoked_at, expires_at) < now() - make_interval(secs => $1)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Float8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "6f3c5cb7800036d01de95e2148bb6d14d482e217ea5827e6688cb48b428eeb7a"
+}

@@ -35,6 +35,15 @@ pub struct Claims {
     /// minted before this field existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp_client_id: Option<String>,
+    /// Session id (`user_sessions.id`) on a dashboard session token. The
+    /// session gate refuses a token whose row is revoked, expired or gone
+    /// (`services::user_sessions`). A session token without one is accepted
+    /// only if it lives no longer than
+    /// [`crate::services::user_sessions::STATELESS_MAX_LIFETIME_SECS`] —
+    /// which is what turns away every pre-jti 7-day cookie. `None` on MCP
+    /// tokens, which are revoked through their refresh chain instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jti: Option<Uuid>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -109,6 +118,7 @@ pub fn mint_mcp(
         exp: now + ttl_secs,
         user_id: None,
         mcp_client_id,
+        jti: None,
     };
     mint(secret, &claims)
 }
@@ -275,6 +285,7 @@ mod tests {
             exp: now + 3600,
             user_id: None,
             mcp_client_id: None,
+            jti: None,
         }
     }
 
@@ -302,6 +313,7 @@ mod tests {
             exp: now - 3600,
             user_id: None,
             mcp_client_id: None,
+            jti: None,
         };
         let token = mint(&secret, &claims).unwrap();
         assert!(verify(&secret, &token, AUD_SESSION).is_err());

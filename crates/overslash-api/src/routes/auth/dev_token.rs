@@ -137,6 +137,7 @@ pub(super) async fn dev_token(
     State(state): State<AppState>,
     ReqExt(ext): ReqExt,
     Query(query): Query<DevTokenQuery>,
+    request_headers: HeaderMap,
 ) -> Result<Response, AppError> {
     if !state.config.dev_auth_enabled {
         return Err(AppError::NotFound("not found".into()));
@@ -281,20 +282,18 @@ pub(super) async fn dev_token(
         );
     }
 
-    let jwt_secret = signing_key_bytes(&state.config.signing_key);
-    let now = time::OffsetDateTime::now_utc().unix_timestamp();
-    let claims = jwt::Claims {
-        sub: identity_id,
-        org: org_id,
-        email: dev_email.into(),
-        aud: jwt::AUD_SESSION.into(),
-        iat: now,
-        exp: now + 7 * 24 * 3600,
-        user_id: dev_user_id,
-        mcp_client_id: None,
-    };
-    let token = jwt::mint(&jwt_secret, &claims)
-        .map_err(|e| AppError::Internal(format!("jwt mint failed: {e}")))?;
+    let token = user_sessions::start(
+        &state,
+        &ext,
+        &request_headers,
+        user_sessions::Subject {
+            identity_id,
+            org_id,
+            user_id: dev_user_id,
+            email: dev_email.into(),
+        },
+    )
+    .await?;
 
     let session_cookie = session_cookie(&state, &token)?;
 

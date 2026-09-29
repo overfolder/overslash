@@ -40,6 +40,7 @@ fn session_cookie(org_id: Uuid, identity_id: Uuid, user_id: Uuid) -> String {
         exp: now + 3600,
         user_id: Some(user_id),
         mcp_client_id: None,
+        jti: None,
     };
     format!(
         "__Host-oss_session={}",
