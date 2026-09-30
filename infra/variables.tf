@@ -344,15 +344,21 @@ variable "enable_overfwd" {
 variable "overfwd_image" {
   description = "overfwd image path *relative to the Docker Hub mirror*, digest-pinned (e.g. `angelmanuel/overfwd@sha256:…`). A moving tag would be an unreviewed third-party code change reaching production on the next revision roll, so a digest is required."
   type        = string
-  # v0.4.0 — the release where an unparseable IMAP SEARCH key returns a 400
-  # naming the fix instead of `200 []`, an empty key means ALL, and /email/search
-  # answers `{results, total, truncated}` rather than a bare array. The `search`
-  # action's description in `services/email.yaml` documents that contract, so a
-  # downgrade would make the shipped template lie to agents.
+  # v0.6.0 — adds inline base64 `attachments` on POST /email/send (≤ 20 parts,
+  # 10 MiB decoded by default via OVERFWD_MAX_ATTACHMENT_BYTES; the send body
+  # limit rises to 16 MiB with it). Nothing in `services/email.yaml` sends
+  # attachments yet; this pin is the floor the attachments feature builds on.
   #
-  # Still ≥ v0.3.0, which introduced OVERFWD_BLOCK_PRIVATE_ENDPOINTS — the
-  # module turns that on and would fail closed against an older image.
-  default = "angelmanuel/overfwd@sha256:adaf72343c74699ebdbb517d2e9e299f0631729379b527ef96c9a20f87d0989a"
+  # Still ≥ v0.4.0 — the release where an unparseable IMAP SEARCH key returns a
+  # 400 naming the fix instead of `200 []`, an empty key means ALL, and
+  # /email/search answers `{results, total, truncated}` rather than a bare
+  # array. The `search` action's description in `services/email.yaml`
+  # documents that contract, so a downgrade would make the shipped template lie
+  # to agents. And ≥ v0.3.0, which introduced OVERFWD_BLOCK_PRIVATE_ENDPOINTS —
+  # the module turns that on and would fail closed against an older image.
+  #
+  # Multi-arch OCI index digest (amd64 + arm64), not a per-platform manifest.
+  default = "angelmanuel/overfwd@sha256:6b2c426dae2639c751313015104bb0271dbb8082c8d2daf701a5e9bda24edf9f"
 
   validation {
     condition     = can(regex("@sha256:[0-9a-f]{64}$", var.overfwd_image))
