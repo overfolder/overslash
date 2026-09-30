@@ -115,15 +115,29 @@ async fn redeem(
     // `claim` matches on hash, unexpired and unconsumed in one statement, so
     // from here an expired token, an unknown one and one whose single push
     // already happened are the same answer.
-    let row =
-        match upload_token::claim(state.db(&ext), &deferred_download::hash_token(&token)).await {
-            Ok(Some(r)) => r,
-            Ok(None) => return not_found(),
-            Err(e) => {
-                tracing::error!(error = %e, "upload: token lookup failed");
-                return (StatusCode::INTERNAL_SERVER_ERROR, "upload failed").into_response();
-            }
-        };
+    let token_hash = deferred_download::hash_token(&token);
+    let row = match upload_token::claim(state.db(&ext), &token_hash).await {
+        Ok(Some(r)) => r,
+        // Not a proxy upload: it may be a gateway-staged one, which lands in
+        // our own table instead of a service's. Same URL, same throttle, same
+        // uniform 404 when neither table holds the token.
+        Ok(None) => {
+            return crate::services::staged_upload::redeem(
+                &state,
+                &ext,
+                ip,
+                &token_hash,
+                &headers,
+                body,
+            )
+            .await
+            .unwrap_or_else(not_found);
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "upload: token lookup failed");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "upload failed").into_response();
+        }
+    };
 
     let scope = OrgScope::new(row.org_id, state.db_pool(&ext));
 

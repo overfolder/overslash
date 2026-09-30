@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM staged_uploads\n         WHERE expires_at < now() AND (pinned_until IS NULL OR pinned_until < now())",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "fc9d584c174311658f46d47efdef97a5f0041d73d70a171a0a7953e0701ade29"
+}

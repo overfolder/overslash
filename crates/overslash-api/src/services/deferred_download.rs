@@ -274,6 +274,7 @@ pub fn bearer_request(method: &str, url: String, secret_name: Option<&str>) -> A
             })
             .into_iter()
             .collect(),
+        staged_uploads: Vec::new(),
     }
 }
 

@@ -37,6 +37,11 @@ struct Target {
     table: &'static str,
     column: &'static str,
     nullable: bool,
+    /// Rows per page for this target, when it must be smaller than
+    /// `Options::batch`. The scan loads a whole page of blobs at once, which
+    /// is nothing for a secret and ~5 GB for 500 staged uploads at their
+    /// 10 MiB ceiling.
+    max_batch: Option<usize>,
 }
 
 const TARGETS: &[Target] = &[
@@ -44,51 +49,69 @@ const TARGETS: &[Target] = &[
         table: "secret_versions",
         column: "encrypted_value",
         nullable: false,
+        max_batch: None,
     },
     Target {
         table: "connections",
         column: "encrypted_access_token",
         nullable: false,
+        max_batch: None,
     },
     Target {
         table: "connections",
         column: "encrypted_refresh_token",
         nullable: true,
+        max_batch: None,
     },
     Target {
         table: "byoc_credentials",
         column: "encrypted_client_id",
         nullable: false,
+        max_batch: None,
     },
     Target {
         table: "byoc_credentials",
         column: "encrypted_client_secret",
         nullable: false,
+        max_batch: None,
     },
     Target {
         table: "org_idp_configs",
         column: "encrypted_client_id",
         nullable: true,
+        max_batch: None,
     },
     Target {
         table: "org_idp_configs",
         column: "encrypted_client_secret",
         nullable: true,
+        max_batch: None,
     },
     Target {
         table: "call_results",
         column: "body_ciphertext",
         nullable: false,
+        max_batch: None,
     },
     Target {
         table: "mcp_upstream_tokens",
         column: "access_token_ciphertext",
         nullable: false,
+        max_batch: None,
     },
     Target {
         table: "mcp_upstream_tokens",
         column: "refresh_token_ciphertext",
         nullable: true,
+        max_batch: None,
+    },
+    // Nullable: a row is written at mint, before any bytes exist, and only
+    // redemption fills the blob.
+    Target {
+        table: "staged_uploads",
+        column: "body_ciphertext",
+        nullable: true,
+        max_batch: Some(4),
     },
 ];
 
@@ -210,6 +233,9 @@ async fn reencrypt_target(
     opts: Options,
 ) -> Result<Stats> {
     let mut stats = Stats::default();
+    let batch = target
+        .max_batch
+        .map_or(opts.batch, |cap| cap.min(opts.batch));
     // Keyset cursor. `Uuid::nil()` is `00000000-…-0000`, which sorts below
     // every gen_random_uuid() value, so the very first page reads from the
     // start without needing a separate "no-cursor" SQL variant.
@@ -230,7 +256,7 @@ async fn reencrypt_target(
     loop {
         let rows: Vec<(Uuid, Vec<u8>)> = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
             .bind(after)
-            .bind(opts.batch as i64)
+            .bind(batch as i64)
             .fetch_all(pool)
             .await
             .with_context(|| format!("scan {}.{}", target.table, target.column))?;
@@ -315,7 +341,7 @@ async fn reencrypt_target(
             }
         }
 
-        if rows.len() < opts.batch {
+        if rows.len() < batch {
             break;
         }
     }

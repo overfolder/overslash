@@ -1292,3 +1292,31 @@ Other callback failures are reported as `failed` with a coarse, allow-listed rea
 
 **Why the key comes in through env, not a keyless `signJwt`.** One mechanism for hosted and self-hosted alike, and a file path for platforms where the JSON should not sit in the environment. On Cloud Run the value comes from Secret Manager, created by Terraform with a placeholder and filled with `gcloud`, so the private key never enters Terraform state.
 
+## D-NEXT: HTTP-action attachments are gateway-staged bytes, referenced by id and inlined only at send time
+
+**Date**: 2026-09-30
+**Decision**: A request-body property marked `x-overslash-staged-upload: {inline_as: base64}` takes a list of `{upload_id}` references to bytes Overslash itself holds. `overslash:upload_file` (a platform action, `risk: write`) takes the file's `filename`, exact `size_bytes`, and optionally `content_type` and `sha256`, and mints a single-use URL. The caller PUTs the bytes to the existing `POST|PUT /v1/uploads/{token}` route, which now falls through to a new `staged_uploads` table (migration 132) when no `upload_tokens` row holds the token. The bytes are measured and hashed, held to the declared size and digest, encrypted with the AES-256-GCM keyring and stored for `STAGED_UPLOAD_TTL_SECS` (24h). Sending is two steps:
+- **At resolution** (`staged_upload::describe`, in `resolve.rs` where every Mode C body is built), each `{upload_id}` is replaced with the stored descriptor: `{upload_id, filename, content_type, size_bytes, sha256}`. That lookup is scoped to the org and the caller's owner user. The approval disclosure, the replay payload and the audit row therefore name the real file, and none of them holds a byte of it.
+- **At send time** (`staged_upload::wire_body`, next to credential injection in both `call.rs` and `action_caller::call_action_request`, and so on the inline, approval-replay, async and hybrid paths alike), the descriptors become `{filename, content_type, content_base64}`. That is overfwd ≥ 0.6.0's shape.
+
+The request carries only `ActionRequest.staged_uploads`, a list of field names set from the template. It rides approvals and replay payloads the way `SecretRef` does. `deliver: "url"` is refused for such an action, because the deferred replay would not inline anything. `services/email.yaml` `send` gains `attachments` and an `Attachments` disclosure row.
+
+Abuse bounds, all in this change:
+- **Size**: `STAGED_UPLOAD_MAX_BYTES` (10 MiB, hard-clamped at 20 MiB) applies to one upload and to one call's total. At most 20 attachments per call.
+- **Quotas**: per identity (50 MiB, 50 live uploads) and per org (200 MiB). Quotas count from the mint, which writes the row with the declared size reserved, so a burst of mints cannot outrun them. The check runs in one transaction under a per-org advisory lock.
+- **Concurrency**: `STAGED_UPLOAD_CONCURRENCY` (4) is one process-wide semaphore held while a body is buffered on redemption and while it is inlined and in flight on send. A saturated replica answers 503 before a token is spent.
+- **Rows**: a failed push deletes its row instead of re-arming it.
+- **Key rotation**: `staged_uploads.body_ciphertext` joins `key_rotation::TARGETS` with a per-target batch cap of 4 rows.
+
+Over quota, a mint is refused with 429 `staged_upload_quota_exceeded`, carrying the live usage and `evictable_bytes`/`evictable_count`. `force: true` evicts the **caller's own** oldest uploads until the new one fits. It never touches another identity's uploads, an upload mid-push, or one **pinned** by a pending approval or queued call (`pinned_until`, set when the approval, async row or hybrid job is written). Eviction is all or nothing: if what is evictable cannot make room, nothing is deleted. The sweeper and the liveness checks treat a pinned row as alive past its TTL.
+
+**Rationale**: The Mailbox Gateway is stateless by design: it holds no credentials or mail at rest. So D76's shape, which streams the bytes into the service's own storage and hands back its reference, has nowhere to point. There were three options:
+- **overfwd stores them.** That breaks overfwd's defining property, and it needs shared storage behind a multi-instance Cloud Run service.
+- **The agent inlines base64 itself.** That puts every byte of every attachment through a context window and into the approval payload, which is the problem D51/D61/D76 exist to avoid.
+- **Overslash stages them.** This keeps D76's capability model: a single-use token, the anonymous redeemer contributes only bytes, and everything a reviewer sees is fixed or verified before the send.
+
+Splitting descriptor from bytes, and swapping them at the same point credentials are injected, is what keeps a 10 MB file out of `approvals.replay_payload`. It also makes the reviewer's view authoritative: the descriptor comes from our table, and whatever else the caller wrote beside `upload_id` is discarded. The dial re-checks the stored digest against the approved one.
+
+Bytes at rest are a new cost, so every bound above is enforced here rather than left to a follow-up. The mint rate is bounded by the existing per-key rate limiter and the push by the per-IP redemption throttle. Eviction is limited to the caller's own uploads, so one agent cannot delete a colleague's attachment out from under a send; pins exist so that a human reviewing an approval cannot have its attachment expire or be evicted mid-review. Postgres `BYTEA` rather than object storage: there is no bucket in this deployment yet, the quotas bound the table, and D61 already stores encrypted blobs the same way.
+
+`upload_file` stays an ordinary gated write for agents. It is not added to the four seeded self-setup anchors, because widening those is a separate call. A user who wants it frictionless grants `overslash:upload_file:*` once, or answers "Allow & Remember".

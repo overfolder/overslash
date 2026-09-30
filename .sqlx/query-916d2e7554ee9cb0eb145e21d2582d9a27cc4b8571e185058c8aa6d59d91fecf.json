@@ -1,0 +1,48 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO staged_uploads (\n             org_id, identity_id, owner_user_id, token_hash, filename, content_type,\n             declared_size_bytes, declared_sha256, expires_at\n         )\n         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now() + make_interval(secs => $9))\n         RETURNING id, expires_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "staged_uploads",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "expires_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "staged_uploads",
+            "name": "expires_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Bytea",
+        "Text",
+        "Text",
+        "Int8",
+        "Text",
+        "Float8"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "916d2e7554ee9cb0eb145e21d2582d9a27cc4b8571e185058c8aa6d59d91fecf"
+}

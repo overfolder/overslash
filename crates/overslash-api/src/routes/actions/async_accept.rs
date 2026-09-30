@@ -61,6 +61,14 @@ pub(super) async fn accept(
     // reusing that TTL keeps one knob instead of two with identical meaning.
     let expires_at = time::OffsetDateTime::now_utc()
         + time::Duration::seconds(state.config.execution_pending_ttl_secs as i64);
+    // The worker dials later; its attachments must still be there when it does.
+    crate::services::staged_upload::pin_for(
+        scope.db(),
+        scope.org_id(),
+        action_req,
+        expires_at + time::Duration::milliseconds(call_timeout.ms() as i64),
+    )
+    .await;
 
     let (service_key, instance_id) = if auth_header_present {
         (

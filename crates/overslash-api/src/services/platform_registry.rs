@@ -260,6 +260,20 @@ impl PlatformHandler for UpdateServiceHandler {
     }
 }
 
+// ── Staged uploads ──────────────────────────────────────────────────────
+
+struct UploadFileHandler;
+
+impl PlatformHandler for UploadFileHandler {
+    fn call(
+        &self,
+        ctx: PlatformCallContext,
+        params: HashMap<String, Value>,
+    ) -> BoxFuture<'_, Result<Value, AppError>> {
+        Box::pin(super::staged_upload::kernel_upload_file(ctx, params))
+    }
+}
+
 // ── Secret-request kernel ────────────────────────────────────────────────
 
 struct RequestSecretHandler;
@@ -320,5 +334,6 @@ pub fn build_registry() -> PlatformRegistry {
         Box::new(CreateConnectionHandler),
     );
     m.insert("request_secret".into(), Box::new(RequestSecretHandler));
+    m.insert("upload_file".into(), Box::new(UploadFileHandler));
     m
 }

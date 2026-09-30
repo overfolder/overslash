@@ -171,6 +171,23 @@ pub(super) fn validate_resolved(
         return Ok(wait_mode::Blockers::default());
     };
 
+    // A deferred download replays the stored request from a token row, and
+    // that replay does not inline staged bytes — it would send the upstream
+    // descriptor stubs instead of attachments. The response to a send is a
+    // small JSON acknowledgement anyway, so there is nothing to defer.
+    if req.deliver.is_some_and(Delivery::is_url)
+        && resolved
+            .svc
+            .actions
+            .get(action_key)
+            .is_some_and(|a| a.params.values().any(|p| p.staged_upload.is_some()))
+    {
+        return Err(AppError::BadRequest(format!(
+            "action '{action_key}' carries staged uploads; deliver: \"url\" is not \
+             supported for it — call it inline"
+        )));
+    }
+
     let platform_runtime =
         resolved.svc.runtime == overslash_core::types::service::Runtime::Platform;
     let binary_response = resolved

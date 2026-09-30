@@ -93,6 +93,7 @@ impl Config {
                     .filter(|n| *n > 0)
                     .unwrap_or(32),
             },
+            staged_uploads: crate::config::StagedUploadConfig::from_env(),
             services_dir: env::or_default("SERVICES_DIR", "services"),
             google_auth_client_id: env::optional("GOOGLE_AUTH_CLIENT_ID"),
             google_auth_client_secret: env::optional("GOOGLE_AUTH_CLIENT_SECRET"),

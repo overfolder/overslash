@@ -63,6 +63,7 @@ pub mod session;
 pub mod short_url;
 pub mod shutdown;
 pub mod ssrf_guard;
+pub mod staged_upload;
 pub mod stored_call;
 pub mod template_resolve;
 pub mod user_sessions;

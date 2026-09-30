@@ -181,6 +181,17 @@ pub(super) async fn enforce_permission_chain(
                         execution_mode: mode.label(),
                     })
                     .await?;
+                // A human may take hours; the attachments they are reviewing
+                // must not expire or be evicted from under them meanwhile —
+                // nor in the window after approval before the call is sent.
+                crate::services::staged_upload::pin_for(
+                    scope.db(),
+                    scope.org_id(),
+                    action_req,
+                    expires_at
+                        + time::Duration::seconds(state.config.execution_pending_ttl_secs as i64),
+                )
+                .await;
 
                 let mut approval_audit_detail = serde_json::json!({
                     "summary": summary,
