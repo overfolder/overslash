@@ -167,9 +167,10 @@ services:
     # mail stack doesn't start, so an upstream push to a mutable tag would
     # break every e2e run, not just the email story.
     # 0.4.0 is the first release where an unparseable IMAP SEARCH key fails
-    # loudly instead of coming back as `200 []`. The e2e mail story asserts
-    # that behaviour, so the pin is a floor, not just a stability choice.
-    image: angelmanuel/overfwd:0.4.0
+    # loudly instead of coming back as `200 []` — the e2e mail story asserts
+    # that, so the pin is a floor, not just a stability choice. 0.6.0 adds
+    # inline base64 `attachments` on send, which email attachments build on.
+    image: angelmanuel/overfwd:0.6.0
     environment:
       OVERFWD_BIND: 0.0.0.0:8000
       # Keyless: exercises the template's `optional` gateway scheme, where the
