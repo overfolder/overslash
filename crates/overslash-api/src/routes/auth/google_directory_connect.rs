@@ -208,7 +208,7 @@ async fn prove_and_connect(
     };
     // `/userinfo`, fetched directly with the access token we were just
     // issued — the source of `hd` and `email_verified`.
-    let info = fetch_userinfo(
+    let info = match fetch_userinfo(
         &state.http_client,
         &provider,
         "google",
@@ -216,7 +216,16 @@ async fn prove_and_connect(
         None,
         None,
     )
-    .await?;
+    .await
+    {
+        Ok(info) => info,
+        // Google-side trouble, like a failed exchange: the admin gets sent
+        // back with a reason to retry, not a bare error page.
+        Err(e) => {
+            tracing::warn!(error = %e, "google directory connect: userinfo failed");
+            return Ok(Err(ConnectError::Google));
+        }
+    };
 
     let Some(hd) = info
         .claims

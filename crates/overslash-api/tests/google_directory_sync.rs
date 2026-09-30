@@ -857,3 +857,28 @@ async fn a_sweep_honours_a_pause_that_lands_after_the_claim() {
     assert_eq!(stats.groups, 0);
     assert!(google_memberships(&e.pool, alice).await.is_empty());
 }
+
+/// Google failing mid-connect sends the admin back with a reason, never a
+/// bare error page: the callback still redirects, with `google_error`.
+#[tokio::test]
+async fn a_google_outage_during_connect_is_reported_not_a_500() {
+    let e = env().await;
+    e.google_user(workspace_admin()).await;
+    let state = e.start_connect().await;
+    // Google's userinfo is unreachable after the code exchange succeeded.
+    sqlx::query(
+        "UPDATE oauth_providers SET userinfo_endpoint = 'http://127.0.0.1:1/userinfo' \
+         WHERE key = 'google'",
+    )
+    .execute(&e.pool)
+    .await
+    .unwrap();
+    let location = e
+        .finish_connect(&state, &common::session_cookie(e.org_id, e.admin_identity))
+        .await;
+    assert!(
+        location.contains("google_directory_error=google_error"),
+        "{location}"
+    );
+    assert!(e.config().await.is_null());
+}
