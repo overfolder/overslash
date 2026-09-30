@@ -5,7 +5,7 @@
 -- instance now owns a single service account (configured by the operator via
 -- `OVERSLASH_GOOGLE_DIRECTORY_SA_KEY` / `_FILE`), and an org's Workspace admin
 -- only grants that account's client ID domain-wide delegation in
--- admin.google.com. See the D-NEXT entry in DECISIONS.md.
+-- admin.google.com. See the D113 entry in DECISIONS.md.
 --
 -- One shared account means every connected Workspace has delegated to the
 -- same client ID, so Google no longer separates tenants — Overslash must. An
