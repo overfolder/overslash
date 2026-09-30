@@ -53,7 +53,9 @@ const snap = await makeSnapper(session);
 try {
 	// 1. Self-serve toggle on the create page (no seeding needed).
 	{
-		const { page, ctx } = await snap.navigateAndSnap('trial-new-team', '/billing/new-team', {
+		// `?paid=1` starts the instance-admin free-unlimited toggle off, so the
+		// page shows the Stripe form this shot is about.
+		const { page, ctx } = await snap.navigateAndSnap('trial-new-team', '/billing/new-team?paid=1', {
 			viewport: { width: 900, height: 1000 },
 			fullPage: false,
 			waitFor: async (p) => {
@@ -62,7 +64,7 @@ try {
 			}
 		});
 		// Flip the toggle on so the CTA + legal copy reflect trial mode.
-		await page.locator('.trial-row [role="switch"]').click();
+		await page.locator('[role="switch"][aria-labelledby="trial-label"]').click();
 		await page.waitForTimeout(300);
 		await page.locator('.card').first().screenshot({ path: 'screenshots/trial-new-team-toggle.png' });
 		console.log('[trial] wrote screenshots/trial-new-team-toggle.png');

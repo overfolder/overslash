@@ -33,6 +33,14 @@
 	// defers the first charge by the trial window (status='trialing').
 	let trial = $state(false);
 
+	// Instance admins can skip Stripe and create a `free_unlimited` org
+	// directly (POST /v1/orgs/free-unlimited). On by default for them; the
+	// Create-Org modal's "toggle off" bounce lands here with `?paid=1`.
+	const isInstanceAdmin = $derived($page.data.user?.is_instance_admin === true);
+	// Read at init (not in onMount) so the first render already matches.
+	let freeUnlimited = $state($page.url.searchParams.get('paid') !== '1');
+	const createFree = $derived(isInstanceAdmin && freeUnlimited);
+
 	let slugCheck = $state<SlugCheck>({ kind: 'idle' });
 	const scheduleSlugCheck = makeDebouncedSlugChecker((s) => (slugCheck = s));
 
@@ -70,8 +78,7 @@
 			orgName.trim() !== '' &&
 			orgSlug.trim() !== '' &&
 			slugCheck.kind === 'available' &&
-			seats >= 2 &&
-			seats <= 20
+			(createFree || (seats >= 2 && seats <= 20))
 	);
 
 	function onNameInput(e: Event) {
@@ -103,6 +110,14 @@
 		submitting = true;
 		submitError = null;
 		try {
+			if (createFree) {
+				const res = await session.post<{ redirect_to?: string }>('/v1/orgs/free-unlimited', {
+					name: orgName.trim(),
+					slug: orgSlug.trim()
+				});
+				window.location.href = res.redirect_to ?? '/';
+				return;
+			}
 			const res = await session.post<{ url: string }>('/v1/billing/checkout', {
 				org_name: orgName.trim(),
 				org_slug: orgSlug.trim(),
@@ -118,6 +133,8 @@
 				if (code === 'slug_taken' || code.startsWith('slug_')) {
 					slugCheck = { kind: 'invalid', reason: code };
 					submitError = describeSlugReason(code);
+				} else if (code === 'instance_admin_required') {
+					submitError = "Your account isn't an instance admin.";
 				} else {
 					submitError = code;
 				}
@@ -141,6 +158,21 @@
 		</p>
 
 		<form onsubmit={submit}>
+			{#if isInstanceAdmin}
+				<div class="trial-row">
+					<ToggleSwitch
+						checked={freeUnlimited}
+						onchange={(next) => (freeUnlimited = next)}
+						disabled={submitting}
+						labelledby="free-label"
+					/>
+					<span class="trial-copy" id="free-label">
+						<strong>Free unlimited (instance admin)</strong>
+						<span class="hint">Skips Stripe. The org gets the free_unlimited plan with no seat limit.</span>
+					</span>
+				</div>
+			{/if}
+
 			<label>
 				<span>Organization name</span>
 				<!-- svelte-ignore a11y_autofocus -->
@@ -179,53 +211,57 @@
 				{/if}
 			</label>
 
-			<div class="seats-row">
-				<label class="seats-label">
-					<span>Seats</span>
-					<div class="seats-control">
-						<button
-							type="button"
-							class="seat-btn"
-							disabled={seats <= 2 || submitting}
-							onclick={() => seats--}
-						>−</button>
-						<span class="seat-count">{seats}</span>
-						<button
-							type="button"
-							class="seat-btn"
-							disabled={seats >= 20 || submitting}
-							onclick={() => seats++}
-						>+</button>
-					</div>
-				</label>
-				{#if geoLoaded}
-					<div class="price-preview">
-						<span class="price-amount">{currencySymbol}{totalPerMonth}</span>
-						<span class="price-period">/{currencyUpper}/month</span>
-						<span class="price-hint">{currencySymbol}{basePrice} × {seats} seats · VAT added at checkout</span>
-					</div>
-				{/if}
-			</div>
+			{#if !createFree}
+				<div class="seats-row">
+					<label class="seats-label">
+						<span>Seats</span>
+						<div class="seats-control">
+							<button
+								type="button"
+								class="seat-btn"
+								disabled={seats <= 2 || submitting}
+								onclick={() => seats--}
+							>−</button>
+							<span class="seat-count">{seats}</span>
+							<button
+								type="button"
+								class="seat-btn"
+								disabled={seats >= 20 || submitting}
+								onclick={() => seats++}
+							>+</button>
+						</div>
+					</label>
+					{#if geoLoaded}
+						<div class="price-preview">
+							<span class="price-amount">{currencySymbol}{totalPerMonth}</span>
+							<span class="price-period">/{currencyUpper}/month</span>
+							<span class="price-hint">{currencySymbol}{basePrice} × {seats} seats · VAT added at checkout</span>
+						</div>
+					{/if}
+				</div>
 
-			<div class="trial-row">
-				<ToggleSwitch
-					checked={trial}
-					onchange={(next) => (trial = next)}
-					disabled={submitting}
-					labelledby="trial-label"
-				/>
-				<span class="trial-copy" id="trial-label">
-					<strong>Not sure? Trial free for a month.</strong>
-					<span class="hint">Card required — no charge until your 30-day trial ends. Cancel any time before then.</span>
-				</span>
-			</div>
+				<div class="trial-row">
+					<ToggleSwitch
+						checked={trial}
+						onchange={(next) => (trial = next)}
+						disabled={submitting}
+						labelledby="trial-label"
+					/>
+					<span class="trial-copy" id="trial-label">
+						<strong>Not sure? Trial free for a month.</strong>
+						<span class="hint">Card required — no charge until your 30-day trial ends. Cancel any time before then.</span>
+					</span>
+				</div>
+			{/if}
 
 			{#if submitError}
 				<div class="error">{submitError}</div>
 			{/if}
 
 			<button type="submit" class="btn-primary" disabled={!canSubmit}>
-				{#if submitting}
+				{#if createFree}
+					{submitting ? 'Creating…' : 'Create free org →'}
+				{:else if submitting}
 					Redirecting to Stripe…
 				{:else if trial}
 					Start free trial →
@@ -235,14 +271,16 @@
 			</button>
 		</form>
 
-		<p class="legal">
-			{#if trial}
-				Free for 30 days, then {currencySymbol}{totalPerMonth}/{currencyUpper}/month. Cancel any time from the Stripe portal.
-			{:else}
-				Billed monthly. Cancel any time from the Stripe portal.
-			{/if}
-			OSS, research, or education? <a href="mailto:sales@overslash.com">Email us</a> — we usually say yes.
-		</p>
+		{#if !createFree}
+			<p class="legal">
+				{#if trial}
+					Free for 30 days, then {currencySymbol}{totalPerMonth}/{currencyUpper}/month. Cancel any time from the Stripe portal.
+				{:else}
+					Billed monthly. Cancel any time from the Stripe portal.
+				{/if}
+				OSS, research, or education? <a href="mailto:sales@overslash.com">Email us</a> — we usually say yes.
+			</p>
+		{/if}
 	</div>
 </div>
 
