@@ -39,17 +39,17 @@ try {
 	await ctx.close();
 
 	// State B — domain admission (require_invite = false) with a populated
-	// allowlist. This is the Reveni case: any @reveni.io user self-provisions.
+	// allowlist. Any @example.org user self-provisions.
 	await setManagedSignin(session, {
 		allow_overslash_managed_signin: true,
 		require_invite_admission: false,
-		managed_signin_allowed_domains: ['reveni.io', 'reveni.com']
+		managed_signin_allowed_domains: ['example.org', 'example.com']
 	});
 	({ page, ctx } = await snap.navigateAndSnap('managed-signin-domain-admit', '/org/signin', {
 		viewport: { width: 1400, height: 1200 },
 		fullPage: false,
 		waitFor: async (p) => {
-			await p.locator('textarea.domains-input').first().waitFor({ timeout: 15_000 });
+			await p.locator('.domains-block .chip-input').first().waitFor({ timeout: 15_000 });
 		}
 	}));
 	await snapCard(page, 'managed-signin-domain-admit-card');
@@ -66,7 +66,7 @@ try {
 		viewport: { width: 1400, height: 1200 },
 		fullPage: false,
 		waitFor: async (p) => {
-			await p.locator('textarea.domains-input').first().waitFor({ timeout: 15_000 });
+			await p.locator('.domains-block .chip-input').first().waitFor({ timeout: 15_000 });
 		}
 	}));
 	await snapCard(page, 'managed-signin-domain-empty-card');
