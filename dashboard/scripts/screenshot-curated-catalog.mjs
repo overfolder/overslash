@@ -31,7 +31,7 @@ try {
 	// 1. Org settings → Service catalog card (default: all available).
 	const { page, ctx } = await snap.navigateAndSnap(
 		'curated-catalog-org-settings',
-		'/org',
+		'/org/catalog',
 		{
 			viewport: { width: 1400, height: 1000 },
 			fullPage: false,

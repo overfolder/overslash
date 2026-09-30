@@ -37,7 +37,7 @@ function initialTheme(): 'light' | 'dark' {
 	return 'light';
 }
 
-export const sidebarCollapsed = persisted<boolean>('ovs_sidebar_collapsed', false);
+export const sidebarCollapsed = persisted<boolean>('ovs_sidebar_collapsed', true);
 export const theme = persisted<'light' | 'dark'>('ovs_theme', initialTheme());
 export const timeFormat = persisted<'relative' | 'absolute'>('ovs_time_format', 'relative');
 

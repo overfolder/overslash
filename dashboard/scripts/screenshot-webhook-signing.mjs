@@ -17,7 +17,7 @@ const snap = await makeSnapper(session);
 const CARD = 'Webhooks';
 
 try {
-	const { page, ctx } = await snap.navigateAndSnap('webhook-signing-page', '/org', {
+	const { page, ctx } = await snap.navigateAndSnap('webhook-signing-page', '/org/webhooks', {
 		viewport: { width: 1400, height: 1000 },
 		fullPage: false,
 		waitFor: async (p) => {

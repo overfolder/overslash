@@ -38,7 +38,7 @@ try {
 				await p.locator('aside.sidebar .build').waitFor({ timeout: 15_000 });
 			}
 		});
-		await page.locator('aside.sidebar button[aria-label="Toggle sidebar"]').click();
+		// The rail is the default sidebar state; no toggle needed.
 		await page.locator('aside.sidebar.collapsed').waitFor({ timeout: 5_000 });
 		// Let the width transition settle before snapping.
 		await page.waitForTimeout(250);

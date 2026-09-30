@@ -19,14 +19,21 @@
 		WebhookCreated,
 		WebhookDelivery
 	} from '$lib/types';
-	import type { OrgPageData, OrgSubscription } from './+page';
+	import type { OrgPageData, OrgSubscription } from './org-settings-load';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
 	import GoogleDirectoryCard from '$lib/components/org/GoogleDirectoryCard.svelte';
 	import { absoluteTime } from '$lib/utils/time';
 	import { invalidateAllowedDomains } from '$lib/orgDomains';
+	import { goto } from '$app/navigation';
+	import {
+		DEFAULT_SETTINGS_SECTION,
+		LEGACY_ANCHORS,
+		settingsHref,
+		visibleGroups
+	} from './sections';
 
-	let { data }: { data: OrgPageData } = $props();
+	let { data, section }: { data: OrgPageData; section: string } = $props();
 
 	let org = $state<OrgInfo | null>(null);
 	let idpConfigs = $state<IdpConfig[]>([]);
@@ -133,6 +140,49 @@
 	// creator can sign in (via their Overslash-level login). Banner nudges
 	// them to add one so their team can sign in via the corp IdP.
 	const hasEnabledIdp = $derived(idpConfigs.some((c) => c.enabled !== false));
+
+	// ── Sub-nav ────────────────────────────────────────────────────────────
+	// One section renders at a time. A section hidden for this org (Billing on
+	// a personal org, say) falls back to General rather than a blank page.
+	// Read `data` directly, not the local mirrors above: those are filled by an
+	// $effect after first render, and a deep link like /org/billing would
+	// otherwise flash General before settling.
+	const groups = $derived(
+		visibleGroups({
+			isPersonalOrg: data.org?.is_personal === true,
+			isInstanceAdmin,
+			hasOrg: data.org !== null,
+			hasSubscription: data.subscription !== null,
+			hasManagedSignin: data.managedSigninSettings !== null
+		})
+	);
+	const active = $derived(
+		groups.some((g) => g.sections.some((s) => s.id === section))
+			? section
+			: DEFAULT_SETTINGS_SECTION
+	);
+	const activeGroup = $derived(groups.find((g) => g.sections.some((s) => s.id === active)));
+	const activeSection = $derived(activeGroup?.sections.find((s) => s.id === active));
+	// Sections that want a look, from data the page already holds.
+	const warnings = $derived(
+		new Set([
+			...((executionSettings?.agents_missing_self_setup ?? 0) > 0 ? ['agent-defaults'] : []),
+			...(webhooks.some(
+				(w) => w.verification_status === 'pending_verification' || w.disabled_reason
+			)
+				? ['webhooks']
+				: [])
+		])
+	);
+	// Before the sub-nav, sections were anchors on one long page. Keep those
+	// links (billing emails, docs) landing on the right section.
+	$effect(() => {
+		const hash = $page.url.hash.slice(1);
+		const target = LEGACY_ANCHORS[hash];
+		if (target && section === DEFAULT_SETTINGS_SECTION) {
+			void goto(settingsHref(target), { replaceState: true });
+		}
+	});
 
 	// Confirmation modal state
 	let confirmOpen = $state(false);
@@ -911,18 +961,43 @@
 </script>
 
 <svelte:head>
-	<title>Org Settings - Overslash</title>
+	<title>{activeSection ? `${activeSection.label} · ` : ''}Org Settings - Overslash</title>
 </svelte:head>
 
-<div class="page">
-	<h1>Org Settings</h1>
-
-	{#if data.error}
+{#if data.error}
+	<div class="page">
+		<h1>Org Settings</h1>
 		<div class="error-card">
 			<strong>Cannot load org settings.</strong>
 			<p>{data.error.message}</p>
 		</div>
-	{:else}
+	</div>
+{:else}
+<div class="settings">
+	<aside class="dock" aria-label="Settings sections">
+		<div class="dock-title">Org Settings</div>
+		<nav class="subnav">
+			{#each groups as group (group.id)}
+				<div class="subnav-group">{group.label}</div>
+				{#each group.sections as s (s.id)}
+					<a
+						href={settingsHref(s.id)}
+						class:on={s.id === active}
+						aria-current={s.id === active ? 'page' : undefined}
+					>
+						<span>{s.label}</span>
+						{#if warnings.has(s.id)}<span class="dot" title="Needs attention"></span>{/if}
+					</a>
+				{/each}
+			{/each}
+		</nav>
+	</aside>
+	<div class="page">
+	<header class="page-head">
+		<div class="page-group">{activeGroup?.label}</div>
+		<h1>{activeSection?.label}</h1>
+	</header>
+		{#if active === 'general'}
 		<!-- General -->
 		<section class="card">
 			<h2>General</h2>
@@ -943,7 +1018,9 @@
 				</div>
 			{/if}
 		</section>
+		{/if}
 
+		{#if active === 'agent-defaults'}
 		<!-- Agent defaults (self-setup permissions + deferred-execution policy) -->
 		<section class="card">
 			<h2>Agent defaults</h2>
@@ -1085,7 +1162,9 @@
 				{/if}
 			{/if}
 		</section>
+		{/if}
 
+		{#if active === 'audit'}
 		<!-- Audit log (response-body capture) -->
 		<section class="card">
 			<h2>Audit log</h2>
@@ -1152,7 +1231,9 @@
 				{/if}
 			{/if}
 		</section>
+		{/if}
 
+		{#if active === 'catalog'}
 		<!-- Service catalog (curated global templates) -->
 		<section class="card">
 			<h2>Service catalog</h2>
@@ -1210,7 +1291,9 @@
 				{/if}
 			{/if}
 		</section>
+		{/if}
 
+		{#if active === 'secret-requests'}
 		<!-- Secret requests (User Signed Mode) -->
 		<section class="card">
 			<h2>Secret requests</h2>
@@ -1242,17 +1325,18 @@
 				{/if}
 			{/if}
 		</section>
+		{/if}
 
-		{#if !isPersonalOrg && !hasEnabledIdp && managedSigninSettings?.allow_overslash_managed_signin !== true}
+		{#if (active === 'signin' || active === 'idp') && !isPersonalOrg && !hasEnabledIdp && managedSigninSettings?.allow_overslash_managed_signin !== true}
 			<div class="idp-warning-banner">
 				<strong>No sign-in configured.</strong> Right now only you — the org's admin —
-				can reach this org, via your Overslash-level login. Add an Identity Provider
-				below, or enable Overslash-managed sign-in and invite your team by email.
+				can reach this org, via your Overslash-level login. Add an Identity Provider,
+				or enable Overslash-managed sign-in and invite your team by email.
 				You'll keep your own access either way.
 			</div>
 		{/if}
 
-		{#if !isPersonalOrg && managedSigninSettings}
+		{#if active === 'signin' && !isPersonalOrg && managedSigninSettings}
 		<!-- Sign-in & members (Overslash-managed sign-in toggle + invites) -->
 		<section class="card">
 			<h2>Sign-in &amp; members</h2>
@@ -1435,6 +1519,7 @@
 		{/if}
 
 		{#if !isPersonalOrg}
+		{#if active === 'idp'}
 		<!-- IdP -->
 		<section class="card">
 			<div class="card-head">
@@ -1460,7 +1545,7 @@
 			</div>
 			<p class="section-desc">
 				Controls <strong>how users log in to Overslash</strong>. Separate from the
-				<a href="#oauth-app-credentials">OAuth App Credentials</a> below, which power service
+				<a href="/org/oauth">OAuth App Credentials</a>, which power service
 				connections (Google Calendar, Drive, Gmail, etc.). Rows marked <span class="badge badge-env">env</span>
 				come from environment variables — they appear automatically when the instance is launched with
 				<code>GOOGLE_AUTH_CLIENT_ID</code> / <code>GITHUB_AUTH_CLIENT_ID</code> set, and aren't affected
@@ -1624,9 +1709,13 @@
 				</form>
 			{/if}
 		</section>
+		{/if}
 
-		<GoogleDirectoryCard />
+		{#if active === 'google-directory'}
+			<GoogleDirectoryCard />
+		{/if}
 
+		{#if active === 'oauth'}
 		<!-- OAuth App Credentials -->
 		<section class="card" id="oauth-app-credentials">
 			<div class="card-head">
@@ -1748,7 +1837,9 @@
 			{/if}
 		</section>
 		{/if}
+		{/if}
 
+		{#if active === 'mcp'}
 		<!-- MCP Clients -->
 		<section class="card">
 			<div class="card-head">
@@ -1807,7 +1898,9 @@
 				</table>
 			{/if}
 		</section>
+		{/if}
 
+		{#if active === 'service-keys'}
 		<!-- Service keys -->
 		<section class="card">
 			<div class="card-head">
@@ -1932,7 +2025,9 @@
 				</form>
 			{/if}
 		</section>
+		{/if}
 
+		{#if active === 'webhooks'}
 		<!-- Webhooks -->
 		<section class="card">
 			<div class="card-head">
@@ -2133,9 +2228,9 @@
 				</form>
 			{/if}
 		</section>
-	{/if}
+		{/if}
 
-	{#if !isPersonalOrg && subscription}
+	{#if active === 'billing' && !isPersonalOrg && subscription}
 		<section class="card" id="billing">
 			<h2>Billing</h2>
 			<div class="billing-row">
@@ -2189,7 +2284,7 @@
 		</section>
 	{/if}
 
-	{#if isInstanceAdmin && !isPersonalOrg && org}
+	{#if active === 'trial' && isInstanceAdmin && !isPersonalOrg && org}
 		<section class="card" id="instance-admin-trial">
 			<h2>Trial <span class="instance-tag">⚡ Instance admin</span></h2>
 			<p class="muted small">
@@ -2250,6 +2345,8 @@
 		</section>
 	{/if}
 </div>
+</div>
+{/if}
 
 <ConfirmModal
 	open={confirmOpen}
@@ -2274,12 +2371,113 @@
 />
 
 <style>
+	/* Docked sub-nav, flush against the main nav rail. The layout drops its
+	   content padding on these routes so the dock can reach the edges. */
+	.settings {
+		display: grid;
+		grid-template-columns: 220px minmax(0, 1fr);
+		align-items: start;
+		min-height: 100%;
+	}
+	.dock {
+		position: sticky;
+		top: 0;
+		height: calc(100vh - var(--topbar-height) - var(--env-bar-height, 0px));
+		overflow-y: auto;
+		background: var(--color-surface);
+		border-right: 1px solid var(--color-border);
+		padding: 20px 10px 24px;
+	}
+	.dock-title {
+		font: var(--text-h3);
+		color: var(--color-text-heading);
+		padding: 0 10px 4px;
+	}
+	.subnav {
+		display: flex;
+		flex-direction: column;
+		gap: 1px;
+	}
+	.subnav-group {
+		font-size: 11px;
+		font-weight: 600;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		color: var(--color-text-muted);
+		padding: 16px 10px 4px;
+	}
+	.subnav a {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		gap: 8px;
+		padding: 6px 10px;
+		border-radius: 6px;
+		font: var(--text-label);
+		color: var(--color-text-secondary);
+		text-decoration: none;
+		transition: background 0.1s;
+	}
+	.subnav a:hover {
+		background: color-mix(in srgb, var(--color-text) 6%, transparent);
+		color: var(--color-text);
+	}
+	.subnav a.on {
+		background: var(--color-primary-bg);
+		color: var(--color-primary);
+		font-weight: 500;
+	}
+	.dot {
+		width: 6px;
+		height: 6px;
+		border-radius: 50%;
+		background: var(--warning-500);
+		flex: none;
+	}
 	.page {
-		max-width: 1000px;
+		max-width: 820px;
+		width: 100%;
+		padding: 24px 32px 64px;
+	}
+	.page-head {
+		margin-bottom: 20px;
+	}
+	.page-group {
+		font: var(--text-body-sm);
+		color: var(--color-text-muted);
+		margin-bottom: 4px;
 	}
 	h1 {
 		font: var(--text-h1);
+		margin: 0;
+		color: var(--color-text-heading);
+	}
+	.page > h1 {
 		margin-bottom: 1.5rem;
+	}
+	@media (max-width: 900px) {
+		.settings {
+			grid-template-columns: minmax(0, 1fr);
+		}
+		.dock {
+			position: static;
+			height: auto;
+			border-right: 0;
+			border-bottom: 1px solid var(--color-border);
+			padding: 12px 16px;
+		}
+		.dock-title,
+		.subnav-group {
+			display: none;
+		}
+		.subnav {
+			flex-direction: row;
+			flex-wrap: wrap;
+			gap: 4px;
+		}
+		.page {
+			padding: 20px 16px 48px;
+		}
 	}
 	.card {
 		background: var(--color-surface);

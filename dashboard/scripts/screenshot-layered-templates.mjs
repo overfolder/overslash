@@ -61,7 +61,7 @@ try {
 	}).then((r) => r.ctx.close());
 
 	// 3. Org settings → Service catalog card (crop) with the policy select.
-	const { page } = await snap.navigateAndSnap('layered-templates-org-settings', '/org', {
+	const { page } = await snap.navigateAndSnap('layered-templates-org-settings', '/org/catalog', {
 		viewport: { width: 1400, height: 1000 },
 		fullPage: false,
 		waitFor: async (p) => {

@@ -80,7 +80,7 @@ const outDir = resolve(process.cwd(), 'screenshots');
 async function cardShot(name, act) {
 	const { ctx, page } = await snap.page({ viewport });
 	try {
-		await page.goto(`${session.dashboardUrl}/org`, { waitUntil: 'domcontentloaded' });
+		await page.goto(`${session.dashboardUrl}/org/google-directory`, { waitUntil: 'domcontentloaded' });
 		const card = page.getByTestId('google-directory-card');
 		await card.waitFor({ timeout: 15000 });
 		await card.scrollIntoViewIfNeeded();

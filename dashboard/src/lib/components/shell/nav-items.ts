@@ -1,22 +1,24 @@
+import type { IconName } from './NavIcon.svelte';
+
 export interface NavItemDef {
 	href: string;
 	label: string;
-	icon: string;
+	icon: IconName;
 }
 
 export const NAV_ITEMS: NavItemDef[] = [
-	{ href: '/agents', label: 'Agents', icon: '⊟' },
-	{ href: '/services', label: 'Services', icon: '◫' },
-	{ href: '/secrets', label: 'Secrets', icon: '⚷' },
-	{ href: '/connections', label: 'Connections', icon: '⇄' },
-	{ href: '/approvals', label: 'Approvals', icon: '✓' },
-	{ href: '/executions', label: 'Executions', icon: '⟳' },
-	{ href: '/audit', label: 'Audit Log', icon: '☰' }
+	{ href: '/agents', label: 'Agents', icon: 'bot' },
+	{ href: '/services', label: 'Services', icon: 'blocks' },
+	{ href: '/secrets', label: 'Secrets', icon: 'key' },
+	{ href: '/connections', label: 'Connections', icon: 'connections' },
+	{ href: '/approvals', label: 'Approvals', icon: 'approvals' },
+	{ href: '/executions', label: 'Executions', icon: 'activity' },
+	{ href: '/audit', label: 'Audit Log', icon: 'scroll' }
 ];
 
 export const ADMIN_NAV_ITEMS: NavItemDef[] = [
-	{ href: '/members', label: 'Users', icon: '◉' },
-	{ href: '/org/groups', label: 'Groups', icon: '◈' }
+	{ href: '/members', label: 'Users', icon: 'user' },
+	{ href: '/org/groups', label: 'Groups', icon: 'group' }
 ];
 
 /**
@@ -24,10 +26,10 @@ export const ADMIN_NAV_ITEMS: NavItemDef[] = [
  * Not in `NAV_ITEMS` because that list is unconditional; this one depends on a
  * build flag that arrives asynchronously.
  */
-export const LIVE_MAP_NAV_ITEM: NavItemDef = { href: '/map', label: 'Live Map', icon: '◎' };
+export const LIVE_MAP_NAV_ITEM: NavItemDef = { href: '/map', label: 'Live Map', icon: 'map' };
 
 /** Settings item shown at the bottom of the sidebar (admin only). */
-export const SETTINGS_NAV_ITEM: NavItemDef = { href: '/org', label: 'Settings', icon: '⚙' };
+export const SETTINGS_NAV_ITEM: NavItemDef = { href: '/org', label: 'Settings', icon: 'settings' };
 
 export function isActive(pathname: string, href: string): boolean {
 	return pathname === href || pathname.startsWith(href + '/');

@@ -16,7 +16,7 @@ try {
 	// Inheriting: both fields blank, placeholders naming the deployment values.
 	await patchTimeouts({ call_timeout_ms: null, max_call_timeout_ms: null });
 
-	const { page, ctx } = await snap.navigateAndSnap('org-call-timeouts-page', '/org', {
+	const { page, ctx } = await snap.navigateAndSnap('org-call-timeouts-page', '/org/agent-defaults', {
 		viewport: { width: 1400, height: 1000 },
 		fullPage: false,
 		waitFor: async (p) => {

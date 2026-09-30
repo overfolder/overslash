@@ -53,15 +53,13 @@ async function openShell(opts = {}) {
 			} catch {}
 		});
 	}
-	if (opts.collapsed) {
-		// `sidebarCollapsed` is a localStorage-persisted store; seed it
-		// before the app boots.
-		await page.addInitScript(() => {
-			try {
-				window.localStorage.setItem('ovs_sidebar_collapsed', 'true');
-			} catch {}
-		});
-	}
+	// `sidebarCollapsed` is a localStorage-persisted store (default: the
+	// rail); seed it before the app boots so both states are explicit.
+	await page.addInitScript((collapsed) => {
+		try {
+			window.localStorage.setItem('ovs_sidebar_collapsed', JSON.stringify(collapsed));
+		} catch {}
+	}, !!opts.collapsed);
 	await page.goto(`${invitee.dashboardUrl}/agents`, { waitUntil: 'domcontentloaded' });
 	await page.locator(opts.collapsed ? 'aside.sidebar.collapsed' : 'aside.sidebar').waitFor({
 		timeout: 20_000

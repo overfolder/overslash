@@ -233,7 +233,7 @@ try {
 		await ctx.route('**/v1/org-idp-configs', json(IDP_CONFIGS));
 		await ctx.route('**/v1/org-oauth-credentials', json(OAUTH_CREDENTIALS));
 		const page = await ctx.newPage();
-		await page.goto(`${BASE}/org`, { waitUntil: 'networkidle' });
+		await page.goto(`${BASE}/org/oauth`, { waitUntil: 'networkidle' });
 		await page.getByText('Identity Providers').waitFor({ timeout: 15_000 });
 		await page.locator('#oauth-app-credentials').scrollIntoViewIfNeeded();
 		await page.waitForTimeout(300);
