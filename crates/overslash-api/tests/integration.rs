@@ -22,6 +22,7 @@ async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
     let addr = listener.local_addr().unwrap();
 
     let config = overslash_api::config::Config {
+        google_directory: Default::default(),
         call_result_max_bytes: 1024 * 1024,
         async_execution: Default::default(),
         call_stream_idle_timeout_ms: 30_000,
@@ -1772,6 +1773,7 @@ async fn test_service_registry_api() {
     let pool = common::test_pool().await;
     // Start API with real service registry loaded
     let config = overslash_api::config::Config {
+        google_directory: Default::default(),
         call_result_max_bytes: 1024 * 1024,
         async_execution: Default::default(),
         call_stream_idle_timeout_ms: 30_000,
@@ -2810,6 +2812,7 @@ async fn start_api_with_registry(
     }
 
     let config = overslash_api::config::Config {
+        google_directory: Default::default(),
         call_result_max_bytes: 1024 * 1024,
         async_execution: Default::default(),
         call_stream_idle_timeout_ms: 30_000,

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "UPDATE org_google_directory_configs SET\n             encrypted_service_account_key = COALESCE($2, encrypted_service_account_key),\n             service_account_email = COALESCE($3, service_account_email),\n             service_account_key_id = COALESCE($4, service_account_key_id),\n             admin_subject = COALESCE($5, admin_subject),\n             customer_id = COALESCE($6, customer_id),\n             domains = COALESCE($7, domains),\n             enabled = COALESCE($8, enabled),\n             sync_interval_hours = COALESCE($9, sync_interval_hours),\n             next_sync_at = CASE\n                 WHEN $2::bytea IS NOT NULL OR $5::text IS NOT NULL\n                      OR $6::text IS NOT NULL OR $7::text[] IS NOT NULL\n                 THEN now()\n                 ELSE next_sync_at\n             END,\n             updated_at = now()\n         WHERE org_id = $1\n         RETURNING org_id, encrypted_service_account_key, service_account_email,\n                   service_account_key_id, admin_subject, customer_id, domains, enabled,\n                   sync_interval_hours, next_sync_at, sync_requested_at, lease_owner,\n                   lease_expires_at, last_sync_started_at, last_sync_finished_at,\n                   last_sync_status, last_sync_error, last_sync_stats, created_at, updated_at",
+  "query": "UPDATE org_google_directory_configs SET\n             enabled = COALESCE($2, enabled),\n             sync_interval_hours = COALESCE($3, sync_interval_hours),\n             updated_at = now()\n         WHERE org_id = $1\n         RETURNING org_id, admin_subject, customer_id, domain, connected_by_identity_id,\n                   connected_at, enabled, sync_interval_hours, next_sync_at, sync_requested_at,\n                   lease_owner, lease_expires_at, last_sync_started_at, last_sync_finished_at,\n                   last_sync_status, last_sync_error, last_sync_stats, created_at, updated_at",
   "describe": {
     "columns": [
       {
@@ -16,39 +16,6 @@
       },
       {
         "ordinal": 1,
-        "name": "encrypted_service_account_key",
-        "type_info": "Bytea",
-        "origin": {
-          "Table": {
-            "table": "org_google_directory_configs",
-            "name": "encrypted_service_account_key"
-          }
-        }
-      },
-      {
-        "ordinal": 2,
-        "name": "service_account_email",
-        "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "org_google_directory_configs",
-            "name": "service_account_email"
-          }
-        }
-      },
-      {
-        "ordinal": 3,
-        "name": "service_account_key_id",
-        "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "org_google_directory_configs",
-            "name": "service_account_key_id"
-          }
-        }
-      },
-      {
-        "ordinal": 4,
         "name": "admin_subject",
         "type_info": "Text",
         "origin": {
@@ -59,7 +26,7 @@
         }
       },
       {
-        "ordinal": 5,
+        "ordinal": 2,
         "name": "customer_id",
         "type_info": "Text",
         "origin": {
@@ -70,18 +37,40 @@
         }
       },
       {
-        "ordinal": 6,
-        "name": "domains",
-        "type_info": "TextArray",
+        "ordinal": 3,
+        "name": "domain",
+        "type_info": "Text",
         "origin": {
           "Table": {
             "table": "org_google_directory_configs",
-            "name": "domains"
+            "name": "domain"
           }
         }
       },
       {
-        "ordinal": 7,
+        "ordinal": 4,
+        "name": "connected_by_identity_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "org_google_directory_configs",
+            "name": "connected_by_identity_id"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "connected_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "org_google_directory_configs",
+            "name": "connected_at"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
         "name": "enabled",
         "type_info": "Bool",
         "origin": {
@@ -92,7 +81,7 @@
         }
       },
       {
-        "ordinal": 8,
+        "ordinal": 7,
         "name": "sync_interval_hours",
         "type_info": "Int4",
         "origin": {
@@ -103,7 +92,7 @@
         }
       },
       {
-        "ordinal": 9,
+        "ordinal": 8,
         "name": "next_sync_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -114,7 +103,7 @@
         }
       },
       {
-        "ordinal": 10,
+        "ordinal": 9,
         "name": "sync_requested_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -125,7 +114,7 @@
         }
       },
       {
-        "ordinal": 11,
+        "ordinal": 10,
         "name": "lease_owner",
         "type_info": "Text",
         "origin": {
@@ -136,7 +125,7 @@
         }
       },
       {
-        "ordinal": 12,
+        "ordinal": 11,
         "name": "lease_expires_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -147,7 +136,7 @@
         }
       },
       {
-        "ordinal": 13,
+        "ordinal": 12,
         "name": "last_sync_started_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -158,7 +147,7 @@
         }
       },
       {
-        "ordinal": 14,
+        "ordinal": 13,
         "name": "last_sync_finished_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -169,7 +158,7 @@
         }
       },
       {
-        "ordinal": 15,
+        "ordinal": 14,
         "name": "last_sync_status",
         "type_info": "Text",
         "origin": {
@@ -180,7 +169,7 @@
         }
       },
       {
-        "ordinal": 16,
+        "ordinal": 15,
         "name": "last_sync_error",
         "type_info": "Text",
         "origin": {
@@ -191,7 +180,7 @@
         }
       },
       {
-        "ordinal": 17,
+        "ordinal": 16,
         "name": "last_sync_stats",
         "type_info": "Jsonb",
         "origin": {
@@ -202,7 +191,7 @@
         }
       },
       {
-        "ordinal": 18,
+        "ordinal": 17,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -213,7 +202,7 @@
         }
       },
       {
-        "ordinal": 19,
+        "ordinal": 18,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -227,12 +216,6 @@
     "parameters": {
       "Left": [
         "Uuid",
-        "Bytea",
-        "Text",
-        "Text",
-        "Text",
-        "Text",
-        "TextArray",
         "Bool",
         "Int4"
       ]
@@ -242,8 +225,7 @@
       false,
       false,
       false,
-      false,
-      false,
+      true,
       false,
       false,
       false,
@@ -260,5 +242,5 @@
       false
     ]
   },
-  "hash": "3129f942e580f2e698dc0bbd9325c5956040604d18105b56f2d6298bd37a92e8"
+  "hash": "e0eddd1219a2b6bc1a4da8142af28417026930b08ab0bcf36a905b255079f5b8"
 }

@@ -20,9 +20,7 @@
 
 use uuid::Uuid;
 
-use overslash_core::crypto;
 use overslash_db::repos::audit::AuditEntry;
-use overslash_db::repos::google_directory_config::GoogleDirectoryConfigRow;
 use overslash_db::repos::org_idp_config;
 use overslash_db::scopes::OrgScope;
 
@@ -154,7 +152,7 @@ pub async fn sync_identity_groups(
 pub struct GoogleSyncStats {
     /// Groups Google listed.
     pub groups: usize,
-    /// Humans in the configured domains that the sweep reconciled.
+    /// Humans in the connected domain that the sweep reconciled.
     pub identities: usize,
     /// Of those, how many the directory places in at least one group.
     pub matched: usize,
@@ -169,22 +167,23 @@ pub enum GoogleSyncError {
     Directory(#[from] google_directory::DirectoryError),
     #[error("database error")]
     Database(#[from] sqlx::Error),
-    #[error("could not decrypt the stored service account key")]
-    Crypto(#[from] overslash_core::crypto::CryptoError),
-    #[error("the stored service account key is unreadable: {0}")]
-    StoredKey(String),
+    #[error(
+        "this Overslash instance has no Google Directory service account \
+         (OVERSLASH_GOOGLE_DIRECTORY_SA_KEY / _FILE)"
+    )]
+    NotConfigured,
 }
 
-/// Decrypt and parse the org's stored key.
-pub(crate) fn stored_key(
+/// The instance's service account, which every org syncs through.
+pub(crate) fn instance_key(
     state: &AppState,
-    config: &GoogleDirectoryConfigRow,
-) -> std::result::Result<google_directory::ServiceAccountKey, GoogleSyncError> {
-    let keyring = state.config.keyring()?;
-    let plain = crypto::decrypt(&keyring, &config.encrypted_service_account_key)?;
-    let json = String::from_utf8(plain).map_err(|e| GoogleSyncError::StoredKey(e.to_string()))?;
-    google_directory::ServiceAccountKey::parse(&json)
-        .map_err(|e| GoogleSyncError::StoredKey(e.to_string()))
+) -> std::result::Result<&google_directory::ServiceAccountKey, GoogleSyncError> {
+    state
+        .config
+        .google_directory
+        .service_account
+        .as_ref()
+        .ok_or(GoogleSyncError::NotConfigured)
 }
 
 /// The lower-cased domain of an email, judged by its last `@`.
@@ -196,7 +195,7 @@ pub fn email_domain(email: &str) -> Option<String> {
 }
 
 /// Full sweep: every group in the Workspace, every member of each, then an
-/// authoritative reconcile of every human in the configured domains.
+/// authoritative reconcile of every human in the connected domain.
 ///
 /// **A partial listing never revokes.** Every page of every call must succeed
 /// before a single membership row is touched; any error returns before the
@@ -220,9 +219,9 @@ pub async fn sync_google_directory_full(
     if !config.enabled {
         return Ok(GoogleSyncStats::default());
     }
-    let key = stored_key(state, &config)?;
+    let key = instance_key(state)?;
     let client =
-        google_directory::DirectoryClient::connect(state, &key, &config.admin_subject).await?;
+        google_directory::DirectoryClient::connect(state, key, &config.admin_subject).await?;
 
     let groups = client.list_groups(&config.customer_id).await?;
     let mut members_by_group = Vec::with_capacity(groups.len());
@@ -256,7 +255,7 @@ pub async fn sync_google_directory_full(
     }
 
     let candidates = scope
-        .list_google_directory_candidates(&config.domains)
+        .list_google_directory_candidates(&config.domain)
         .await?;
     let mut stats = GoogleSyncStats {
         groups: groups.len(),
@@ -287,8 +286,8 @@ pub async fn sync_google_directory_full(
 /// Per-user pull at sign-in: the groups Google places `email` in directly.
 ///
 /// Runs on a spawned task — the caller never waits on Google. Does nothing
-/// without an enabled config, or for an email outside the configured domains:
-/// a Workspace credential speaks for its own domains' users and nobody else,
+/// without an enabled config, or for an email outside the connected domain:
+/// a Workspace speaks for its own domain's users and nobody else,
 /// whichever IdP they signed in through.
 pub async fn sync_google_directory_for_identity(
     state: &AppState,
@@ -301,13 +300,13 @@ pub async fn sync_google_directory_for_identity(
         return Ok(false);
     };
     let email = email.trim().to_lowercase();
-    let in_domain = email_domain(&email).is_some_and(|d| config.domains.contains(&d));
+    let in_domain = email_domain(&email).is_some_and(|d| d == config.domain);
     if !config.enabled || !in_domain {
         return Ok(false);
     }
-    let key = stored_key(state, &config)?;
+    let key = instance_key(state)?;
     let client =
-        google_directory::DirectoryClient::connect(state, &key, &config.admin_subject).await?;
+        google_directory::DirectoryClient::connect(state, key, &config.admin_subject).await?;
     let groups = client.list_user_groups(&email).await?;
 
     let mut ids = Vec::with_capacity(groups.len());

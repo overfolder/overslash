@@ -128,6 +128,8 @@ pub struct Config {
     pub call_stream_idle_timeout_ms: u64,
     /// Async execution. See [`AsyncExecutionConfig`].
     pub async_execution: AsyncExecutionConfig,
+    /// Google Workspace Directory group sync. See [`GoogleDirectoryInstance`].
+    pub google_directory: GoogleDirectoryInstance,
     pub services_dir: String,
     pub google_auth_client_id: Option<String>,
     pub google_auth_client_secret: Option<String>,
@@ -375,6 +377,24 @@ pub struct PlatformCredential {
     /// The credential itself. Cloud Run surfaces the Secret Manager value as
     /// an env var, same as `stripe_secret_key` and friends.
     pub value: String,
+}
+
+/// Google Workspace Directory group sync — the instance's one service account.
+///
+/// Every org on the instance syncs through this account: a Workspace admin
+/// grants its client ID domain-wide delegation in admin.google.com, and nothing
+/// credential-shaped is ever stored per org. `None` means the feature is off on
+/// this instance — the dashboard says so, and connect is refused.
+///
+/// Read from `OVERSLASH_GOOGLE_DIRECTORY_SA_KEY` (the JSON key itself — what a
+/// Secret Manager value surfaced as an env var looks like) or
+/// `OVERSLASH_GOOGLE_DIRECTORY_SA_KEY_FILE` (a path — a mounted Kubernetes or
+/// Docker secret). Parsed at boot: a malformed key, an unreadable file, or both
+/// variables set stops the process rather than surfacing at the first sweep.
+/// Nested for the same reason as [`AsyncExecutionConfig`].
+#[derive(Clone, Debug, Default)]
+pub struct GoogleDirectoryInstance {
+    pub service_account: Option<crate::services::google_directory::ServiceAccountKey>,
 }
 
 /// Async (non-blocking) action execution — see DECISIONS D62.
@@ -897,6 +917,7 @@ pub(crate) mod tests {
     pub(crate) fn empty_test_config() -> Config {
         Config {
             async_execution: Default::default(),
+            google_directory: Default::default(),
             call_stream_idle_timeout_ms: 30_000,
             call_timeout_max_ms: 110_000,
             call_timeout_ms: 30_000,

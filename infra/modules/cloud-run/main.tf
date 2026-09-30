@@ -285,6 +285,12 @@ variable "trusted_proxy_secret_secret_id" {
   description = "GSM secret ID holding the value the dashboard's Vercel middleware stamps in x-overslash-proxy-secret."
 }
 
+variable "google_directory_sa_key_secret_id" {
+  type        = string
+  default     = ""
+  description = "GSM secret ID holding the instance's Google Workspace Directory service-account JSON key. Feeds OVERSLASH_GOOGLE_DIRECTORY_SA_KEY; empty leaves the feature off."
+}
+
 variable "bi_db_password_secret_id" {
   type        = string
   default     = ""
@@ -459,6 +465,9 @@ locals {
 
   env_secrets = merge(
     var.bi_db_password_secret_id != "" ? { OVERSLASH_BI_DB_PASSWORD = var.bi_db_password_secret_id } : {},
+    var.google_directory_sa_key_secret_id != "" ? {
+      OVERSLASH_GOOGLE_DIRECTORY_SA_KEY = var.google_directory_sa_key_secret_id
+    } : {},
     {
       DB_PASSWORD                = var.db_password_secret_id
       OAUTH_GOOGLE_CLIENT_ID     = var.google_services_client_id_secret_id

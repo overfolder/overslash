@@ -232,6 +232,23 @@ pub(super) async fn provider_callback(
     Query(params): Query<CallbackQuery>,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
+    // A Google Workspace Directory connect rides this same registered
+    // redirect URI with its own state; it is not a login and sets no session.
+    if provider_key == "google"
+        && let Some(flow_id) = params
+            .state
+            .strip_prefix(super::google_directory_connect::STATE_PREFIX)
+    {
+        return super::google_directory_connect::finish(
+            &state,
+            &ext,
+            &headers,
+            flow_id,
+            &params.code,
+        )
+        .await;
+    }
+
     // Parse state: "login:<provider_key>:<nonce>" or, for the Vercel
     // preview-deployment handoff, "login:<provider_key>:<nonce>:<preview_id>".
     // The 4-segment form is only honored when the feature is enabled — a

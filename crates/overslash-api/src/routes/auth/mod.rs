@@ -37,6 +37,7 @@ const PREVIEW_HANDOFF_CODE_TTL_SECS: i64 = 60;
 
 mod account_sessions;
 mod dev_token;
+pub(crate) mod google_directory_connect;
 mod magic_link;
 mod providers;
 mod provisioning;

@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict uGAvzortgMj4WdMbkpZY6Iyb7tGMPzFtygmAF2gfRSYGOauhBjAzzOXuzoV6FAH
+\restrict JexBrV8XPBloPESfwlIGUte3yUbEjM0CUdXu38qe6fTckdZ9k1P9Akhbf0HVezS
 
 -- Dumped from database version 16.14 (Debian 16.14-1.pgdg12+1)
 -- Dumped by pg_dump version 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1)
@@ -559,6 +559,20 @@ COMMENT ON COLUMN public.executions.cancel_requested IS 'Cooperative cancel. Sto
 
 
 --
+-- Name: google_directory_connect_flows; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.google_directory_connect_flows (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    org_id uuid NOT NULL,
+    identity_id uuid NOT NULL,
+    pkce_verifier text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    expires_at timestamp with time zone NOT NULL
+);
+
+
+--
 -- Name: group_grants; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -936,12 +950,8 @@ COMMENT ON COLUMN public.oauth_providers.refresh_endpoint IS 'Where the refresh 
 
 CREATE TABLE public.org_google_directory_configs (
     org_id uuid NOT NULL,
-    encrypted_service_account_key bytea NOT NULL,
-    service_account_email text NOT NULL,
-    service_account_key_id text NOT NULL,
     admin_subject text NOT NULL,
     customer_id text DEFAULT 'my_customer'::text NOT NULL,
-    domains text[] NOT NULL,
     enabled boolean DEFAULT true NOT NULL,
     sync_interval_hours integer DEFAULT 8 NOT NULL,
     next_sync_at timestamp with time zone DEFAULT now() NOT NULL,
@@ -955,7 +965,9 @@ CREATE TABLE public.org_google_directory_configs (
     last_sync_stats jsonb,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT org_google_directory_configs_domains_check CHECK ((cardinality(domains) > 0)),
+    domain text NOT NULL,
+    connected_by_identity_id uuid,
+    connected_at timestamp with time zone DEFAULT now() NOT NULL,
     CONSTRAINT org_google_directory_configs_last_sync_status_check CHECK ((last_sync_status = ANY (ARRAY['ok'::text, 'error'::text]))),
     CONSTRAINT org_google_directory_configs_sync_interval_hours_check CHECK (((sync_interval_hours >= 1) AND (sync_interval_hours <= 168)))
 );
@@ -1413,6 +1425,25 @@ CREATE TABLE public.user_org_memberships (
 
 
 --
+-- Name: user_sessions; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.user_sessions (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    user_id uuid,
+    identity_id uuid NOT NULL,
+    org_id uuid NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    last_seen_at timestamp with time zone DEFAULT now() NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    revoked_at timestamp with time zone,
+    revoked_reason text,
+    user_agent text,
+    ip_address text
+);
+
+
+--
 -- Name: users; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -1670,6 +1701,14 @@ ALTER TABLE ONLY public.events
 
 ALTER TABLE ONLY public.executions
     ADD CONSTRAINT executions_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: google_directory_connect_flows google_directory_connect_flows_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.google_directory_connect_flows
+    ADD CONSTRAINT google_directory_connect_flows_pkey PRIMARY KEY (id);
 
 
 --
@@ -2065,6 +2104,14 @@ ALTER TABLE ONLY public.user_org_memberships
 
 
 --
+-- Name: user_sessions user_sessions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_sessions
+    ADD CONSTRAINT user_sessions_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: users users_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2318,6 +2365,13 @@ CREATE INDEX idx_executions_pending_expiry ON public.executions USING btree (exp
 --
 
 CREATE INDEX idx_executions_unread ON public.executions USING btree (org_id, completed_at) WHERE ((status = ANY (ARRAY['executed'::text, 'failed'::text])) AND (result_viewed_at IS NULL));
+
+
+--
+-- Name: idx_google_directory_connect_flows_expires; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_google_directory_connect_flows_expires ON public.google_directory_connect_flows USING btree (expires_at);
 
 
 --
@@ -2804,6 +2858,13 @@ CREATE UNIQUE INDEX media_descriptors_ref_idx ON public.media_descriptors USING 
 
 
 --
+-- Name: org_google_directory_configs_domain_key; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX org_google_directory_configs_domain_key ON public.org_google_directory_configs USING btree (lower(domain));
+
+
+--
 -- Name: org_idp_configs_one_default_per_org; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2843,6 +2904,27 @@ CREATE UNIQUE INDEX service_action_embeddings_user_unique ON public.service_acti
 --
 
 CREATE INDEX upload_tokens_expiry_idx ON public.upload_tokens USING btree (expires_at);
+
+
+--
+-- Name: user_sessions_expires_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX user_sessions_expires_idx ON public.user_sessions USING btree (expires_at);
+
+
+--
+-- Name: user_sessions_identity_live_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX user_sessions_identity_live_idx ON public.user_sessions USING btree (identity_id) WHERE (revoked_at IS NULL);
+
+
+--
+-- Name: user_sessions_user_live_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX user_sessions_user_live_idx ON public.user_sessions USING btree (user_id) WHERE (revoked_at IS NULL);
 
 
 --
@@ -3146,6 +3228,22 @@ ALTER TABLE ONLY public.executions
 
 
 --
+-- Name: google_directory_connect_flows google_directory_connect_flows_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.google_directory_connect_flows
+    ADD CONSTRAINT google_directory_connect_flows_identity_id_fkey FOREIGN KEY (identity_id) REFERENCES public.identities(id) ON DELETE CASCADE;
+
+
+--
+-- Name: google_directory_connect_flows google_directory_connect_flows_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.google_directory_connect_flows
+    ADD CONSTRAINT google_directory_connect_flows_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
+
+
+--
 -- Name: group_directory_sources group_directory_sources_directory_group_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3423,6 +3521,14 @@ ALTER TABLE ONLY public.oauth_connection_flows
 
 ALTER TABLE ONLY public.oauth_mcp_clients
     ADD CONSTRAINT oauth_mcp_clients_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
+
+
+--
+-- Name: org_google_directory_configs org_google_directory_configs_connected_by_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.org_google_directory_configs
+    ADD CONSTRAINT org_google_directory_configs_connected_by_identity_id_fkey FOREIGN KEY (connected_by_identity_id) REFERENCES public.identities(id) ON DELETE SET NULL;
 
 
 --
@@ -3706,6 +3812,30 @@ ALTER TABLE ONLY public.user_org_memberships
 
 
 --
+-- Name: user_sessions user_sessions_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_sessions
+    ADD CONSTRAINT user_sessions_identity_id_fkey FOREIGN KEY (identity_id) REFERENCES public.identities(id) ON DELETE CASCADE;
+
+
+--
+-- Name: user_sessions user_sessions_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_sessions
+    ADD CONSTRAINT user_sessions_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
+
+
+--
+-- Name: user_sessions user_sessions_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_sessions
+    ADD CONSTRAINT user_sessions_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+
+--
 -- Name: users users_personal_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3741,5 +3871,5 @@ ALTER TABLE ONLY public.webhook_subscriptions
 -- PostgreSQL database dump complete
 --
 
-\unrestrict uGAvzortgMj4WdMbkpZY6Iyb7tGMPzFtygmAF2gfRSYGOauhBjAzzOXuzoV6FAH
+\unrestrict JexBrV8XPBloPESfwlIGUte3yUbEjM0CUdXu38qe6fTckdZ9k1P9Akhbf0HVezS
 

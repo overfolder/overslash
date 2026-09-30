@@ -67,6 +67,34 @@ pub(super) fn parse_platform_credential(
     })
 }
 
+/// The instance's Google Directory service account, from exactly one of an
+/// inline JSON key or a path to one. Panics — the boot-time failure — on both
+/// set, an unreadable file, or a key that does not parse; the message never
+/// includes key material.
+pub(super) fn parse_google_directory(
+    inline: Option<String>,
+    file: Option<String>,
+) -> GoogleDirectoryInstance {
+    let inline = inline.filter(|s| !s.trim().is_empty());
+    let file = file.filter(|s| !s.trim().is_empty());
+    let json = match (inline, file) {
+        (None, None) => return GoogleDirectoryInstance::default(),
+        (Some(_), Some(_)) => panic!(
+            "set only one of OVERSLASH_GOOGLE_DIRECTORY_SA_KEY and \
+             OVERSLASH_GOOGLE_DIRECTORY_SA_KEY_FILE"
+        ),
+        (Some(json), None) => json,
+        (None, Some(path)) => std::fs::read_to_string(path.trim()).unwrap_or_else(|e| {
+            panic!("OVERSLASH_GOOGLE_DIRECTORY_SA_KEY_FILE: cannot read {path:?} ({e})")
+        }),
+    };
+    let key = crate::services::google_directory::ServiceAccountKey::parse(&json)
+        .unwrap_or_else(|e| panic!("Google Directory service account key: {e}"));
+    GoogleDirectoryInstance {
+        service_account: Some(key),
+    }
+}
+
 pub(super) fn parse_service_base_overrides(raw: Option<&str>) -> HashMap<String, String> {
     let mut out = HashMap::new();
     let Some(s) = raw.filter(|s| !s.trim().is_empty()) else {
@@ -497,5 +525,78 @@ mod tests {
             std::env::remove_var("SECRETS_ENCRYPTION_KEY_ACTIVE_ID");
             std::env::remove_var("SECRETS_ENCRYPTION_KEY_PREVIOUS_ID");
         }
+    }
+}
+
+#[cfg(test)]
+mod google_directory_tests {
+    use super::parse_google_directory;
+    use overslash_fakes::google_directory::service_account_json;
+
+    #[test]
+    fn unset_means_the_feature_is_off() {
+        assert!(parse_google_directory(None, None).service_account.is_none());
+        assert!(
+            parse_google_directory(Some("  ".into()), Some(String::new()))
+                .service_account
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn an_inline_key_is_parsed() {
+        let key = parse_google_directory(
+            Some(service_account_json("sa@p.iam.gserviceaccount.com")),
+            None,
+        )
+        .service_account
+        .unwrap();
+        assert_eq!(key.client_email, "sa@p.iam.gserviceaccount.com");
+        assert_eq!(key.client_id, "109876543210");
+    }
+
+    #[test]
+    fn a_key_file_is_read() {
+        let path = std::env::temp_dir().join(format!("gdir-key-{}.json", uuid::Uuid::new_v4()));
+        std::fs::write(
+            &path,
+            service_account_json("file@p.iam.gserviceaccount.com"),
+        )
+        .unwrap();
+        let key = parse_google_directory(None, Some(path.display().to_string()))
+            .service_account
+            .unwrap();
+        std::fs::remove_file(&path).ok();
+        assert_eq!(key.client_email, "file@p.iam.gserviceaccount.com");
+    }
+
+    #[test]
+    #[should_panic(expected = "set only one of")]
+    fn both_set_is_a_boot_failure() {
+        parse_google_directory(Some("{}".into()), Some("/x.json".into()));
+    }
+
+    #[test]
+    #[should_panic(expected = "cannot read")]
+    fn an_unreadable_file_is_a_boot_failure() {
+        parse_google_directory(None, Some("/definitely/not/here.json".into()));
+    }
+
+    /// A bad key stops boot, and the panic never echoes key material.
+    #[test]
+    fn a_malformed_key_is_a_boot_failure_without_leaking_it() {
+        let err = std::panic::catch_unwind(|| {
+            parse_google_directory(
+                Some(r#"{"type":"service_account","private_key":"SECRET-MATERIAL"}"#.into()),
+                None,
+            )
+        })
+        .unwrap_err();
+        let msg = err.downcast_ref::<String>().cloned().unwrap_or_default();
+        assert!(
+            msg.contains("Google Directory service account key"),
+            "{msg}"
+        );
+        assert!(!msg.contains("SECRET-MATERIAL"), "{msg}");
     }
 }
