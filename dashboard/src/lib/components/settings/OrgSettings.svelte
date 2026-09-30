@@ -22,6 +22,7 @@
 	import type { OrgPageData, OrgSubscription } from './org-settings-load';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
+	import ChipInput from '$lib/components/ChipInput.svelte';
 	import GoogleDirectoryCard from '$lib/components/org/GoogleDirectoryCard.svelte';
 	import { absoluteTime } from '$lib/utils/time';
 	import { invalidateAllowedDomains } from '$lib/orgDomains';
@@ -57,10 +58,15 @@
 	let managedSigninSettings = $state<ManagedSigninSettings | null>(null);
 	let managedSigninSaving = $state(false);
 	let managedSigninError = $state<string | null>(null);
-	// Editable buffer for the allowed-domains list (one per line). Synced
-	// from the server value on load and after each save.
-	let domainsInput = $state('');
-	let domainsDirty = $state(false);
+	// Editable buffer for the allowed-domains list. Synced from the server
+	// value on load and after each save.
+	let allowedDomains = $state<string[]>([]);
+	const domainsDirty = $derived.by(() => {
+		const saved = managedSigninSettings?.managed_signin_allowed_domains ?? [];
+		return (
+			saved.length !== allowedDomains.length || saved.some((d, i) => d !== allowedDomains[i])
+		);
+	});
 	let templateSettings = $state<TemplateSettings | null>(null);
 	let templateSettingsSaving = $state(false);
 	let templateSettingsError = $state<string | null>(null);
@@ -82,8 +88,7 @@
 		executionSettings = data.executionSettings;
 		auditSettings = data.auditSettings;
 		managedSigninSettings = data.managedSigninSettings;
-		domainsInput = data.managedSigninSettings?.managed_signin_allowed_domains.join('\n') ?? '';
-		domainsDirty = false;
+		allowedDomains = [...(data.managedSigninSettings?.managed_signin_allowed_domains ?? [])];
 		templateSettings = data.templateSettings;
 		invites = data.invites;
 		subscription = data.subscription;
@@ -779,8 +784,7 @@
 				patch
 			);
 			managedSigninSettings = updated;
-			domainsInput = updated.managed_signin_allowed_domains.join('\n');
-			domainsDirty = false;
+			allowedDomains = [...updated.managed_signin_allowed_domains];
 			// Identity labels across the app strip the domain when exactly one is
 			// allowed. This page patches state in place instead of invalidating
 			// the layout load, so drop the memo explicitly or every other page
@@ -809,12 +813,15 @@
 	}
 
 	function saveAllowedDomains() {
-		const domains = domainsInput
-			.split(/[\s,]+/)
-			.map((d) => d.trim())
-			.filter((d) => d.length > 0);
-		return saveManagedSignin({ managed_signin_allowed_domains: domains });
+		return saveManagedSignin({ managed_signin_allowed_domains: allowedDomains });
 	}
+
+	// Loose client-side shape check so typos surface before Save; the API
+	// stays the authority on what it accepts.
+	const domainRe = /^[a-z0-9-]+(\.[a-z0-9-]+)+$/;
+	const normalizeDomain = (d: string) => d.trim().toLowerCase().replace(/^@/, '');
+	const validateDomain = (d: string) =>
+		domainRe.test(d) ? null : `"${d}" doesn't look like a domain (e.g. example.org).`;
 
 	async function submitInvite(e: Event) {
 		e.preventDefault();
@@ -1392,7 +1399,7 @@
 				<div class="domains-block">
 					<div class="toggle-label">Allowed email domains</div>
 					<div class="toggle-help">
-						One domain per line (e.g. <code>reveni.io</code>). Any user
+						Type a domain and press Enter (e.g. <code>example.org</code>). Any user
 						whose verified email ends in one of these self-provisions on
 						first login. Matching splits the email on <code>@</code> and
 						is case-insensitive; it does not cryptographically verify the
@@ -1405,14 +1412,14 @@
 							rejected — no one can self-provision.
 						</div>
 					{/if}
-					<textarea
-						class="domains-input"
-						rows="3"
-						placeholder="reveni.io"
-						bind:value={domainsInput}
-						oninput={() => (domainsDirty = true)}
+					<ChipInput
+						bind:value={allowedDomains}
+						placeholder="example.org"
+						ariaLabel="Allowed email domains"
+						normalize={normalizeDomain}
+						validate={validateDomain}
 						disabled={managedSigninSaving}
-					></textarea>
+					/>
 					<button
 						type="button"
 						class="btn btn-primary"
@@ -2889,16 +2896,6 @@
 		margin-top: 0.75rem;
 		padding-top: 0.75rem;
 		border-top: 1px solid var(--color-border);
-	}
-	.domains-input {
-		font-family: var(--font-mono, monospace);
-		font-size: 0.85rem;
-		padding: 0.5rem 0.6rem;
-		border: 1px solid var(--color-border);
-		border-radius: 6px;
-		background: var(--color-surface, #fff);
-		color: var(--color-text);
-		resize: vertical;
 	}
 	.domains-block .btn {
 		align-self: flex-start;
