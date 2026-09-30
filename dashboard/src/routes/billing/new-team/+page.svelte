@@ -37,7 +37,8 @@
 	// directly (POST /v1/orgs/free-unlimited). On by default for them; the
 	// Create-Org modal's "toggle off" bounce lands here with `?paid=1`.
 	const isInstanceAdmin = $derived($page.data.user?.is_instance_admin === true);
-	let freeUnlimited = $state(true);
+	// Read at init (not in onMount) so the first render already matches.
+	let freeUnlimited = $state($page.url.searchParams.get('paid') !== '1');
 	const createFree = $derived(isInstanceAdmin && freeUnlimited);
 
 	let slugCheck = $state<SlugCheck>({ kind: 'idle' });
@@ -51,7 +52,6 @@
 		// instance-admin Create-Org modal with the toggle off.
 		const qsName = $page.url.searchParams.get('name');
 		const qsSlug = $page.url.searchParams.get('slug');
-		if ($page.url.searchParams.get('paid') === '1') freeUnlimited = false;
 		if (qsName) orgName = qsName;
 		if (qsSlug) {
 			orgSlug = qsSlug;
