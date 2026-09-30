@@ -1321,7 +1321,7 @@ Bytes at rest are a new cost, so every bound above is enforced here rather than 
 
 `upload_file` stays an ordinary gated write for agents. It is not added to the four seeded self-setup anchors, because widening those is a separate call. A user who wants it frictionless grants `overslash:upload_file:*` once, or answers "Allow & Remember".
 
-## D-NEXT: Every instance endpoint and config field is overridable; a template only decides which ones the form shows up front
+## D115: Every instance endpoint and config field is overridable; a template only decides which ones the form shows up front
 
 **Date**: 2026-09
 **Decision**: `configurable_url` on the template detail is true for every template except the `http` pseudo-service and `runtime: platform`. It is no longer tied to being host-less, MCP, or carrying a `secret_source: org` scheme. The detail also reports `default_url`, which is `mcp.url` or `ServiceDefinition::default_base_url()` (the same function `effective_base` falls back to), and `url_promoted`. Each `instance_config_params` entry gains `default` and `promoted`. A new extension, `x-overslash-promoted` (alias `promoted`), is read on `servers[]` (only `servers[0]` counts) and wherever `x-overslash-instance-config` is read. An `x-overslash-config` var takes a plain `promoted: true`. The instance form shows a field in its main section when the instance cannot work without it (required, and neither the template nor an org layer supplies a default) or when it is promoted. Everything else goes behind "Show more options", and every field with a default names that default. Shipped promotions: Langfuse's endpoint, and email's `X-Mailbox-Imap`/`X-Mailbox-Smtp`.
