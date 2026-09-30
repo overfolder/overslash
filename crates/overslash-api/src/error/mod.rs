@@ -382,6 +382,22 @@ pub enum AppError {
         action: String,
         reason: String,
     },
+
+    /// Minting a staged upload would take the caller past a quota. Returned as
+    /// 429 with the live usage and — the useful part — how much a `force: true`
+    /// retry could free by evicting the caller's own oldest uploads. Zero there
+    /// means forcing would not help either, so an agent is told not to try.
+    #[error("staged_upload_quota_exceeded")]
+    StagedUploadQuotaExceeded {
+        detail: serde_json::Value,
+        hint: String,
+    },
+
+    /// The replica is at its bound on concurrent large-body work and waited
+    /// as long as it will. Returned as 503: retrying shortly is the right
+    /// answer, and nothing about the request itself was wrong.
+    #[error("unavailable: {0}")]
+    Unavailable(String),
 }
 
 impl AppError {
@@ -406,7 +422,10 @@ impl AppError {
             Self::UpstreamTimeout { .. } => StatusCode::GATEWAY_TIMEOUT,
             Self::Conflict(_) | Self::SecretNameConflict { .. } => StatusCode::CONFLICT,
             Self::Gone(_) => StatusCode::GONE,
-            Self::RateLimited { .. } => StatusCode::TOO_MANY_REQUESTS,
+            Self::RateLimited { .. } | Self::StagedUploadQuotaExceeded { .. } => {
+                StatusCode::TOO_MANY_REQUESTS
+            }
+            Self::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             Self::TemplateValidationFailed { .. } => StatusCode::BAD_REQUEST,
             Self::ServiceResolution { status, .. } => *status,
             Self::NeedsAuthentication { .. } | Self::ReauthRequired { .. } => {
@@ -472,6 +491,19 @@ impl IntoResponse for AppError {
                     .into_response();
             }
             Self::Gone(msg) => (StatusCode::GONE, msg.clone()),
+            Self::Unavailable(msg) => (StatusCode::SERVICE_UNAVAILABLE, msg.clone()),
+            Self::StagedUploadQuotaExceeded { detail, hint } => {
+                let mut body = json!({
+                    "error": "staged_upload_quota_exceeded",
+                    "hint": hint,
+                });
+                if let (Some(b), Some(d)) = (body.as_object_mut(), detail.as_object()) {
+                    for (k, v) in d {
+                        b.insert(k.clone(), v.clone());
+                    }
+                }
+                return (StatusCode::TOO_MANY_REQUESTS, Json(body)).into_response();
+            }
             Self::Internal(msg) => {
                 tracing::error!("Internal error: {msg}");
                 (

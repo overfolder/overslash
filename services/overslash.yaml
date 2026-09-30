@@ -310,3 +310,26 @@ platform_actions:
       service_id: { type: string, required: false }
       credential_key: { type: string, required: false }
       force: { type: boolean, required: false }
+
+  upload_file:
+    # A write because it stores bytes and spends quota, though nothing leaves
+    # the gateway until an action that names the upload is itself approved.
+    description: >
+      Stage a file so an action can send it without the bytes ever entering
+      your context — today, an email attachment. Declare the file up front
+      (filename, exact size_bytes, optionally content_type and sha256) and get
+      back upload_id plus a single-use upload_url: PUT the raw bytes there (the
+      response carries a ready curl command), then pass {"upload_id": …} in the
+      action's attachments. The body must be exactly size_bytes long and match
+      sha256 when given. A staged file lives 24 hours and is only sendable by
+      you or agents under the same user. Limits: 10 MiB per file and per send,
+      plus per-identity and per-org quotas. Over quota the call is refused with
+      staged_upload_quota_exceeded; pass force: true to evict your own oldest
+      staged files to make room (never ones a pending approval is waiting on).
+    risk: write
+    params:
+      filename: { type: string, required: true }
+      size_bytes: { type: integer, required: true }
+      content_type: { type: string, required: false }
+      sha256: { type: string, required: false }
+      force: { type: boolean, required: false }

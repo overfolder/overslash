@@ -178,6 +178,7 @@ mod tests {
             headers: h,
             body: body.map(str::to_string),
             secrets: Vec::new(),
+            staged_uploads: Vec::new(),
         }
     }
 

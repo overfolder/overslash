@@ -672,6 +672,15 @@ pub struct ActionParam {
     /// is empty".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shape: Option<Box<ParamShape>>,
+    /// `x-overslash-staged-upload`: this body property is an array of
+    /// `{upload_id}` references to bytes staged through the gateway's own
+    /// upload endpoint, and each is inlined in this encoding at send time.
+    ///
+    /// HTTP runtime, body properties only. Template validation requires an
+    /// `array` param; the gateway fills in each item's descriptor before the
+    /// approval is written and swaps in the bytes only when it dials.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub staged_upload: Option<crate::types::StagedInline>,
 }
 
 impl Default for ActionParam {
@@ -696,6 +705,7 @@ impl Default for ActionParam {
             sql_database: None,
             content_media_type: None,
             shape: None,
+            staged_upload: None,
         }
     }
 }

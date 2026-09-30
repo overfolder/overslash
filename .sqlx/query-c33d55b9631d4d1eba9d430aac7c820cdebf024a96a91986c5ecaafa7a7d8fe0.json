@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id, COALESCE(size_bytes, declared_size_bytes) AS \"bytes!\"\n               FROM staged_uploads\n               WHERE identity_id = $1\n                 AND status <> 'uploading'\n                 AND expires_at > now()\n                 AND (pinned_until IS NULL OR pinned_until <= now())\n               ORDER BY created_at ASC, id ASC",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "staged_uploads",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "bytes!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      null
+    ]
+  },
+  "hash": "c33d55b9631d4d1eba9d430aac7c820cdebf024a96a91986c5ecaafa7a7d8fe0"
+}

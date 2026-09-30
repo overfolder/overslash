@@ -56,6 +56,7 @@ pub mod secret_request;
 pub mod service_action_embedding;
 pub mod service_instance;
 pub mod service_template;
+pub mod staged_upload;
 pub mod upload_token;
 pub mod user;
 pub mod user_session;

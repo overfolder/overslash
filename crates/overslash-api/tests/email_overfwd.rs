@@ -163,7 +163,7 @@ async fn setup_email_instance_layered(
 /// `Config` before boot — how the platform-credential tests below install a
 /// platform gateway key (and route the template's real `mailbox.overslash.com`
 /// host at the in-process mock) without touching process-global env.
-async fn setup_email_instance_configured<F>(
+pub(crate) async fn setup_email_instance_configured<F>(
     pool: sqlx::PgPool,
     secrets: &[(&str, &str)],
     layer: Option<Value>,

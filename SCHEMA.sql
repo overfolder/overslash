@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict JexBrV8XPBloPESfwlIGUte3yUbEjM0CUdXu38qe6fTckdZ9k1P9Akhbf0HVezS
+\restrict ucgw40mCIPlPgV5GqW8GKWP8CHVzpEgVOckGaAcWQqXjRgTefZmau7iSCU6Bnfd
 
 -- Dumped from database version 16.14 (Debian 16.14-1.pgdg12+1)
 -- Dumped by pg_dump version 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1)
@@ -1351,6 +1351,55 @@ COMMENT ON COLUMN public.service_templates.delta IS 'Derived-layer content: mask
 
 
 --
+-- Name: staged_uploads; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.staged_uploads (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    org_id uuid NOT NULL,
+    identity_id uuid NOT NULL,
+    owner_user_id uuid NOT NULL,
+    token_hash bytea,
+    status text DEFAULT 'pending'::text NOT NULL,
+    filename text NOT NULL,
+    content_type text NOT NULL,
+    declared_size_bytes bigint NOT NULL,
+    declared_sha256 text,
+    size_bytes bigint,
+    sha256 text,
+    body_ciphertext bytea,
+    pinned_until timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    redeemed_at timestamp with time zone,
+    CONSTRAINT staged_uploads_declared_size_bytes_check CHECK ((declared_size_bytes > 0)),
+    CONSTRAINT staged_uploads_ready_has_bytes CHECK (((status = 'ready'::text) = ((body_ciphertext IS NOT NULL) AND (size_bytes IS NOT NULL) AND (sha256 IS NOT NULL)))),
+    CONSTRAINT staged_uploads_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'uploading'::text, 'ready'::text])))
+);
+
+
+--
+-- Name: TABLE staged_uploads; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.staged_uploads IS 'Bytes the gateway holds briefly so an HTTP action can carry them inline (x-overslash-staged-upload). Minted by overslash:upload_file, pushed to POST /v1/uploads/{token}, inlined at send time. Quota-bounded and TTL''d.';
+
+
+--
+-- Name: COLUMN staged_uploads.body_ciphertext; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.staged_uploads.body_ciphertext IS 'AES-256-GCM [version|nonce|ct+tag] over the raw bytes. NULL until redeemed.';
+
+
+--
+-- Name: COLUMN staged_uploads.pinned_until; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.staged_uploads.pinned_until IS 'Referenced by a pending approval or queued call until this time: not evictable, not swept.';
+
+
+--
 -- Name: upload_tokens; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -2077,6 +2126,22 @@ ALTER TABLE ONLY public.service_instances
 
 ALTER TABLE ONLY public.service_templates
     ADD CONSTRAINT service_templates_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: staged_uploads staged_uploads_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.staged_uploads
+    ADD CONSTRAINT staged_uploads_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: staged_uploads staged_uploads_token_hash_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.staged_uploads
+    ADD CONSTRAINT staged_uploads_token_hash_key UNIQUE (token_hash);
 
 
 --
@@ -2897,6 +2962,27 @@ CREATE UNIQUE INDEX service_action_embeddings_org_unique ON public.service_actio
 --
 
 CREATE UNIQUE INDEX service_action_embeddings_user_unique ON public.service_action_embeddings USING btree (org_id, owner_identity_id, template_key, action_key) WHERE (tier = 'user'::text);
+
+
+--
+-- Name: staged_uploads_expiry_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX staged_uploads_expiry_idx ON public.staged_uploads USING btree (expires_at);
+
+
+--
+-- Name: staged_uploads_identity_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX staged_uploads_identity_idx ON public.staged_uploads USING btree (identity_id, created_at);
+
+
+--
+-- Name: staged_uploads_org_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX staged_uploads_org_idx ON public.staged_uploads USING btree (org_id);
 
 
 --
@@ -3772,6 +3858,30 @@ ALTER TABLE ONLY public.service_templates
 
 
 --
+-- Name: staged_uploads staged_uploads_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.staged_uploads
+    ADD CONSTRAINT staged_uploads_identity_id_fkey FOREIGN KEY (identity_id) REFERENCES public.identities(id) ON DELETE CASCADE;
+
+
+--
+-- Name: staged_uploads staged_uploads_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.staged_uploads
+    ADD CONSTRAINT staged_uploads_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
+
+
+--
+-- Name: staged_uploads staged_uploads_owner_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.staged_uploads
+    ADD CONSTRAINT staged_uploads_owner_user_id_fkey FOREIGN KEY (owner_user_id) REFERENCES public.identities(id) ON DELETE CASCADE;
+
+
+--
 -- Name: upload_tokens upload_tokens_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3871,5 +3981,5 @@ ALTER TABLE ONLY public.webhook_subscriptions
 -- PostgreSQL database dump complete
 --
 
-\unrestrict JexBrV8XPBloPESfwlIGUte3yUbEjM0CUdXu38qe6fTckdZ9k1P9Akhbf0HVezS
+\unrestrict ucgw40mCIPlPgV5GqW8GKWP8CHVzpEgVOckGaAcWQqXjRgTefZmau7iSCU6Bnfd
 

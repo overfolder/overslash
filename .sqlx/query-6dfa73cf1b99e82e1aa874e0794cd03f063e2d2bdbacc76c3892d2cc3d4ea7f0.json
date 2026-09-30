@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE staged_uploads\n         SET pinned_until = GREATEST(COALESCE(pinned_until, $3), $3)\n         WHERE org_id = $1 AND id = ANY($2)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "UuidArray",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "6dfa73cf1b99e82e1aa874e0794cd03f063e2d2bdbacc76c3892d2cc3d4ea7f0"
+}

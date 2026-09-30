@@ -167,6 +167,7 @@ pub(super) async fn resolve_request(
                     headers: req.headers.clone(),
                     body: req.body.clone(),
                     secrets: resolved_auth.secrets,
+                    staged_uploads: Vec::new(),
                 },
                 auth_header: resolved_auth.auth_header,
             },
@@ -368,6 +369,7 @@ pub(super) async fn resolve_request(
                         headers: HashMap::new(),
                         body: None,
                         secrets: Vec::new(),
+                        staged_uploads: Vec::new(),
                     },
                     auth_header: None,
                 },
@@ -440,6 +442,7 @@ pub(super) async fn resolve_request(
                         headers: HashMap::new(),
                         body: None,
                         secrets: Vec::new(),
+                        staged_uploads: Vec::new(),
                     },
                     auth_header: None,
                 },
@@ -518,13 +521,25 @@ pub(super) async fn resolve_request(
                 .unwrap_or(false)
         };
 
-        let non_path_params: HashMap<String, serde_json::Value> = req
+        let mut non_path_params: HashMap<String, serde_json::Value> = req
             .params
             .iter()
             .filter(|(k, _)| !action.path.contains(&format!("{{{k}}}")))
             .filter(|(k, _)| !is_header_param(k))
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
+
+        // Staged uploads become descriptors here, before the approval that
+        // quotes them exists; their bytes are inlined only at send time.
+        let staged_uploads = crate::services::staged_upload::describe(
+            state.db(ext),
+            scope.org_id(),
+            ceiling_user_id,
+            &state.config.staged_uploads,
+            action,
+            &mut non_path_params,
+        )
+        .await?;
 
         let (url, body) = if action.method == "GET" || action.method == "HEAD" {
             // Append non-path params as query string
@@ -822,6 +837,7 @@ pub(super) async fn resolve_request(
                         headers: h.clone(),
                         body: None,
                         secrets: resolved_auth.secrets.clone(),
+                        staged_uploads: Vec::new(),
                     };
                     match crate::services::action_caller::resolve_credential_values(
                         state,
@@ -904,6 +920,7 @@ pub(super) async fn resolve_request(
                     headers,
                     body,
                     secrets: resolved_auth.secrets,
+                    staged_uploads,
                 },
                 auth_header: resolved_auth.auth_header,
             },

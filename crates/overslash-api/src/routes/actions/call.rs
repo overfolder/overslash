@@ -18,6 +18,7 @@ use crate::{
         audit_capture::{self, AuditResponseBodyMode},
         call_timeout, group_ceiling, http_caller,
         response_filter::{self},
+        staged_upload,
     },
 };
 use overslash_core::{
@@ -464,7 +465,6 @@ pub(super) async fn call_action_impl(
     // Resolved *before* the gate on purpose: a call that gets gated stores
     // this budget on the approval, so the eventual replay honours what the
     // caller asked for instead of falling back to a deployment default.
-
     // Layer 2 (agents/sub-agents only): walk the ancestor chain and file an
     // approval at the first gap. `permission_gate` documents why the gate
     // keys off the pre-resolution estimate.
@@ -662,7 +662,6 @@ pub(super) async fn call_action_impl(
         return deferred::mint_http_download(&state, &ext, &scope, &action_req, d).await;
     }
 
-    // Resolve secrets and inject
     let secret_values = crate::services::action_caller::resolve_credential_values(
         &state,
         &scope,
@@ -679,6 +678,8 @@ pub(super) async fn call_action_impl(
         resolved_headers.insert(ah.name.clone(), ah.value.clone());
     }
     let resolved_url = state.config.apply_base_overrides(&resolved_url);
+    // Staged uploads meet the body here, as credentials meet the headers above.
+    let wire = staged_upload::wire_body(&state, scope.db(), auth.org_id, &action_req).await?;
 
     // Streaming proxy path
     if req.prefer_stream.unwrap_or(false) {
@@ -688,7 +689,7 @@ pub(super) async fn call_action_impl(
             &action_req.method,
             &resolved_url,
             &resolved_headers,
-            action_req.body.as_deref(),
+            wire.or(action_req.body.as_deref()),
             call_timeout.duration(),
         )
         .await
@@ -814,7 +815,7 @@ pub(super) async fn call_action_impl(
         &action_req.method,
         &resolved_url,
         &resolved_headers,
-        action_req.body.as_deref(),
+        wire.or(action_req.body.as_deref()),
         state.config.max_response_body_bytes,
         call_timeout.duration(),
     )

@@ -108,6 +108,41 @@ pub struct ActionRequest {
     pub body: Option<String>,
     #[serde(default)]
     pub secrets: Vec<SecretRef>,
+    /// Top-level body fields whose items name gateway-staged uploads
+    /// (`x-overslash-staged-upload`). The body carries each upload's
+    /// *descriptor* — id, filename, type, size, digest — and never its bytes;
+    /// those are inlined at send time, exactly as a [`SecretRef`] is resolved
+    /// at send time rather than persisted. That is what keeps a 10 MB
+    /// attachment out of `approvals.replay_payload` and every audit row.
+    ///
+    /// Only ever set from a service template, never from caller input: Mode A
+    /// builds its request field by field from a `deny_unknown_fields` DTO, so
+    /// a raw HTTP call cannot name an upload and have it sent anywhere.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub staged_uploads: Vec<StagedUploadField>,
+}
+
+/// One body field holding staged-upload references. See
+/// [`ActionRequest::staged_uploads`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StagedUploadField {
+    pub field: String,
+    #[serde(default)]
+    pub inline_as: StagedInline,
+}
+
+/// How a staged upload's bytes are written into the outgoing body.
+///
+/// One variant today. An enum rather than a bare flag so a template states the
+/// encoding it expects, and a future upstream that wants something else is a
+/// new variant rather than a silent reinterpretation of an old one.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StagedInline {
+    /// Each item becomes `{filename, content_type, content_base64}`, standard
+    /// padded base64 — the shape overfwd's `POST /email/send` takes.
+    #[default]
+    Base64,
 }
 
 /// A live credential header resolved at auth time (e.g.

@@ -554,6 +554,8 @@ pub(crate) fn lower_input_schema(
                 sql_database,
                 content_media_type,
                 shape,
+                // Body properties of an HTTP operation only; see ext::READS.
+                staged_upload: None,
             },
         );
     }

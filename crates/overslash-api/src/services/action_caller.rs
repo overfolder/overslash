@@ -421,6 +421,15 @@ pub async fn call_action_request(
         resolved_headers.insert(ah.name.clone(), ah.value.clone());
     }
     let resolved_url = ctx.state.config.apply_base_overrides(&resolved_url);
+    // Staged uploads meet the body at send time, as the credential does above:
+    // the stored request names them, and only this line holds their bytes.
+    let wire = crate::services::staged_upload::wire_body(
+        ctx.state,
+        ctx.scope.db(),
+        ctx.scope.org_id(),
+        action_req,
+    )
+    .await?;
 
     // ── Streaming path ───────────────────────────────────────────────
     if ctx.prefer_stream {
@@ -431,7 +440,7 @@ pub async fn call_action_request(
             &action_req.method,
             &resolved_url,
             &resolved_headers,
-            action_req.body.as_deref(),
+            wire.or(action_req.body.as_deref()),
             ctx.timeout.duration(),
         )
         .await
@@ -489,7 +498,7 @@ pub async fn call_action_request(
         &action_req.method,
         &resolved_url,
         &resolved_headers,
-        action_req.body.as_deref(),
+        wire.or(action_req.body.as_deref()),
         ctx.state.config.max_response_body_bytes,
         ctx.timeout.duration(),
     )

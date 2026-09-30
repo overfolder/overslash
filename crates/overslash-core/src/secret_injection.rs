@@ -75,6 +75,7 @@ mod tests {
             headers: HashMap::new(),
             body: None,
             secrets: vec![secret],
+            staged_uploads: Vec::new(),
         }
     }
 

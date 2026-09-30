@@ -326,6 +326,9 @@ fn parse_platform_params(raw: &Map<String, Value>, _base: &str) -> HashMap<Strin
                     // a media type or a sub-shape from.
                     content_media_type: None,
                     shape: None,
+                    // Inlined into an outgoing JSON body; a platform action
+                    // sends none.
+                    staged_upload: None,
                 },
             ))
         })

@@ -299,6 +299,7 @@ fn shared_config(addr: SocketAddr) -> overslash_api::config::Config {
     overslash_api::config::Config {
         async_execution: Default::default(),
         google_directory: Default::default(),
+        staged_uploads: Default::default(),
         call_stream_idle_timeout_ms: 30_000,
         call_timeout_max_ms: 110_000,
         call_timeout_ms: 30_000,

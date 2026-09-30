@@ -397,6 +397,14 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
                     |n| tracing::info!("Expired {n} upload_tokens"),
                 )
                 .await;
+                // Staged bytes and unredeemed reservations alike. A row a
+                // pending approval pinned outlives its TTL until the pin lapses.
+                instrumented_step(
+                    "staged_upload_expiry",
+                    async { overslash_db::repos::staged_upload::prune_expired(&db).await },
+                    |n| tracing::info!("Expired {n} staged_uploads"),
+                )
+                .await;
                 // Stored results for truncated compact renders (D61). Ordering
                 // against the sweep above is irrelevant: the FK from
                 // `download_tokens.call_result_id` cascades, so pruning a

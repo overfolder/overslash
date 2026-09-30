@@ -81,6 +81,7 @@ pub enum Ext {
     InstanceConfig,
     SqlField,
     SqlDatabase,
+    StagedUpload,
     // components
     Secrets,
     Config,
@@ -124,6 +125,7 @@ impl Ext {
             Ext::InstanceConfig => "x-overslash-instance-config",
             Ext::SqlField => "x-overslash-sql-field",
             Ext::SqlDatabase => "x-overslash-sql-database",
+            Ext::StagedUpload => "x-overslash-staged-upload",
             Ext::Secrets => "x-overslash-secrets",
             Ext::Config => "x-overslash-config",
             Ext::AuthModes => "x-overslash-auth-modes",
@@ -182,6 +184,7 @@ pub(super) const ALL: &[Ext] = &[
     Ext::InstanceConfig,
     Ext::SqlField,
     Ext::SqlDatabase,
+    Ext::StagedUpload,
     Ext::Secrets,
     Ext::Config,
     Ext::AuthModes,
@@ -449,6 +452,12 @@ pub(super) const READS: &[(Ext, &[Pos])] = &[
             Pos::PlatformActionParam,
         ],
     ),
+    // params.rs (collect_body_parameters). A request-body property only: the
+    // gateway inlines staged bytes into the JSON body it builds, so there is
+    // nothing to inline into on a query/path/header `parameters[]` entry, an
+    // MCP tool's arguments (no MCP analogue of the send-time swap exists), or
+    // a platform action (answered in-process — no body goes anywhere).
+    (Ext::StagedUpload, &[Pos::BodyProperty]),
     // auth.rs:286,213
     (Ext::Secrets, &[Pos::Components]),
     (Ext::Config, &[Pos::Components]),
@@ -517,7 +526,7 @@ mod tests {
     fn every_variant_is_in_all() {
         // `ALL` drives name resolution and did-you-mean suggestions, so a
         // variant missing from it is invisible to the lint.
-        assert_eq!(ALL.len(), 35, "ALL has drifted from the enum");
+        assert_eq!(ALL.len(), 36, "ALL has drifted from the enum");
         let mut keys: Vec<&str> = ALL.iter().map(|e| e.key()).collect();
         keys.sort_unstable();
         let before = keys.len();
@@ -581,6 +590,11 @@ mod tests {
         assert!(!reads_at(Ext::HandoffAfterMs, Pos::PlatformAction));
         assert!(reads_at(Ext::WaitMode, Pos::Operation));
         assert!(!reads_at(Ext::Resolve, Pos::PlatformActionParam));
+        // Staged uploads are inlined into the JSON body the gateway builds, so
+        // only a request-body property can carry one.
+        assert!(reads_at(Ext::StagedUpload, Pos::BodyProperty));
+        assert!(!reads_at(Ext::StagedUpload, Pos::Parameter));
+        assert!(!reads_at(Ext::StagedUpload, Pos::McpToolProperty));
         assert!(reads_at(Ext::Aliases, Pos::PlatformActionParam));
         // A platform action answers from this process against no upstream
         // credential, so a probe there would prove nothing.
