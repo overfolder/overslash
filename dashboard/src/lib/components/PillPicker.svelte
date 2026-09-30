@@ -51,6 +51,17 @@
 	let highlight = $state(0);
 	let wrapEl: HTMLDivElement | undefined = $state();
 	let inputEl: HTMLInputElement | undefined = $state();
+	let addEl: HTMLButtonElement | undefined = $state();
+	let dropEl: HTMLDivElement | undefined = $state();
+	let dropPos = $state({ left: 0, top: 0 });
+
+	// The dropdown renders in the top layer (`popover`) at fixed viewport
+	// coordinates. Callers put this picker inside table cells whose table has
+	// `overflow: hidden` for its rounded corners — an absolutely positioned
+	// menu got cropped there and painted under the rows below it.
+	const DROP_WIDTH = 260;
+	const DROP_HEIGHT = 300;
+	const GAP = 8;
 
 	const selectedIds = $derived(new Set(selected.map((s) => s.id)));
 
@@ -75,6 +86,50 @@
 		return () => document.removeEventListener('mousedown', onDoc);
 	});
 
+	function place() {
+		if (!wrapEl || !addEl) return;
+		const anchor = wrapEl.getBoundingClientRect();
+		const btn = addEl.getBoundingClientRect();
+		const vw = document.documentElement.clientWidth;
+		const vh = window.innerHeight;
+		const measured = dropEl?.offsetHeight || DROP_HEIGHT;
+		const below = vh - btn.bottom - GAP;
+		// Flip above only when it fits better there — a short viewport with no
+		// room either way keeps the menu below, where the page can scroll to it.
+		const top =
+			below < measured && btn.top - GAP > below
+				? Math.max(GAP, btn.top - GAP - measured)
+				: btn.bottom + GAP;
+		const width = dropEl?.offsetWidth || DROP_WIDTH;
+		const left = Math.max(GAP, Math.min(anchor.left, vw - width - GAP));
+		dropPos = { left, top };
+	}
+
+	$effect(() => {
+		if (!open || !dropEl) return;
+		const el = dropEl;
+		place();
+		el.showPopover();
+		// Focus only once shown — a hidden popover is `display: none`.
+		inputEl?.focus();
+		// Re-measure once the menu has its real size (result count varies).
+		place();
+		window.addEventListener('resize', place);
+		window.addEventListener('scroll', place, true);
+		return () => {
+			window.removeEventListener('resize', place);
+			window.removeEventListener('scroll', place, true);
+			if (el.matches(':popover-open')) el.hidePopover();
+		};
+	});
+
+	// The filter changes the menu's height; when it sits above the button its
+	// bottom edge must stay pinned there.
+	$effect(() => {
+		void matches.length;
+		if (open) queueMicrotask(place);
+	});
+
 	// Keep the highlight in range as the filter narrows, otherwise Enter can
 	// fire on a row that is no longer rendered.
 	$effect(() => {
@@ -86,10 +141,7 @@
 	function toggle() {
 		if (disabled || busy) return;
 		open = !open;
-		if (open) {
-			query = '';
-			queueMicrotask(() => inputEl?.focus());
-		}
+		if (open) query = '';
 	}
 
 	function close() {
@@ -141,6 +193,7 @@
 		{/if}
 
 		<button
+			bind:this={addEl}
 			type="button"
 			class="add"
 			aria-label={addLabel}
@@ -154,7 +207,13 @@
 	</div>
 
 	{#if open}
-		<div class="drop">
+		<div
+			class="drop"
+			popover="manual"
+			bind:this={dropEl}
+			style:left="{dropPos.left}px"
+			style:top="{dropPos.top}px"
+		>
 			<input
 				bind:this={inputEl}
 				bind:value={query}
@@ -257,10 +316,11 @@
 	}
 
 	.drop {
-		position: absolute;
-		z-index: 40;
-		top: calc(100% + var(--space-2));
-		left: 0;
+		position: fixed;
+		inset: auto;
+		margin: 0;
+		padding: 0;
+		color: inherit;
 		min-width: 260px;
 		background: var(--color-surface);
 		border: 1px solid var(--color-border);

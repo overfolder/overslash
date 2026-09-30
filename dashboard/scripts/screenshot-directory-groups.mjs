@@ -115,6 +115,25 @@ try {
 		}
 	});
 
+	// 1b. The picker opened on the *last* directory-group row of the list —
+	//     the case where the table's `overflow: hidden` used to crop the menu
+	//     and the rows below painted over it.
+	{
+		const { page } = await snap.navigateAndSnap('directory-groups-list-picker', '/org/groups', {
+			viewport: { width: 1280, height: 900 },
+			waitFor: async (p) => {
+				await p.getByText('Directory groups').first().waitFor({ timeout: 15000 });
+				await p.waitForTimeout(300);
+			}
+		});
+		const plus = page.getByRole('button', { name: /to a group$/i }).last();
+		if ((await plus.count()) > 0) {
+			await plus.click();
+			await page.waitForTimeout(350);
+			await snap.snap(page, 'directory-groups-list-picker');
+		}
+	}
+
 	// 2. The directory group's own page: what the IdP said, who is in it, and
 	//    the one place it turns into access.
 	await snap.navigateAndSnap('directory-groups-detail-page', `/org/directory-groups/${members.id}`, {
