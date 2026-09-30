@@ -78,11 +78,15 @@ pub(crate) async fn get_by_org(
 /// Record a proven Workspace connection for the org, creating the config or
 /// re-pointing it at the admin who just signed in.
 ///
+/// One transaction. A connect to a *different* Workspace first deletes the old
+/// config — cascading to its groups, memberships and mappings, which are not
+/// this Workspace's — so a failure midway can never leave the org with the old
+/// groups and no config, or with neither.
+///
 /// Due at once either way: the first sweep follows the connect within a tick.
 /// Fails with a unique violation on `org_google_directory_configs_domain_key`
-/// when another org already connected this Workspace; the caller turns that
-/// into a refusal. A reconnect to a *different* Workspace must delete first —
-/// the old Workspace's groups are not this one's.
+/// when another org already connected this Workspace (the delete rolls back
+/// with it); the caller turns that into a refusal.
 pub(crate) async fn connect(
     pool: &PgPool,
     org_id: Uuid,
@@ -90,7 +94,16 @@ pub(crate) async fn connect(
     domain: &str,
     identity_id: Uuid,
 ) -> Result<GoogleDirectoryConfigRow, sqlx::Error> {
-    sqlx::query_as!(
+    let mut tx = pool.begin().await?;
+    sqlx::query!(
+        "DELETE FROM org_google_directory_configs
+          WHERE org_id = $1 AND domain <> lower($2)",
+        org_id,
+        domain,
+    )
+    .execute(&mut *tx)
+    .await?;
+    let row = sqlx::query_as!(
         GoogleDirectoryConfigRow,
         "INSERT INTO org_google_directory_configs
              (org_id, admin_subject, domain, connected_by_identity_id)
@@ -111,8 +124,10 @@ pub(crate) async fn connect(
         domain,
         identity_id,
     )
-    .fetch_one(pool)
-    .await
+    .fetch_one(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(row)
 }
 
 /// Update the admin-editable settings.

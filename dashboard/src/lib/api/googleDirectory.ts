@@ -57,11 +57,14 @@ export interface GoogleDirectoryState {
  *  redirects back with. */
 export const CONNECT_ERRORS: Record<string, string> = {
 	expired: 'That sign-in link expired or was already used. Start again.',
+	cancelled: 'The Google sign-in was cancelled. Nothing was connected.',
 	wrong_session:
 		'The Google sign-in finished in a different Overslash session than the one that started it. Start again from this page.',
 	not_workspace:
 		'That Google account is not part of a Google Workspace or Cloud Identity organization. Sign in with a Workspace admin account.',
 	email_unverified: 'Google did not confirm that account’s email address.',
+	not_primary_domain:
+		'That account is on a secondary domain. Sign in with an admin account on the Workspace’s primary domain.',
 	domain_taken: 'Another organization on this Overslash instance has already connected that Workspace.',
 	delegation_missing:
 		'Google refused Overslash’s service account for that Workspace. Add the client ID and scope below under Domain-wide delegation (it can take a few minutes to apply), then try again.',

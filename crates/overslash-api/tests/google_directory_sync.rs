@@ -882,3 +882,83 @@ async fn a_google_outage_during_connect_is_reported_not_a_500() {
     );
     assert!(e.config().await.is_null());
 }
+
+/// Backing out at Google's consent screen lands back on the settings page
+/// with a reason — not a 400 from a missing `code`.
+#[tokio::test]
+async fn refusing_consent_at_google_is_reported_as_cancelled() {
+    let e = env().await;
+    let state = e.start_connect().await;
+    let mut url = url::Url::parse(&format!("{}/auth/callback/google", e.base)).unwrap();
+    url.query_pairs_mut()
+        .append_pair("error", "access_denied")
+        .append_pair("state", &state);
+    let resp = e
+        .client
+        .get(url)
+        .header("cookie", common::session_cookie(e.org_id, e.admin_identity))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_redirection(), "{}", resp.status());
+    let location = resp.headers()["location"].to_str().unwrap();
+    assert!(
+        location.contains("google_directory_error=cancelled"),
+        "{location}"
+    );
+    assert!(e.config().await.is_null());
+}
+
+/// `hd` is the Workspace's primary domain; an admin on a secondary domain is
+/// told so, not that their email is unverified.
+#[tokio::test]
+async fn a_secondary_domain_account_is_named_as_such() {
+    let e = env().await;
+    let location = e
+        .connect_as(
+            json!({ "email": "admin@acme-labs.com", "hd": "acme.com", "email_verified": true }),
+        )
+        .await;
+    assert!(
+        location.contains("google_directory_error=not_primary_domain"),
+        "{location}"
+    );
+}
+
+/// Reconnecting to a Workspace another org holds is refused as one unit: the
+/// org keeps its existing connection and groups rather than losing both.
+#[tokio::test]
+async fn a_refused_reconnect_leaves_the_old_workspace_in_place() {
+    let e = env().await;
+    e.fake.set_groups(three_groups());
+    e.human("alice@acme.com").await;
+    e.connect_as(workspace_admin()).await;
+    e.run_worker().await;
+
+    let (other_org, _, _, _) = common::bootstrap_org_identity(&e.base, &e.client).await;
+    sqlx::query(
+        "INSERT INTO org_google_directory_configs (org_id, admin_subject, domain) \
+         VALUES ($1, 'it@beta.io', 'beta.io')",
+    )
+    .bind(other_org)
+    .execute(&e.pool)
+    .await
+    .unwrap();
+
+    let location = e
+        .connect_as(json!({ "email": "admin@beta.io", "hd": "beta.io", "email_verified": true }))
+        .await;
+    assert!(
+        location.contains("google_directory_error=domain_taken"),
+        "{location}"
+    );
+    assert_eq!(e.config().await["domain"], "acme.com");
+    let kept: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM directory_groups WHERE org_id = $1 AND source = 'google_directory'",
+    )
+    .bind(e.org_id)
+    .fetch_one(&e.pool)
+    .await
+    .unwrap();
+    assert_eq!(kept, 3);
+}

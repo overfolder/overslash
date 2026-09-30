@@ -42,11 +42,16 @@ const SETTINGS_PATH: &str = "/org/google-directory";
 pub(crate) enum ConnectError {
     /// Unknown, used or expired flow.
     Expired,
+    /// The admin backed out at Google's consent screen.
+    Cancelled,
     /// The browser finishing the flow is not the admin who started it.
     WrongSession,
     /// A personal Google account: no `hd`, so no Workspace to sync.
     NotWorkspace,
     EmailUnverified,
+    /// Signed in with an account on a secondary domain. `hd` is always the
+    /// Workspace's primary domain, which is what the sync matches on.
+    NotPrimaryDomain,
     /// Another org on this instance already connected this Workspace.
     DomainTaken,
     /// Google refused the instance service account for this Workspace.
@@ -61,9 +66,11 @@ impl ConnectError {
     pub(crate) fn code(self) -> &'static str {
         match self {
             Self::Expired => "expired",
+            Self::Cancelled => "cancelled",
             Self::WrongSession => "wrong_session",
             Self::NotWorkspace => "not_workspace",
             Self::EmailUnverified => "email_unverified",
+            Self::NotPrimaryDomain => "not_primary_domain",
             Self::DomainTaken => "domain_taken",
             Self::DelegationMissing => "delegation_missing",
             Self::NotAdmin => "not_admin",
@@ -128,7 +135,7 @@ pub(crate) async fn finish(
     ext: &axum::http::Extensions,
     headers: &HeaderMap,
     flow_id: &str,
-    code: &str,
+    code: Option<&str>,
 ) -> Result<Response, AppError> {
     let Ok(flow_id) = Uuid::parse_str(flow_id) else {
         return Ok(back(state, None, Err(ConnectError::Expired)));
@@ -139,6 +146,10 @@ pub(crate) async fn finish(
     };
     let org_row = org::get_by_id(state.db(ext), flow.org_id).await?;
     let slug = org_row.as_ref().map(|o| o.slug.as_str());
+    // Consent refused: the flow is spent either way (taken above).
+    let Some(code) = code else {
+        return Ok(back(state, slug, Err(ConnectError::Cancelled)));
+    };
 
     // The browser must be the admin who started this, with a live session.
     let session_ok = match session::extract_session(state, headers) {
@@ -241,8 +252,11 @@ async fn prove_and_connect(
         .get("email_verified")
         .is_some_and(|v| v.as_bool() == Some(true) || v.as_str() == Some("true"));
     let email = info.email.trim().to_lowercase();
-    if !verified || email_domain(&email).as_deref() != Some(hd.as_str()) {
+    if !verified {
         return Ok(Err(ConnectError::EmailUnverified));
+    }
+    if email_domain(&email).as_deref() != Some(hd.as_str()) {
+        return Ok(Err(ConnectError::NotPrimaryDomain));
     }
 
     // Can the instance service account read this Workspace as this admin?
@@ -269,14 +283,9 @@ async fn prove_and_connect(
         }));
     }
 
+    // Reconnecting as a different Workspace replaces the old one atomically
+    // inside `connect` — its groups are not this one's.
     let scope = OrgScope::new(flow.org_id, state.db_pool(ext));
-    // A different Workspace than before: the old one's groups are not this
-    // one's, so disconnect first (cascades to groups, memberships, mappings).
-    if let Some(existing) = scope.get_google_directory_config().await?
-        && existing.domain != hd
-    {
-        scope.delete_google_directory_config().await?;
-    }
     match scope
         .connect_google_directory(&email, &hd, flow.identity_id)
         .await

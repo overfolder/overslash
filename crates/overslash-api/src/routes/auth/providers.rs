@@ -32,7 +32,10 @@ pub(super) struct HandoffQuery {
 
 #[derive(Deserialize)]
 pub(super) struct CallbackQuery {
-    code: String,
+    /// Absent when the user refused consent: the provider redirects back with
+    /// `error=access_denied` instead. A login still requires it; a Google
+    /// Workspace connect turns its absence into a "cancelled" answer.
+    code: Option<String>,
     state: String,
 }
 
@@ -244,10 +247,14 @@ pub(super) async fn provider_callback(
             &ext,
             &headers,
             flow_id,
-            &params.code,
+            params.code.as_deref(),
         )
         .await;
     }
+    let code = params
+        .code
+        .clone()
+        .ok_or_else(|| AppError::BadRequest("missing authorization code".into()))?;
 
     // Parse state: "login:<provider_key>:<nonce>" or, for the Vercel
     // preview-deployment handoff, "login:<provider_key>:<nonce>:<preview_id>".
@@ -358,7 +365,7 @@ pub(super) async fn provider_callback(
         &provider,
         &client_id,
         &client_secret,
-        &params.code,
+        &code,
         &redirect_uri,
         verifier_ref,
     )
