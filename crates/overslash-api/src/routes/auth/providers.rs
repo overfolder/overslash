@@ -32,7 +32,10 @@ pub(super) struct HandoffQuery {
 
 #[derive(Deserialize)]
 pub(super) struct CallbackQuery {
-    code: String,
+    /// Absent when the user refused consent: the provider redirects back with
+    /// `error=access_denied` instead. A login still requires it; a Google
+    /// Workspace connect turns its absence into a "cancelled" answer.
+    code: Option<String>,
     state: String,
 }
 
@@ -232,6 +235,27 @@ pub(super) async fn provider_callback(
     Query(params): Query<CallbackQuery>,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
+    // A Google Workspace Directory connect rides this same registered
+    // redirect URI with its own state; it is not a login and sets no session.
+    if provider_key == "google"
+        && let Some(flow_id) = params
+            .state
+            .strip_prefix(super::google_directory_connect::STATE_PREFIX)
+    {
+        return super::google_directory_connect::finish(
+            &state,
+            &ext,
+            &headers,
+            flow_id,
+            params.code.as_deref(),
+        )
+        .await;
+    }
+    let code = params
+        .code
+        .clone()
+        .ok_or_else(|| AppError::BadRequest("missing authorization code".into()))?;
+
     // Parse state: "login:<provider_key>:<nonce>" or, for the Vercel
     // preview-deployment handoff, "login:<provider_key>:<nonce>:<preview_id>".
     // The 4-segment form is only honored when the feature is enabled — a
@@ -341,7 +365,7 @@ pub(super) async fn provider_callback(
         &provider,
         &client_id,
         &client_secret,
-        &params.code,
+        &code,
         &redirect_uri,
         verifier_ref,
     )

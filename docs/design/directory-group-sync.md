@@ -207,35 +207,72 @@ reads the Admin SDK Directory API instead and writes the same two tables under
 the rule that discovery grants nothing are all unchanged — it is a second
 writer, not a second model.
 
-### Credential
+### Credential: one service account per instance
 
-A service account with **domain-wide delegation** for exactly one scope,
-`admin.directory.group.readonly`, impersonating a Workspace admin the org
-names (`admin_subject`). The JSON key is stored AES-256-GCM encrypted in
-`org_google_directory_configs` (one row per org) and never returned; the API
-shows its client email and key id.
+The instance has **one** service account with **domain-wide delegation** for
+exactly one scope, `admin.directory.group.readonly`. Every org syncs through it.
+The operator supplies its JSON key through `OVERSLASH_GOOGLE_DIRECTORY_SA_KEY`
+(the key itself — how a Secret Manager value surfaces on Cloud Run) or
+`OVERSLASH_GOOGLE_DIRECTORY_SA_KEY_FILE` (a path — a mounted Kubernetes or
+Docker secret). It is parsed at boot: a malformed key, an unreadable file, or
+both variables set stops the process. Unset means the feature is off on that
+instance, and the dashboard says so. There is no per-org credential of any
+kind. Operator setup: [runbooks/google-directory.md](../runbooks/google-directory.md).
 
-Chosen over an admin's OAuth consent because a delegated service account does
-not stop working when the person who clicked "connect" leaves or loses the
-admin role, and because the sweep runs with nobody signed in.
+A Workspace admin's whole job is in admin.google.com: add the instance's
+**client ID** with that scope under *Domain-wide delegation*. The dashboard
+shows both values, with copy buttons, before anything is connected.
+
+Chosen over per-org keys (the first cut, D110) because a customer should not
+need a Google Cloud project, the Admin SDK switched on in it, and a downloaded
+key to share with us; and over an admin's OAuth consent because consent stops
+working when the person who clicked "connect" leaves or loses the admin role,
+and the sweep runs with nobody signed in.
 
 The key's own `token_uri` is **ignored**. Assertions are always exchanged at
-`https://oauth2.googleapis.com/token`; honouring the field would let whoever
-uploads a key send a signed, replayable assertion for the org's Workspace to a
-host of their choosing.
+`https://oauth2.googleapis.com/token`.
 
-`PUT /v1/google-directory` proves the credential before saving — a token and
-one page of groups — so a missing delegation grant is a 400 carrying Google's
-reason, not a config that fails every sweep.
+### Proving which Workspace an org is
+
+One shared service account means every connected Workspace has delegated to
+the same client ID, so **Google no longer separates tenants — Overslash must.**
+If an org could simply type an admin email, org A could enter
+`admin@victim.com` and read the victim's groups.
+
+So an org connects by **signing in with Google** as an admin of the Workspace
+(`POST /v1/google-directory/connect` → Google → `/auth/callback/google`):
+
+- **What Google says is the config.** The `hd` (hosted domain) from Google's
+  `/userinfo` becomes `domain`; the verified email becomes `admin_subject`, the
+  account the service account impersonates. Nothing is typed. A personal Google
+  account has no `hd` and is refused; so is an unverified email or one outside
+  `hd`.
+- **Proving it is also probing it.** Before saving, the instance service
+  account reads one page of groups as that admin. That single call checks the
+  delegation grant (`unauthorized_client` → "add the client ID") and the admin
+  privilege (403 → "sign in as an admin") together.
+- **One org per Workspace per instance** (`UNIQUE (lower(domain))`). A second
+  org cannot attach a Workspace someone else connected.
+- **The link only works in the browser that asked for it.** The flow row is
+  single-use, expires in ten minutes, and is bound to the admin who started it;
+  the callback refuses any browser whose live session is someone else's.
+  Without that, an org admin could mail the Google link to another Workspace's
+  admin and attach that directory to their own org.
+
+The connect rides the login's already-registered redirect URI with a
+`gdir:<flow id>` state, so operators register nothing new — but the instance
+needs its Google sign-in client (`GOOGLE_AUTH_CLIENT_ID/SECRET`) for the proof.
+
+Reconnecting as a different Workspace disconnects the old one first: its
+groups are not the new one's.
 
 ### Who it may speak about
 
-**The configured domains are the trust boundary**, not the sign-in path. The
-credential is the org's own, so it may speak about the org regardless of which
-IdP a human signed in through — but only about humans whose email is under one
-of `domains` (default: the admin subject's domain). Anyone else is never
-touched, whatever Google reports. Matching is by lower-cased email, judged by
-the part after the last `@`.
+**The connected domain is the trust boundary**, not the sign-in path. The
+Workspace was proven to be the org's, so it may speak about the org's humans
+whichever IdP they signed in through — but only about those whose email is
+under `domain`. Anyone else is never touched, whatever Google reports. Matching
+is by lower-cased email, judged by the part after the last `@`.
 
 ### Three triggers
 
@@ -275,7 +312,7 @@ nothing. A group deleted in Google keeps its row, and so the admin's mapping,
 but loses its members; `last_seen_at` shows the staleness.
 
 **Pausing** (`enabled = false`) stops syncing and keeps what the last sync
-established. **Disconnecting** (`DELETE`) removes the key and every
+established. **Disconnecting** (`DELETE`) removes the connection and every
 `google_directory` directory group, which cascades to memberships and
 mappings: derived access is revoked at once.
 
@@ -283,15 +320,19 @@ mappings: derived access is revoked at once.
 
 | Method | Path | Auth |
 |---|---|---|
-| `GET` | `/v1/google-directory` | admin; 404 when not configured |
-| `PUT` | `/v1/google-directory` | admin; creates (201) or updates (200), probing Google first |
-| `DELETE` | `/v1/google-directory` | admin |
+| `GET` | `/v1/google-directory` | admin; the instance's client ID + scope, and the org's connection or `null` |
+| `POST` | `/v1/google-directory/connect` | admin (signed in); returns the Google `auth_url` |
+| `PUT` | `/v1/google-directory` | admin; schedule and pause only |
+| `DELETE` | `/v1/google-directory` | admin; disconnects |
 | `POST` | `/v1/google-directory/sync` | admin; 202 `queued`, or 200 `already_queued` |
 
-Dashboard: a *Google Workspace Directory* card on `/org` (setup with the
-delegation instructions, status of the last sync, *Sync now*, pause,
-disconnect), and a *Google Workspace* tag on its groups in the *Directory
-groups* list.
+Dashboard: the *Google Workspace* section of Org Settings
+(`/org/google-directory`). Before connecting it leads with *Authorize Overslash
+in Google Admin* — the admin-console path, then the client ID and the scope,
+each with a copy button — and a *Sign in with Google to connect* button. After,
+it shows the Workspace, the admin it acts as, the schedule, the last sync,
+*Sync now*, pause, reconnect and disconnect. Google groups carry a *Google
+Workspace* tag in the *Directory groups* list.
 
 ## Deliberately not built
 

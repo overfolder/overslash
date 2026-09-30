@@ -207,6 +207,20 @@ UPDATE oauth_providers SET
 WHERE key = 'github';
 SQL
 
+# Same for Google, which the stack uses only for "Sign in with Google" to
+# connect a Google Workspace Directory (the OAuth fake returns whatever `hd` /
+# email a scenario sets through `/control/userinfo-claims`). Paired with the
+# GOOGLE_AUTH_* client below; the instance's directory service account is the
+# fakes crate's throwaway test key.
+log "seeding google oauth_provider endpoints at fake AS"
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 >/dev/null <<SQL
+UPDATE oauth_providers SET
+  authorization_endpoint = '$OAUTH_AS_URL/oauth/authorize',
+  token_endpoint         = '$OAUTH_AS_URL/oauth/token',
+  userinfo_endpoint      = '$OAUTH_AS_URL/oidc/userinfo'
+WHERE key = 'google';
+SQL
+
 # 4. Pick free ports for the API and dashboard up-front. The dashboard URL
 #    must be known when the API starts so cloud-billing success/cancel URLs
 #    point at the real dashboard host (the Stripe fake redirects to them
@@ -277,6 +291,9 @@ PORT="$API_PORT" \
 PUBLIC_URL="$API_URL" \
 DASHBOARD_URL="$DASH_URL" \
 DASHBOARD_ORIGIN="*localhost*" \
+GOOGLE_AUTH_CLIENT_ID="e2e-google-client" \
+GOOGLE_AUTH_CLIENT_SECRET="e2e-google-secret" \
+OVERSLASH_GOOGLE_DIRECTORY_SA_KEY_FILE="$REPO_ROOT/crates/overslash-fakes/fixtures/google_sa_test_key.json" \
 CLOUD_BILLING=1 \
 STRIPE_SECRET_KEY="sk_test_e2e" \
 STRIPE_WEBHOOK_SECRET="$STRIPE_WEBHOOK_SECRET" \

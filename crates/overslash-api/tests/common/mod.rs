@@ -636,6 +636,7 @@ where
     let addr = listener.local_addr().unwrap();
     let mut config = overslash_api::config::Config {
         async_execution: Default::default(),
+        google_directory: Default::default(),
         call_stream_idle_timeout_ms: 30_000,
         call_timeout_max_ms: 110_000,
         call_timeout_ms: 30_000,
@@ -874,6 +875,7 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
     let addr = listener.local_addr().unwrap();
     let config = overslash_api::config::Config {
         async_execution: Default::default(),
+        google_directory: Default::default(),
         call_stream_idle_timeout_ms: 30_000,
         call_timeout_max_ms: 110_000,
         call_timeout_ms: 30_000,
@@ -1073,6 +1075,7 @@ where
 {
     let mut config = overslash_api::config::Config {
         async_execution: Default::default(),
+        google_directory: Default::default(),
         call_stream_idle_timeout_ms: 30_000,
         call_timeout_max_ms: 110_000,
         call_timeout_ms: 30_000,
@@ -1780,6 +1783,7 @@ where
     let addr = listener.local_addr().unwrap();
     let mut config = overslash_api::config::Config {
         async_execution: Default::default(),
+        google_directory: Default::default(),
         call_stream_idle_timeout_ms: 30_000,
         call_timeout_max_ms: 110_000,
         call_timeout_ms: 30_000,
@@ -1969,6 +1973,7 @@ pub async fn start_api_for_search(pool: PgPool) -> (String, Client) {
 
     let config = overslash_api::config::Config {
         async_execution: Default::default(),
+        google_directory: Default::default(),
         call_stream_idle_timeout_ms: 30_000,
         call_timeout_max_ms: 110_000,
         call_timeout_ms: 30_000,
@@ -2131,6 +2136,7 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
     let addr = listener.local_addr().unwrap();
     let config = overslash_api::config::Config {
         async_execution: Default::default(),
+        google_directory: Default::default(),
         call_stream_idle_timeout_ms: 30_000,
         call_timeout_max_ms: 110_000,
         call_timeout_ms: 30_000,
@@ -2479,6 +2485,7 @@ pub async fn make_app_state(pool: PgPool) -> overslash_api::AppState {
     let config = overslash_api::config::Config {
         call_result_max_bytes: 1024 * 1024,
         async_execution: Default::default(),
+        google_directory: Default::default(),
         call_stream_idle_timeout_ms: 30_000,
         call_timeout_max_ms: 110_000,
         call_timeout_ms: 30_000,

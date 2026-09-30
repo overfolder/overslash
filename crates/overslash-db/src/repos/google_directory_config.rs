@@ -1,11 +1,17 @@
-//! `org_google_directory_configs` — an org's Google Workspace Directory
-//! credential, and the scheduling state of its group sync.
+//! `org_google_directory_configs` — which Google Workspace an org has
+//! connected, and the scheduling state of its group sync.
+//!
+//! The credential is not here: every org uses the instance's one service
+//! account (see `overslash_api::config::GoogleDirectoryInstance`). What an org
+//! owns is the proof of which Workspace it is — `domain`, as Google's `hd`
+//! claim reported it when an admin of that Workspace signed in — and that proof
+//! is unique per instance.
 //!
 //! Three things can start a sync: the periodic sweep (`next_sync_at`), an
 //! admin's "Sync now" (`sync_requested_at`), and a sign-in (which runs a
 //! per-user pull outside this table entirely). The first two go through
 //! [`claim_due`], which leases a row to exactly one worker across replicas.
-//! See migration 129 and `docs/design/directory-group-sync.md`.
+//! See migrations 129 and 131 and `docs/design/directory-group-sync.md`.
 
 use sqlx::PgPool;
 use time::OffsetDateTime;
@@ -14,12 +20,14 @@ use uuid::Uuid;
 #[derive(Debug)]
 pub struct GoogleDirectoryConfigRow {
     pub org_id: Uuid,
-    pub encrypted_service_account_key: Vec<u8>,
-    pub service_account_email: String,
-    pub service_account_key_id: String,
+    /// The Workspace admin the instance service account impersonates. Always
+    /// the account that signed in to connect — never typed.
     pub admin_subject: String,
     pub customer_id: String,
-    pub domains: Vec<String>,
+    /// The Workspace's primary domain, from Google's `hd` claim. Lower-cased.
+    pub domain: String,
+    pub connected_by_identity_id: Option<Uuid>,
+    pub connected_at: OffsetDateTime,
     pub enabled: bool,
     pub sync_interval_hours: i32,
     pub next_sync_at: OffsetDateTime,
@@ -42,20 +50,10 @@ impl GoogleDirectoryConfigRow {
     }
 }
 
-/// The credential-bearing half of a config, written together on create and on
-/// a key replacement.
-pub struct GoogleDirectoryCredential<'a> {
-    pub encrypted_service_account_key: &'a [u8],
-    pub service_account_email: &'a str,
-    pub service_account_key_id: &'a str,
-}
-
-/// Everything an admin edits besides the key. `None` leaves a field as it is.
+/// What an admin may edit after connecting. `None` leaves a field as it is.
+/// The Workspace itself is not editable: changing it means connecting again.
 #[derive(Default)]
-pub struct GoogleDirectorySettings<'a> {
-    pub admin_subject: Option<&'a str>,
-    pub customer_id: Option<&'a str>,
-    pub domains: Option<&'a [String]>,
+pub struct GoogleDirectorySettings {
     pub enabled: Option<bool>,
     pub sync_interval_hours: Option<i32>,
 }
@@ -66,10 +64,9 @@ pub(crate) async fn get_by_org(
 ) -> Result<Option<GoogleDirectoryConfigRow>, sqlx::Error> {
     sqlx::query_as!(
         GoogleDirectoryConfigRow,
-        "SELECT org_id, encrypted_service_account_key, service_account_email,
-                service_account_key_id, admin_subject, customer_id, domains, enabled,
-                sync_interval_hours, next_sync_at, sync_requested_at, lease_owner,
-                lease_expires_at, last_sync_started_at, last_sync_finished_at,
+        "SELECT org_id, admin_subject, customer_id, domain, connected_by_identity_id,
+                connected_at, enabled, sync_interval_hours, next_sync_at, sync_requested_at,
+                lease_owner, lease_expires_at, last_sync_started_at, last_sync_finished_at,
                 last_sync_status, last_sync_error, last_sync_stats, created_at, updated_at
            FROM org_google_directory_configs WHERE org_id = $1",
         org_id,
@@ -78,99 +75,141 @@ pub(crate) async fn get_by_org(
     .await
 }
 
-/// Create the org's config. A fresh config is due immediately (`next_sync_at`
-/// defaults to `now()`), so the first sweep follows the save within a tick.
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn create(
+/// Record a proven Workspace connection for the org, creating the config or
+/// re-pointing it at the admin who just signed in.
+///
+/// One transaction. A connect to a *different* Workspace first deletes the old
+/// config — cascading to its groups, memberships and mappings, which are not
+/// this Workspace's — so a failure midway can never leave the org with the old
+/// groups and no config, or with neither.
+///
+/// Due at once either way: the first sweep follows the connect within a tick.
+/// Fails with a unique violation on `org_google_directory_configs_domain_key`
+/// when another org already connected this Workspace (the delete rolls back
+/// with it); the caller turns that into a refusal.
+pub(crate) async fn connect(
     pool: &PgPool,
     org_id: Uuid,
-    credential: GoogleDirectoryCredential<'_>,
     admin_subject: &str,
-    customer_id: &str,
-    domains: &[String],
-    enabled: bool,
-    sync_interval_hours: i32,
+    domain: &str,
+    identity_id: Uuid,
 ) -> Result<GoogleDirectoryConfigRow, sqlx::Error> {
-    sqlx::query_as!(
+    let mut tx = pool.begin().await?;
+    sqlx::query!(
+        "DELETE FROM org_google_directory_configs
+          WHERE org_id = $1 AND domain <> lower($2)",
+        org_id,
+        domain,
+    )
+    .execute(&mut *tx)
+    .await?;
+    let row = sqlx::query_as!(
         GoogleDirectoryConfigRow,
         "INSERT INTO org_google_directory_configs
-             (org_id, encrypted_service_account_key, service_account_email,
-              service_account_key_id, admin_subject, customer_id, domains, enabled,
-              sync_interval_hours)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-         RETURNING org_id, encrypted_service_account_key, service_account_email,
-                   service_account_key_id, admin_subject, customer_id, domains, enabled,
-                   sync_interval_hours, next_sync_at, sync_requested_at, lease_owner,
-                   lease_expires_at, last_sync_started_at, last_sync_finished_at,
+             (org_id, admin_subject, domain, connected_by_identity_id)
+         VALUES ($1, $2, lower($3), $4)
+         ON CONFLICT (org_id) DO UPDATE SET
+             admin_subject = EXCLUDED.admin_subject,
+             domain = EXCLUDED.domain,
+             connected_by_identity_id = EXCLUDED.connected_by_identity_id,
+             connected_at = now(),
+             next_sync_at = now(),
+             updated_at = now()
+         RETURNING org_id, admin_subject, customer_id, domain, connected_by_identity_id,
+                   connected_at, enabled, sync_interval_hours, next_sync_at, sync_requested_at,
+                   lease_owner, lease_expires_at, last_sync_started_at, last_sync_finished_at,
                    last_sync_status, last_sync_error, last_sync_stats, created_at, updated_at",
         org_id,
-        credential.encrypted_service_account_key,
-        credential.service_account_email,
-        credential.service_account_key_id,
         admin_subject,
-        customer_id,
-        domains,
-        enabled,
-        sync_interval_hours,
+        domain,
+        identity_id,
     )
-    .fetch_one(pool)
-    .await
+    .fetch_one(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(row)
 }
 
-/// Update settings and, optionally, replace the key.
-///
-/// Changing the credential or the domains makes the row due at once: what the
-/// last sweep established was computed under the old ones.
+/// Update the admin-editable settings.
 pub(crate) async fn update(
     pool: &PgPool,
     org_id: Uuid,
-    credential: Option<GoogleDirectoryCredential<'_>>,
-    settings: GoogleDirectorySettings<'_>,
+    settings: GoogleDirectorySettings,
 ) -> Result<Option<GoogleDirectoryConfigRow>, sqlx::Error> {
-    let (key, email, key_id) = match &credential {
-        Some(c) => (
-            Some(c.encrypted_service_account_key),
-            Some(c.service_account_email),
-            Some(c.service_account_key_id),
-        ),
-        None => (None, None, None),
-    };
     sqlx::query_as!(
         GoogleDirectoryConfigRow,
         "UPDATE org_google_directory_configs SET
-             encrypted_service_account_key = COALESCE($2, encrypted_service_account_key),
-             service_account_email = COALESCE($3, service_account_email),
-             service_account_key_id = COALESCE($4, service_account_key_id),
-             admin_subject = COALESCE($5, admin_subject),
-             customer_id = COALESCE($6, customer_id),
-             domains = COALESCE($7, domains),
-             enabled = COALESCE($8, enabled),
-             sync_interval_hours = COALESCE($9, sync_interval_hours),
-             next_sync_at = CASE
-                 WHEN $2::bytea IS NOT NULL OR $5::text IS NOT NULL
-                      OR $6::text IS NOT NULL OR $7::text[] IS NOT NULL
-                 THEN now()
-                 ELSE next_sync_at
-             END,
+             enabled = COALESCE($2, enabled),
+             sync_interval_hours = COALESCE($3, sync_interval_hours),
              updated_at = now()
          WHERE org_id = $1
-         RETURNING org_id, encrypted_service_account_key, service_account_email,
-                   service_account_key_id, admin_subject, customer_id, domains, enabled,
-                   sync_interval_hours, next_sync_at, sync_requested_at, lease_owner,
-                   lease_expires_at, last_sync_started_at, last_sync_finished_at,
+         RETURNING org_id, admin_subject, customer_id, domain, connected_by_identity_id,
+                   connected_at, enabled, sync_interval_hours, next_sync_at, sync_requested_at,
+                   lease_owner, lease_expires_at, last_sync_started_at, last_sync_finished_at,
                    last_sync_status, last_sync_error, last_sync_stats, created_at, updated_at",
         org_id,
-        key,
-        email,
-        key_id,
-        settings.admin_subject,
-        settings.customer_id,
-        settings.domains,
         settings.enabled,
         settings.sync_interval_hours,
     )
     .fetch_optional(pool)
     .await
+}
+
+// ── Connect flows ────────────────────────────────────────────────────
+
+/// Start a "Sign in with Google" connect, bound to the admin who started it.
+/// Returns the flow id, which rides the OAuth `state`.
+pub(crate) async fn create_connect_flow(
+    pool: &PgPool,
+    org_id: Uuid,
+    identity_id: Uuid,
+    pkce_verifier: &str,
+    ttl_secs: i64,
+) -> Result<Uuid, sqlx::Error> {
+    // Opportunistic cleanup: flows are short-lived and rarely created, so
+    // sweeping expired ones here keeps the table bounded without a loop.
+    sqlx::query!("DELETE FROM google_directory_connect_flows WHERE expires_at < now()")
+        .execute(pool)
+        .await?;
+    sqlx::query_scalar!(
+        "INSERT INTO google_directory_connect_flows
+             (org_id, identity_id, pkce_verifier, expires_at)
+         VALUES ($1, $2, $3, now() + make_interval(secs => $4))
+         RETURNING id",
+        org_id,
+        identity_id,
+        pkce_verifier,
+        ttl_secs as f64,
+    )
+    .fetch_one(pool)
+    .await
+}
+
+/// A consumed connect flow.
+pub struct ConnectFlow {
+    pub org_id: Uuid,
+    pub identity_id: Uuid,
+    pub pkce_verifier: String,
+    pub expires_at: OffsetDateTime,
+}
+
+/// Consume a connect flow. Single use: the row is deleted whether or not the
+/// rest of the callback succeeds, so a replayed `state` finds nothing.
+/// `None` for an unknown, used or expired flow.
+pub async fn take_connect_flow(
+    pool: &PgPool,
+    id: Uuid,
+) -> Result<Option<ConnectFlow>, sqlx::Error> {
+    let flow = sqlx::query_as!(
+        ConnectFlow,
+        "DELETE FROM google_directory_connect_flows
+          WHERE id = $1
+          RETURNING org_id, identity_id, pkce_verifier, expires_at",
+        id,
+    )
+    .fetch_optional(pool)
+    .await?;
+    Ok(flow.filter(|f| f.expires_at > OffsetDateTime::now_utc()))
 }
 
 /// Remove the config and everything it reported.
@@ -281,20 +320,20 @@ pub(crate) async fn finish(
 }
 
 /// A human the directory may speak about: a live user identity in the org
-/// whose email falls under one of the configured domains.
+/// whose email is under the connected Workspace's domain.
 pub struct DirectoryCandidate {
     pub identity_id: Uuid,
     /// Lower-cased.
     pub email: String,
 }
 
-/// Every non-archived user identity in the org whose email domain is in
-/// `domains` (which the caller has lower-cased). The domain match is on the
-/// part after the *last* `@`, so `a@b@evil.com` is judged by `evil.com`.
+/// Every non-archived user identity in the org whose email domain is
+/// `domain`. The match is on the part after the *last* `@`, so `a@b@evil.com`
+/// is judged by `evil.com`.
 pub(crate) async fn list_candidates(
     pool: &PgPool,
     org_id: Uuid,
-    domains: &[String],
+    domain: &str,
 ) -> Result<Vec<DirectoryCandidate>, sqlx::Error> {
     sqlx::query_as!(
         DirectoryCandidate,
@@ -304,9 +343,9 @@ pub(crate) async fn list_candidates(
               AND kind = 'user'
               AND archived_at IS NULL
               AND email IS NOT NULL
-              AND lower(substring(email from '@([^@]+)$')) = ANY($2)"#,
+              AND lower(substring(email from '@([^@]+)$')) = lower($2)"#,
         org_id,
-        domains,
+        domain,
     )
     .fetch_all(pool)
     .await

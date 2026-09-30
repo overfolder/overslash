@@ -149,6 +149,12 @@ variable "use_private_vpc" {
   default     = false
 }
 
+variable "enable_google_directory_sync" {
+  description = "Google Workspace Directory group sync: create the instance's directory service account and the Secret Manager secret its JSON key lives in, enable the Admin SDK API, and feed the key to the API as OVERSLASH_GOOGLE_DIRECTORY_SA_KEY. Populate the secret (docs/runbooks/google-directory.md) BEFORE enabling — the API refuses to boot on a key that does not parse."
+  type        = bool
+  default     = false
+}
+
 variable "enable_bi" {
   description = "Provision the BI surface: a BigQuery connection + overslash_bi dataset over the Postgres `bi` schema (docs/runbooks/bi.md)."
   type        = bool

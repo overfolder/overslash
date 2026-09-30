@@ -173,6 +173,10 @@ impl Config {
             service_base_overrides: parse_service_base_overrides(
                 env::optional("OVERSLASH_SERVICE_BASE_OVERRIDES").as_deref(),
             ),
+            google_directory: parse_google_directory(
+                env::optional("OVERSLASH_GOOGLE_DIRECTORY_SA_KEY"),
+                env::optional("OVERSLASH_GOOGLE_DIRECTORY_SA_KEY_FILE"),
+            ),
             platform_credential: parse_platform_credential(
                 env::optional("OVERSLASH_PLATFORM_GATEWAY_SECRET_NAME").as_deref(),
                 env::optional("OVERSLASH_PLATFORM_GATEWAY_HOST").as_deref(),

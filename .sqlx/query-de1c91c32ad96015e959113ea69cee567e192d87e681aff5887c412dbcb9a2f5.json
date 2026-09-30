@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM org_google_directory_configs\n          WHERE org_id = $1 AND domain <> lower($2)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "de1c91c32ad96015e959113ea69cee567e192d87e681aff5887c412dbcb9a2f5"
+}

@@ -55,7 +55,9 @@ pub enum DirectoryError {
 #[derive(Clone)]
 pub struct ServiceAccountKey {
     pub client_email: String,
-    pub client_id: Option<String>,
+    /// The OAuth client ID a Workspace admin enters in admin.google.com →
+    /// Domain-wide delegation. Numeric, not secret — the dashboard shows it.
+    pub client_id: String,
     pub private_key_id: String,
     private_key: String,
 }
@@ -64,6 +66,7 @@ impl std::fmt::Debug for ServiceAccountKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ServiceAccountKey")
             .field("client_email", &self.client_email)
+            .field("client_id", &self.client_id)
             .field("private_key_id", &self.private_key_id)
             .finish_non_exhaustive()
     }
@@ -94,7 +97,7 @@ impl ServiceAccountKey {
         };
         let key = Self {
             client_email: field(raw.client_email, "client_email")?,
-            client_id: raw.client_id.filter(|s| !s.is_empty()),
+            client_id: field(raw.client_id, "client_id")?,
             private_key_id: field(raw.private_key_id, "private_key_id")?,
             private_key: field(raw.private_key, "private_key")?,
         };

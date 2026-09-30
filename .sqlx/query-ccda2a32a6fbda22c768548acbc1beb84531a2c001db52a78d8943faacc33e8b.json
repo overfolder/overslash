@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "INSERT INTO org_google_directory_configs\n             (org_id, encrypted_service_account_key, service_account_email,\n              service_account_key_id, admin_subject, customer_id, domains, enabled,\n              sync_interval_hours)\n         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)\n         RETURNING org_id, encrypted_service_account_key, service_account_email,\n                   service_account_key_id, admin_subject, customer_id, domains, enabled,\n                   sync_interval_hours, next_sync_at, sync_requested_at, lease_owner,\n                   lease_expires_at, last_sync_started_at, last_sync_finished_at,\n                   last_sync_status, last_sync_error, last_sync_stats, created_at, updated_at",
+  "query": "SELECT org_id, admin_subject, customer_id, domain, connected_by_identity_id,\n                connected_at, enabled, sync_interval_hours, next_sync_at, sync_requested_at,\n                lease_owner, lease_expires_at, last_sync_started_at, last_sync_finished_at,\n                last_sync_status, last_sync_error, last_sync_stats, created_at, updated_at\n           FROM org_google_directory_configs WHERE org_id = $1",
   "describe": {
     "columns": [
       {
@@ -16,39 +16,6 @@
       },
       {
         "ordinal": 1,
-        "name": "encrypted_service_account_key",
-        "type_info": "Bytea",
-        "origin": {
-          "Table": {
-            "table": "org_google_directory_configs",
-            "name": "encrypted_service_account_key"
-          }
-        }
-      },
-      {
-        "ordinal": 2,
-        "name": "service_account_email",
-        "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "org_google_directory_configs",
-            "name": "service_account_email"
-          }
-        }
-      },
-      {
-        "ordinal": 3,
-        "name": "service_account_key_id",
-        "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "org_google_directory_configs",
-            "name": "service_account_key_id"
-          }
-        }
-      },
-      {
-        "ordinal": 4,
         "name": "admin_subject",
         "type_info": "Text",
         "origin": {
@@ -59,7 +26,7 @@
         }
       },
       {
-        "ordinal": 5,
+        "ordinal": 2,
         "name": "customer_id",
         "type_info": "Text",
         "origin": {
@@ -70,18 +37,40 @@
         }
       },
       {
-        "ordinal": 6,
-        "name": "domains",
-        "type_info": "TextArray",
+        "ordinal": 3,
+        "name": "domain",
+        "type_info": "Text",
         "origin": {
           "Table": {
             "table": "org_google_directory_configs",
-            "name": "domains"
+            "name": "domain"
           }
         }
       },
       {
-        "ordinal": 7,
+        "ordinal": 4,
+        "name": "connected_by_identity_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "org_google_directory_configs",
+            "name": "connected_by_identity_id"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "connected_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "org_google_directory_configs",
+            "name": "connected_at"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
         "name": "enabled",
         "type_info": "Bool",
         "origin": {
@@ -92,7 +81,7 @@
         }
       },
       {
-        "ordinal": 8,
+        "ordinal": 7,
         "name": "sync_interval_hours",
         "type_info": "Int4",
         "origin": {
@@ -103,7 +92,7 @@
         }
       },
       {
-        "ordinal": 9,
+        "ordinal": 8,
         "name": "next_sync_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -114,7 +103,7 @@
         }
       },
       {
-        "ordinal": 10,
+        "ordinal": 9,
         "name": "sync_requested_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -125,7 +114,7 @@
         }
       },
       {
-        "ordinal": 11,
+        "ordinal": 10,
         "name": "lease_owner",
         "type_info": "Text",
         "origin": {
@@ -136,7 +125,7 @@
         }
       },
       {
-        "ordinal": 12,
+        "ordinal": 11,
         "name": "lease_expires_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -147,7 +136,7 @@
         }
       },
       {
-        "ordinal": 13,
+        "ordinal": 12,
         "name": "last_sync_started_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -158,7 +147,7 @@
         }
       },
       {
-        "ordinal": 14,
+        "ordinal": 13,
         "name": "last_sync_finished_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -169,7 +158,7 @@
         }
       },
       {
-        "ordinal": 15,
+        "ordinal": 14,
         "name": "last_sync_status",
         "type_info": "Text",
         "origin": {
@@ -180,7 +169,7 @@
         }
       },
       {
-        "ordinal": 16,
+        "ordinal": 15,
         "name": "last_sync_error",
         "type_info": "Text",
         "origin": {
@@ -191,7 +180,7 @@
         }
       },
       {
-        "ordinal": 17,
+        "ordinal": 16,
         "name": "last_sync_stats",
         "type_info": "Jsonb",
         "origin": {
@@ -202,7 +191,7 @@
         }
       },
       {
-        "ordinal": 18,
+        "ordinal": 17,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -213,7 +202,7 @@
         }
       },
       {
-        "ordinal": 19,
+        "ordinal": 18,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -226,15 +215,7 @@
     ],
     "parameters": {
       "Left": [
-        "Uuid",
-        "Bytea",
-        "Text",
-        "Text",
-        "Text",
-        "Text",
-        "TextArray",
-        "Bool",
-        "Int4"
+        "Uuid"
       ]
     },
     "nullable": [
@@ -242,8 +223,7 @@
       false,
       false,
       false,
-      false,
-      false,
+      true,
       false,
       false,
       false,
@@ -260,5 +240,5 @@
       false
     ]
   },
-  "hash": "36f7036e26f751583abd8e468c0f4b49ca866fab96528c1d57999112db81696b"
+  "hash": "ccda2a32a6fbda22c768548acbc1beb84531a2c001db52a78d8943faacc33e8b"
 }
