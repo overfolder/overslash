@@ -451,3 +451,15 @@ async fn deliver_url_is_refused_for_a_staged_send() {
     assert_eq!(status, 400, "{resp}");
     assert!(resp.to_string().contains("staged uploads"), "{resp}");
 }
+
+#[tokio::test]
+async fn an_empty_attachment_list_sends_a_plain_message() {
+    // Nothing to inline, so nothing to stage, pin or buffer: the list goes
+    // through untouched and the send behaves like one with no attachments.
+    let env = setup(|_| {}).await;
+    let (status, body) = call(&env, &env.admin_key, send_params(&[])).await;
+    assert_eq!(status, 200, "{body}");
+    let captured = env.sink.lock().unwrap().clone();
+    assert_eq!(captured.len(), 1);
+    assert_eq!(captured[0].body["attachments"], json!([]));
+}

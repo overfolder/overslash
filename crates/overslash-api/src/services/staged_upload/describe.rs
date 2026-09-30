@@ -131,9 +131,13 @@ pub(crate) async fn describe(
         )));
     }
 
+    // Only fields that name at least one upload go on the request. An empty
+    // list (`attachments: []`) is sent as-is and has nothing to inline, so
+    // listing it would make the send path take — and hold for the whole
+    // upstream call — a buffer slot it never uses.
     Ok(fields
         .into_iter()
-        .filter(|(name, _)| refs.iter().any(|(n, _)| n == name))
+        .filter(|(name, _)| refs.iter().any(|(n, ids)| n == name && !ids.is_empty()))
         .map(|(field, inline_as)| StagedUploadField { field, inline_as })
         .collect())
 }
