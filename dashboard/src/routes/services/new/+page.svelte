@@ -50,6 +50,14 @@
 	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
 	import GroupGrantPicker from '$lib/components/groups/GroupGrantPicker.svelte';
 	import EndpointTlsHint from '$lib/components/services/EndpointTlsHint.svelte';
+	import ServiceEndpointField from '$lib/components/services/ServiceEndpointField.svelte';
+	import MoreOptions from '$lib/components/services/MoreOptions.svelte';
+	import {
+		endpointIsMain,
+		endpointRequired,
+		splitParams,
+		type EndpointFacts
+	} from '$lib/instance-fields';
 	import type { Group, GroupGrantPick } from '$lib/api/groups';
 
 
@@ -128,30 +136,34 @@
 	// leaving the field blank inherits it, so the URL is not "required".
 	const layerDefaults = $derived(selectedDetail?.instance_defaults);
 	const inheritedUrl = $derived(layerDefaults?.url);
-	const mcpNeedsUrl = $derived(isMcp && !selectedDetail?.mcp?.url && !inheritedUrl);
 	const mcpNeedsSecret = $derived(
 		isMcp &&
 		selectedDetail?.mcp?.auth_kind === 'bearer' &&
 		!selectedDetail?.mcp?.has_default_secret_name
 	);
 
-	// HTTP gateways (e.g. the `email` Mailbox Gateway) set their endpoint per
-	// instance too — reveal the same URL field the MCP path uses.
-	const httpNeedsUrl = $derived(!isMcp && selectedDetail?.configurable_url === true);
-
-	// …and when the template names no host at all, the field is not an override
-	// but the only endpoint this instance will ever have. Two ways to get here:
-	// `servers: []`, or a `${VAR?}` endpoint the deployment left unset (D44 —
-	// e.g. self-hosted Metabase). The server rejects a blank one, so say so
-	// here rather than letting the form post and bounce.
-	const httpUrlRequired = $derived(
-		httpNeedsUrl && (selectedDetail?.hosts?.length ?? 0) === 0 && !inheritedUrl
-	);
+	// Every template's endpoint and config pins are overridable per instance.
+	// The ones an instance cannot work without, and the ones the template
+	// promotes (`x-overslash-promoted`), sit in the main form; the rest wait
+	// behind "Show more options", each showing the default it falls back to.
+	const endpoint = $derived<EndpointFacts>({
+		configurable: selectedDetail?.configurable_url === true,
+		defaultUrl: selectedDetail?.default_url,
+		inheritedUrl,
+		promoted: selectedDetail?.url_promoted === true
+	});
+	const urlRequired = $derived(endpointRequired(endpoint));
+	const urlInMain = $derived(endpointIsMain(endpoint));
 
 	// Non-secret values the org pins per instance (e.g. the mailbox gateway's
 	// IMAP/SMTP endpoint). Declared by the template via
-	// `x-overslash-instance-config`; empty for templates that declare none.
+	// `x-overslash-instance-config` or `x-overslash-config`.
 	const instanceConfigParams = $derived(selectedDetail?.instance_config_params ?? []);
+	const configSplit = $derived(splitParams(instanceConfigParams, layerDefaults?.config));
+	const moreOptionsCount = $derived(
+		(endpoint.configurable && !urlInMain ? 1 : 0) + configSplit.more.length
+	);
+	let showMoreOptions = $state(false);
 
 	// Group-grant bookkeeping for the org-level path.
 	const availableGroups = $derived(data.groups ?? []);
@@ -442,6 +454,7 @@
 				seededConfig[p.name] = '';
 			}
 			configInput = seededConfig;
+			showMoreOptions = false;
 		} catch (e) {
 			error = e instanceof ApiError ? `Failed to load template (${e.status})` : 'Failed to load template';
 		} finally {
@@ -1326,48 +1339,20 @@
 				</div>
 			{/if}
 
-			{#if isMcp}
-				<label class="field">
-					<span class="label">MCP server URL</span>
-					<input
-						type="text"
-						bind:value={urlInput}
-						placeholder={inheritedUrl ?? selectedDetail?.mcp?.url ?? 'https://host/mcp'}
-					/>
-					<EndpointTlsHint url={urlInput} />
-					{#if mcpNeedsUrl}
-						<small>Required — this template has no default URL.</small>
-					{:else if inheritedUrl}
-						<small>Leave blank to use your org's deployment ({inheritedUrl}).</small>
-					{:else}
-						<small>Leave blank to use the template's default.</small>
-					{/if}
-				</label>
-			{:else if httpNeedsUrl}
-				<label class="field">
-					<span class="label">Endpoint URL</span>
-					<input
-						type="text"
-						bind:value={urlInput}
-						placeholder={inheritedUrl ??
-							(selectedDetail?.hosts?.[0]
-								? `https://${selectedDetail.hosts[0]}`
-								: 'https://service.your-org.com')}
-					/>
-					<EndpointTlsHint url={urlInput} />
-					{#if httpUrlRequired}
-						<small>Required — this template has no default endpoint.</small>
-					{:else if inheritedUrl}
-						<small>Leave blank to use your org's deployment ({inheritedUrl}).</small>
-					{:else}
-						<small>Point this instance at your own deployment. Leave blank to use the default.</small>
-					{/if}
-				</label>
+			{#if urlInMain}
+				<ServiceEndpointField
+					id="new-service-url"
+					bind:url={urlInput}
+					mcp={isMcp}
+					defaultUrl={endpoint.defaultUrl}
+					{inheritedUrl}
+					required={urlRequired}
+				/>
 			{/if}
 
-			{#if instanceConfigParams.length > 0}
+			{#if configSplit.main.length > 0}
 				<ServiceInstanceConfig
-					params={instanceConfigParams}
+					params={configSplit.main}
 					bind:config={configInput}
 					inherited={layerDefaults?.config}
 					idPrefix="new-service-config"
@@ -1396,14 +1381,33 @@
 					/>
 					{#if mcpNeedsSecret}
 						<small>Vault key holding the MCP server's bearer token. Required — this template has no default.</small>
-					{:else if httpNeedsUrl}
-						<small>The per-instance credential this gateway presents (e.g. a mailbox <code>user:pass</code>). Any shared gateway key is a separate org secret.</small>
 					{:else}
 						<small>Pick an existing secret from your vault, or type a new name to use later.</small>
 					{/if}
 				</div>
 			{/if}
 
+			{#if moreOptionsCount > 0}
+				<MoreOptions bind:open={showMoreOptions} count={moreOptionsCount}>
+					{#if endpoint.configurable && !urlInMain}
+						<ServiceEndpointField
+							id="new-service-url"
+							bind:url={urlInput}
+							mcp={isMcp}
+							defaultUrl={endpoint.defaultUrl}
+							{inheritedUrl}
+						/>
+					{/if}
+					{#if configSplit.more.length > 0}
+						<ServiceInstanceConfig
+							params={configSplit.more}
+							bind:config={configInput}
+							inherited={layerDefaults?.config}
+							idPrefix="new-service-config"
+						/>
+					{/if}
+				</MoreOptions>
+			{/if}
 			<div class="actions">
 				<button
 					type="button"

@@ -160,6 +160,7 @@ pub fn apply_delta(
             .description
             .clone()
             .or_else(|| base.description.clone()),
+        url_promoted: false,
         hosts,
         category: base.category.clone(),
         hidden: delta.hidden.unwrap_or(base.hidden),
@@ -504,6 +505,7 @@ mod tests {
             description: String::new(),
             required: true,
             identity: false,
+            promoted: false,
         }];
         let delta = Delta {
             instance_defaults: Some(defaults(None, &[("mailbox_user", "ops@acme.com")])),

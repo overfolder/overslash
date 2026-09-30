@@ -168,6 +168,7 @@ mod shortcut;
 mod slack;
 mod ssrf_guard;
 mod subdomain_oauth_as;
+mod template_endpoint_fields;
 mod template_validation;
 mod templates;
 mod templates_import;

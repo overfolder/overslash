@@ -567,6 +567,7 @@ fn platform_namespace_action_allowed() {
         key: "overslash".into(),
         display_name: "Overslash".into(),
         description: None,
+        url_promoted: false,
         hosts: vec![],
         category: Some("platform".into()),
         hidden: false,

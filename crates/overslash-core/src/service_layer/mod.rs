@@ -198,6 +198,7 @@ pub(crate) mod fixtures {
             key: "github".into(),
             display_name: "GitHub".into(),
             description: Some("d".into()),
+            url_promoted: false,
             hosts: vec!["api.github.com".into()],
             category: Some("Dev".into()),
             hidden: false,

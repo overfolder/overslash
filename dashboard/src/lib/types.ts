@@ -438,10 +438,16 @@ export interface TemplateDetail {
   mcp?: McpDetail;
   /** `x-overslash-hidden` — shown flagged in the dashboard, omitted from agent-facing surfaces. */
   hidden?: boolean;
-  /** True when the endpoint URL is set per instance (MCP servers, or HTTP
-   * gateways like the `email` Mailbox Gateway). The instance form reveals a
-   * URL field when this is set. */
+  /** True when an instance may point this template at its own endpoint —
+   * every HTTP and MCP template except the `http` pseudo-service. The
+   * instance form renders the URL field whenever this is set. */
   configurable_url?: boolean;
+  /** The endpoint an instance uses when it sets none (`mcp.url`, or the first
+   * `servers[]` host). Absent means the instance must supply one. */
+  default_url?: string;
+  /** `servers[0].x-overslash-promoted`: show the URL field in the form's main
+   * section instead of behind "Show more options". */
+  url_promoted?: boolean;
   /** Params an org may pin per instance (`x-overslash-instance-config`), deduped
    * across actions. The instance form renders one field each and submits them
    * as `config`. */
@@ -519,6 +525,11 @@ export interface InstanceConfigParam {
    * ("Mailbox username") because their key is not a header name an operator
    * would recognise; params have none and fall back to `name`. */
   label?: string;
+  /** The template's own default, as the form shows it. */
+  default?: string;
+  /** `x-overslash-promoted`: shown in the form's main section rather than
+   * behind "Show more options". */
+  promoted?: boolean;
 }
 
 export interface CreateTemplateRequest {

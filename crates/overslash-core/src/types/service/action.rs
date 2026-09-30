@@ -626,6 +626,13 @@ pub struct ActionParam {
     /// secret goes in the vault and is bound via `credentials`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub instance_config: bool,
+    /// `x-overslash-promoted`: an [`instance_config`](Self::instance_config)
+    /// field the instance form shows in its main section rather than behind
+    /// "Show more options". A required pin with no default is shown there
+    /// regardless; this is for an optional one the operator should see up
+    /// front.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub promoted: bool,
     /// `x-overslash-sql-field` (D42/D43): presence marks this string param
     /// as the one carrying a raw SQL query — the call handler parses and
     /// classifies it (read/write becomes a risk floor, referenced tables
@@ -701,6 +708,7 @@ impl Default for ActionParam {
             aliases: Vec::new(),
             location: ParamLocation::default(),
             instance_config: false,
+            promoted: false,
             sql_field: None,
             sql_database: None,
             content_media_type: None,

@@ -369,6 +369,8 @@ async fn db_row_to_detail(
         mcp,
         hidden: def.hidden,
         configurable_url: configurable_url(def),
+        default_url: default_url(def),
+        url_promoted: def.url_promoted,
         instance_config_params: instance_config_params(def),
         test_action: crate::routes::actions::probe::describe(def),
         instance_defaults: def.instance_defaults.clone(),
@@ -405,6 +407,11 @@ fn instance_config_params(def: &ServiceDefinition) -> Vec<InstanceConfigParam> {
                     description: p.description.clone(),
                     required: p.required,
                     label: String::new(),
+                    default: p.default.as_ref().map(|v| match v {
+                        serde_json::Value::String(s) => s.clone(),
+                        other => other.to_string(),
+                    }),
+                    promoted: p.promoted,
                 });
         }
     }
@@ -416,35 +423,34 @@ fn instance_config_params(def: &ServiceDefinition) -> Vec<InstanceConfigParam> {
                 description: var.description.clone(),
                 required: var.required,
                 label: var.label.clone(),
+                default: None,
+                promoted: var.promoted,
             });
     }
     acc.into_values().collect()
 }
 
-/// True when a service's endpoint URL is set per instance rather than baked
-/// into the template: MCP-runtime services (their `mcp.url`) and HTTP gateways
-/// that pair a shared org gateway key (`secret_source: org`) with a per-instance
-/// credential — e.g. the `email` Mailbox Gateway (overfwd). Drives whether the
-/// dashboard shows a URL field on the instance form.
+/// Whether an instance may point this template at its own endpoint. Every
+/// template can — the executor takes `service_instances.url` ahead of the
+/// template's host unconditionally — so the only exceptions are the two with
+/// no endpoint to override: the `http` pseudo-service, whose callers pass a
+/// full URL per call, and `runtime: platform`, answered in this process.
+///
+/// How *prominently* the form offers the field is a separate question, decided
+/// by [`default_url`] (none ⇒ required ⇒ always shown) and
+/// `ServiceDefinition::url_promoted`.
 fn configurable_url(def: &ServiceDefinition) -> bool {
-    use overslash_core::types::{Runtime, SecretSource, ServiceAuth};
-    // A template that names no host has nowhere to send a request until the
-    // instance supplies one, so the field is not merely available — it is the
-    // only way the instance can work. Covers `servers: []` (telegram, whatsapp)
-    // and, since D44, a `${VAR?}` endpoint the deployment left unset
-    // (metabase). The `http` pseudo-service is the one host-less template this
-    // must not claim: its callers pass a full URL per call.
-    (def.hosts.is_empty() && def.key != "http")
-        || def.runtime == Runtime::Mcp
-        || def.auth.iter().any(|a| {
-            matches!(
-                a,
-                ServiceAuth::Secret {
-                    secret_source: SecretSource::Org,
-                    ..
-                }
-            )
-        })
+    use overslash_core::types::Runtime;
+    def.key != overslash_core::registry::HTTP_PSEUDO_SERVICE && def.runtime != Runtime::Platform
+}
+
+/// The endpoint an instance falls back to when it sets none, before any org
+/// layer default: what the form shows as "Default: …".
+fn default_url(def: &ServiceDefinition) -> Option<String> {
+    match &def.mcp {
+        Some(m) => m.url.clone(),
+        None => def.default_base_url(),
+    }
 }
 
 fn runtime_string(def: &ServiceDefinition) -> String {

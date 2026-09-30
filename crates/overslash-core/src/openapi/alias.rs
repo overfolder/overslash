@@ -179,7 +179,17 @@ pub(super) const PARAMETER_ALIASES: &[Alias] = &[
         alias: "sql-database",
         canonical: "x-overslash-sql-database",
     },
+    Alias {
+        alias: "promoted",
+        canonical: "x-overslash-promoted",
+    },
 ];
+
+/// Root-level `servers[]` entry aliases.
+pub(super) const SERVER_ALIASES: &[Alias] = &[Alias {
+    alias: "promoted",
+    canonical: "x-overslash-promoted",
+}];
 
 pub(super) const OAUTH2_SEC_ALIASES: &[Alias] = &[Alias {
     alias: "provider",
@@ -343,6 +353,14 @@ pub fn normalize_aliases(v: &mut Value) -> Vec<ValidationIssue> {
 
     if let Some(info) = root.get_mut("info").and_then(Value::as_object_mut) {
         rewrite_aliases(info, INFO_ALIASES, "info", &mut issues);
+    }
+
+    if let Some(servers) = root.get_mut("servers").and_then(Value::as_array_mut) {
+        for (i, server) in servers.iter_mut().enumerate() {
+            if let Value::Object(obj) = server {
+                rewrite_aliases(obj, SERVER_ALIASES, &format!("servers[{i}]"), &mut issues);
+            }
+        }
     }
 
     if let Some(paths) = root.get_mut("paths").and_then(Value::as_object_mut) {

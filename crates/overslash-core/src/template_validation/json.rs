@@ -67,6 +67,7 @@ pub fn parse_template_parts(
         key: key.to_string(),
         display_name: display_name.to_string(),
         description: description.map(|s| s.to_string()),
+        url_promoted: false,
         hosts: hosts.to_vec(),
         category: category.map(|s| s.to_string()),
         // Parts-based CRUD has no `hidden` input — the flag lives in the

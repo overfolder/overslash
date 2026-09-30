@@ -144,6 +144,10 @@ paths:
           IMAP endpoint as host:port (e.g. imap.migadu.com:993). Leave unset to
           let the gateway autoconfigure from the mailbox domain.
         x-overslash-instance-config: true
+        # Shown up front rather than under "Show more options": autoconfigure
+        # only covers providers that publish autoconfig, and custom-domain or
+        # corporate hosts routinely need the endpoint spelled out.
+        x-overslash-promoted: true
         schema:
           type: string
       - name: X-Mailbox-Smtp
@@ -153,6 +157,10 @@ paths:
           SMTP submission endpoint as host:port (e.g. smtp.migadu.com:465).
           Leave unset to let the gateway autoconfigure from the mailbox domain.
         x-overslash-instance-config: true
+        # Shown up front rather than under "Show more options": autoconfigure
+        # only covers providers that publish autoconfig, and custom-domain or
+        # corporate hosts routinely need the endpoint spelled out.
+        x-overslash-promoted: true
         schema:
           type: string
     post:
