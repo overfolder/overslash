@@ -1292,7 +1292,7 @@ Other callback failures are reported as `failed` with a coarse, allow-listed rea
 
 **Why the key comes in through env, not a keyless `signJwt`.** One mechanism for hosted and self-hosted alike, and a file path for platforms where the JSON should not sit in the environment. On Cloud Run the value comes from Secret Manager, created by Terraform with a placeholder and filled with `gcloud`, so the private key never enters Terraform state.
 
-## D-NEXT: HTTP-action attachments are gateway-staged bytes, referenced by id and inlined only at send time
+## D114: HTTP-action attachments are gateway-staged bytes, referenced by id and inlined only at send time
 
 **Date**: 2026-09-30
 **Decision**: A request-body property marked `x-overslash-staged-upload: {inline_as: base64}` takes a list of `{upload_id}` references to bytes Overslash itself holds. `overslash:upload_file` (a platform action, `risk: write`) takes the file's `filename`, exact `size_bytes`, and optionally `content_type` and `sha256`, and mints a single-use URL. The caller PUTs the bytes to the existing `POST|PUT /v1/uploads/{token}` route, which now falls through to a new `staged_uploads` table (migration 132) when no `upload_tokens` row holds the token. The bytes are measured and hashed, held to the declared size and digest, encrypted with the AES-256-GCM keyring and stored for `STAGED_UPLOAD_TTL_SECS` (24h). Sending is two steps:

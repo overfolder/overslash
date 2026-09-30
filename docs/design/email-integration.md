@@ -203,7 +203,7 @@ Unipile. Overslash is just one consumer.
     and an address on two headers is one approval, not two.
     **Reads are ordinary `read`** (auto-approvable); consent boundary is *whether the owner
     grants read permission*, not per-fetch approval. **Sending** attachments shipped
-    (DECISIONS D-NEXT, overfwd ≥ 0.6.0): `send` takes `attachments: [{upload_id}]`, bytes staged
+    (DECISIONS D114, overfwd ≥ 0.6.0): `send` takes `attachments: [{upload_id}]`, bytes staged
     through the gateway's own `upload_file` and inlined as base64 only at send time. *Reading*
     them (`get_attachment`, binary + `prefer_stream`) and `list_folders` are later additions.
 12. **Cloud hosting = Cloud Run**, one shared stateless service alongside the API (Portfolio
