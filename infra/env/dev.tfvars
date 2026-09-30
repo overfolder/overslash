@@ -155,3 +155,6 @@ enable_trusted_proxy_secret = true
 # retention and the module can still be iterated on. Do not flip this here.
 audit_log_retention_days = 400
 audit_log_bucket_locked  = false
+
+enable_google_directory_sync = true
+
