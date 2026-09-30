@@ -61,11 +61,11 @@
 	// Editable buffer for the allowed-domains list. Synced from the server
 	// value on load and after each save.
 	let allowedDomains = $state<string[]>([]);
+	// Compared as sets: removing a domain and re-adding it moves it to the
+	// end, which is not a change worth saving.
 	const domainsDirty = $derived.by(() => {
-		const saved = managedSigninSettings?.managed_signin_allowed_domains ?? [];
-		return (
-			saved.length !== allowedDomains.length || saved.some((d, i) => d !== allowedDomains[i])
-		);
+		const saved = new Set(managedSigninSettings?.managed_signin_allowed_domains ?? []);
+		return saved.size !== allowedDomains.length || allowedDomains.some((d) => !saved.has(d));
 	});
 	let templateSettings = $state<TemplateSettings | null>(null);
 	let templateSettingsSaving = $state(false);
