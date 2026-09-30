@@ -1104,7 +1104,8 @@ If the caller has any open drafts, a **Drafts** card renders above this table; s
    - *Secret*: form to paste the value → stored as a versioned secret → done
    - *Both available*: user picks which auth method
    - *Org service with shared credential*: one-click, no auth needed
-4. **Status**: starts as Active (or Draft if the user wants to test first)
+4. **Endpoint and config** — every template's endpoint URL and every per-instance config field (`x-overslash-config` vars, `x-overslash-instance-config` params) can be overridden. A field is shown in the main form when the instance cannot work without it (required, and neither the template nor an org layer supplies a default) or when the template promotes it with `x-overslash-promoted` (Langfuse's region, the email gateway's IMAP/SMTP endpoints). Everything else sits behind a collapsed **Show more options ▸ (n)** disclosure below the credentials. Every field with a default says so in its hint ("Default: `https://api.resend.com`", or "your org's deployment (…)" for a layer default), so an empty field never hides where calls will go. The same split applies on the service's Overview tab, where the disclosure opens by itself when the instance already overrides a field inside it.
+5. **Status**: starts as Active (or Draft if the user wants to test first)
 
 ### Manage service
 

@@ -11,7 +11,7 @@ use crate::types::{
 
 use super::super::ext::{self, Ext, Pos};
 use super::shape::{lower_content_media_type, lower_shape};
-use super::{parse_aliases, parse_instance_config, parse_sql_policy};
+use super::{parse_aliases, parse_instance_config, parse_promoted, parse_sql_policy};
 
 // ── parameters → HashMap<String, ActionParam> ────────────────────────
 
@@ -56,6 +56,7 @@ pub(super) fn collect_parameters(
         };
 
         let instance_config = parse_instance_config(Some(obj), Pos::Parameter);
+
         let (sql_field, sql_database) = parse_sql_policy(Some(obj), Pos::Parameter);
 
         out.insert(
@@ -70,6 +71,7 @@ pub(super) fn collect_parameters(
                 aliases,
                 location,
                 instance_config,
+                promoted: parse_promoted(Some(obj), Pos::Parameter),
                 sql_field,
                 sql_database,
                 content_media_type,
@@ -182,6 +184,7 @@ pub(super) fn collect_body_parameters(
                 aliases,
                 location: ParamLocation::Body,
                 instance_config,
+                promoted: parse_promoted(pobj, Pos::BodyProperty),
                 sql_field,
                 sql_database,
                 content_media_type,

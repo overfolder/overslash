@@ -773,6 +773,17 @@ fn parse_instance_config(obj: Option<&Map<String, Value>>, pos: Pos) -> bool {
         .unwrap_or(false)
 }
 
+/// `x-overslash-promoted` — whether the instance form shows this field in its
+/// main section instead of behind "Show more options". Read wherever
+/// `x-overslash-instance-config` is (a promoted param that is not
+/// instance-configurable renders nowhere, so it is inert), plus a `servers[]`
+/// entry, where it promotes the endpoint URL.
+pub(in crate::openapi) fn parse_promoted(obj: Option<&Map<String, Value>>, pos: Pos) -> bool {
+    obj.and_then(|o| ext::get(o, pos, Ext::Promoted))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
 /// `x-overslash-sql-field` + `x-overslash-sql-database` (D42/D43): presence
 /// of `sql-field` marks this param as the raw-SQL query field, its value is
 /// the dotted body path the value nests under; `sql-database` is the jq
@@ -901,5 +912,52 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(svc.hosts, vec!["real.example.com"]);
+    }
+
+    #[test]
+    fn promoted_is_read_off_the_first_server_and_instance_config_params() {
+        let mut doc = json!({
+            "info": {"title": "T", "x-overslash-key": "t"},
+            "servers": [
+                {"url": "https://eu.example.com", "promoted": true},
+                {"url": "https://us.example.com"}
+            ],
+            "paths": {"/x": {"get": {
+                "operationId": "x",
+                "x-overslash-risk": "read",
+                "parameters": [
+                    {"name": "Region", "in": "header",
+                     "instance-config": true, "promoted": true,
+                     "schema": {"type": "string"}},
+                    {"name": "Other", "in": "header",
+                     "instance-config": true, "schema": {"type": "string"}}
+                ]
+            }}}
+        });
+        assert!(crate::openapi::normalize_aliases(&mut doc).is_empty());
+        let (svc, _) = compile_service(&doc).unwrap();
+        assert!(svc.url_promoted);
+        assert_eq!(
+            svc.default_base_url().as_deref(),
+            Some("https://eu.example.com")
+        );
+        let params = &svc.actions["x"].params;
+        assert!(params["Region"].promoted);
+        assert!(!params["Other"].promoted);
+    }
+
+    #[test]
+    fn url_is_not_promoted_by_default_and_host_less_has_no_default() {
+        let (svc, _) = compile_service(&json!({
+            "info": {"title": "T", "x-overslash-key": "t"},
+            "servers": [{"url": "https://api.example.com"}]
+        }))
+        .unwrap();
+        assert!(!svc.url_promoted);
+        let (svc, _) = compile_service(&json!({
+            "info": {"title": "T", "x-overslash-key": "t"}
+        }))
+        .unwrap();
+        assert_eq!(svc.default_base_url(), None);
     }
 }

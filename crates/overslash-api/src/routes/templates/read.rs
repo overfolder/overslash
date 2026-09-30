@@ -241,6 +241,8 @@ pub(super) async fn get_template(
         mcp,
         hidden: svc.hidden,
         configurable_url: configurable_url(svc),
+        default_url: default_url(svc),
+        url_promoted: svc.url_promoted,
         instance_config_params: instance_config_params(svc),
         test_action: crate::routes::actions::probe::describe(svc),
         // A global template is never a layer, so it never carries defaults.

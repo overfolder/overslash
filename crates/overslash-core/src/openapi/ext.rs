@@ -82,6 +82,8 @@ pub enum Ext {
     SqlField,
     SqlDatabase,
     StagedUpload,
+    // Parameters (as above) and `servers[]` entries
+    Promoted,
     // components
     Secrets,
     Config,
@@ -123,6 +125,7 @@ impl Ext {
             Ext::Resolve => "x-overslash-resolve",
             Ext::Aliases => "x-overslash-aliases",
             Ext::InstanceConfig => "x-overslash-instance-config",
+            Ext::Promoted => "x-overslash-promoted",
             Ext::SqlField => "x-overslash-sql-field",
             Ext::SqlDatabase => "x-overslash-sql-database",
             Ext::StagedUpload => "x-overslash-staged-upload",
@@ -185,6 +188,7 @@ pub(super) const ALL: &[Ext] = &[
     Ext::SqlField,
     Ext::SqlDatabase,
     Ext::StagedUpload,
+    Ext::Promoted,
     Ext::Secrets,
     Ext::Config,
     Ext::AuthModes,
@@ -236,6 +240,8 @@ pub enum Pos {
     Operation,
     /// A `parameters[]` entry, at path-item or operation level.
     Parameter,
+    /// A root-level `servers[]` entry.
+    Server,
     /// `requestBody.content.*.schema.properties.*`.
     BodyProperty,
     Components,
@@ -265,6 +271,7 @@ impl Pos {
             Pos::PathItem => "a path item",
             Pos::Operation => "an operation",
             Pos::Parameter => "a `parameters[]` entry",
+            Pos::Server => "a `servers[]` entry",
             Pos::BodyProperty => "a request-body schema property",
             Pos::Components => "`components`",
             Pos::SecurityScheme(SchemeKind::Oauth2) => "an `oauth2` security scheme",
@@ -458,6 +465,21 @@ pub(super) const READS: &[(Ext, &[Pos])] = &[
     // MCP tool's arguments (no MCP analogue of the send-time swap exists), or
     // a platform action (answered in-process — no body goes anywhere).
     (Ext::StagedUpload, &[Pos::BodyProperty]),
+    // extract/mod.rs `parse_promoted`: every position `InstanceConfig` is read
+    // at, since it only means something on an instance-configurable param, plus
+    // `servers[]` (compile/mod.rs), where it promotes the endpoint URL field.
+    // Only `servers[0]` is read — it is the entry `default_base_url` uses —
+    // but the lint cannot tell entries apart, so a later entry is not flagged.
+    (
+        Ext::Promoted,
+        &[
+            Pos::Server,
+            Pos::Parameter,
+            Pos::BodyProperty,
+            Pos::McpToolProperty,
+            Pos::PlatformActionParam,
+        ],
+    ),
     // auth.rs:286,213
     (Ext::Secrets, &[Pos::Components]),
     (Ext::Config, &[Pos::Components]),
@@ -526,7 +548,7 @@ mod tests {
     fn every_variant_is_in_all() {
         // `ALL` drives name resolution and did-you-mean suggestions, so a
         // variant missing from it is invisible to the lint.
-        assert_eq!(ALL.len(), 36, "ALL has drifted from the enum");
+        assert_eq!(ALL.len(), 37, "ALL has drifted from the enum");
         let mut keys: Vec<&str> = ALL.iter().map(|e| e.key()).collect();
         keys.sort_unstable();
         let before = keys.len();

@@ -180,6 +180,7 @@ mod tests {
             key: "t".into(),
             display_name: "T".into(),
             description: None,
+            url_promoted: false,
             hosts: vec!["api.example.com".into()],
             category: None,
             hidden: false,

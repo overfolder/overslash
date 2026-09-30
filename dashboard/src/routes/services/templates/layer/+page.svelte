@@ -83,8 +83,8 @@
 	let defaultConfig = $state<Record<string, string>>({
 		...(existingDelta.instance_defaults?.config ?? {})
 	});
-	// The endpoint field only makes sense where the endpoint is a per-deployment
-	// concern in the first place — the same signal the instance form uses.
+	// Every template's endpoint is overridable (bar the `http` pseudo-service),
+	// so an org may preset one for all of its services.
 	const showDefaultUrl = base?.configurable_url === true;
 	const canSetDefaults = $derived(scope === 'org' && (showDefaultUrl || pinnableParams.length > 0));
 
@@ -380,10 +380,13 @@
 						<input
 							type="url"
 							bind:value={defaultUrl}
-							placeholder={base?.hosts?.[0] ? `https://${base.hosts[0]}` : 'https://gateway.example.com'}
+							placeholder={base?.default_url ?? 'https://gateway.example.com'}
 						/>
 						<span class="hint">
-							Your org's own deployment. Leave blank to use the template's default.
+							Your org's own deployment.
+							{#if base?.default_url}Leave blank to use the template's default
+								(<code>{base.default_url}</code>).{:else}The template has no default, so
+								every service must set one unless this does.{/if}
 						</span>
 						<EndpointTlsHint url={defaultUrl} />
 					</label>

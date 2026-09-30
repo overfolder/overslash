@@ -72,6 +72,12 @@ pub struct ServiceDefinition {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     pub hosts: Vec<String>,
+    /// `servers[0].x-overslash-promoted`: the instance form shows the endpoint
+    /// URL in its main section instead of behind "Show more options". Every
+    /// template's endpoint can be overridden per instance; this only decides
+    /// how prominently the form offers it (Langfuse's region, say).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub url_promoted: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,
     /// Catalog visibility (`x-overslash-hidden`). Hidden templates are
@@ -203,6 +209,21 @@ pub enum McpAuth {
 }
 
 impl ServiceDefinition {
+    /// The base URL an instance that sets no `url` of its own (and inherits
+    /// none from an org layer) sends to: the first `servers[]` host, as
+    /// `https://` unless it names a scheme. `None` for a host-less template.
+    ///
+    /// The executor's fallback and the default the dashboard shows are both
+    /// this, so the form can never advertise a different URL than calls use.
+    pub fn default_base_url(&self) -> Option<String> {
+        let host = self.hosts.first()?;
+        Some(if host.contains("://") {
+            host.clone()
+        } else {
+            format!("https://{host}")
+        })
+    }
+
     /// The config key whose per-instance value names the account this instance
     /// speaks for, if the template declares one (`identity: true` on a
     /// `components.x-overslash-config` entry).
@@ -577,6 +598,7 @@ mod tests {
             key: "slack".into(),
             display_name: "Slack".into(),
             description: None,
+            url_promoted: false,
             hosts: vec!["slack.com".into()],
             category: None,
             hidden: false,
@@ -636,6 +658,7 @@ mod tests {
             key: "linear_mcp".into(),
             display_name: "Linear".into(),
             description: None,
+            url_promoted: false,
             hosts: vec![],
             category: Some("Development".into()),
             hidden: false,

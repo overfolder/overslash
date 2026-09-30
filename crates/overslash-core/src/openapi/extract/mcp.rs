@@ -14,8 +14,9 @@ use super::super::ext::{self, Ext, Pos};
 use super::shape::{lower_content_media_type, lower_shape};
 use super::{
     parse_additional_properties, parse_aliases, parse_disclose, parse_download,
-    parse_instance_config, parse_pagination, parse_redact, parse_resolver, parse_scope_params,
-    parse_sql_policy, parse_test, parse_timeout_ms, parse_upload, parse_wait_mode,
+    parse_instance_config, parse_pagination, parse_promoted, parse_redact, parse_resolver,
+    parse_scope_params, parse_sql_policy, parse_test, parse_timeout_ms, parse_upload,
+    parse_wait_mode,
 };
 
 // ── x-overslash-mcp → McpSpec + ServiceActions ───────────────────────
@@ -531,6 +532,7 @@ pub(crate) fn lower_input_schema(
         let shape = lower_shape(Some(po), 0).map(Box::new);
         let aliases = parse_aliases(Some(po), name, Pos::McpToolProperty);
         let instance_config = parse_instance_config(Some(po), Pos::McpToolProperty);
+        let promoted = parse_promoted(Some(po), Pos::McpToolProperty);
         let (sql_field, sql_database) = parse_sql_policy(Some(po), Pos::McpToolProperty);
         // MCP params carry resolvers too — an MCP resolver names a sibling
         // `risk: read` tool rather than a GET path, but the declaration and
@@ -550,6 +552,7 @@ pub(crate) fn lower_input_schema(
                 aliases,
                 location: ParamLocation::Body,
                 instance_config,
+                promoted,
                 sql_field,
                 sql_database,
                 content_media_type,

@@ -89,10 +89,19 @@ pub(super) struct TemplateDetail {
     pub(super) mcp: Option<McpDetail>,
     /// `x-overslash-hidden` — see [`TemplateSummary::hidden`].
     pub(super) hidden: bool,
-    /// True when the endpoint URL is set per service instance rather than baked
-    /// into the template. The dashboard reveals a URL field on the
-    /// instance-create/edit form when this is set. See [`configurable_url`].
+    /// True when an instance may point this template at its own endpoint —
+    /// every HTTP and MCP template except the `http` pseudo-service. The
+    /// dashboard renders the URL field whenever this is set; see
+    /// [`configurable_url`].
     pub(super) configurable_url: bool,
+    /// The endpoint an instance uses when it sets none: `mcp.url` for an MCP
+    /// template, else the first `servers[]` host. Shown on the form so a
+    /// default is never invisible. `None` means the instance must supply one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) default_url: Option<String>,
+    /// `servers[0].x-overslash-promoted`: render the URL field in the form's
+    /// main section instead of behind "Show more options".
+    pub(super) url_promoted: bool,
     /// Params an org may pin per service instance (`x-overslash-instance-config`),
     /// deduped across actions. The dashboard renders one field per entry on the
     /// instance-create/edit form and submits them as `config`.
@@ -433,4 +442,12 @@ pub(super) struct InstanceConfigParam {
     /// an operator would recognise; params have none and fall back to `name`.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub(super) label: String,
+    /// The template's own default, rendered as the form shows it. A field with
+    /// a default is never *required* on the form, however `required` reads.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) default: Option<String>,
+    /// `x-overslash-promoted` (param) / `promoted` (config var): shown in the
+    /// form's main section rather than behind "Show more options".
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub(super) promoted: bool,
 }

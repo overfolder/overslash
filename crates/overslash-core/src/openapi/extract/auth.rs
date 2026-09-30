@@ -252,29 +252,24 @@ fn extract_config_vars(components: Option<&Value>) -> Result<Vec<ConfigVar>, Vec
             ));
             continue;
         };
-        let required = match obj.get("required") {
-            None => false,
-            Some(Value::Bool(b)) => *b,
+        let flag = |name: &str, errors: &mut Vec<ValidationIssue>| match obj.get(name) {
+            None => Some(false),
+            Some(Value::Bool(b)) => Some(*b),
             Some(other) => {
                 errors.push(ValidationIssue::new(
                     "openapi_unsupported_construct",
-                    format!("config `required` must be a boolean (got {other})"),
-                    format!("{base}.required"),
+                    format!("config `{name}` must be a boolean (got {other})"),
+                    format!("{base}.{name}"),
                 ));
-                continue;
+                None
             }
         };
-        let identity = match obj.get("identity") {
-            None => false,
-            Some(Value::Bool(b)) => *b,
-            Some(other) => {
-                errors.push(ValidationIssue::new(
-                    "openapi_unsupported_construct",
-                    format!("config `identity` must be a boolean (got {other})"),
-                    format!("{base}.identity"),
-                ));
-                continue;
-            }
+        let (Some(required), Some(identity), Some(promoted)) = (
+            flag("required", &mut errors),
+            flag("identity", &mut errors),
+            flag("promoted", &mut errors),
+        ) else {
+            continue;
         };
         out.push(ConfigVar {
             key: key.clone(),
@@ -282,6 +277,7 @@ fn extract_config_vars(components: Option<&Value>) -> Result<Vec<ConfigVar>, Vec
             description: str_field(obj, "description"),
             required,
             identity,
+            promoted,
         });
     }
 
@@ -760,6 +756,23 @@ mod tests {
                 .map(|c| c.key.clone())
                 .collect::<Vec<_>>(),
             ["mailbox_user"]
+        );
+    }
+
+    #[test]
+    fn config_var_promoted_must_be_a_boolean() {
+        let doc = |promoted: Value| {
+            json!({
+                "info": {"title": "T", "x-overslash-key": "t"},
+                "components": {"x-overslash-config": {"region": {"promoted": promoted}}}
+            })
+        };
+        let (svc, _) = compile_service(&doc(json!(true))).unwrap();
+        assert!(svc.config[0].promoted);
+        let errs = compile_service(&doc(json!("yes"))).unwrap_err();
+        assert!(
+            errs.iter().any(|e| e.path.ends_with("region.promoted")),
+            "{errs:?}"
         );
     }
 
