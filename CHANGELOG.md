@@ -1,5 +1,39 @@
 # Changelog
 
+## [0.14.0](https://github.com/overfolder/overslash/compare/v0.13.0...v0.14.0) (2026-10-01)
+
+
+### Features
+
+* **auth:** server-side dashboard sessions (CASA 2.2.1–2.2.3) ([#698](https://github.com/overfolder/overslash/issues/698)) ([d377255](https://github.com/overfolder/overslash/commit/d3772557b110aee7dddf506b46a0b6c25656a1e4))
+* **bi:** terraform-owned BigQuery federation over prod Postgres ([#688](https://github.com/overfolder/overslash/issues/688)) ([9a0e16b](https://github.com/overfolder/overslash/commit/9a0e16b46be2a5eef6b12763155703273b4723ad))
+* **dashboard:** allowed sign-in domains as pills, example.org placeholder ([#705](https://github.com/overfolder/overslash/issues/705)) ([fde6006](https://github.com/overfolder/overslash/commit/fde600665cedcac81c1275bc926c1bad540115c7))
+* **dashboard:** free-unlimited toggle on /billing/new-team for instance admins ([#702](https://github.com/overfolder/overslash/issues/702)) ([238068d](https://github.com/overfolder/overslash/commit/238068d9df4d341dcae09b6456dd33d41229f242))
+* **dashboard:** icon rail sidebar and sub-nav Org Settings ([#699](https://github.com/overfolder/overslash/issues/699)) ([a3f0efa](https://github.com/overfolder/overslash/commit/a3f0efa81c8901fa819d5a3801d5602d8723cb67))
+* **dashboard:** suggest mcp-add for non-Claude clients in connect tip ([#687](https://github.com/overfolder/overslash/issues/687)) ([4ba9b89](https://github.com/overfolder/overslash/commit/4ba9b894ca5f50114ccd1e3ce7bf736f250ddabb))
+* **email:** send attachments through gateway-staged uploads ([#703](https://github.com/overfolder/overslash/issues/703)) ([70b93ab](https://github.com/overfolder/overslash/commit/70b93ab58904a8122c8a8a376cd8c2d28f5cc47f))
+* **groups:** one Google service account per instance; orgs connect by signing in with Google ([#701](https://github.com/overfolder/overslash/issues/701)) ([8e2ba6b](https://github.com/overfolder/overslash/commit/8e2ba6b64e370619719b5dab89f319480a642372))
+* **groups:** provision groups from an IdP's group claim ([#665](https://github.com/overfolder/overslash/issues/665)) ([0dc1478](https://github.com/overfolder/overslash/commit/0dc1478b15605d567fa61e142f91480fd04b4f2f))
+* **groups:** sync Google Workspace Directory groups ([#696](https://github.com/overfolder/overslash/issues/696)) ([0a35b78](https://github.com/overfolder/overslash/commit/0a35b78de5e314675845162e9e60b88160cd0b88))
+* **infra:** audit-log secret access to a retained bucket and alert on unexpected reads ([#694](https://github.com/overfolder/overslash/issues/694)) ([163a7c9](https://github.com/overfolder/overslash/commit/163a7c984d432116fd5fb751eaffc0b795d46ad1))
+* **infra:** require TLS, deletion protection and pgAudit on Cloud SQL ([#693](https://github.com/overfolder/overslash/issues/693)) ([ada8151](https://github.com/overfolder/overslash/commit/ada81514477da39c3ab49dc4f11c54ca4bd7e891))
+* **mcp:** speak MCP 2026-07-28 alongside 2025-06-18, with approval dialogs as multi round-trip requests ([#683](https://github.com/overfolder/overslash/issues/683)) ([f1da6c3](https://github.com/overfolder/overslash/commit/f1da6c391ea803059d1a0a764882a5d09284637f))
+* **mcp:** URL hand-offs always answer with a reason, and never return a used-up link ([#691](https://github.com/overfolder/overslash/issues/691)) ([d0f5465](https://github.com/overfolder/overslash/commit/d0f5465d9ed0e69703c676c32f77d770ed72151a))
+* **mcp:** URL-mode elicitation for auth, credential, setup and opted-out approval links ([#690](https://github.com/overfolder/overslash/issues/690)) ([eb04377](https://github.com/overfolder/overslash/commit/eb04377c8bee784f1f43161c472e45409a76ab78))
+* **rate-limit:** log each deny once per window, cap the total, key IPv6 by /64 ([#697](https://github.com/overfolder/overslash/issues/697)) ([26c0ae7](https://github.com/overfolder/overslash/commit/26c0ae75a1033cc691a8abbb1199ae8b1f283665))
+* **rate-limit:** meter sessions, MCP bearers and the OAuth handshake ([#695](https://github.com/overfolder/overslash/issues/695)) ([4147b5b](https://github.com/overfolder/overslash/commit/4147b5be460b6c049689d22532fad5797af7e06b))
+* **security:** resolve client IP against trusted proxies, not the leftmost X-Forwarded-For ([#682](https://github.com/overfolder/overslash/issues/682)) ([aca115b](https://github.com/overfolder/overslash/commit/aca115b150ce686845fdb4c65b530dd6260e14f1))
+* **services:** every instance endpoint and config field is overridable, behind "Show more options" unless promoted ([#706](https://github.com/overfolder/overslash/issues/706)) ([f9217f0](https://github.com/overfolder/overslash/commit/f9217f004cb9e52edb9c31d523599b6e9ab7f2eb))
+
+
+### Bug Fixes
+
+* **bi:** gate BigQuery view creation behind bi_publish_views ([#692](https://github.com/overfolder/overslash/issues/692)) ([08a6bbd](https://github.com/overfolder/overslash/commit/08a6bbd83715b16f4ca92bbabadf76838912c503))
+* **dashboard:** render PillPicker dropdown in the top layer so tables can't crop it ([#704](https://github.com/overfolder/overslash/issues/704)) ([58ab5e7](https://github.com/overfolder/overslash/commit/58ab5e79e90e19340ce39e8ef29b9010c478d7ae))
+* **db:** renumber directory_group_sync migration 127 -&gt; 128 ([5089c4f](https://github.com/overfolder/overslash/commit/5089c4f3f721ab08e328c575f458ffdf576da756))
+* **groups:** clean up the directory-only membership 409 message ([#708](https://github.com/overfolder/overslash/issues/708)) ([3f21ca6](https://github.com/overfolder/overslash/commit/3f21ca6e0dcee13fc4ca8059d6880bfa963236c8))
+* **security:** Vercel hop names the client in x-overslash-client-ip; never read XFF past it ([#689](https://github.com/overfolder/overslash/issues/689)) ([1b0808f](https://github.com/overfolder/overslash/commit/1b0808f8f3035d490e3351d55474c7b22280dfc5))
+
 ## [0.13.0](https://github.com/overfolder/overslash/compare/v0.12.0...v0.13.0) (2026-09-28)
 
 
