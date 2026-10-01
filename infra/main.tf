@@ -302,6 +302,7 @@ module "audit_logging" {
   # Every secret consumer runs as this one SA: the API, the shortener, overfwd
   # and the metrics-exporter job all take module.iam.cloud_run_sa_email.
   expected_secret_accessors = [module.iam.cloud_run_sa_email]
+  terraform_operators       = var.terraform_operators
 
   alerts_enabled        = var.alert_email != ""
   notification_channels = var.alert_email != "" ? [module.monitoring.email_channel_id] : []

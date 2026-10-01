@@ -30,7 +30,7 @@ mcp_extra_origins = "http://localhost:6274"
 dashboard_origin = "https://app.dev.overslash.com,https://*.app.dev.overslash.com"
 dashboard_url    = "https://app.dev.overslash.com"
 enable_dev_auth  = false
-# The Live Map and its per-call `action.*` events. Dev only (D58).
+# The Live Map and its per-call `action.*` events (D58, D116).
 enable_live_map = true
 # Passwordless email magic-link login — on (email is configured below).
 enable_magic_link = true
@@ -106,6 +106,14 @@ cloud_billing = true
 # stripe_usd_lookup_key = "overslash_seat_usd"
 
 alert_email = "alert@overspiral.com"
+
+# Principals whose `tofu plan`/`apply` secret reads do not alert (their Console,
+# gcloud and db-shell reads still do). factory@ is the Claude session on
+# factory.angelmartin.name.
+terraform_operators = [
+  "amanuelmartincanto@gmail.com",
+  "factory@software-factory-491814.iam.gserviceaccount.com",
+]
 
 # --- PromQL alert gates ---------------------------------------------------
 # Every PromQL-based alert policy is gated, because GMP rejects a policy whose

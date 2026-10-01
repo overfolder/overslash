@@ -18,7 +18,7 @@ enable_api_lb         = true
 dashboard_origin = "https://app.overslash.com,https://*.app.overslash.com"
 dashboard_url    = "https://app.overslash.com"
 enable_dev_auth  = false
-enable_live_map  = false
+enable_live_map  = true
 # Passwordless email magic-link login — on (email is configured below).
 enable_magic_link = true
 # Sign-in with Google (default) + Sign-in with GitHub. Populate the OAuth
@@ -99,6 +99,14 @@ connection_return_url_hosts = "api.overfolder.com"
 
 pagerduty_enabled = true
 alert_email       = "alert@overslash.com"
+
+# Principals whose `tofu plan`/`apply` secret reads do not alert (their Console,
+# gcloud and db-shell reads still do). factory@ is the Claude session on
+# factory.angelmartin.name.
+terraform_operators = [
+  "amanuelmartincanto@gmail.com",
+  "factory@software-factory-491814.iam.gserviceaccount.com",
+]
 
 # --- PromQL alert gates ---------------------------------------------------
 # Every PromQL-based alert policy is gated, because GMP rejects a policy whose

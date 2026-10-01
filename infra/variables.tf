@@ -76,7 +76,7 @@ variable "enable_dev_auth" {
 }
 
 variable "enable_live_map" {
-  description = "Enable the Live Map (/map) and the per-call `action.*` events it animates (OVERSLASH_LIVE_MAP). Dev only — one durable events row per action call. See D58."
+  description = "Enable the Live Map (/map) and the per-call `action.*` events it animates (OVERSLASH_LIVE_MAP). Opt-in per deployment — one durable events row per action call, pruned after 7 days. See D58, D116."
   type        = bool
   default     = false
 }
@@ -464,6 +464,12 @@ variable "alert_email" {
   description = "Email that receives every alert. Required for the monitoring module."
   type        = string
   default     = ""
+}
+
+variable "terraform_operators" {
+  description = "Principals whose `tofu plan`/`apply` secret reads (google provider user agent) do not fire the unexpected-secret-access alert. Their other secret reads still do."
+  type        = list(string)
+  default     = []
 }
 
 variable "pagerduty_enabled" {
