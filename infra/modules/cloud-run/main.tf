@@ -173,7 +173,7 @@ variable "enable_dev_auth" {
 variable "enable_live_map" {
   type        = bool
   default     = false
-  description = "Enable the Live Map (/map) and the per-call `action.*` events it animates (OVERSLASH_LIVE_MAP). Opt-in per deployment — one durable events row per action call, pruned after 7 days. See D58, D-NEXT."
+  description = "Enable the Live Map (/map) and the per-call `action.*` events it animates (OVERSLASH_LIVE_MAP). Opt-in per deployment — one durable events row per action call, pruned after 7 days. See D58, D116."
 }
 
 variable "enable_magic_link" {
