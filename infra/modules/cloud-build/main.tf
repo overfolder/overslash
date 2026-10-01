@@ -106,13 +106,29 @@ resource "google_cloudbuild_trigger" "deploy" {
       ]
     }
 
+    # Builds for back-to-back pushes run concurrently and finish in any order, so
+    # a stale build can land after a newer one and roll the service back — a
+    # release did exactly that: the dev->master merge redeployed over the
+    # release-please merge pushed after it. Deploy only while $COMMIT_SHA is
+    # still the branch tip; if it moved, the newer push's build deploys. A
+    # manual run pinned to a SHA has no $BRANCH_NAME and always deploys, which
+    # keeps rollbacks working.
     step {
       name       = "gcr.io/google.com/cloudsdktool/cloud-sdk"
-      entrypoint = "gcloud"
-      args = [
-        "run", "deploy", var.cloud_run_service,
-        "--image", "${local.image}:$COMMIT_SHA",
-        "--region", var.region,
+      entrypoint = "bash"
+      args = ["-c", <<-EOT
+        set -eu
+        if [ -n "$BRANCH_NAME" ]; then
+          tip=$(git ls-remote "https://github.com/${var.github_owner}/${var.github_repo}.git" "refs/heads/$BRANCH_NAME" | cut -f1)
+          if [ -n "$$tip" ] && [ "$$tip" != "$COMMIT_SHA" ]; then
+            echo "Skipping deploy: $BRANCH_NAME moved to $$tip; its build deploys instead of $COMMIT_SHA."
+            exit 0
+          fi
+        fi
+        gcloud run deploy ${var.cloud_run_service} \
+          --image ${local.image}:$COMMIT_SHA \
+          --region ${var.region}
+      EOT
       ]
     }
 
