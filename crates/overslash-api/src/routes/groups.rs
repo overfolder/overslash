@@ -849,7 +849,9 @@ async fn unassign_identity(
         .await?
     {
         return Err(AppError::Conflict(
-            "this membership comes from a directory group; remove the mapping              under the group's directory sources, or remove the user from the              group in your identity provider"
+            "this membership comes from a directory group; remove the mapping \
+             under the group's directory sources, or remove the user from the \
+             group in your identity provider"
                 .into(),
         ));
     }
