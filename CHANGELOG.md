@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.15.0](https://github.com/overfolder/overslash/compare/v0.14.0...v0.15.0) (2026-10-01)
+
+
+### Features
+
+* **infra:** enable the Live Map in production ([1d97f0a](https://github.com/overfolder/overslash/commit/1d97f0a7c23eeee5aef8ac8d4316834e6cb04221))
+* **infra:** exempt named operators' Terraform secret reads from the access alert ([#711](https://github.com/overfolder/overslash/issues/711)) ([0f9eab1](https://github.com/overfolder/overslash/commit/0f9eab1e1f680d3cbf94c62bc1276c231f5eb90a))
+
+
+### Bug Fixes
+
+* **infra:** skip the API deploy when its commit is no longer the branch tip ([#710](https://github.com/overfolder/overslash/issues/710)) ([6cc5bd1](https://github.com/overfolder/overslash/commit/6cc5bd1a53c437d47d5eaf7c20eb95ef7dec7519))
+* **services:** org-level and group-shared instances open by id again ([#712](https://github.com/overfolder/overslash/issues/712)) ([39ff4bb](https://github.com/overfolder/overslash/commit/39ff4bb1d4e9317430a3392b0c4156d3e5c0baba))
+
 ## [0.14.0](https://github.com/overfolder/overslash/compare/v0.13.0...v0.14.0) (2026-10-01)
 
 
