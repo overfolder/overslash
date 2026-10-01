@@ -107,6 +107,14 @@ cloud_billing = true
 
 alert_email = "alert@overspiral.com"
 
+# Principals whose `tofu plan`/`apply` secret reads do not alert (their Console,
+# gcloud and db-shell reads still do). factory@ is the Claude session on
+# factory.angelmartin.name.
+terraform_operators = [
+  "amanuelmartincanto@gmail.com",
+  "factory@software-factory-491814.iam.gserviceaccount.com",
+]
+
 # --- PromQL alert gates ---------------------------------------------------
 # Every PromQL-based alert policy is gated, because GMP rejects a policy whose
 # metric descriptor does not exist yet. The knobs are listed here even at

@@ -466,6 +466,12 @@ variable "alert_email" {
   default     = ""
 }
 
+variable "terraform_operators" {
+  description = "Principals whose `tofu plan`/`apply` secret reads (google provider user agent) do not fire the unexpected-secret-access alert. Their other secret reads still do."
+  type        = list(string)
+  default     = []
+}
+
 variable "pagerduty_enabled" {
   description = "Enable PagerDuty paging for P0 alerts. Requires the `<base_prefix>-pagerduty-integration-key` secret (e.g. overslash-prod-pagerduty-integration-key) to be populated in Secret Manager."
   type        = bool

@@ -40,7 +40,7 @@ metadata is not a payload read and is not restricted beyond project IAM.
 | Principal | Access | Path | Why |
 |-----------|--------|------|-----|
 | `overslash-<env>-run@<project>.iam.gserviceaccount.com` | `roles/secretmanager.secretAccessor`, project-wide | Cloud Run resolves `secret_key_ref` env vars and secret volumes when an instance starts. No payload is ever placed in a plaintext env var or in the service spec | The only runtime identity. The API, the oversla.sh shortener, the overfwd Mailbox Gateway and the metrics-exporter job all run as it |
-| Project Owners (humans) | Implicit via `roles/owner` | `tofu plan`/`apply` — the provider refreshes each `google_secret_manager_secret_version` by reading it, and reads the PagerDuty key as a data source. `bin/db-shell.sh` reads the database password. `gcloud secrets versions access` for break-glass | Operating the platform. **Every such read notifies** (below) |
+| Project Owners (humans) | Implicit via `roles/owner` | `tofu plan`/`apply` — the provider refreshes each `google_secret_manager_secret_version` by reading it, and reads the PagerDuty key as a data source. `bin/db-shell.sh` reads the database password. `gcloud secrets versions access` for break-glass | Operating the platform. **Every such read notifies** (below), except Terraform reads by a listed `terraform_operators` principal |
 | Everyone else | **None** | — | `roles/viewer` excludes `secretmanager.versions.access`. The Cloud Build and Scheduler service accounts hold no Secret Manager role. The BigQuery connection stores its own copy of the `bi` credential and never reads the secret |
 
 **Writes.** A new version is added either by Terraform (generated values: DB password,
@@ -51,8 +51,13 @@ and every IAM change are Admin Activity audit logs, which GCP always writes.
 
 **Adding a runtime reader.** A new service account that must read secrets at runtime is
 added to `expected_secret_accessors` in [`infra/main.tf`](../../../infra/main.tf) in the
-same PR that grants it. The module refuses a non-service-account entry, so a human can
-never be exempted from the alert.
+same PR that grants it. The module refuses a non-service-account entry there.
+
+**Terraform operators.** `terraform_operators` (per environment, in `infra/env/*.tfvars`)
+lists the principals — humans or service accounts — whose `tofu plan`/`apply` reads do not
+alert. Only reads whose user agent carries `terraform-provider-google/` are exempt; the same
+principal reading through the Console, `gcloud` or `bin/db-shell.sh` still notifies. Adding
+a principal is a reviewed PR.
 
 ---
 
@@ -107,23 +112,29 @@ be done silently.
 
 A log-based metric, `overslash-<env>-unexpected-secret-access`, counts every
 `AccessSecretVersion` whose caller is **not** in `expected_secret_accessors` (today: the
-run service account alone). It is labelled by principal and secret. A caller with no
-principal email at all is counted.
+run service account alone), leaving out Terraform-provider reads by a `terraform_operators`
+principal. It is labelled by principal and secret. A caller with no principal email at all
+is counted.
 
 The alert policy `[P1] overslash-<env> Unexpected Secret Access` fires on any non-zero
-minute and emails the environment's alert address, naming the principal and the secret.
-It is P1 (email), not P0 (page), because the common trigger is an operator's own
-`tofu plan`.
+minute and emails the environment's alert address, naming the principal. It opens one
+incident per principal, so a session that reads every secret is one email, not one per
+secret. It is P1 (email), not P0 (page), because the common trigger is an operator's own
+read.
 
-**It fires on human reads by design.** A Terraform plan, a `db-shell.sh` session and a
-break-glass `gcloud secrets versions access` all notify. The policy's position is that
-every human read of a platform secret should be seen and attributable, and the cost is one
-email per plan.
+**It fires on interactive human reads by design.** A `db-shell.sh` session, a Console view
+and a break-glass `gcloud secrets versions access` all notify, as does a Terraform run by
+anyone not in `terraform_operators`. A listed operator's Terraform reads are routine — every
+plan reads every secret — so they are not alerted on, but they remain in the retained audit
+bucket, attributable to the principal. The exemption keys on a caller-supplied user agent,
+so it trusts the operator's credential, not the header: a stolen operator credential could
+read quietly by imitating the provider. That is the accepted cost of not training operators
+to ignore the alert.
 
 ### Responding to an alert
 
-1. **Recognise it.** Was it your own `tofu plan`/`apply`, `db-shell.sh` or a documented
-   break-glass read, at the time shown? Note that on the incident and close it.
+1. **Recognise it.** Was it a `tofu plan`/`apply` by a non-operator, your own
+   `db-shell.sh` or Console view, or a documented break-glass read, at the time shown? Note that on the incident and close it.
 2. **If not**, treat the secret as exposed:
    1. Rotate it — add a new version, roll the consumers (a new Cloud Run revision picks
       up `latest`), then disable the old version. For the master key, follow the
@@ -138,7 +149,7 @@ email per plan.
 
 ## Review
 
-- On every change to `expected_secret_accessors` or to any Secret Manager IAM grant — in
+- On every change to `expected_secret_accessors`, `terraform_operators` or to any Secret Manager IAM grant — in
   the PR, by a reviewer.
 - At least once per CASA cycle, before the evidence pack is assembled: re-run the
   verification below on both projects and re-read this document against it.
