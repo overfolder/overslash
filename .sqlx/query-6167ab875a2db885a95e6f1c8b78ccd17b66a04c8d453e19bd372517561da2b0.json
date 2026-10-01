@@ -1,0 +1,43 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT i.id AS \"identity_id!\",\n                  bool_or(m.direct) AS \"direct!\",\n                  COALESCE(\n                      array_agg(m.directory_group_id)\n                          FILTER (WHERE m.directory_group_id IS NOT NULL),\n                      '{}'\n                  ) AS \"via_directory_group_ids!\"\n             FROM (\n                 SELECT ig.identity_id, true AS direct, NULL::uuid AS directory_group_id\n                   FROM identity_groups ig\n                  WHERE ig.group_id = $1\n                 UNION ALL\n                 SELECT idg.identity_id, false AS direct, gds.directory_group_id\n                   FROM group_directory_sources gds\n                   JOIN identity_directory_groups idg\n                     ON idg.directory_group_id = gds.directory_group_id\n                  WHERE gds.group_id = $1\n             ) m\n             JOIN identities i ON i.id = m.identity_id AND i.org_id = $2\n            GROUP BY i.id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "identity_id!",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "identities",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "direct!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "via_directory_group_ids!",
+        "type_info": "UuidArray",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      null
+    ]
+  },
+  "hash": "6167ab875a2db885a95e6f1c8b78ccd17b66a04c8d453e19bd372517561da2b0"
+}

@@ -22,8 +22,10 @@ async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
     let addr = listener.local_addr().unwrap();
 
     let config = overslash_api::config::Config {
+        google_directory: Default::default(),
         call_result_max_bytes: 1024 * 1024,
         async_execution: Default::default(),
+        staged_uploads: Default::default(),
         call_stream_idle_timeout_ms: 30_000,
         call_timeout_max_ms: 110_000,
         call_timeout_ms: 30_000,
@@ -71,6 +73,7 @@ async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         resolve_cache_namespace: None,
         default_rate_limit: 10000,
         default_rate_window_secs: 60,
+        ingress_rate_limits: overslash_api::config::IngressRateLimits::disabled(),
         allow_org_creation: true,
         trial_default_duration_days: 30,
         single_org_mode: None,
@@ -96,6 +99,7 @@ async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         preview_origin_allowlist: None,
         deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
+        trusted_proxies: Default::default(),
     };
 
     // Build the app with the test pool directly
@@ -127,6 +131,7 @@ async fn start_api(pool: PgPool) -> (SocketAddr, Client) {
         mailer: std::sync::Arc::new(overslash_core::email::NoopMailer),
         event_bus: overslash_api::services::events::EventBus::new(),
         resolve_cache: overslash_api::services::resolve_cache::in_memory(10_000),
+        session_cache: overslash_api::services::user_sessions::cache::in_memory(),
         test_resources: None,
         background_db: None,
     };
@@ -1769,8 +1774,10 @@ async fn test_service_registry_api() {
     let pool = common::test_pool().await;
     // Start API with real service registry loaded
     let config = overslash_api::config::Config {
+        google_directory: Default::default(),
         call_result_max_bytes: 1024 * 1024,
         async_execution: Default::default(),
+        staged_uploads: Default::default(),
         call_stream_idle_timeout_ms: 30_000,
         call_timeout_max_ms: 110_000,
         call_timeout_ms: 30_000,
@@ -1818,6 +1825,7 @@ async fn test_service_registry_api() {
         resolve_cache_namespace: None,
         default_rate_limit: 10000,
         default_rate_window_secs: 60,
+        ingress_rate_limits: overslash_api::config::IngressRateLimits::disabled(),
         allow_org_creation: true,
         trial_default_duration_days: 30,
         single_org_mode: None,
@@ -1843,6 +1851,7 @@ async fn test_service_registry_api() {
         preview_origin_allowlist: None,
         deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
+        trusted_proxies: Default::default(),
     };
 
     // services/ is at workspace root; tests run from crate dir
@@ -1885,6 +1894,7 @@ async fn test_service_registry_api() {
         mailer: std::sync::Arc::new(overslash_core::email::NoopMailer),
         event_bus: overslash_api::services::events::EventBus::new(),
         resolve_cache: overslash_api::services::resolve_cache::in_memory(10_000),
+        session_cache: overslash_api::services::user_sessions::cache::in_memory(),
         test_resources: None,
         background_db: None,
     };
@@ -2804,8 +2814,10 @@ async fn start_api_with_registry(
     }
 
     let config = overslash_api::config::Config {
+        google_directory: Default::default(),
         call_result_max_bytes: 1024 * 1024,
         async_execution: Default::default(),
+        staged_uploads: Default::default(),
         call_stream_idle_timeout_ms: 30_000,
         call_timeout_max_ms: 110_000,
         call_timeout_ms: 30_000,
@@ -2853,6 +2865,7 @@ async fn start_api_with_registry(
         resolve_cache_namespace: None,
         default_rate_limit: 10000,
         default_rate_window_secs: 60,
+        ingress_rate_limits: overslash_api::config::IngressRateLimits::disabled(),
         allow_org_creation: true,
         trial_default_duration_days: 30,
         single_org_mode: None,
@@ -2878,6 +2891,7 @@ async fn start_api_with_registry(
         preview_origin_allowlist: None,
         deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
+        trusted_proxies: Default::default(),
     };
 
     let state = overslash_api::AppState {
@@ -2908,6 +2922,7 @@ async fn start_api_with_registry(
         mailer: std::sync::Arc::new(overslash_core::email::NoopMailer),
         event_bus: overslash_api::services::events::EventBus::new(),
         resolve_cache: overslash_api::services::resolve_cache::in_memory(10_000),
+        session_cache: overslash_api::services::user_sessions::cache::in_memory(),
         test_resources: None,
         background_db: None,
     };

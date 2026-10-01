@@ -32,7 +32,10 @@ pub(super) struct HandoffQuery {
 
 #[derive(Deserialize)]
 pub(super) struct CallbackQuery {
-    code: String,
+    /// Absent when the user refused consent: the provider redirects back with
+    /// `error=access_denied` instead. A login still requires it; a Google
+    /// Workspace connect turns its absence into a "cancelled" answer.
+    code: Option<String>,
     state: String,
 }
 
@@ -232,6 +235,27 @@ pub(super) async fn provider_callback(
     Query(params): Query<CallbackQuery>,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
+    // A Google Workspace Directory connect rides this same registered
+    // redirect URI with its own state; it is not a login and sets no session.
+    if provider_key == "google"
+        && let Some(flow_id) = params
+            .state
+            .strip_prefix(super::google_directory_connect::STATE_PREFIX)
+    {
+        return super::google_directory_connect::finish(
+            &state,
+            &ext,
+            &headers,
+            flow_id,
+            params.code.as_deref(),
+        )
+        .await;
+    }
+    let code = params
+        .code
+        .clone()
+        .ok_or_else(|| AppError::BadRequest("missing authorization code".into()))?;
+
     // Parse state: "login:<provider_key>:<nonce>" or, for the Vercel
     // preview-deployment handoff, "login:<provider_key>:<nonce>:<preview_id>".
     // The 4-segment form is only honored when the feature is enabled — a
@@ -341,7 +365,7 @@ pub(super) async fn provider_callback(
         &provider,
         &client_id,
         &client_secret,
-        &params.code,
+        &code,
         &redirect_uri,
         verifier_ref,
     )
@@ -349,11 +373,16 @@ pub(super) async fn provider_callback(
     .map_err(|e| AppError::Internal(format!("token exchange failed: {e}")))?;
 
     // Fetch user info (provider-specific)
+    // The ID token is passed alongside the access token because group claims
+    // land in one or the other depending on the IdP. `state_nonce_expected` is
+    // the nonce this login minted — it binds the ID token to this exchange.
     let userinfo = fetch_userinfo(
         &state.http_client,
         &provider,
         &provider_key,
         &tokens.access_token,
+        tokens.id_token.as_deref(),
+        Some(state_nonce_expected.as_str()),
     )
     .await?;
 
@@ -364,21 +393,19 @@ pub(super) async fn provider_callback(
     let (org_id, identity_id, resolved_user_id, email) =
         find_or_provision_user(&state, &ext, &userinfo, org_slug.as_deref()).await?;
 
-    // Mint JWT
-    let jwt_secret = signing_key_bytes(&state.config.signing_key);
-    let now = time::OffsetDateTime::now_utc().unix_timestamp();
-    let claims = jwt::Claims {
-        sub: identity_id,
-        org: org_id,
-        email: email.clone(),
-        aud: jwt::AUD_SESSION.into(),
-        iat: now,
-        exp: now + 7 * 24 * 3600,
-        user_id: Some(resolved_user_id),
-        mcp_client_id: None,
-    };
-    let token = jwt::mint(&jwt_secret, &claims)
-        .map_err(|e| AppError::Internal(format!("jwt mint failed: {e}")))?;
+    // Start a server-side session and mint its JWT.
+    let token = user_sessions::start(
+        &state,
+        &ext,
+        &headers,
+        user_sessions::Subject {
+            identity_id,
+            org_id,
+            user_id: Some(resolved_user_id),
+            email: email.clone(),
+        },
+    )
+    .await?;
 
     // Vercel preview-deployment handoff branch. The session cookie can't
     // be set on `api.dev.overslash.com` and read on `<preview>.vercel.app`

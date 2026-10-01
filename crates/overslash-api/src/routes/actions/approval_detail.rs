@@ -238,6 +238,7 @@ mod tests {
             headers,
             body: Some(r#"{"title":"hi"}"#.into()),
             secrets: Vec::new(),
+            staged_uploads: Vec::new(),
         };
         let meta = http_meta();
 

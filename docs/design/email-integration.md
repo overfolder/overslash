@@ -202,8 +202,10 @@ Unipile. Overslash is just one consumer.
     correspondent wherever they appear, a bcc to an outsider gates the send like a to,
     and an address on two headers is one approval, not two.
     **Reads are ordinary `read`** (auto-approvable); consent boundary is *whether the owner
-    grants read permission*, not per-fetch approval. Attachments (`get_attachment`, binary +
-    `prefer_stream`) and `list_folders` are later additions.
+    grants read permission*, not per-fetch approval. **Sending** attachments shipped
+    (DECISIONS D114, overfwd ≥ 0.6.0): `send` takes `attachments: [{upload_id}]`, bytes staged
+    through the gateway's own `upload_file` and inlined as base64 only at send time. *Reading*
+    them (`get_attachment`, binary + `prefer_stream`) and `list_folders` are later additions.
 12. **Cloud hosting = Cloud Run**, one shared stateless service alongside the API (Portfolio
     store disabled in Cloud). Fly/GCE unjustified without per-tenant state. Standalone = the
     overfwd docker image. In-memory pools are best-effort per instance under Cloud Run's

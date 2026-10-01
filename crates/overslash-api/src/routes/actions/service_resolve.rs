@@ -234,14 +234,7 @@ pub(super) fn effective_base(
     });
     match explicit {
         Some(u) => Some(u.trim_end_matches('/').to_string()),
-        None => {
-            let host = svc.hosts.first()?;
-            Some(if host.contains("://") {
-                host.clone()
-            } else {
-                format!("https://{host}")
-            })
-        }
+        None => svc.default_base_url(),
     }
 }
 
@@ -422,6 +415,7 @@ mod verb_host_path_tests {
             key: "github".into(),
             display_name: "GitHub".into(),
             description: None,
+            url_promoted: false,
             hosts: hosts.into_iter().map(String::from).collect(),
             category: None,
             hidden: false,

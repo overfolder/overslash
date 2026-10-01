@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO mcp_url_elicitations (elicit_id, agent_identity_id) VALUES ($1, $2)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d824af0254647f90c44a1e0fa78eaba4e0b64ea1ea1781b4c224e5b24f92de10"
+}

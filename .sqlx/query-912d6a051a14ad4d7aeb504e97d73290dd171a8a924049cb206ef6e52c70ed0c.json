@@ -1,0 +1,112 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT s.id, s.org_id, o.name AS org_name, s.created_at, s.last_seen_at,\n                s.expires_at, s.user_agent, s.ip_address\n         FROM user_sessions s JOIN orgs o ON o.id = s.org_id\n         WHERE s.user_id = $1 AND s.revoked_at IS NULL AND s.expires_at > now()\n         ORDER BY s.last_seen_at DESC, s.created_at DESC",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "user_sessions",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "org_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "user_sessions",
+            "name": "org_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "org_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "orgs",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "user_sessions",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "last_seen_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "user_sessions",
+            "name": "last_seen_at"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "expires_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "user_sessions",
+            "name": "expires_at"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "user_agent",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "user_sessions",
+            "name": "user_agent"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "ip_address",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "user_sessions",
+            "name": "ip_address"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "912d6a051a14ad4d7aeb504e97d73290dd171a8a924049cb206ef6e52c70ed0c"
+}

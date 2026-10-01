@@ -25,7 +25,7 @@ async function main() {
   // Mint the session through the dashboard proxy so the cookie attaches
   // naturally to the dashboard origin.
   await page.goto(`${DASH}/auth/dev/token`, { waitUntil: 'load' });
-  await page.goto(`${DASH}/org`, { waitUntil: 'networkidle' });
+  await page.goto(`${DASH}/org/service-keys`, { waitUntil: 'networkidle' });
   await page.waitForSelector('h2:has-text("Service keys")', { timeout: 60000 });
 
   // Empty state screenshot.

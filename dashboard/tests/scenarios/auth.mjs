@@ -45,8 +45,12 @@ export const SESSION_COOKIE = '__Host-oss_session';
  * emails, so nothing a spec does there is visible to any other spec. Pair it
  * with `deleteOrg` in teardown; see `freshOrgSlug`.
  *
+ * Every call is a fresh server-side session (a `user_sessions` row). Pass
+ * `opts.userAgent` to label it the way a real browser would — the account
+ * page's Sessions list shows it.
+ *
  * @param {DevProfile} [profile='admin']
- * @param {{ org?: string }} [opts]
+ * @param {{ org?: string, userAgent?: string }} [opts]
  * @returns {Promise<Session>}
  */
 export async function login(profile = 'admin', opts = {}) {
@@ -54,7 +58,8 @@ export async function login(profile = 'admin', opts = {}) {
 	const query = new URLSearchParams({ profile });
 	if (opts.org) query.set('org', opts.org);
 	const res = await fetch(`${apiUrl}/auth/dev/token?${query}`, {
-		redirect: 'manual'
+		redirect: 'manual',
+		headers: opts.userAgent ? { 'user-agent': opts.userAgent } : {}
 	});
 	if (!res.ok && res.status !== 302) {
 		throw new Error(`dev login failed: HTTP ${res.status} ${await res.text().catch(() => '')}`);
@@ -105,6 +110,30 @@ export async function attachToContext(ctx, session) {
 		sameSite: /** @type {'Lax'} */ ('Lax')
 	}));
 	await ctx.addCookies(cookies);
+}
+
+/**
+ * `session` re-pointed at the session cookie the browser holds *now*.
+ *
+ * Anything the page does that re-scopes the session — Accept on an
+ * invitation, the org switcher — moves the server-side session to another
+ * org and hands the browser a replacement cookie. The copy `login()` captured
+ * is then superseded and refused (401), exactly like a stale cookie a real
+ * browser has already overwritten. Call this after such a step before making
+ * further API calls as the same user.
+ *
+ * @param {import('playwright').BrowserContext} ctx
+ * @param {Session} session
+ * @returns {Promise<Session>}
+ */
+export async function sessionFromContext(ctx, session) {
+	const current = (await ctx.cookies(session.apiUrl)).find((c) => c.name === SESSION_COOKIE);
+	if (!current) throw new Error(`browser context holds no ${SESSION_COOKIE} for ${session.apiUrl}`);
+	return {
+		...session,
+		rawCookieValue: current.value,
+		cookieHeader: `${SESSION_COOKIE}=${current.value}`
+	};
 }
 
 /**

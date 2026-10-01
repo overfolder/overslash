@@ -11,7 +11,7 @@ use crate::types::{
 
 use super::super::ext::{self, Ext, Pos};
 use super::shape::{lower_content_media_type, lower_shape};
-use super::{parse_aliases, parse_instance_config, parse_sql_policy};
+use super::{parse_aliases, parse_instance_config, parse_promoted, parse_sql_policy};
 
 // ── parameters → HashMap<String, ActionParam> ────────────────────────
 
@@ -56,6 +56,7 @@ pub(super) fn collect_parameters(
         };
 
         let instance_config = parse_instance_config(Some(obj), Pos::Parameter);
+
         let (sql_field, sql_database) = parse_sql_policy(Some(obj), Pos::Parameter);
 
         out.insert(
@@ -70,10 +71,12 @@ pub(super) fn collect_parameters(
                 aliases,
                 location,
                 instance_config,
+                promoted: parse_promoted(Some(obj), Pos::Parameter),
                 sql_field,
                 sql_database,
                 content_media_type,
                 shape,
+                staged_upload: None,
             },
         );
     }
@@ -158,6 +161,16 @@ pub(super) fn collect_body_parameters(
         let aliases = parse_aliases(pobj, name, Pos::BodyProperty);
         let instance_config = parse_instance_config(pobj, Pos::BodyProperty);
         let (sql_field, sql_database) = parse_sql_policy(pobj, Pos::BodyProperty);
+        let staged_upload = pobj
+            .and_then(|o| ext::get(o, Pos::BodyProperty, Ext::StagedUpload))
+            .and_then(|v| {
+                parse_staged_upload(
+                    v,
+                    &param_type,
+                    &format!("{base}.requestBody.{name}"),
+                    issues,
+                )
+            });
 
         out.insert(
             name.clone(),
@@ -171,13 +184,65 @@ pub(super) fn collect_body_parameters(
                 aliases,
                 location: ParamLocation::Body,
                 instance_config,
+                promoted: parse_promoted(pobj, Pos::BodyProperty),
                 sql_field,
                 sql_database,
                 content_media_type,
                 shape,
+                staged_upload,
             },
         );
     }
+}
+
+/// Lower an `x-overslash-staged-upload` block.
+///
+/// Strict where [`parse_resolver`] is lenient, and for the reason
+/// `cache_ttl` is strict there: a malformed block here does not degrade a
+/// display string, it decides whether a body carries descriptors or bytes. A
+/// typo that dropped the block would send `{upload_id}` stubs upstream and
+/// look like a working send with no attachments, so every malformed shape is
+/// named rather than ignored — and names nothing onto the action.
+fn parse_staged_upload(
+    v: &Value,
+    param_type: &str,
+    base: &str,
+    issues: &mut Vec<ValidationIssue>,
+) -> Option<crate::types::StagedInline> {
+    let path = format!("{base}.x-overslash-staged-upload");
+    let Some(obj) = v.as_object() else {
+        issues.push(ValidationIssue::new(
+            "invalid_staged_upload",
+            "x-overslash-staged-upload must be an object, e.g. {inline_as: base64}".to_string(),
+            path,
+        ));
+        return None;
+    };
+    let inline_as = match obj.get("inline_as") {
+        None => crate::types::StagedInline::Base64,
+        Some(v) => match serde_json::from_value::<crate::types::StagedInline>(v.clone()) {
+            Ok(i) => i,
+            Err(_) => {
+                issues.push(ValidationIssue::new(
+                    "invalid_staged_upload",
+                    format!("unsupported inline_as {v}; the only encoding is `base64`"),
+                    format!("{path}.inline_as"),
+                ));
+                return None;
+            }
+        },
+    };
+    if param_type != "array" {
+        issues.push(ValidationIssue::new(
+            "invalid_staged_upload",
+            "x-overslash-staged-upload marks a list of {upload_id} references, so the \
+             property must be `type: array`"
+                .to_string(),
+            path,
+        ));
+        return None;
+    }
+    Some(inline_as)
 }
 
 /// What a parameter's own schema object contributes to its [`ActionParam`].

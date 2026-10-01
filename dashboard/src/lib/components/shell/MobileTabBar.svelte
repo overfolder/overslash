@@ -7,6 +7,7 @@
 		pickActiveHref,
 		type NavItemDef
 	} from './nav-items';
+	import NavIcon from './NavIcon.svelte';
 
 	let {
 		user,
@@ -16,17 +17,17 @@
 	// Bottom bar keeps the four most-used routes; everything else lives behind
 	// "More" so we don't pack 9 icons into a 390-px viewport.
 	const PRIMARY_TABS: NavItemDef[] = [
-		{ href: '/agents', label: 'Agents', icon: '⊟' },
-		{ href: '/services', label: 'Services', icon: '◫' },
-		{ href: '/approvals', label: 'Approvals', icon: '✓' }
+		{ href: '/agents', label: 'Agents', icon: 'bot' },
+		{ href: '/services', label: 'Services', icon: 'blocks' },
+		{ href: '/approvals', label: 'Approvals', icon: 'approvals' }
 	];
 
 	const MORE_ITEMS: NavItemDef[] = $derived([
-		{ href: '/secrets', label: 'Secrets', icon: '⚷' },
-		{ href: '/audit', label: 'Audit Log', icon: '☰' },
+		{ href: '/secrets', label: 'Secrets', icon: 'key' },
+		{ href: '/audit', label: 'Audit Log', icon: 'scroll' },
 		...(isAdmin ? ADMIN_NAV_ITEMS : []),
 		...(isAdmin ? [SETTINGS_NAV_ITEM] : []),
-		{ href: '/profile', label: 'Profile', icon: '◉' }
+		{ href: '/profile', label: 'Profile', icon: 'user' }
 	]);
 
 	let moreOpen = $state(false);
@@ -65,7 +66,7 @@
 			class:active={item.href === activeHref}
 			aria-label={item.label}
 		>
-			<span class="icon">{item.icon}</span>
+			<span class="icon"><NavIcon name={item.icon} size={20} /></span>
 			<span class="label">{item.label}</span>
 		</a>
 	{/each}
@@ -77,7 +78,7 @@
 		aria-expanded={moreOpen}
 		onclick={openMore}
 	>
-		<span class="icon">⋯</span>
+		<span class="icon"><NavIcon name="more" size={20} /></span>
 		<span class="label">More</span>
 	</button>
 </nav>
@@ -100,7 +101,7 @@
 				onclick={() => pickFromMore(item.href)}
 				role="menuitem"
 			>
-				<span class="icon">{item.icon}</span>
+				<span class="icon"><NavIcon name={item.icon} size={20} /></span>
 				<span class="label">{item.label}</span>
 			</button>
 		{/each}
@@ -150,7 +151,7 @@
 		-webkit-tap-highlight-color: transparent;
 	}
 	.tab .icon {
-		font-size: 1.2rem;
+		display: flex;
 		line-height: 1;
 	}
 	.tab.active {
@@ -225,9 +226,9 @@
 		font-weight: 600;
 	}
 	.sheet-item .icon {
-		font-size: 1.1rem;
+		display: flex;
+		justify-content: center;
 		width: 1.5rem;
-		text-align: center;
 	}
 	.sheet-foot {
 		margin-top: 8px;

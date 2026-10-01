@@ -1,6 +1,6 @@
 # MCP Elicitation as Approval Surface
 
-**Status:** Adopted for Flow A, on by default (2026-09-22, D95). Flow B (tasks-augmented) still rejected — its revisit condition is unmet. URL mode is available client-side: Codex 0.157.0 offers it on `2025-06-18` (no work needed), Claude Code 2.1.282 only on `2026-07-28` (needs a protocol bump). Codex works interactively; **headless** Codex auto-declines, which D95 reads as a real denial — see the probed Codex section.
+**Status:** Adopted for Flow A, on by default (2026-09-22, D95). Flow B (tasks-augmented) still rejected — its revisit condition is unmet. URL mode is available client-side: Codex 0.157.0 offers it on `2025-06-18`, Claude Code 2.1.282 only on `2026-07-28` — which `/mcp` now speaks (D103), with approval dialogs as multi round-trip requests. URL mode is wired for both eras (D104): auth, credential-entry, connect and opted-out approval links are handed over through the client and the call finishes when the browser flow does. Codex works interactively; **headless** Codex auto-declines, which D95 reads as a real denial — see the probed Codex section.
 **Date:** 2026-04-24, revised 2026-09-22 and 2026-09-25
 **Related:** [`overslash.md`](overslash.md), [`mcp-integration.md`](mcp-integration.md), [`mcp-oauth-transport.md`](mcp-oauth-transport.md), [`agent-self-management.md`](agent-self-management.md)
 
@@ -93,10 +93,10 @@ condition is met the upgrade stays additive: URL-reject remains the fallback, an
 augmentation lets the model keep working while the approval pends.
 
 URL mode is a different story as of 2026-09-25: it shipped in Claude Code 2.1.282, on
-`2026-07-28` connections. Overslash cannot reach it yet, because `initialize` answers every
-handshake with a hardcoded `2025-06-18` — so sensitive flows (provider OAuth, credential entry)
-still live in the dashboard, but now for a reason on our side of the wire. See *Correction: URL
-mode is live* below.
+`2026-07-28` connections. `/mcp` now serves that era alongside `2025-06-18` (D103, see
+*Flow A on 2026-07-28* below), so the transport blocker is gone; sensitive flows (provider
+OAuth, credential entry) now reach the user as URL-mode elicitations (D104, see *URL mode*
+below). See *Correction: URL mode is live* below.
 
 ---
 
@@ -474,20 +474,20 @@ future negative result from it:
    until the probe is ported to `mcp` 2.x. Treat the row above as "not reachable from here",
    never as "not supported".
 
-**The blocker is ours, for Claude Code specifically.** `routes/mcp/initialize.rs` answers every
-handshake with a hardcoded `"protocolVersion": "2025-06-18"`, so an Overslash connection never
-reaches the era where *Claude Code* offers `url`. Supporting `2026-07-28` is real work — a
-different wire schema, not a constant bump — and is deliberately out of scope here. What changed
-is *why* URL mode is unavailable to that client: it is no longer "the client doesn't do it."
+**The blocker was ours, for Claude Code specifically — and is now removed.** At the time,
+`routes/mcp/initialize.rs` answered every handshake with a hardcoded `"protocolVersion":
+"2025-06-18"`, so an Overslash connection never reached the era where *Claude Code* offers
+`url`. Supporting `2026-07-28` turned out to be real work — a different wire schema, not a
+constant bump — and landed separately under D103; see *Flow A on 2026-07-28* below.
 
 **This does not generalise, and the first draft of this block wrongly implied it did.** Codex
 0.157.0 declares `elicitation: { form: {}, url: {} }` on `2025-06-18` — see the probed Codex
 section above — so for a Codex-connected agent URL mode needs no protocol work at all. The era
 gate is a Claude Code property, not a property of URL mode.
 
-What that would unlock, when someone picks it up — the URL-returning paths that form mode can
-never serve, because the spec forbids credentials and OAuth in a form and because a browser
-round trip needs `notifications/elicitation/complete` to report back:
+What that unlocked (now built, D104) — the URL-returning paths that form mode can never
+serve, because the spec forbids credentials and OAuth in a form. The table is kept as it was
+written; *URL mode* below says how each row was resolved:
 
 | Path | Envelope | Note |
 |---|---|---|
@@ -499,10 +499,85 @@ round trip needs `notifications/elicitation/complete` to report back:
 `approval_url` already moved, under D95. It was the only one of the set that is a pure
 structured decision with no secret in it, which is exactly why it was reachable in form mode.
 
-One line in the code reads differently in this light. `routes/mcp/tools_call.rs` says the typed
+One line in the code read differently in this light. `routes/mcp/tools_call.rs` said the typed
 envelopes bypass elicitation because *"the agent has structured branching info already, no
-human-in-the-loop dialog applies."* That is half true: no dialog applies **to the agent**, but
-every one of those envelopes ends with a human opening a URL. Worth rewording whenever URL mode
-is picked up, because as written it reads as a design decision rather than a client limitation.
+human-in-the-loop dialog applies."* That was half true: no dialog applies **to the agent**, but
+every one of those envelopes ends with a human opening a URL. It was reworded when URL mode
+landed.
+
+### URL mode (D104)
+
+`routes/mcp/url_elicitation.rs`. Eligible when the client declares `elicitation.url` — the
+request's `_meta` on 2026-07-28, the `initialize` capabilities on 2025 — independent of the
+"Approve in your client" toggle.
+
+- **Plan.** A forwarded outcome becomes a list of hand-offs (link + message + what to watch)
+  and what completing them earns: `auth_url` envelopes **replay** the call once the OAuth
+  callback stamps the flow (`oauth_connection_flows.completed_at`, migration 126); credential
+  and connect links from platform results **report** the original result with
+  `url_elicitation: "completed"`; an approval whose form dialog is unavailable **calls** the
+  approved action once the dashboard resolves it. Multi-slot setup bundles walk their
+  `requests[]` one link at a time — the wrinkle in the table above, resolved by sequencing.
+- **Fallback.** Declined / cancelled / failed / timed out → the original body plus a
+  `url_elicitation` note. A URL elicitation never resolves or denies anything by itself.
+- **2025 transport.** One SSE stream: `elicitation/create { mode: "url", elicitationId }` per
+  link, `notifications/elicitation/complete` after each, then the result. The answer arrives on
+  another POST and crosses replicas via `mcp_url_elicitations`.
+- **2026-07-28 transport.** `input_required` with the link under `inputRequests.url` (no
+  `elicitationId`; that revision dropped it); the plan in the signed `requestState`. The
+  retry after "accept" waits for the flow on an SSE response with keep-alives. Waiting, not
+  "call again later", because a model's immediate retry would otherwise mint a fresh link and
+  a second prompt.
+- **Approvals.** The link holds the approval's auto-call off with the same
+  `pending_mcp_elicitations` row a form uses, retired `withdrawn` (no cooldown) if the link is
+  not completed. The post-cancel cooldown does suppress the link, as it does the form.
+
+**How a hand-off ends (D106).** Every ending reaches the call promptly and says why:
+
+| Ending | Note | `url_elicitation_error` | Link handed back |
+|---|---|---|---|
+| Client declines / dismisses the prompt | `declined` / `cancelled` | — | the original (never opened) |
+| Provider Deny, consent-page Cancel, provide-page Deny | `declined` | `access_denied` / `cancelled_by_user` / `declined_on_page` | auth links: a fresh one (call re-run) |
+| Callback error, flow or request expired, target gone | `failed` | coarse reason (`bad_request`, `expired`, `not_found`, …) | auth links: a fresh one |
+| Nothing within 300s | `timed_out` | — | auth links: the original if never opened, else a fresh one |
+| Retry after the `requestState` expired (≤24h) | form: D95 envelope; URL: `timed_out` | — | as above; nothing acted on |
+
+Legacy streams send `notifications/elicitation/complete` on every browser-side ending, not
+only success. Modern waits run detached, so a dropped client still releases an approval's
+auto-call hold.
+
+Verified against Claude Code 2.1.283 on 2026-09-28: the approval arrived as a `url` mode
+elicitation, the retry held on the keep-alive stream until the dashboard approved, and the
+call executed exactly once with auto-call on.
+
+### Flow A on 2026-07-28 (D103)
+
+`2026-07-28` removes `initialize`, sessions and every server-to-client request. What that
+means on the wire, as Claude Code 2.1.282+ drives it (`routes/mcp/modern.rs`):
+
+1. **Negotiation.** The client probes `server/discover` with
+   `_meta["io.modelcontextprotocol/protocolVersion"] = "2026-07-28"` and the mirrored
+   `MCP-Protocol-Version` / `Mcp-Method` headers. A result whose `supportedVersions` lists
+   `2026-07-28` keeps it modern; any non-modern answer sends it back to `initialize`. The
+   probe only happens on direct `type: "http"` servers — claude.ai connectors stay legacy by
+   default whatever the server says.
+2. **Capabilities per request.** Every request carries `clientCapabilities` in `_meta`; that
+   is the authority for the request. They are also written to `oauth_mcp_clients` on
+   discover and `tools/list`, for the dashboard.
+3. **The dialog is a multi round-trip request.** A gated `overslash_call` answers
+   `resultType: "input_required"` with the decision form under `inputRequests.decision` and a
+   signed `requestState`. The client shows the form, then **retries the same call** with
+   `inputResponses` + the echoed `requestState`. The retry never re-dispatches: it verifies
+   the state (signature, expiry, agent, MCP client, digest of tool + arguments), runs the
+   same `complete_from_elicitation` as the legacy receiver, and answers with the result, the
+   denial, the "Allow & remember" follow-up (a second `input_required` under `remember`), or
+   the D95 envelope.
+4. **Same row, same semantics.** The `pending_mcp_elicitations` row still suppresses
+   auto-call while the dialog is open, a `cancel` still starts the cooldown, and a retry that
+   never comes is reaped by the sweeper like a dead originator.
+
+Verified against Claude Code 2.1.283 on 2026-09-26: headless (`-p`) negotiated `2026-07-28`,
+auto-cancelled the form and received the envelope; driven as an SDK host answering "Allow
+once" over stream-json, the retry executed the call end to end.
 
 See the test directory's README for run instructions and the exact `claude mcp add` / `.mcp.json` setup to wire it into Claude Code.

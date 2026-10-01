@@ -42,10 +42,18 @@ webhook.created      webhook.deleted
 
 ### IP address capture
 
-A `ClientIp` extractor resolves the client IP from (in order):
-1. `X-Forwarded-For` header (first IP in comma-separated list)
-2. `X-Real-IP` header
-3. `ConnectInfo<SocketAddr>` fallback (direct connection)
+A `ClientIp` extractor resolves the client IP against the configured trusted
+proxies (`Config::trusted_proxies`, `services/client_ip.rs`). It walks the
+chain `[socket peer, X-Forwarded-For right to left]` and returns the first
+address that is not trusted: the rightmost untrusted address. An address is
+trusted by position (`OVERSLASH_TRUSTED_PROXY_HOPS`), by range
+(`OVERSLASH_TRUSTED_PROXIES`). A proxy with no stable address vouches with a
+shared secret (`OVERSLASH_TRUSTED_PROXY_SECRET`) and names the client in
+`x-overslash-client-ip`; on a match that name stands in for the proxy's hop,
+and nothing left of it is read. With nothing configured the
+socket peer is the client and `X-Forwarded-For` is ignored. `X-Real-IP` is
+never read. Deployment values are in `infra/README.md` ("Client IP & trusted
+proxies").
 
 The extractor never fails -- it returns `Option<String>`. This is a separate extractor from `AuthContext` because IP is a request-level concern, and some handlers (org creation, API key creation) are unauthenticated.
 

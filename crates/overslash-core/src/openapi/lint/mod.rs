@@ -136,6 +136,36 @@ mod tests {
         assert!(lint(clean_doc()).is_empty());
     }
 
+    /// `promoted` is read on a `servers[]` entry and a parameter, in either
+    /// spelling; the lint used to treat `servers` as `Pos::Other`.
+    #[test]
+    fn promoted_on_a_server_and_a_parameter_is_silent() {
+        let mut doc = clean_doc();
+        doc["servers"][0]["x-overslash-promoted"] = json!(true);
+        doc["paths"]["/items"]["get"]["parameters"] = json!([{
+            "name": "region", "in": "query",
+            "instance-config": true, "promoted": true,
+            "schema": {"type": "string"},
+        }]);
+        assert!(lint(doc.clone()).is_empty());
+        doc["servers"][0] = json!({"url": "https://api.example.com", "promoted": true});
+        assert!(lint(doc).is_empty());
+    }
+
+    #[test]
+    fn promoted_on_an_operation_is_misplaced() {
+        let mut doc = clean_doc();
+        doc["paths"]["/items"]["get"]["x-overslash-promoted"] = json!(true);
+        assert_eq!(codes(&lint(doc)), ["misplaced_extension"]);
+    }
+
+    #[test]
+    fn unknown_plain_key_on_a_server_is_flagged() {
+        let mut doc = clean_doc();
+        doc["servers"][0]["region"] = json!("eu");
+        assert_eq!(only(&lint(doc)).path, "servers[0].region");
+    }
+
     // ── the motivating cases ─────────────────────────────────────────
 
     /// The bug that opened #539. `response_type` is a `ServiceAction` field the

@@ -1,0 +1,31 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO google_directory_connect_flows\n             (org_id, identity_id, pkce_verifier, expires_at)\n         VALUES ($1, $2, $3, now() + make_interval(secs => $4))\n         RETURNING id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "google_directory_connect_flows",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Float8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "8eba8b22675fb61f25b07b3fbf49999b169276779b670fba1d21855afe0ce9b8"
+}

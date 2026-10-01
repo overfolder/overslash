@@ -16,7 +16,6 @@ use axum::{
     http::{HeaderMap, HeaderValue, StatusCode},
     response::{Html, IntoResponse, Response},
 };
-use time::OffsetDateTime;
 use uuid::Uuid;
 
 use overslash_db::repos::oauth_connection_flow::OauthConnectionFlowRow;
@@ -25,9 +24,8 @@ use overslash_db::repos::{identity, membership};
 use crate::AppState;
 use crate::cookies;
 use crate::error::AppError;
-use crate::middleware::security_headers;
 use crate::routes::auth::{session_cookie, signing_key_bytes};
-use crate::services::jwt;
+use crate::services::{jwt, user_sessions};
 
 #[derive(Debug)]
 pub struct ParsedSession {
@@ -77,18 +75,19 @@ pub async fn session_authorized_for_org_identity(
 /// Outcome of the connect-gate authorization check for a flow.
 pub enum ConnectGateOutcome {
     /// The session is authorized to proceed straight to the provider. When
-    /// `set_cookie` is `Some`, the caller MUST attach it to the redirect so
-    /// the browser session is transparently re-scoped to the flow's org first
-    /// (the same-human cross-org auto-switch — mirrors `/auth/switch-org`).
-    Allow { set_cookie: Option<HeaderValue> },
+    /// `remint` is `Some`, the caller MUST apply it and attach the cookie to
+    /// the redirect so the browser session is transparently re-scoped to the
+    /// flow's org first (the same-human cross-org auto-switch — mirrors
+    /// `/auth/switch-org`).
+    Allow { remint: Option<SessionRemint> },
     /// The session is NOT the flow's owner, but the acting identity is an org
     /// admin of the flow's org or the flow's `actor` — so it MAY proceed after
     /// an explicit, loud confirmation that names whose account is being linked.
     /// The caller renders [`admin_consent_html`]; the confirm POST re-runs this
     /// evaluation (never trusting the client) and treats this variant as
-    /// "proceed". `set_cookie` carries the cross-org remint, applied on confirm.
+    /// "proceed". `remint` carries the cross-org re-scope, applied on confirm.
     NeedsConsent {
-        set_cookie: Option<HeaderValue>,
+        remint: Option<SessionRemint>,
         owner_label: String,
         provider: String,
     },
@@ -157,29 +156,41 @@ fn idp_provider(ident: &identity::IdentityRow) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// Mint a fresh `oss_session` Set-Cookie scoped to `org_id` + `identity`,
-/// mirroring `switch_org`. The identity's email is non-authoritative (display
-/// / audit only — all authz is `org` + `sub` + `user_id`).
-fn mint_switch_cookie(
-    state: &AppState,
+/// A pending re-scope of the browser session to `org_id` + `identity`,
+/// mirroring `switch_org`. Deferred rather than minted up front: re-scoping
+/// moves the server-side session, so it must only happen once the caller has
+/// actually won the flow — see `connections::gate::consume_and_redirect`.
+pub struct SessionRemint {
     org_id: Uuid,
-    identity: &identity::IdentityRow,
-) -> Result<HeaderValue, AppError> {
-    let secret = signing_key_bytes(&state.config.signing_key);
-    let now = OffsetDateTime::now_utc().unix_timestamp();
-    let claims = jwt::Claims {
-        sub: identity.id,
-        org: org_id,
-        email: identity.email.clone().unwrap_or_default(),
-        aud: jwt::AUD_SESSION.into(),
-        iat: now,
-        exp: now + 7 * 24 * 3600,
-        user_id: identity.user_id,
-        mcp_client_id: None,
-    };
-    let token = jwt::mint(&secret, &claims)
-        .map_err(|e| AppError::Internal(format!("jwt mint failed: {e}")))?;
-    session_cookie(state, &token)
+    identity_id: Uuid,
+    user_id: Option<Uuid>,
+    email: String,
+}
+
+impl SessionRemint {
+    /// Re-scope the current session and return its `Set-Cookie`. The
+    /// identity's email is non-authoritative (display / audit only — all
+    /// authz is `org` + `sub` + `user_id`).
+    pub async fn apply(
+        self,
+        state: &AppState,
+        ext: &axum::http::Extensions,
+        headers: &HeaderMap,
+    ) -> Result<HeaderValue, AppError> {
+        let token = user_sessions::rescope(
+            state,
+            ext,
+            headers,
+            user_sessions::Subject {
+                identity_id: self.identity_id,
+                org_id: self.org_id,
+                user_id: self.user_id,
+                email: self.email,
+            },
+        )
+        .await?;
+        session_cookie(state, &token)
+    }
 }
 
 /// A human-readable label for the flow's owning identity, for the consent page.
@@ -202,7 +213,7 @@ async fn owner_label(
 /// 1. **Owner / ancestor** of the flow's identity in its org → proceed.
 /// 2. **Same human** (matched by user-id OR IdP) who is owner/ancestor in the
 ///    flow's org via a *different* active session → proceed with a transparent
-///    org auto-switch (`set_cookie`). Reproduces locally (no subdomains) the
+///    org auto-switch (`remint`). Reproduces locally (no subdomains) the
 ///    alignment production gets from the subdomain↔JWT enforcement.
 /// 3. **Org admin of the flow's org, or the flow's `actor`** → `NeedsConsent`:
 ///    may proceed only after a loud confirmation, because the external account
@@ -223,14 +234,14 @@ pub async fn evaluate_connect_gate(
     if session_authorized_for_org_identity(state, ext, session, flow.org_id, flow.identity_id)
         .await?
     {
-        return Ok(ConnectGateOutcome::Allow { set_cookie: None });
+        return Ok(ConnectGateOutcome::Allow { remint: None });
     }
 
     // Resolve the identity that is acting in the flow's org, plus the remint
     // cookie needed to get there. Same org → the session identity, no cookie.
     // Cross org → the same human's identity (id-or-IdP), with a remint cookie,
     // but only when reminting is permitted.
-    let (acting, set_cookie) = if session.org_id == flow.org_id {
+    let (acting, remint) = if session.org_id == flow.org_id {
         match identity::get_by_id(state.db(ext), flow.org_id, session.identity_id).await? {
             Some(acting) => (acting, None),
             None => return Ok(ConnectGateOutcome::Deny),
@@ -238,8 +249,13 @@ pub async fn evaluate_connect_gate(
     } else if allow_remint {
         match resolve_same_human_in_org(state, ext, session, flow.org_id).await? {
             Some(acting) => {
-                let cookie = mint_switch_cookie(state, flow.org_id, &acting)?;
-                (acting, Some(cookie))
+                let remint = SessionRemint {
+                    org_id: flow.org_id,
+                    identity_id: acting.id,
+                    user_id: acting.user_id,
+                    email: acting.email.clone().unwrap_or_default(),
+                };
+                (acting, Some(remint))
             }
             None => return Ok(ConnectGateOutcome::Deny),
         }
@@ -265,7 +281,7 @@ pub async fn evaluate_connect_gate(
             chain.iter().any(|row| row.id == acting.id)
         };
         if owner_or_ancestor {
-            return Ok(ConnectGateOutcome::Allow { set_cookie });
+            return Ok(ConnectGateOutcome::Allow { remint });
         }
         admin_in_org = acting.is_org_admin;
     }
@@ -277,7 +293,7 @@ pub async fn evaluate_connect_gate(
     //     harmless even for an agent-kind actor with no `user_id`/membership).
     if admin_in_org || acting.id == flow.actor_identity_id {
         return Ok(ConnectGateOutcome::NeedsConsent {
-            set_cookie,
+            remint,
             owner_label: owner_label(state, ext, flow).await?,
             provider: flow.provider_key.clone(),
         });
@@ -327,9 +343,6 @@ pub fn mismatch_html() -> Response {
     (StatusCode::FORBIDDEN, Html(body)).into_response()
 }
 
-const CANCEL_SCRIPT: &str =
-    "document.getElementById('cancel').addEventListener('click', () => window.close());";
-
 /// The loud admin/actor consent interstitial. Shown when the signed-in
 /// identity is *not* the flow's owner but is an org admin (or the flow's
 /// actor) and so may proceed on the owner's behalf. It must name **whose**
@@ -338,7 +351,10 @@ const CANCEL_SCRIPT: &str =
 /// POSTs back to `/connect-authorize/confirm`, which re-validates the override
 /// before consuming the flow (so this page is advisory, not the security
 /// boundary). `SameSite=Lax` on `oss_session` keeps a cross-site forge of the
-/// POST from carrying the victim's session.
+/// POST from carrying the victim's session. Cancel submits the same form to
+/// `/connect-authorize/cancel`, which records the refusal on the flow — so a
+/// tool call waiting on this link as a URL-mode elicitation ends at once
+/// instead of timing out.
 pub fn admin_consent_html(owner_label: &str, provider: &str, flow_id: &str) -> Response {
     let owner = html_escape(owner_label);
     let prov = html_escape(provider);
@@ -357,13 +373,20 @@ pub fn admin_consent_html(owner_label: &str, provider: &str, flow_id: &str) -> R
          <input type='hidden' name='id' value='{id}'>\
          <button type='submit' style='padding:.6rem 1.1rem;font-size:1rem;cursor:pointer'>\
          Continue to {prov}</button>\
-         <button type='button' id=cancel \
+         <button type='submit' formaction='/connect-authorize/cancel' \
          style='margin-left:.5rem;padding:.6rem 1.1rem;font-size:1rem;cursor:pointer'>Cancel</button>\
-         </form><script>{CANCEL_SCRIPT}</script></body>"
+         </form></body>"
     );
-    // An `onclick=` attribute would need `'unsafe-hashes'`; a hashed block
-    // keeps the page's CSP to exactly this one script.
-    security_headers::html_with_inline_script(StatusCode::OK, body, CANCEL_SCRIPT)
+    (StatusCode::OK, Html(body)).into_response()
+}
+
+/// Shown after Cancel on the consent interstitial.
+pub fn cancelled_html() -> Response {
+    let body = "<!doctype html><meta charset=utf-8><title>Connection cancelled</title>\
+                <body style='font-family:system-ui;max-width:480px;margin:4rem auto;padding:0 1rem'>\
+                <h1>Connection cancelled</h1><p>Nothing was connected. You can close this \
+                window.</p></body>";
+    (StatusCode::OK, Html(body)).into_response()
 }
 
 #[cfg(test)]

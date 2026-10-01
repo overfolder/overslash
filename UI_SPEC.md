@@ -319,25 +319,27 @@ Thin full-width bars at the top of the page for connectivity state. Semi-transpa
 
 ### Navigation
 
-**Sidebar** (desktop): collapsible, two states.
+**Sidebar** (desktop): collapsible, two states — **rail** (the default) and **expanded**. The collapse button toggles between them and the choice persists per browser; tablet widths always show the rail.
+
+**Icons**: line icons drawn inline as SVG (24×24 grid, 1.5 stroke, `currentColor`, 18px), never Unicode glyphs: Agents `bot`, Services `blocks`, Secrets `key`, Connections `arrow-left-right`, Approvals `circle-check`, Executions `activity`, Audit Log `scroll-text`, Live Map `map`, Users `user`, Groups `group`, Settings `settings`. The mobile tab bar uses the same set.
 
 **Expanded** (240px): neutral-50 background, neutral-200 right border. Contains:
 - Logo ("Overs/ash") at top (bold 18px)
-- Nav items with 18px icon placeholder + label. Active item: primary-50 background, primary text, semi-bold. Inactive: neutral-600 text, medium weight.
+- Nav items with 18px icon + label. Active item: primary-50 background, primary text, medium weight. Inactive: secondary text.
 - "ADMIN" section label (11px semi-bold, neutral-400, letter-spaced) separates admin-only items.
 - **Pending invitations** (sidebar footer, directly above the org switcher): rendered only when the signed-in user has invitations from orgs they haven't joined, sourced from `/auth/me/identity.invitations[]` (same list as `GET /v1/account/invitations`). An "INVITATIONS" section label followed by one card per org — org name, "invited as admin/member", and **Accept** / **Decline**. Accept posts to `/v1/account/invitations/{id}/accept`, then switches to that org and hard-reloads onto its subdomain. Decline asks for confirmation, then archives the invitation. When the inviting org signs its members in through its own IdP (`allow_overslash_managed_signin = false`) the buttons are replaced by a "Sign in to accept →" link to that org's subdomain — accepting has to happen there.
 - **Org switcher** (sidebar footer, above the Settings link): shows the current org's name. When the user belongs to more than one org, clicking it opens a dropdown grouped by **Personal** / **Orgs** with the current entry highlighted. Selecting an entry posts to `/auth/switch-org { org_id }` and the browser hard-reloads onto the returned URL (root apex for personal orgs, `<slug>.app.overslash.com` for corp orgs). The current org's role (admin / member) is implicit — no per-row badges; every row is just an org name.
-- Collapse button (chevron «) at the bottom or top-right of the sidebar.
+- Collapse button (chevrons-left icon + "Collapse") in the footer.
 - **Build stamp** (last line of the sidebar footer): `v<version> · <short sha>` in muted 11px text, read from `GET /v1/version`. Hovering shows the full SHA; clicking copies it and the line reads "Copied" for ~1.5s. Absent until the request resolves, and if it fails.
 
-**Collapsed** (64px): same background and border. Contains:
+**Rail** (76px, default): same background and border. Contains:
 - Logo collapses to "/" (the slash character, bold 18px) — the iconic part of "Overs/ash".
-- Nav items show icons only (18px, centered), no labels. Active item still has primary-50 rounded background. Tooltip on hover shows the label.
-- "ADMIN" label hidden. Admin nav items still show as icon-only.
-- Pending invitations collapse to a single bordered cell — envelope glyph + count badge — with the count in the hover tooltip; clicking expands the sidebar rather than opening a popover, since the org names are the whole point and 64px can't carry them.
+- Nav items stack the 18px icon over a small label (10.5px, centered, wrapping balanced). Active item still has primary-50 rounded background. Tooltip on hover shows the label.
+- "ADMIN" label stays, centered at 9.5px, above the admin items.
+- Pending invitations collapse to a single bordered cell — envelope glyph + count badge — with the count in the hover tooltip; clicking expands the sidebar rather than opening a popover, since the org names are the whole point and 76px can't carry them.
 - Org switcher collapses to the first letter of the current org's slug in a single cell; clicking still opens the dropdown (which anchors to the right of the sidebar so it's readable).
 - Build stamp drops the short SHA and shows the version alone — the SHA stays available in the hover tooltip, and clicking still copies it.
-- Expand button (chevron ») to restore.
+- Expand button (chevrons-right icon) to restore.
 
 **Top bar**: 56px tall, white background, neutral-200 bottom border. Page title on left (semi-bold 16px). On the right, in order: notification bell + badge, theme toggle, **user badge** — the user's avatar (32px circle) + name, with the `⚡ Instance` chip appended when the viewer is an instance admin. Clicking the user badge opens the User Profile view.
 
@@ -381,13 +383,13 @@ Breakpoint: 768px. Below = mobile layout, above = desktop.
 ## Page Structure
 
 All the following pages have this structure.
-There is a collapsable navigation menu on the left bar on desktop, when expanded shows labels and icons, when contracted only icons. On mobile this bar can be shown and hidden using swipes.
+There is a collapsable navigation menu on the left bar on desktop, when expanded shows labels and icons, when contracted (the default rail) icons with small labels underneath. On mobile this bar can be shown and hidden using swipes.
 
-Nav items: **Agents**, **Services**, **Secrets**, **Connections**, **Audit Log**. API Explorer is a sub-view within Services, not a top-level nav item. Template Editor is accessed from Services, not a nav item.
+Nav items: **Agents**, **Services**, **Secrets**, **Connections**, **Approvals**, **Executions**, **Audit Log**, plus **Live Map** when the build enables it. API Explorer is a sub-view within Services, not a top-level nav item. Template Editor is accessed from Services, not a nav item.
 
 Under an "ADMIN" label (org-admins only): **Users**, **Groups**.
 
-At the bottom of the sidebar: **Settings** (gear icon) — opens user settings. For org-admins, a second settings link or sub-menu provides org settings.
+At the bottom of the sidebar (org-admins only): **Settings** (gear icon) — opens Org Settings at `/org`.
 
 **Profile is NOT a nav item.** The logged-in user's avatar and name appear in the top bar (desktop) or top-right (mobile). Clicking opens the User Profile view, which is also the only place to sign out.
 
@@ -702,6 +704,14 @@ A section/tab within the Org Dashboard for managing user groups. Groups define t
 - *Services list groups column (`/services`).* Group pills for self grants render as **"Myself"**, derived from `system_kind === 'self'` on the per-grant `ServiceGroupRef`.
 - *Service detail Groups table (`/services/<name>`).* Owner's self grants render as **"Myself"** (same rule). The "Restore Myself grant" inline affordance remains for owners who removed their own grant.
 
+**Directory groups in the dashboard.** When an org has group sync on for one of its IdPs (see *Identity Providers* below), the groups an IdP reports surface as their own thing — never mixed into the groups table, because they are a membership source rather than a ceiling (SPEC §5).
+
+- *Groups list (`/org/groups`).* A **Directory groups** section below the groups table, hidden entirely when nothing has been discovered. Columns: group (display name, plus the raw claim value when it differs — Entra sends object GUIDs), member count, *Grants access through* (chips naming the mapped groups, each with an × to unmap), and a *Map to group…* picker. An unmapped row reads "Not mapped — grants nothing", which is the honest description: discovery is not granting. System groups are excluded from the picker, as the API refuses them.
+- *Directory group detail (`/org/directory-groups/<id>`).* Linked from the group name in the section above. Shows the claim value, source, first/last seen; a **Grants access through** card carrying the mapping pills; and a **Members** list of the humans the directory places in it, with copy saying to add or remove them in the identity provider rather than here. A directory group is a thing an admin reasons about on its own — who is in it, what it grants, when it was last seen — and the list row answers none of that beyond a count.
+- *Group detail (`/org/groups/<id>`).* A **Directory sources** card above Members, listing the directory groups feeding this group as pills, plus the add affordance. Hidden on system groups. The copy states that removing a source revokes immediately, because it does.
+- *Adding a pill.* Everywhere a pill relationship is edited — mapped groups, directory sources — the affordance is the shared **`PillPicker`**: the pills, then a `+` button that opens a searchable dropdown (search field, filtered list, arrow/Enter/Escape). Never a bare `<select>`, and never the always-open chip input `GroupSearch` uses, which belongs to create forms; on an existing relationship a permanently-open search box reads as an unfinished form.
+- *Members list.* A member the directory asserts and no admin assigned carries a `via <directory group>` badge and **no Remove button** — there is no manual row to delete, and the API answers 409. The fix is to unmap the source or remove them upstream, which the badge points at.
+
 ```
 Group: Engineering
 
@@ -727,7 +737,17 @@ Grants use the `{service}:{action}:{arg}` format, where the arg is a value or a 
 
 ### Settings
 
-A section within the Org Dashboard. Single scrollable view with sections as cards. Subsections below are documented in intended order; some (notably *Features*) are not yet implemented in the dashboard.
+A section within the Org Dashboard, organized as a **sub-nav with one page per section**. A 220px panel docks against the sidebar rail (titled "Org Settings", surface background, right border, sticky to the viewport) and lists the sections under uppercase group labels; the page beside it shows the group name above the section title, then that section's card. `/org` shows General; every other section lives at `/org/<section>` and deep-links. Moving between sections does not refetch the page's data. Old `/org#billing`, `/org#instance-admin-trial`, `/org#oauth-app-credentials` and `/org#google-directory` links redirect to the matching section. A small amber dot flags a section that needs a look (agents missing self-setup rules; an unverified or disabled webhook). At ≤900px the panel collapses above the page into wrapping chips.
+
+| Group | Sections (shown when) |
+|---|---|
+| Organization | General · Billing (corp org with a subscription) · Trial (instance admins, corp org) |
+| Access | Sign-in & members (corp org) · Identity Providers (corp org) · Google Workspace (corp org) |
+| Agents & policy | Agent defaults · Service catalog · Secret requests |
+| Developer | OAuth App Credentials (corp org) · MCP Clients · Service keys · Webhooks |
+| Audit & data | Audit log |
+
+A group whose sections are all hidden is dropped, so a personal org sees no Access group. The subsections below are documented in intended order; some (notably *Features*) are not yet implemented in the dashboard.
 
 **Dev User access**: Dev Users (logged in via Dev Login) have org-admin privileges in development mode. The Org Settings view must be accessible to Dev Users.
 
@@ -758,13 +778,17 @@ Overslash-managed providers are shown with an "env" badge and are read-only — 
 Per-provider settings:
 - **Auto-create users**: create user identity on first login (matched by email domain)
 - **Allowed email domains**: restrict which domains can log in (e.g., `acme.com`)
-- **Default group**: which group new users join on first login
+- **Group sync**: a column in the table, plus a *Sync groups* / *Stop group sync* action on the org's own rows. When on, the cell shows an `on` badge next to the claim name, and clicking the claim name edits it (`groups` suits Okta and Entra; Auth0 needs a namespaced claim such as `https://acme.com/groups`). Managed (`env`) rows show `—` and no action — only an org's own IdP may assert groups (D12). Turning it on means sign-ins through this IdP populate **Directory groups** on `/org/groups`; it grants nothing by itself.
+
+**Google Workspace Directory** (its own *Google Workspace* section in the Access group, after Identity Providers). Google emits no group claim, so Workspace groups come from the Admin SDK instead, through the instance's one service account. When the instance has none, the section says so and names the two operator variables. Not connected: an outlined **Authorize Overslash in Google Admin** box first — the admin-console path (Security → API controls → Domain-wide delegation → Add new) with a link, then the **Client ID** and **OAuth scopes** as copy rows, then the service account's email — followed by **Sign in with Google to connect** and a line saying to sign in as a super admin (or an admin with the Groups privilege), with nothing to type. Returning from Google shows a banner: connected, or the specific refusal (delegation missing, not an admin, personal account, already connected by another org, link expired or finished in another session). Connected: the Workspace domain, the admin it acts as, the schedule (interval select), and a status strip with the last sync (ok with counts, or failed with Google's message and "nothing was revoked"); **Sync now**, which reads *Sync queued* and is disabled while a run is waiting (at most one can be), and *Syncing… queue another* while one runs; *Pause*, *Reconnect*, *Disconnect*. The delegation box stays available under a *Domain-wide delegation details* disclosure. The card polls only while a run is queued or running. *Pause* keeps existing memberships; *Disconnect* confirms that it revokes every Google-derived membership and mapping. Its groups carry a *Google Workspace* tag in the Directory groups list.
+
+*Supersedes the previously specified **Default group** setting* ("which group new users join on first login"), which was never implemented. Group sync answers the same need — new users landing in the right group without an admin touching them — without the failure mode of a static default, which cannot express more than one group and never revokes.
 
 SAML 2.0: future concern. "SAML" appears greyed out in the type dropdown with a "coming soon" tooltip.
 
 #### OAuth App Credentials
 
-Below the Identity Providers table, an **OAuth App Credentials** section manages org-level OAuth client credentials shared across IdP login and service connections.
+In the Developer group, an **OAuth App Credentials** section manages org-level OAuth client credentials shared across IdP login and service connections.
 
 ```
 OAuth App Credentials
@@ -1080,7 +1104,8 @@ If the caller has any open drafts, a **Drafts** card renders above this table; s
    - *Secret*: form to paste the value → stored as a versioned secret → done
    - *Both available*: user picks which auth method
    - *Org service with shared credential*: one-click, no auth needed
-4. **Status**: starts as Active (or Draft if the user wants to test first)
+4. **Endpoint and config** — every template's endpoint URL and every per-instance config field (`x-overslash-config` vars, `x-overslash-instance-config` params) can be overridden. A field is shown in the main form when the instance cannot work without it (required, and neither the template nor an org layer supplies a default) or when the template promotes it with `x-overslash-promoted` (Langfuse's region, the email gateway's IMAP/SMTP endpoints). Everything else sits behind a collapsed **Show more options ▸ (n)** disclosure below the credentials. Every field with a default says so in its hint ("Default: `https://api.resend.com`", or "your org's deployment (…)" for a layer default), so an empty field never hides where calls will go. The same split applies on the service's Overview tab, where the disclosure opens by itself when the instance already overrides a field inside it.
+5. **Status**: starts as Active (or Draft if the user wants to test first)
 
 ### Manage service
 
@@ -1385,6 +1410,11 @@ A top-level page scoped to the human, not any one org — always reachable from 
 **Profile card**:
 - Display name, email (last value the IdP returned, informational)
 - `User ID` (a UUID, in a monospaced chip) so the user can reference their own account when filing support
+
+**Sessions card** (between Email preferences and Organizations): every live sign-in of this human, across all their orgs — `GET /v1/account/sessions`, most recently active first.
+- Each row: a device label parsed from the User-Agent ("Chrome on macOS"; raw string on hover), the org the session is currently scoped to, the client IP, "Active <relative>" and "Signed in <relative>" (absolute time on hover). The caller's own row carries a **This session** tag and reads "Active now".
+- Per-row action: **End session** — `DELETE /v1/account/sessions/{id}`; that browser is signed out on its next request. On the caller's own row the button reads **Sign out**, and success navigates to `/login`.
+- **Sign out all other sessions** (card header, only when there are others) — confirms in a modal naming how many, then `POST /v1/account/sessions/revoke-others` and reloads the list.
 
 **Organizations card**:
 - List of the user's memberships, one per row

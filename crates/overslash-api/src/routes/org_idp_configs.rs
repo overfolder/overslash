@@ -59,6 +59,15 @@ struct CreateIdpConfigRequest {
     enabled: bool,
     #[serde(default)]
     allowed_email_domains: Vec<String>,
+    /// Mirror this IdP's group claim into directory groups at each sign-in.
+    /// Off unless asked for: turning it on is an admission that this IdP is
+    /// authoritative over the org's group structure.
+    #[serde(default)]
+    group_sync_enabled: bool,
+    /// Claim carrying group membership. Omitted keeps the `groups` default,
+    /// which is right for Okta and Entra; Auth0 needs its namespaced claim.
+    #[serde(default)]
+    group_claim: Option<String>,
     /// Mark this newly-created config as the org's default IdP. The
     /// `/oauth/authorize` flow on a corp subdomain bounces unauthenticated
     /// callers straight through the default IdP. Mutually exclusive at the
@@ -87,6 +96,10 @@ struct UpdateIdpConfigRequest {
     /// the prior default), `Some(false)` clears the default flag on this
     /// row, `None` leaves it untouched.
     is_default: Option<bool>,
+    /// `None` leaves directory group sync as it is.
+    group_sync_enabled: Option<bool>,
+    /// `None` leaves the claim name as it is.
+    group_claim: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -103,6 +116,11 @@ struct IdpConfigResponse {
     /// True when this IdP is the org's designated default for the OAuth
     /// authorize flow.
     is_default: bool,
+    /// True when sign-ins through this IdP mirror its group claim into
+    /// directory groups.
+    group_sync_enabled: bool,
+    /// Claim name group sync reads.
+    group_claim: String,
     created_at: String,
     updated_at: String,
 }
@@ -242,6 +260,8 @@ async fn create_idp_config(
             encrypted_client_secret.as_deref(),
             req.enabled,
             &req.allowed_email_domains,
+            req.group_sync_enabled,
+            req.group_claim.as_deref(),
         )
         .await
         .map_err(|e| {
@@ -295,6 +315,8 @@ async fn create_idp_config(
         source: "db",
         uses_org_credentials,
         is_default: row.is_default,
+        group_sync_enabled: row.group_sync_enabled,
+        group_claim: row.group_claim,
         created_at: fmt_time(row.created_at),
         updated_at: fmt_time(row.updated_at),
     }))
@@ -330,6 +352,8 @@ async fn list_idp_configs(
             "allowed_email_domains": config.allowed_email_domains,
             "uses_org_credentials": config.encrypted_client_id.is_none(),
             "is_default": config.is_default,
+            "group_sync_enabled": config.group_sync_enabled,
+            "group_claim": config.group_claim,
             "created_at": fmt_time(config.created_at),
             "updated_at": fmt_time(config.updated_at),
         }));
@@ -429,7 +453,14 @@ async fn update_idp_config(
     };
 
     let mut updated = scope
-        .update_org_idp_config(id, creds, req.enabled, req.allowed_email_domains.as_deref())
+        .update_org_idp_config(
+            id,
+            creds,
+            req.enabled,
+            req.allowed_email_domains.as_deref(),
+            req.group_sync_enabled,
+            req.group_claim.as_deref(),
+        )
         .await?
         .ok_or_else(|| AppError::NotFound("IdP config not found".into()))?;
 
@@ -481,6 +512,8 @@ async fn update_idp_config(
         source: "db",
         uses_org_credentials,
         is_default: updated.is_default,
+        group_sync_enabled: updated.group_sync_enabled,
+        group_claim: updated.group_claim,
         created_at: fmt_time(updated.created_at),
         updated_at: fmt_time(updated.updated_at),
     }))

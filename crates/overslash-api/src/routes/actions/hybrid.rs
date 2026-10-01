@@ -117,6 +117,9 @@ pub(super) async fn start(
         + time::Duration::milliseconds(
             (call_timeout.ms() + state.config.async_execution.lease_ttl_secs * 1_000) as i64,
         );
+    // A handed-off job may dial after this connection is gone.
+    crate::services::staged_upload::pin_for(scope.db(), scope.org_id(), action_req, expires_at)
+        .await;
 
     let (service_key, instance_id) = if auth_header_present {
         (

@@ -56,6 +56,12 @@ enable_valkey    = true
 enable_dns       = false
 enable_shortener = true
 
+# BI: BigQuery federation over prod Postgres (docs/runbooks/bi.md).
+# Step 1 mounts OVERSLASH_BI_DB_PASSWORD; an API boot then creates the `bi` role.
+enable_bi = true
+# Step 2, after an API release containing overslash_db::bi is live in prod.
+bi_publish_views = false
+
 # Shared overfwd Mailbox Gateway. This hostname is what `services/email.yaml`
 # ships as `servers[0]`, so every `email` instance that pins no `url` lands
 # here. Needs a manual `mailbox CNAME ghs.googlehosted.com` at the registrar.
@@ -122,3 +128,26 @@ read_oauth_credentials_from_env = false
 
 # Async (non-blocking) action calls. Off until validated on dev.
 enable_async_execution = false
+
+# Client-IP resolution (infra/README.md "Client IP & trusted proxies").
+# Hop 1 is Cloud Run's frontend, which appends the address it saw. Behind the
+# GCLB that address is the LB's own, so the LB IP is trusted by CIDR — a
+# literal, because module.api_lb depends on module.cloud_run (update it if the
+# `lb_ip` output ever changes). 35.191.0.0/16 and 130.211.0.0/22 are Google's
+# LB proxy ranges, trusted in case the serverless-NEG path appends a frontend
+# address too. A direct *.run.app caller still resolves to its own address.
+trusted_proxy_hops  = 1
+trusted_proxy_cidrs = "34.36.8.174/32,35.191.0.0/16,130.211.0.0/22"
+# Flip after `gcloud secrets versions add overslash-prod-trusted-proxy-secret`
+# and setting the same value as OVERSLASH_TRUSTED_PROXY_SECRET in Vercel (Production).
+enable_trusted_proxy_secret = true
+
+
+# Audit logging (CASA 6.7.1; docs/compliance/casa/secrets-access-policy.md).
+# !!! audit_log_bucket_locked = true IS IRREVERSIBLE !!!
+# The first apply that carries it locks overslash-prod-audit for good: 400-day
+# retention fixed forever, the bucket undeletable until its contents age out,
+# and no way to unlock. Apply to dev first and verify (infra/README.md
+# "Audit logging") before this line reaches a prod apply.
+audit_log_retention_days = 400
+audit_log_bucket_locked  = true

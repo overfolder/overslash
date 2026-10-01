@@ -214,6 +214,25 @@ export type SubmitOutcome<B> =
  * comes back as `null` in that case, which callers read as "saved, details
  * unknown" rather than as a positive result.
  */
+/**
+ * Tell the API the recipient pressed Deny. Best-effort: the page shows the
+ * declined state either way. What it buys is that an agent waiting on this
+ * link (an MCP URL-mode elicitation) hears "declined" now, not after its
+ * timeout.
+ */
+export async function declinePublicRequest(reqId: string, token: string): Promise<void> {
+	try {
+		await fetch(`/public/secrets/provide/${encodeURIComponent(reqId)}/decline`, {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			credentials: 'same-origin',
+			body: JSON.stringify({ token })
+		});
+	} catch {
+		// Nothing to show: the refusal stands on the page regardless.
+	}
+}
+
 export async function submitPublicRequest<B>(
 	reqId: string,
 	token: string,

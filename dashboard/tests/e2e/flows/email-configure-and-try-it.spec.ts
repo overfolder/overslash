@@ -88,6 +88,10 @@ test('user configures the email template against their own gateway and lists mai
 			.click();
 		await page.getByRole('button', { name: 'Use this template' }).click();
 
+		// The deployment names a shared gateway (MAILBOX_HOST), so the endpoint
+		// has a default and waits behind the disclosure; this run points at
+		// its own overfwd instead.
+		await page.getByRole('button', { name: /Show more options/ }).click();
 		const gatewayUrl = page.getByLabel('Endpoint URL');
 		await expect(gatewayUrl).toBeVisible();
 		await gatewayUrl.fill(env.overfwdUrl!);

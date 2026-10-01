@@ -85,6 +85,11 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
 
     // Run migrations
     overslash_db::MIGRATOR.run(&db).await?;
+    // BI login role (docs/runbooks/bi.md). A malformed password refuses the
+    // boot like any other bad config; an unset one means BI is off.
+    let bi_password = overslash_env::optional("OVERSLASH_BI_DB_PASSWORD")
+        .map(|raw| overslash_db::bi::BiPassword::parse(&raw).unwrap_or_else(|e| panic!("{e}")));
+    overslash_db::bi::reconcile_bi_user(&db, bi_password.as_ref()).await;
 
     // Resolve Stripe price IDs from lookup keys at startup so a misconfigured
     // billing deploy fails fast (not at first checkout). Skip when billing is
@@ -185,6 +190,8 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
     let (resolve_cache, in_memory_resolve_cache) =
         services::resolve_cache::create_resolve_cache(&config).await;
 
+    let session_cache = services::user_sessions::cache::create_session_cache(&config).await;
+
     let (embedder, embeddings_available) = init_embeddings(&db).await;
 
     // Parse the egress allow-list now, so "your outbound reach is wider than
@@ -215,6 +222,7 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
         mailer,
         event_bus: event_bus.clone(),
         resolve_cache,
+        session_cache,
         test_resources: None,
         background_db: Some(background_db.clone()),
     };
@@ -245,6 +253,7 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
         let elicit_reap_after = state.config.mcp_elicitation_reap_after_secs();
         let elicit_retention = state.config.mcp_elicitation_retention_secs();
         let setup_draft_retention = state.config.setup_draft_retention_secs();
+        let sessions_db = db.clone();
         tokio::spawn(async move {
             // Approval expiry loop: expire stale pending approvals every 60s
             loop {
@@ -321,6 +330,15 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
                     tracing::info!("Purged {n} archived sub-agent identities")
                 })
                 .await;
+                instrumented_step(
+                    "user_session_purge",
+                    overslash_db::repos::user_session::purge_stale(
+                        &sessions_db,
+                        services::user_sessions::RETENTION_SECS,
+                    ),
+                    |n| tracing::info!("Purged {n} ended dashboard sessions"),
+                )
+                .await;
                 // Service instances whose setup nobody finished. Same kind of
                 // sweep as the two above — delete a row whose owner never came
                 // back — and the window is derived from the longest setup link
@@ -379,6 +397,14 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
                     |n| tracing::info!("Expired {n} upload_tokens"),
                 )
                 .await;
+                // Staged bytes and unredeemed reservations alike. A row a
+                // pending approval pinned outlives its TTL until the pin lapses.
+                instrumented_step(
+                    "staged_upload_expiry",
+                    async { overslash_db::repos::staged_upload::prune_expired(&db).await },
+                    |n| tracing::info!("Expired {n} staged_uploads"),
+                )
+                .await;
                 // Stored results for truncated compact renders (D61). Ordering
                 // against the sweep above is irrelevant: the FK from
                 // `download_tokens.call_result_id` cascades, so pruning a
@@ -419,6 +445,16 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
                     |n| tracing::info!("Purged {n} stale MCP elicitations"),
                 )
                 .await;
+                // URL-mode answers: read only while the stream that opened
+                // them is alive, which the same poll ceiling bounds.
+                instrumented_step(
+                    "mcp_url_elicitation_purge",
+                    async {
+                        overslash_db::repos::mcp_url_elicitation::purge(&db, elicit_retention).await
+                    },
+                    |n| tracing::info!("Purged {n} stale MCP URL elicitations"),
+                )
+                .await;
             }
         });
 
@@ -436,6 +472,15 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
             state.mailer.clone(),
             state.config.public_url.clone(),
         ));
+
+        // Google Workspace Directory group sync: the periodic sweep and the
+        // "Sync now" queue. Replicas share work through row leases on
+        // `org_google_directory_configs`. See services::google_directory_worker.
+        {
+            let mut worker_state = state.clone();
+            worker_state.db = background_db.clone();
+            tokio::spawn(services::google_directory_worker::spawn_loop(worker_state));
+        }
 
         // Rate limit eviction loop. The config/billing caches always need
         // eviction — their resolve paths only check TTL on read, so stale
@@ -569,6 +614,8 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
         .merge(routes::org_oauth_credentials::router())
         .merge(routes::org_service_keys::router())
         .merge(routes::groups::router())
+        .merge(routes::directory_groups::router())
+        .merge(routes::google_directory::router())
         .merge(routes::rate_limits::router())
         .merge(billing_api_routes)
         .layer(axum::middleware::from_fn_with_state(
@@ -617,11 +664,7 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
 
     // MCP transport + OAuth handshake. `cors_mcp` is wider (allows the
     // Inspector origin); the layer is attached to this subrouter only.
-    let mcp_oauth_routes = Router::new()
-        .merge(routes::oauth_as::router())
-        .merge(routes::oauth::router())
-        .merge(routes::mcp::router())
-        .layer(cors_mcp);
+    let mcp_oauth_routes = mcp_oauth_routes(&state).layer(cors_mcp);
 
     // Everything else gets `cors_global`, scoped via a sibling subrouter
     // so the two CORS layers don't compose (an outer cors_global would
@@ -668,6 +711,12 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
     let app = Router::new()
         .merge(mcp_oauth_routes)
         .merge(global_routes)
+        // Inside the subdomain layer: a dead session cookie is gone from the
+        // request before any extractor, limiter or handler reads it.
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            middleware::session_gate::session_gate,
+        ))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             middleware::subdomain::subdomain_middleware,
@@ -699,6 +748,23 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
         );
 
     Ok(app)
+}
+
+/// The MCP transport and the OAuth handshake around it, behind their own
+/// throttle (`middleware::ingress_rate_limit`): per client IP on `/oauth/*`,
+/// a stricter per-IP cap on Dynamic Client Registration, per MCP client on
+/// `/mcp`. Outside the `/v1` rate-limit layer, which keys on credentials most
+/// of these requests do not have yet. `pub` so the test harness mounts the
+/// same throttled subrouter production does.
+pub fn mcp_oauth_routes(state: &AppState) -> Router<AppState> {
+    Router::new()
+        .merge(routes::oauth_as::router())
+        .merge(routes::oauth::router())
+        .merge(routes::mcp::router())
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            middleware::ingress_rate_limit::ingress_rate_limit_middleware,
+        ))
 }
 
 /// Parse a comma-separated CORS origin spec into a tower-http `AllowOrigin`.

@@ -104,6 +104,7 @@ fn mint_session_for(signing_key: &[u8], org_id: Uuid, identity_id: Uuid, user_id
         exp: now + 3600,
         user_id: Some(user_id),
         mcp_client_id: None,
+        jti: None,
     };
     jwt::mint(signing_key, &claims).unwrap()
 }

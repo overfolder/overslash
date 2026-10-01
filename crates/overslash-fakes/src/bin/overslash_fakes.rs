@@ -20,6 +20,7 @@ use serde_json::{Value, json};
 use std::path::PathBuf;
 
 use overslash_fakes::{
+    google_directory,
     idp::{self, IdpProfile, IdpVariant},
     mcp, oauth, openapi,
     scenarios::McpVariant,
@@ -79,6 +80,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .await;
     let okta = idp::boot(IdpVariant::Okta, IdpProfile::okta_default(), &cli.bind_host).await;
 
+    // Google Workspace Directory (Admin SDK + the JWT-bearer token endpoint).
+    // The harness routes `oauth2.googleapis.com` and `admin.googleapis.com`
+    // here through `OVERSLASH_SERVICE_BASE_OVERRIDES`.
+    let (_google_directory_server, google_directory) = google_directory::start(&bind(0)).await;
+
     // One MCP fake per variant, all running concurrently. Selecting which
     // shape a given test exercises is then just a matter of picking the
     // matching URL from the state file — no harness restart needed.
@@ -117,6 +123,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "mcp_variant": selected_variant_key,
         "mcp_variants": Value::Object(mcp_variants),
         "stripe": stripe.handle.url,
+        "google_directory": google_directory.url,
         "auth0": {
             "tenant_url": auth0.issuer_url,
             "discovery_url": auth0.discovery_url,

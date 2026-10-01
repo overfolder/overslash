@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT ig.identity_id AS \"identity_id!\"\n         FROM effective_identity_groups ig\n         JOIN groups g ON g.id = ig.group_id\n         WHERE ig.group_id = $1 AND g.org_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "identity_id!",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "effective_identity_groups",
+            "name": "identity_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "0a31bd1ab29451417d5ef03f3f968f05e58330baf06beba00c439e27a1ae9005"
+}

@@ -90,6 +90,20 @@ pub fn load_config(host: String, port: u16) -> Config {
     if !overslash_env::is_set("PUBLIC_URL") {
         config.public_url = default_public_url(&config.host, config.port);
     }
+    if config.trusted_proxies.is_configured() {
+        tracing::info!(
+            policy = %config.trusted_proxies.summary(),
+            "client IP: X-Forwarded-For read right-to-left past the trusted proxies",
+        );
+    } else if config.deployment_env.is_prod() {
+        // Safe (the socket peer is used) but almost certainly not intended:
+        // behind a proxy, every audit row and per-IP throttle sees the proxy.
+        tracing::warn!(
+            "no trusted proxy configured: X-Forwarded-For is ignored and the socket peer is \
+             the client IP. Set OVERSLASH_TRUSTED_PROXY_HOPS / OVERSLASH_TRUSTED_PROXIES \
+             (see infra/README.md)."
+        );
+    }
     if !config.service_base_overrides.is_empty() {
         let mut entries: Vec<_> = config
             .service_base_overrides

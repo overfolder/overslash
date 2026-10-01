@@ -17,7 +17,7 @@ use super::ext::{self, Ext, Pos};
 use super::extract;
 use super::extract::{
     extract_auth, extract_hosts, extract_http_action, extract_mcp_actions, extract_mcp_spec,
-    extract_platform_action, parse_additional_properties, parse_timeout_ms,
+    extract_platform_action, parse_additional_properties, parse_promoted, parse_timeout_ms,
 };
 
 /// Lower a normalized OpenAPI document into a [`ServiceDefinition`].
@@ -137,6 +137,15 @@ pub fn compile_service(
     .unwrap_or(false);
 
     let hosts = extract_hosts(root.get("servers"));
+    // Read off `servers[0]` only: that is the entry `default_base_url` shows,
+    // so it is the one whose prominence the flag describes.
+    let url_promoted = parse_promoted(
+        root.get("servers")
+            .and_then(Value::as_array)
+            .and_then(|s| s.first())
+            .and_then(Value::as_object),
+        Pos::Server,
+    );
 
     let creds = match extract_auth(root.get("components")) {
         Ok(c) => c,
@@ -315,6 +324,7 @@ pub fn compile_service(
             display_name,
             description,
             hosts,
+            url_promoted,
             category,
             hidden,
             icon,

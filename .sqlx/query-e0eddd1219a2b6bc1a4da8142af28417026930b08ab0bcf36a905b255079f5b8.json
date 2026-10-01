@@ -1,0 +1,246 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE org_google_directory_configs SET\n             enabled = COALESCE($2, enabled),\n             sync_interval_hours = COALESCE($3, sync_interval_hours),\n             updated_at = now()\n         WHERE org_id = $1\n         RETURNING org_id, admin_subject, customer_id, domain, connected_by_identity_id,\n                   connected_at, enabled, sync_interval_hours, next_sync_at, sync_requested_at,\n                   lease_owner, lease_expires_at, last_sync_started_at, last_sync_finished_at,\n                   last_sync_status, last_sync_error, last_sync_stats, created_at, updated_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "org_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "org_google_directory_configs",
+            "name": "org_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "admin_subject",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "org_google_directory_configs",
+            "name": "admin_subject"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "customer_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "org_google_directory_configs",
+            "name": "customer_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "domain",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "org_google_directory_configs",
+            "name": "domain"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "connected_by_identity_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "org_google_directory_configs",
+            "name": "connected_by_identity_id"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "connected_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "org_google_directory_configs",
+            "name": "connected_at"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "enabled",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "org_google_directory_configs",
+            "name": "enabled"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "sync_interval_hours",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "org_google_directory_configs",
+            "name": "sync_interval_hours"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "next_sync_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "org_google_directory_configs",
+            "name": "next_sync_at"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "sync_requested_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "org_google_directory_configs",
+            "name": "sync_requested_at"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "lease_owner",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "org_google_directory_configs",
+            "name": "lease_owner"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "lease_expires_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "org_google_directory_configs",
+            "name": "lease_expires_at"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "last_sync_started_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "org_google_directory_configs",
+            "name": "last_sync_started_at"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "last_sync_finished_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "org_google_directory_configs",
+            "name": "last_sync_finished_at"
+          }
+        }
+      },
+      {
+        "ordinal": 14,
+        "name": "last_sync_status",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "org_google_directory_configs",
+            "name": "last_sync_status"
+          }
+        }
+      },
+      {
+        "ordinal": 15,
+        "name": "last_sync_error",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "org_google_directory_configs",
+            "name": "last_sync_error"
+          }
+        }
+      },
+      {
+        "ordinal": 16,
+        "name": "last_sync_stats",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "org_google_directory_configs",
+            "name": "last_sync_stats"
+          }
+        }
+      },
+      {
+        "ordinal": 17,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "org_google_directory_configs",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 18,
+        "name": "updated_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "org_google_directory_configs",
+            "name": "updated_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Bool",
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "e0eddd1219a2b6bc1a4da8142af28417026930b08ab0bcf36a905b255079f5b8"
+}

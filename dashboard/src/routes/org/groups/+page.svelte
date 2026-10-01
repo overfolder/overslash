@@ -3,9 +3,18 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/stores';
 	import { ApiError } from '$lib/session';
-	import { groupsApi, identitiesApi, type Group, type Identity } from '$lib/api/groups';
+	import {
+		groupsApi,
+		directoryGroupsApi,
+		directorySourceLabel,
+		identitiesApi,
+		type Group,
+		type DirectoryGroupSummary,
+		type Identity
+	} from '$lib/api/groups';
 	import { shortEmail } from '$lib/identityDisplay';
 	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
+	import PillPicker from '$lib/components/PillPicker.svelte';
 
 	type Row = Group & { memberCount: number; grantCount: number };
 
@@ -22,6 +31,25 @@
 
 	let deleteTarget = $state<Group | null>(null);
 	let deleteBusy = $state(false);
+
+	let directoryGroups = $state<DirectoryGroupSummary[]>([]);
+	let mapBusy = $state<string | null>(null);
+	let mapError = $state<string | null>(null);
+
+	const groupName = $derived(new Map(rows.map((r) => [r.id, r.name])));
+	/** Groups an admin may map onto — system groups are refused by the API. */
+	const mappableOptions = $derived(
+		rows
+			.filter((r) => !r.is_system)
+			.map((r) => ({ id: r.id, label: r.name, hint: r.description || undefined }))
+	);
+
+	function mappedPills(d: DirectoryGroupSummary) {
+		return d.mapped_group_ids.map((gid) => ({
+			id: gid,
+			label: groupName.get(gid) ?? gid.slice(0, 8)
+		}));
+	}
 
 	const currentUserId = $derived(($page as any).data?.user?.identity_id as string | undefined);
 	const allowedDomains = $derived((($page as any).data?.allowedDomains ?? []) as string[]);
@@ -70,11 +98,15 @@
 			// `list()` (no include_self) now returns the caller's own Myself row
 			// alongside non-self groups; the backend hides other users' Myself
 			// unless `?include_self=true`. See SPEC §7 *Myself groups*.
-			const [groups, idents] = await Promise.all([
+			const [groups, idents, directory] = await Promise.all([
 				groupsApi.list(),
-				identitiesApi.list().catch(() => [] as Identity[])
+				identitiesApi.list().catch(() => [] as Identity[]),
+				// Empty for every org that has not turned group sync on, which
+				// is the default — the section below then stays hidden.
+				directoryGroupsApi.list().catch(() => [] as DirectoryGroupSummary[])
 			]);
 			identities = idents;
+			directoryGroups = directory;
 			const enriched = await Promise.all(
 				groups.map(async (g) => {
 					const [grants, members] = await Promise.all([
@@ -128,6 +160,34 @@
 			}
 		} finally {
 			createBusy = false;
+		}
+	}
+
+	async function mapTo(directoryGroupId: string, groupId: string) {
+		if (!groupId) return;
+		mapBusy = directoryGroupId;
+		mapError = null;
+		try {
+			await groupsApi.addDirectorySource(groupId, directoryGroupId);
+			await load();
+		} catch (e) {
+			mapError =
+				e instanceof ApiError ? `Could not map: ${e.status}` : 'Could not map directory group';
+		} finally {
+			mapBusy = null;
+		}
+	}
+
+	async function unmap(directoryGroupId: string, groupId: string) {
+		mapBusy = directoryGroupId;
+		mapError = null;
+		try {
+			await groupsApi.removeDirectorySource(groupId, directoryGroupId);
+			await load();
+		} catch (e) {
+			mapError = e instanceof ApiError ? `Could not unmap: ${e.status}` : 'Could not unmap';
+		} finally {
+			mapBusy = null;
 		}
 	}
 
@@ -201,6 +261,59 @@
 			</tbody>
 		</table>
 	{/if}
+
+	{#if directoryGroups.length > 0}
+		<section class="directory" id="directory-groups">
+			<header class="section-header">
+				<h2>Directory groups</h2>
+				<p class="subtitle">
+					Groups your identity provider reports at sign-in, or that sync from Google Workspace.
+					They grant nothing on their own — map one onto a group above to give its members that
+					group's access.
+				</p>
+			</header>
+
+			{#if mapError}<div class="state error">{mapError}</div>{/if}
+
+			<table class="table">
+				<thead>
+					<tr>
+						<th>Group</th>
+						<th class="num">Members</th>
+						<th>Grants access through</th>
+					</tr>
+				</thead>
+				<tbody>
+					{#each directoryGroups as d (d.id)}
+						<tr>
+							<td>
+								<a href="/org/directory-groups/{d.id}" class="name-link">{d.display_name}</a>
+								{#if d.source === 'google_directory'}
+									<span class="source-tag">{directorySourceLabel(d.source)}</span>
+								{:else if d.display_name !== d.external_id}
+									<span class="muted mono">{d.external_id}</span>
+								{/if}
+							</td>
+							<td class="num">{d.member_count}</td>
+							<td>
+								<PillPicker
+									selected={mappedPills(d)}
+									options={mappableOptions}
+									busy={mapBusy === d.id}
+									placeholder="Search groups…"
+									addLabel="Map {d.display_name} to a group"
+									emptyText="Not mapped — grants nothing"
+									noOptionsText="No groups to map onto"
+									onAdd={(gid) => mapTo(d.id, gid)}
+									onRemove={(gid) => unmap(d.id, gid)}
+								/>
+							</td>
+						</tr>
+					{/each}
+				</tbody>
+			</table>
+		</section>
+	{/if}
 </div>
 
 {#if showCreate}
@@ -240,6 +353,25 @@
 />
 
 <style>
+	.directory {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-4);
+	}
+	.section-header h2 {
+		margin: 0;
+		font: var(--text-h3);
+		color: var(--color-text-heading);
+	}
+	.section-header .subtitle {
+		margin: var(--space-1) 0 0;
+		max-width: 70ch;
+	}
+	.mono {
+		font-family: var(--font-mono);
+		font: var(--text-body-sm);
+		margin-left: var(--space-2);
+	}
 	.page {
 		max-width: 1100px;
 		display: flex;
@@ -414,5 +546,17 @@
 		background: rgba(230, 56, 54, 0.06);
 		color: var(--color-danger);
 		font: var(--text-body-sm);
+	}
+	.source-tag {
+		display: inline-block;
+		margin-left: 0.4rem;
+		padding: 0.05rem 0.4rem;
+		border-radius: 4px;
+		font-size: 0.7rem;
+		font-weight: 600;
+		letter-spacing: 0.02em;
+		background: var(--color-bg);
+		border: 1px solid var(--color-border);
+		color: var(--color-text-muted);
 	}
 </style>

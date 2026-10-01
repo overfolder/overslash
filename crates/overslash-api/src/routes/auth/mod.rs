@@ -17,7 +17,7 @@ use crate::{
     AppState, cookies,
     error::AppError,
     extractors::{ClientIp, ReqExt},
-    services::{jwt, oauth, org_signin},
+    services::{jwt, oauth, org_signin, user_sessions},
 };
 use base64::Engine as _;
 use overslash_db::repos::audit::AuditEntry;
@@ -35,13 +35,16 @@ const PREVIEW_ORIGIN_TTL_SECS: i64 = 600;
 /// the redirect URL is ever logged or intercepted.
 const PREVIEW_HANDOFF_CODE_TTL_SECS: i64 = 60;
 
+mod account_sessions;
 mod dev_token;
+pub(crate) mod google_directory_connect;
 mod magic_link;
 mod providers;
 mod provisioning;
 mod session;
 mod userinfo;
 
+use account_sessions::{list_sessions, revoke_other_sessions, revoke_session};
 use dev_token::dev_token;
 use magic_link::{request_magic_link, verify_magic_link};
 use providers::{
@@ -89,6 +92,16 @@ pub fn router() -> Router<AppState> {
             "/v1/account/email-preferences",
             get(get_email_preferences).put(put_email_preferences),
         )
+        // Server-side sessions: list, end one, end all others (CASA 2.2.2).
+        .route("/v1/account/sessions", get(list_sessions))
+        .route(
+            "/v1/account/sessions/revoke-others",
+            post(revoke_other_sessions),
+        )
+        .route(
+            "/v1/account/sessions/{id}",
+            axum::routing::delete(revoke_session),
+        )
 }
 
 // ---------------------------------------------------------------------------
@@ -101,6 +114,14 @@ struct NormalizedUserInfo {
     email: String,
     name: Option<String>,
     picture: Option<String>,
+    /// Every other claim the IdP returned, merged from `/userinfo` and the ID
+    /// token. The four fields above are what Overslash has always understood;
+    /// this is what an org's *own* IdP additionally asserts, and the only
+    /// consumer today is directory group sync, which reads one admin-named key
+    /// out of it. Empty for providers that assert nothing extra (GitHub, magic
+    /// link) — and an empty bag means "no claim", which is why sync treats it
+    /// as "change nothing" rather than "member of nothing".
+    claims: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Absolute URL for `path` on a corp org's dashboard host,

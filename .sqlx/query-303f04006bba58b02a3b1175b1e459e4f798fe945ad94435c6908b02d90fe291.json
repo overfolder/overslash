@@ -1,0 +1,126 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT dg.id, dg.org_id, dg.idp_config_id, dg.source, dg.external_id,\n                  dg.display_name, dg.first_seen_at, dg.last_seen_at,\n                  (SELECT count(*) FROM identity_directory_groups idg\n                    WHERE idg.directory_group_id = dg.id) AS \"member_count!\",\n                  COALESCE(\n                      (SELECT array_agg(gds.group_id)\n                         FROM group_directory_sources gds\n                        WHERE gds.directory_group_id = dg.id),\n                      '{}'\n                  ) AS \"mapped_group_ids!\"\n             FROM directory_groups dg\n            WHERE dg.org_id = $1\n            ORDER BY dg.display_name",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "directory_groups",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "org_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "directory_groups",
+            "name": "org_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "idp_config_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "directory_groups",
+            "name": "idp_config_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "source",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "directory_groups",
+            "name": "source"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "external_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "directory_groups",
+            "name": "external_id"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "display_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "directory_groups",
+            "name": "display_name"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "first_seen_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "directory_groups",
+            "name": "first_seen_at"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "last_seen_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "directory_groups",
+            "name": "last_seen_at"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "member_count!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 9,
+        "name": "mapped_group_ids!",
+        "type_info": "UuidArray",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      null,
+      null
+    ]
+  },
+  "hash": "303f04006bba58b02a3b1175b1e459e4f798fe945ad94435c6908b02d90fe291"
+}

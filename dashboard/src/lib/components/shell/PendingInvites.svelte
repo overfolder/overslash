@@ -226,7 +226,7 @@
 	.signin:hover {
 		text-decoration: underline;
 	}
-	/* Collapsed rail: 64px leaves no room for org names, so show the count
+	/* Collapsed rail: 76px leaves no room for org names, so show the count
 	   and expand the sidebar on click rather than opening a popover. */
 	.rail {
 		display: flex;

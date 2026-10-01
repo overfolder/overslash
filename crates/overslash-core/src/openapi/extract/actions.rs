@@ -11,8 +11,8 @@ use super::super::ext::{self, Ext, Pos};
 use super::params::{collect_body_parameters, collect_parameters, parse_request_body};
 use super::{
     parse_additional_properties, parse_aliases, parse_disclose, parse_instance_config,
-    parse_pagination, parse_redact, parse_scope_params, parse_sql_policy, parse_test,
-    parse_timeout_ms, parse_wait_mode,
+    parse_pagination, parse_promoted, parse_redact, parse_scope_params, parse_sql_policy,
+    parse_test, parse_timeout_ms, parse_wait_mode,
 };
 
 // ── paths.*.* → ServiceAction ────────────────────────────────────────
@@ -306,6 +306,7 @@ fn parse_platform_params(raw: &Map<String, Value>, _base: &str) -> HashMap<Strin
                 .to_string();
             let aliases = parse_aliases(Some(obj), name, Pos::PlatformActionParam);
             let instance_config = parse_instance_config(Some(obj), Pos::PlatformActionParam);
+            let promoted = parse_promoted(Some(obj), Pos::PlatformActionParam);
             let (sql_field, sql_database) = parse_sql_policy(Some(obj), Pos::PlatformActionParam);
             Some((
                 name.clone(),
@@ -319,6 +320,7 @@ fn parse_platform_params(raw: &Map<String, Value>, _base: &str) -> HashMap<Strin
                     aliases,
                     location: ParamLocation::Body,
                     instance_config,
+                    promoted,
                     sql_field,
                     sql_database,
                     // A platform action's params are declared as a flat
@@ -326,6 +328,9 @@ fn parse_platform_params(raw: &Map<String, Value>, _base: &str) -> HashMap<Strin
                     // a media type or a sub-shape from.
                     content_media_type: None,
                     shape: None,
+                    // Inlined into an outgoing JSON body; a platform action
+                    // sends none.
+                    staged_upload: None,
                 },
             ))
         })

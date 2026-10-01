@@ -13,7 +13,7 @@ await setAuditResponseBodyMode(session, 'errors_only');
 const snap = await makeSnapper(session);
 
 try {
-	const { page, ctx } = await snap.navigateAndSnap('org-audit-settings-page', '/org', {
+	const { page, ctx } = await snap.navigateAndSnap('org-audit-settings-page', '/org/audit', {
 		viewport: { width: 1400, height: 1000 },
 		fullPage: false,
 		waitFor: async (p) => {

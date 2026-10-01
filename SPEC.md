@@ -194,6 +194,10 @@ Users authenticate to Overslash via external Identity Providers (IdPs). Overslas
     - *Invite-required* (`require_invite_admission = true`, the default): every new member must already exist as a pre-created user identity for that email (an invite, or an impersonation-provisioned member) — regardless of which IdP authenticates them. First sign-in adopts that identity by email. Membership crossing trust domains is blocked unless the admin explicitly invites the email.
     - *Domain-allowlist* (`require_invite_admission = false`): any verified email whose domain is on the org-wide `orgs.managed_signin_allowed_domains` list self-provisions as `member` on first login, no invite needed. An **empty** allowlist here is a misconfiguration, not "admit everyone" — sign-in is rejected. This is distinct from the per-provider `org_idp_configs.allowed_email_domains` used by the domain-whitelist path above; the managed list is org-wide because the managed path admits through multiple env-var providers sharing one trust boundary (the operator's env creds).
 
+**Group provisioning from a directory.** An org's own IdP may also assert *which groups a human belongs to*, refreshed at every sign-in. Opt-in per IdP config via `org_idp_configs.group_sync_enabled` (default off) and `group_claim` (default `groups`; Auth0 needs a namespaced claim). Each claim value becomes a **directory group** — a row in `directory_groups`, not in `groups`. A directory group carries no grants and confers nothing on its own; an admin maps it onto a real group via `group_directory_sources`, and only then do its members inherit that group's ceiling. Membership in `identity_directory_groups` is owned by sync and reconciled to match the claim exactly, so leaving a group upstream revokes on next sign-in — but sync never writes `identity_groups`, so a manual assignment is untouchable from this path.
+
+Four rules bound it. Sync runs only off an enabled per-org `org_idp_configs` row, never Overslash-managed sign-in — a claim from the operator's shared OAuth app says nothing about this org (D12). An **absent** claim changes nothing while a **present but empty** one revokes, so an upstream claim rename cannot silently strip an org's access. System groups (Everyone, Admins, any Myself) refuse a directory source, so an IdP claim can never mint an org admin. And only `kind = 'user'` identities are synced; agents inherit their owner's ceiling as always. **Google Workspace** emits no group claim, so a second source pulls from the Admin SDK Directory API with the instance's one delegated service account (`source = 'google_directory'`). An org connects by signing in with Google as a Workspace admin — Google's `hd` fixes which Workspace, unique per instance — after authorising the instance's client ID in admin.google.com: at each sign-in for that user, every `sync_interval_hours` (default 8), and on an admin's *Sync now* (at most one queued). It speaks only about humans whose email is under its configured domains, reads direct membership only, and a listing that fails partway revokes nothing (D110). SCIM is not built; it will write the same tables under its own `source`. See [docs/design/directory-group-sync.md](docs/design/directory-group-sync.md) and D107.
+
 **No cross-IdP account linking.** A human who uses Google for personal and Okta for Acme has two distinct `users` rows. This is intentional: Google and Okta are different trust domains and the system treats them as such. See [docs/design/multi_org_auth.md](docs/design/multi_org_auth.md).
 
 ### Hierarchy
@@ -385,6 +389,8 @@ Raw HTTP access goes through the system-managed `http` service instance (one per
 - *Display name.* The DB-stored name `Myself: <label> (<uuid8>)` is an internal disambiguator for the `(org_id, name)` unique constraint (two users may share an email per migration 043). Clients render the group as **"Myself"** in the caller's own context. Admin audit views may disambiguate as **"Myself (email)"**, falling back to **"Myself (email, id8)"** only on email collision. API consumers detect Myself via `system_kind === 'self'`, never by parsing the name.
 
 There is no separate "user-level service" tier in the permission model. `owner_identity_id` survives as a namespace marker (so alice's `github` shadows the org `github` in her own resolution — see §9 *Services (Instances)*) and as a provenance bit, but every permission decision flows through the same `group_grants` ceiling. Org admins can additionally grant any service — including ones owned by individual users — to other groups, making admin-driven sharing first-class.
+
+**Directory groups are not a group class.** A group an external directory reports lives in `directory_groups`, alongside `groups` rather than inside it, because it is a membership source and not a ceiling — see §4 *Group provisioning from a directory*. Effective Layer 1 membership is the `effective_identity_groups` view: `identity_groups` plus one hop through `group_directory_sources`. Exactly one hop — directory groups do not nest — so the ceiling query stays a flat join. Every membership read (ceiling, service visibility, service-name resolution, group listing, member listing and count) goes through that view; `is_identity_in_admins` deliberately does not, since Admins is not a mappable target.
 
 There is no permissive default. After the Myself migration, every bootstrapped user identity belongs to at least the Everyone and Myself system groups, and Everyone always carries the `overslash:write` grant from org bootstrap, so `ceiling.grants` is never empty in practice and the ceiling is always enforced. The `NoGroups` permissive branch survives only as a safety net for org-level keys with no identity at all.
 
@@ -918,7 +924,7 @@ Templates live in a three-tier registry:
 
 **Org-admin visibility**: Org-admins can see all templates in the org (global + org + user-created) in a read-only list for security/compliance — they need to know what external APIs their users are connecting to.
 
-**Layers (`extends`/`delta`).** Each org/user template row is a **layer**. A **standalone** layer (`extends` NULL) holds a full OpenAPI doc (the classic org/user template). A **derived** layer (`extends` set) holds a *delta* over a base template named by `extends` (resolved by key: DB rows then the global registry), and its effective template is the **fold** `resolve(layer) = apply(delta, resolve(extends))`. The delta's **masks** are restrictive and order-independent — action `allowlist` (∩) / `denylist` (\), per-action `risk` clamp-**up**-only, additive `disclose`, relabel, template `hidden` — so `resolve(child) ⊆ resolve(base)` (a child can never re-expose what a parent hid); its **extensions** add new actions/hosts only (no auth, no rebinding). An **org** layer may additionally carry `instance_defaults` — non-secret presets (endpoint `url` + `x-overslash-instance-config` values) that every service instance created from the layer inherits unless it sets its own, so an org running its own deployment (its overfwd Mailbox Gateway, its self-hosted MCP server) names it once instead of on every user's instance. `extends` is a **live pointer**: editing a base (or Overslash shipping a new global version) propagates to every descendant immediately. `extends` and the layer's own `key` are decoupled — reusing the base key shadows it (curation that agents get transparently), a distinct key is a separate catalog entry alongside the base. Discovery, instantiation, and **execution** all resolve through the fold, so a masked-out action is unreachable everywhere. See [DECISIONS.md D29](DECISIONS.md) and [docs/design/layered-service-templates.md](docs/design/layered-service-templates.md).
+**Layers (`extends`/`delta`).** Each org/user template row is a **layer**. A **standalone** layer (`extends` NULL) holds a full OpenAPI doc (the classic org/user template). A **derived** layer (`extends` set) holds a *delta* over a base template named by `extends` (resolved by key: DB rows then the global registry), and its effective template is the **fold** `resolve(layer) = apply(delta, resolve(extends))`. The delta's **masks** are restrictive and order-independent — action `allowlist` (∩) / `denylist` (\), per-action `risk` clamp-**up**-only, additive `disclose`, relabel, template `hidden` — so `resolve(child) ⊆ resolve(base)` (a child can never re-expose what a parent hid); its **extensions** add new actions/hosts only (no auth, no rebinding). An **org** layer may additionally carry `instance_defaults` — non-secret presets (endpoint `url` + `x-overslash-instance-config` values) that every service instance created from the layer inherits unless it sets its own (every template's endpoint is overridable per instance; `x-overslash-promoted` on `servers[0]` or on a config field only decides whether the instance form shows it up front or behind "Show more options"), so an org running its own deployment (its overfwd Mailbox Gateway, its self-hosted MCP server) names it once instead of on every user's instance. `extends` is a **live pointer**: editing a base (or Overslash shipping a new global version) propagates to every descendant immediately. `extends` and the layer's own `key` are decoupled — reusing the base key shadows it (curation that agents get transparently), a distinct key is a separate catalog entry alongside the base. Discovery, instantiation, and **execution** all resolve through the fold, so a masked-out action is unreachable everywhere. See [DECISIONS.md D29](DECISIONS.md) and [docs/design/layered-service-templates.md](docs/design/layered-service-templates.md).
 
 ### Template Definition
 
@@ -1783,6 +1789,33 @@ The User bucket limit is resolved in priority order:
 Identity caps are per-identity only — no inheritance.
 
 Configured by org admins via `PUT /GET /DELETE /v1/rate-limits`.
+
+### Who is charged
+
+The middleware charges the principal the auth extractors resolve, in the same order (session cookie, then bearer):
+
+- **`osk_` API key** and **MCP access token** — the owner-user bucket plus that identity's cap. An MCP tool call reaches `/v1` as a loopback request carrying the client's own bearer, so it is counted there, once.
+- **Dashboard session** — a bucket of its own per identity, sized by the same resolution chain, with no identity cap. A runaway agent draining the shared user bucket cannot lock its owner out of the dashboard.
+- A credential that does not verify is not charged; the route's extractor rejects it.
+
+### MCP transport and OAuth handshake
+
+The `/oauth/*`, `/.well-known/oauth-*` and `/mcp` routes sit outside the `/v1` layer, behind their own. These limits are instance-wide, not per org, because most of the traffic arrives before the caller has proven an org:
+
+| Env var (`…_RATE_LIMIT` / `…_RATE_WINDOW_SECS`) | Keyed on | Default |
+|---|---|---|
+| `OAUTH_` | Client IP, across the handshake and unauthenticated `/mcp` | 120 / 60s |
+| `OAUTH_REGISTER_` | Client IP, `POST /oauth/register` only (on top of the above) | 20 / 3600s |
+| `MCP_` | MCP client (identity for an `osk_` key or a session) on `/mcp` | 600 / 60s |
+
+The client IP is `ClientIp`, resolved against the trusted-proxy configuration. `0` disables a limit, and a value that doesn't parse stops the boot.
+
+Every per-IP throttle — these, and the in-handler magic-link, download and upload buckets — keys an IPv6 client on its **/64**, since one subscriber can source from any address in it; an IPv4-mapped address counts as its IPv4 address. Audit rows keep the full address.
+
+### Observability
+
+- **Metric**: `overslash_rate_limit_decisions_total{scope, decision}` counts every check, including every deny. `scope` names the limiter (`user`, `session`, `identity_cap`, `org`, `mcp_client`, `oauth_ip`, `oauth_register_ip`, `magic_link_ip`, `download_ip`, `upload_ip`); it carries no org or IP label, which would be unbounded.
+- **Log**: one `warn` per bucket per window — the request that takes the bucket over its limit (`count == max + 1`, exactly one request even across instances, since Valkey's `INCR` is atomic) — naming the bucket key, and so the org/identity/MCP client or IP. Later denies in the window are not logged. A fleet-wide budget of 60 such lines a minute caps the total however many buckets an attacker can mint; a line dropped for budget increments `overslash_rate_limit_deny_log_suppressed_total{scope}` instead.
 
 ### Behavior
 

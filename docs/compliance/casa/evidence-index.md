@@ -17,7 +17,7 @@ snippets and the policies, because those are the parts it cannot test for. Assum
 
 | For | Statement | Status | Source |
 |-----|-----------|--------|--------|
-| 1.1.1 | The list of external authentication services (Google, GitHub, per-org OIDC), plus the magic-link anti-automation policy: per-IP 30/600s, per-email 5/900s, opaque response on every outcome | `need` | `routes/auth/magic_link.rs:16-19,76-113` |
+| 1.1.1 | The list of external authentication services (Google, GitHub, per-org OIDC), plus the anti-automation policy: magic link per-IP 30/600s and per-email 5/900s with an opaque response on every outcome; OAuth handshake per-IP 120/60s; Dynamic Client Registration per-IP 20/3600s; every credential (key, MCP token, session) metered on `/v1` | `need` | `routes/auth/magic_link.rs:16-19,76-113`, `middleware/ingress_rate_limit.rs`, `middleware/rate_limit.rs` |
 | 1.1.3 | "No passwords exist." Describe the API-key analogue: Argon2id, 256-bit entropy, prefix-indexed, revocable, expiring | `need` | `routes/api_keys.rs:191-209` |
 | 2.1.1 | Why three capability tokens legitimately appear in URLs, and their compensating properties (single-use / short-TTL, SHA-256 at rest, clean redirect after use) | `need` | `gap-assessment.md` 2.1.1 |
 | 2.3.3 | Why `osk_` API keys coexist with session tokens — programmatic access, not user sessions | `need` | — |
@@ -46,7 +46,7 @@ excerpt, without calling functions or underlying libraries.
 | 2.3.4 | The `aud` split preventing cookie↔bearer replay | `have` | `services/jwt.rs:6-11` |
 | 6.5.1 | `scrub_transport_error` — a strong affirmative artifact, since it declines to log a URL *because* credentials live in the query | `have` | `services/audit_capture.rs:93-118` |
 | 2.3.1 | Cookie construction: one builder, `Secure` + `__Host-`/`__Secure-` on every cookie, prefixed-only reader | `have` | `crates/overslash-api/src/cookies.rs` |
-| 2.2.x | Server-side session lookup | `need` | Lands with the P1 session work |
+| 2.2.x | Server-side session lookup: the per-request gate, revocation on logout / identity change / removal, and the Sessions page | `have` | `middleware/session_gate.rs`; `services/user_sessions/`; `routes/auth/account_sessions.rs`; `tests/user_sessions.rs` |
 | 5.1.5 | `ssrf_guard` denial ranges, `.resolve()` pinning, `Policy::none()` — **and** the call sites proving it is on the execution path | `have` / `need` | `services/ssrf_guard.rs:17-43,121-129`; call sites land with P0 |
 
 ## Screenshots
@@ -73,13 +73,13 @@ what the product actually renders.
 
 | For | Document | Status |
 |-----|----------|--------|
-| 6.7.1 | A documented access-control policy for server-side secrets: who can read what, through which path, and how access is logged and monitored | `need` |
-| 6.7.1 | Evidence that secret access is logged — requires `google_project_iam_audit_config` for Secret Manager Data Access logs plus a sink with locked retention | `need` |
+| 6.7.1 | A documented access-control policy for server-side secrets: who can read what, through which path, and how access is logged and monitored | `have`: [secrets-access-policy.md](secrets-access-policy.md) |
+| 6.7.1 | Evidence that secret access is logged — Secret Manager Data Access logs plus a sink with locked retention | `need` — the config is written (`infra/modules/audit-logging/`); once applied, capture the output of the "Verifying the controls" commands in [secrets-access-policy.md](secrets-access-policy.md): `auditConfigs`, the locked 400-day bucket, and a sample `AccessSecretVersion` entry naming its caller |
 | 6.1.1 | A dependency-update and vulnerability-response policy: scan cadence, severity triage, patch SLA, and the justified-exception process for `rsa` and `paste` | `have`: [dependency-vulnerability-policy.md](dependency-vulnerability-policy.md), with the exceptions as config in `deny.toml` / `osv-scanner.toml` |
 | — | `SECURITY.md` with a vulnerability disclosure policy and a security contact. Not a numbered CASA requirement, but its absence on a public repo hosting a credential vault is the cheapest possible finding to avoid | `have`: [`SECURITY.md`](../../../SECURITY.md) (contact, response and fix SLAs matching [dependency-vulnerability-policy.md](dependency-vulnerability-policy.md), scope, safe harbor) |
 | — | RFC 9116 `security.txt` publishing the same contact | `have`: `https://app.overslash.com/.well-known/security.txt`, from [`dashboard/static/.well-known/security.txt`](../../../dashboard/static/.well-known/security.txt); `Expires` kept current by `scripts/check-security-txt.sh` in the daily Dependency audit |
 | — | Master-key rotation runbook. [TODO.md](../../../TODO.md) marks it done; no file exists in `docs/runbooks/`, and [STATUS.md](../../../STATUS.md) — authoritative per the repo's Rule 1 — lists it as outstanding | `need` |
-| — | DR plan: RTO/RPO, restore procedure, and a recorded restore drill. PITR is configured (`infra/modules/cloud-sql/main.tf:69-78`) but never exercised | `need` |
+| — | DR plan: RTO/RPO, restore procedure, and a recorded restore drill. PITR is configured (`infra/modules/cloud-sql/main.tf:87-96`) but never exercised | `need` |
 
 ## Scan output
 

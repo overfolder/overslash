@@ -176,6 +176,7 @@ mod tests {
             key: key.into(),
             display_name: display.into(),
             description: desc.map(String::from),
+            url_promoted: false,
             hosts: vec![],
             category: None,
             hidden: false,

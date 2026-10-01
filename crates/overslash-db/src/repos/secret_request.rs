@@ -90,6 +90,38 @@ pub async fn mark_fulfilled(pool: &PgPool, id: &str) -> Result<bool, sqlx::Error
     Ok(r.rows_affected() > 0)
 }
 
+/// Record that the recipient pressed Deny. Only an open request can be
+/// declined; returns whether this call recorded it.
+pub async fn mark_declined(pool: &PgPool, id: &str) -> Result<bool, sqlx::Error> {
+    let r = sqlx::query!(
+        "UPDATE secret_requests SET declined_at = now()
+          WHERE id = $1 AND fulfilled_at IS NULL AND declined_at IS NULL",
+        id,
+    )
+    .execute(pool)
+    .await?;
+    Ok(r.rows_affected() > 0)
+}
+
+/// Where a request stands, for URL-mode elicitation waiting on it.
+#[derive(Debug)]
+pub struct RequestProgress {
+    pub org_id: Uuid,
+    pub expires_at: OffsetDateTime,
+    pub fulfilled_at: Option<OffsetDateTime>,
+    pub declined_at: Option<OffsetDateTime>,
+}
+
+pub async fn progress(pool: &PgPool, id: &str) -> Result<Option<RequestProgress>, sqlx::Error> {
+    sqlx::query_as!(
+        RequestProgress,
+        "SELECT org_id, expires_at, fulfilled_at, declined_at FROM secret_requests WHERE id = $1",
+        id,
+    )
+    .fetch_optional(pool)
+    .await
+}
+
 /// Every identity that minted a setup link for this instance.
 ///
 /// "Who is blocked on this service going live." The rows survive fulfilment —

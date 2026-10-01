@@ -2,6 +2,7 @@
 
 use super::provisioning::*;
 use super::*;
+use crate::services::rate_limit::refuse;
 
 // ---------------------------------------------------------------------------
 // Passwordless email magic-link login (root apex)
@@ -73,24 +74,16 @@ pub(super) async fn request_magic_link(
     //   - per-email: stops bombing a victim's inbox (and burning Resend
     //     quota) → handled *silently* below so a 429 can't reveal that a
     //     given address is being targeted.
-    let ip = client_ip.as_deref().unwrap_or("unknown");
+    let key = format!(
+        "ml:req:ip:{}",
+        crate::services::client_ip::rate_limit_subject(client_ip.as_deref())
+    );
     let ip_rl = state
         .rate_limiter(&ext)
-        .check_and_increment(
-            &format!("ml:req:ip:{ip}"),
-            MAGIC_LINK_REQ_IP_MAX,
-            MAGIC_LINK_REQ_IP_WINDOW_SECS,
-        )
+        .check_and_increment(&key, MAGIC_LINK_REQ_IP_MAX, MAGIC_LINK_REQ_IP_WINDOW_SECS)
         .await;
     if !ip_rl.allowed {
-        let retry_after = ip_rl
-            .reset_at
-            .saturating_sub(crate::services::rate_limit::now_unix());
-        return Err(AppError::RateLimited {
-            limit: ip_rl.limit,
-            reset_at: ip_rl.reset_at,
-            retry_after,
-        });
+        return Ok(refuse(state.rate_limiter(&ext), "magic_link_ip", &key, &ip_rl).await);
     }
 
     let Some(email) = normalize_login_email(&body.email) else {
@@ -169,6 +162,7 @@ pub(super) async fn verify_magic_link(
     State(state): State<AppState>,
     ReqExt(ext): ReqExt,
     Query(q): Query<MagicLinkVerifyQuery>,
+    headers: HeaderMap,
 ) -> Result<Response, AppError> {
     if !state.config.magic_link_enabled {
         return Err(AppError::NotFound("magic-link login is disabled".into()));
@@ -188,24 +182,25 @@ pub(super) async fn verify_magic_link(
         email: row.email.clone(),
         name: None,
         picture: None,
+        // A magic link proves control of a mailbox. It is not an IdP making
+        // assertions about group structure, so it carries no claims.
+        claims: serde_json::Map::new(),
     };
     let (org_id, identity_id, user_id, email) =
         find_or_provision_user(&state, &ext, &userinfo, None).await?;
 
-    let jwt_secret = signing_key_bytes(&state.config.signing_key);
-    let now = time::OffsetDateTime::now_utc().unix_timestamp();
-    let claims = jwt::Claims {
-        sub: identity_id,
-        org: org_id,
-        email,
-        aud: jwt::AUD_SESSION.into(),
-        iat: now,
-        exp: now + 7 * 24 * 3600,
-        user_id: Some(user_id),
-        mcp_client_id: None,
-    };
-    let token = jwt::mint(&jwt_secret, &claims)
-        .map_err(|e| AppError::Internal(format!("jwt mint failed: {e}")))?;
+    let token = user_sessions::start(
+        &state,
+        &ext,
+        &headers,
+        user_sessions::Subject {
+            identity_id,
+            org_id,
+            user_id: Some(user_id),
+            email,
+        },
+    )
+    .await?;
 
     let session_cookie = session_cookie(&state, &token)?;
     let mut resp_headers = HeaderMap::new();

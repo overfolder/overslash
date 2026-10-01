@@ -63,8 +63,11 @@
 # `cloud.langfuse.com` is the vendor's own EU cloud and is the right answer for
 # any deployment that does not say otherwise — which is the case D44 reserved a
 # default for. A deployment serving US, JP, HIPAA or a self-hosted Langfuse
-# sets OVERSLASH_TEMPLATE_VAR_LANGFUSE_URL; a single instance is re-pointed by
-# setting `url` on it.
+# sets OVERSLASH_TEMPLATE_VAR_LANGFUSE_URL. A single instance is re-pointed by
+# setting `url` on it, and because the region is a choice most orgs outside
+# the EU have to make, `x-overslash-promoted` puts that field in the instance
+# form's main section, showing this default, rather than under "Show more
+# options".
 openapi: 3.1.0
 info:
   title: Langfuse
@@ -84,6 +87,7 @@ info:
     pair sent as HTTP Basic.
 servers:
   - url: ${LANGFUSE_URL:https://cloud.langfuse.com}
+    x-overslash-promoted: true
 security:
   - project_key: []
 components:

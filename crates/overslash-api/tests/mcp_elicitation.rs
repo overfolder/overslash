@@ -1865,6 +1865,8 @@ fn sweep_windows_are_ordered_and_clear_the_poll_ceiling() {
 fn build_config_shape() -> overslash_api::config::Config {
     overslash_api::config::Config {
         async_execution: Default::default(),
+        google_directory: Default::default(),
+        staged_uploads: Default::default(),
         call_stream_idle_timeout_ms: 30_000,
         call_timeout_max_ms: 110_000,
         call_timeout_ms: 30_000,
@@ -1913,6 +1915,7 @@ fn build_config_shape() -> overslash_api::config::Config {
         resolve_cache_namespace: None,
         default_rate_limit: 10000,
         default_rate_window_secs: 60,
+        ingress_rate_limits: overslash_api::config::IngressRateLimits::disabled(),
         allow_org_creation: true,
         trial_default_duration_days: 30,
         single_org_mode: None,
@@ -1938,6 +1941,7 @@ fn build_config_shape() -> overslash_api::config::Config {
         preview_origin_allowlist: None,
         deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
+        trusted_proxies: Default::default(),
     }
 }
 
@@ -1975,6 +1979,7 @@ async fn build_state_for_session(fx: &McpFixture) -> overslash_api::AppState {
         mailer: std::sync::Arc::new(overslash_core::email::NoopMailer),
         event_bus: overslash_api::services::events::EventBus::new(),
         resolve_cache: overslash_api::services::resolve_cache::in_memory(10_000),
+        session_cache: overslash_api::services::user_sessions::cache::in_memory(),
         test_resources: None,
         background_db: None,
     }

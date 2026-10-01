@@ -177,6 +177,7 @@ STRIPE_URL=$(python3    -c "import json,sys; print(json.load(open('$FAKES_STATE_
 MCP_URL=$(python3       -c "import json,sys; print(json.load(open('$FAKES_STATE_FILE'))['mcp'])")
 AUTH0_TENANT_URL=$(python3 -c "import json; print(json.load(open('$FAKES_STATE_FILE'))['auth0']['tenant_url'])")
 OKTA_TENANT_URL=$(python3  -c "import json; print(json.load(open('$FAKES_STATE_FILE'))['okta']['tenant_url'])")
+GOOGLE_DIRECTORY_URL=$(python3 -c "import json; print(json.load(open('$FAKES_STATE_FILE'))['google_directory'])")
 # Per-variant URLs: emitted as `MCP_VARIANT_<NAME>_URL` env vars (kebab-case
 # names get uppercased + dashes-to-underscores) so the env file is safe to
 # `source` from bash without the JSON braces being mistaken for brace
@@ -206,6 +207,20 @@ UPDATE oauth_providers SET
 WHERE key = 'github';
 SQL
 
+# Same for Google, which the stack uses only for "Sign in with Google" to
+# connect a Google Workspace Directory (the OAuth fake returns whatever `hd` /
+# email a scenario sets through `/control/userinfo-claims`). Paired with the
+# GOOGLE_AUTH_* client below; the instance's directory service account is the
+# fakes crate's throwaway test key.
+log "seeding google oauth_provider endpoints at fake AS"
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 >/dev/null <<SQL
+UPDATE oauth_providers SET
+  authorization_endpoint = '$OAUTH_AS_URL/oauth/authorize',
+  token_endpoint         = '$OAUTH_AS_URL/oauth/token',
+  userinfo_endpoint      = '$OAUTH_AS_URL/oidc/userinfo'
+WHERE key = 'google';
+SQL
+
 # 4. Pick free ports for the API and dashboard up-front. The dashboard URL
 #    must be known when the API starts so cloud-billing success/cancel URLs
 #    point at the real dashboard host (the Stripe fake redirects to them
@@ -225,6 +240,10 @@ DASH_URL="http://localhost:$DASH_PORT"
 # the upstream hostnames the shipped service templates use. Add more as needed.
 OPENAPI_HOST=$(python3 -c "from urllib.parse import urlparse; import sys; print(urlparse('$OPENAPI_URL').netloc.split(':')[0])")
 OVERRIDES="api.github.com=$OPENAPI_URL,api.slack.com=$OPENAPI_URL,api.stripe.com=$STRIPE_URL"
+# Google Workspace Directory sync: the JWT-bearer token exchange and the Admin
+# SDK both land on one fake. Nothing else in the API dials these two hosts
+# through the override table.
+OVERRIDES="$OVERRIDES,oauth2.googleapis.com=$GOOGLE_DIRECTORY_URL,admin.googleapis.com=$GOOGLE_DIRECTORY_URL"
 # `services/email.yaml` resolves `servers[0]` from ${MAILBOX_HOST} (D44) and
 # has no default, so without this the whole `email` template is skipped at load
 # and every mail story 404s. The value itself is never dialed: the e2e suite
@@ -272,6 +291,9 @@ PORT="$API_PORT" \
 PUBLIC_URL="$API_URL" \
 DASHBOARD_URL="$DASH_URL" \
 DASHBOARD_ORIGIN="*localhost*" \
+GOOGLE_AUTH_CLIENT_ID="e2e-google-client" \
+GOOGLE_AUTH_CLIENT_SECRET="e2e-google-secret" \
+OVERSLASH_GOOGLE_DIRECTORY_SA_KEY_FILE="$REPO_ROOT/crates/overslash-fakes/fixtures/google_sa_test_key.json" \
 CLOUD_BILLING=1 \
 STRIPE_SECRET_KEY="sk_test_e2e" \
 STRIPE_WEBHOOK_SECRET="$STRIPE_WEBHOOK_SECRET" \
@@ -337,6 +359,17 @@ print(json.dumps({
             "client_id": "okta-e2e-client-id",
             "client_secret": "okta-e2e-client-secret",
             "allowed_email_domains": ["orgb.example"],
+            # The Okta fake already returns a top-level `groups` claim, so
+            # turning sync on here makes the e2e stack exercise directory group
+            # provisioning end to end: Bob's sign-in creates `org-b-members`
+            # and `everyone` as directory groups in org-b. They confer nothing
+            # until an admin maps one onto a real group (D107).
+            "group_sync_enabled": True,
+            # Bob is the Okta org's admin, so the admin surfaces (Groups,
+            # Directory groups) are reachable in e2e. Pre-created as an admin
+            # identity and adopted by email at his first sign-in — the ordinary
+            # invite path, not a seed-only shortcut.
+            "admin_emails": ["bob@orgb.example"],
         },
     ],
 }))
@@ -422,6 +455,7 @@ MCP_URL=$MCP_URL
 MCP_PUPPET_URL=$MCP_PUPPET_URL
 AUTH0_TENANT_URL=$AUTH0_TENANT_URL
 OKTA_TENANT_URL=$OKTA_TENANT_URL
+GOOGLE_DIRECTORY_URL=$GOOGLE_DIRECTORY_URL
 APP_HOST_SUFFIX=$APP_HOST_SUFFIX
 API_HOST_SUFFIX=$API_HOST_SUFFIX
 OVERFWD_URL=$OVERFWD_URL

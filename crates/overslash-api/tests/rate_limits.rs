@@ -4,7 +4,6 @@
 use crate::common;
 
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::time::Duration;
 
 use axum::{Router, routing::get};
@@ -326,6 +325,8 @@ async fn test_resolve_user_budget_falls_back_to_org_default() {
     let cache = RateLimitConfigCache::new(Duration::from_secs(30));
     let config = overslash_api::config::Config {
         async_execution: Default::default(),
+        google_directory: Default::default(),
+        staged_uploads: Default::default(),
         call_stream_idle_timeout_ms: 30_000,
         call_timeout_max_ms: 110_000,
         call_timeout_ms: 30_000,
@@ -374,6 +375,7 @@ async fn test_resolve_user_budget_falls_back_to_org_default() {
         resolve_cache_namespace: None,
         default_rate_limit: 9999,
         default_rate_window_secs: 60,
+        ingress_rate_limits: overslash_api::config::IngressRateLimits::disabled(),
         allow_org_creation: true,
         trial_default_duration_days: 30,
         single_org_mode: None,
@@ -399,6 +401,7 @@ async fn test_resolve_user_budget_falls_back_to_org_default() {
         preview_origin_allowlist: None,
         deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
+        trusted_proxies: Default::default(),
     };
     let resolved = cache
         .resolve_user_budget(&pool, &config, org_id, user_id)
@@ -603,6 +606,8 @@ async fn test_resolve_user_budget_per_user_override_wins() {
     let cache = RateLimitConfigCache::new(Duration::from_secs(30));
     let config = overslash_api::config::Config {
         async_execution: Default::default(),
+        google_directory: Default::default(),
+        staged_uploads: Default::default(),
         call_stream_idle_timeout_ms: 30_000,
         call_timeout_max_ms: 110_000,
         call_timeout_ms: 30_000,
@@ -651,6 +656,7 @@ async fn test_resolve_user_budget_per_user_override_wins() {
         resolve_cache_namespace: None,
         default_rate_limit: 9999,
         default_rate_window_secs: 60,
+        ingress_rate_limits: overslash_api::config::IngressRateLimits::disabled(),
         allow_org_creation: true,
         trial_default_duration_days: 30,
         single_org_mode: None,
@@ -676,6 +682,7 @@ async fn test_resolve_user_budget_per_user_override_wins() {
         preview_origin_allowlist: None,
         deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
+        trusted_proxies: Default::default(),
     };
     let resolved = cache
         .resolve_user_budget(&pool, &config, org_id, user_id)
@@ -693,111 +700,6 @@ async fn test_resolve_user_budget_per_user_override_wins() {
 // in front of an "echo" handler so we can exercise the middleware end-to-end:
 // header parsing, identity resolution, two-counter check, 429 generation,
 // and response header injection.
-
-/// Build a test AppState with an in-memory rate limiter.
-async fn make_app_state(pool: PgPool) -> overslash_api::AppState {
-    let config = overslash_api::config::Config {
-        async_execution: Default::default(),
-        call_stream_idle_timeout_ms: 30_000,
-        call_timeout_max_ms: 110_000,
-        call_timeout_ms: 30_000,
-        host: "127.0.0.1".into(),
-        port: 0,
-        database_url: String::new(),
-        db_max_connections: 5,
-        db_min_connections: 1,
-        db_acquire_timeout_secs: 10,
-        events_stream_max_connection_secs: 30,
-        live_map_enabled: false,
-        db_background_max_connections: 2,
-        secrets_encryption_key: "ab".repeat(32),
-        secrets_encryption_key_previous: None,
-        secrets_encryption_key_active_id: 1,
-        secrets_encryption_key_previous_id: 0,
-        signing_key: "cd".repeat(32),
-        approval_expiry_secs: 1800,
-        execution_pending_ttl_secs: 900,
-        execution_replay_timeout_secs: 30,
-        sweep_grace_secs: 60,
-        services_dir: "services".into(),
-        google_auth_client_id: None,
-        google_auth_client_secret: None,
-        github_auth_client_id: None,
-        github_auth_client_secret: None,
-        public_url: "http://localhost:3000".into(),
-        dev_auth_enabled: false,
-        magic_link_enabled: true,
-        max_response_body_bytes: 5_242_880,
-        audit_response_body_max_bytes: 65_536,
-        filter_timeout_ms: 2000,
-        download_token_ttl_secs: 900,
-        upload_token_ttl_secs: 900,
-        upload_max_bytes: 100 * 1024 * 1024,
-        call_result_max_bytes: 1024 * 1024,
-        dashboard_url: "/".into(),
-        dashboard_origin: "*localhost*".into(),
-        mcp_extra_origins: String::new(),
-        redis_url: None,
-        resolve_cache_ttl_secs: 300,
-        resolve_cache_negative_ttl_secs: 30,
-        resolve_cache_scope_ttl_max_secs: 300,
-        resolve_cache_timeout_ms: 100,
-        resolve_cache_max_entries: 10_000,
-        resolve_cache_namespace: None,
-        default_rate_limit: 1000,
-        default_rate_window_secs: 60,
-        allow_org_creation: true,
-        trial_default_duration_days: 30,
-        single_org_mode: None,
-        app_host_suffix: None,
-        api_host_suffix: None,
-        session_cookie_domain: None,
-        cloud_billing: false,
-        stripe_secret_key: None,
-        stripe_webhook_secret: None,
-        stripe_eur_price_id: None,
-        stripe_usd_price_id: None,
-        stripe_eur_lookup_key: "overslash_seat_eur".into(),
-        stripe_usd_lookup_key: "overslash_seat_usd".into(),
-        stripe_api_base: "https://api.stripe.com/v1".into(),
-        service_base_overrides: std::collections::HashMap::new(),
-        platform_credential: None,
-        oversla_sh_base_url: None,
-        oversla_sh_api_key: None,
-        email_provider: None,
-        email_from: None,
-        email_reply_to: None,
-        email_api_key: None,
-        preview_origin_allowlist: None,
-        deployment_env: Default::default(),
-        connection_return_url_allowed_hosts: Vec::new(),
-    };
-    overslash_api::AppState {
-        db: pool,
-        config,
-        http_client: reqwest::Client::new(),
-        registry: Arc::new(overslash_core::registry::ServiceRegistry::default()),
-        rate_limiter: Arc::new(overslash_api::services::rate_limit::InMemoryRateLimitStore::new()),
-        rate_limit_cache: Arc::new(
-            overslash_api::services::rate_limit::RateLimitConfigCache::new(Duration::from_secs(30)),
-        ),
-        free_unlimited_cache: Arc::new(
-            overslash_api::services::billing_tier::FreeUnlimitedCache::new(Duration::from_secs(30)),
-        ),
-        auth_code_store: overslash_api::services::oauth_as::AuthCodeStore::new(),
-        pending_authorize_store: overslash_api::services::oauth_as::PendingAuthorizeStore::new(),
-        embedder: std::sync::Arc::new(overslash_core::embeddings::DisabledEmbedder),
-        embeddings_available: false,
-        platform_registry: std::sync::Arc::new(
-            overslash_api::services::platform_registry::build_registry(),
-        ),
-        mailer: std::sync::Arc::new(overslash_core::email::NoopMailer),
-        event_bus: overslash_api::services::events::EventBus::new(),
-        resolve_cache: overslash_api::services::resolve_cache::in_memory(10_000),
-        test_resources: None,
-        background_db: None,
-    }
-}
 
 /// Spawn an Axum server with the rate_limit_middleware in front of an echo handler.
 /// Returns the bound address.
@@ -830,7 +732,7 @@ async fn make_org_user_key(pool: &PgPool) -> (Uuid, Uuid, String) {
 #[tokio::test]
 async fn test_middleware_passes_through_without_auth() {
     let pool = common::test_pool().await;
-    let state = make_app_state(pool).await;
+    let state = common::make_app_state(pool).await;
     let addr = spawn_middleware_app(state).await;
 
     let resp = reqwest::get(format!("http://{addr}/echo")).await.unwrap();
@@ -842,7 +744,7 @@ async fn test_middleware_passes_through_without_auth() {
 #[tokio::test]
 async fn test_middleware_passes_through_with_non_osk_auth() {
     let pool = common::test_pool().await;
-    let state = make_app_state(pool).await;
+    let state = common::make_app_state(pool).await;
     let addr = spawn_middleware_app(state).await;
 
     let client = reqwest::Client::new();
@@ -859,7 +761,7 @@ async fn test_middleware_passes_through_with_non_osk_auth() {
 #[tokio::test]
 async fn test_middleware_passes_through_for_unknown_key() {
     let pool = common::test_pool().await;
-    let state = make_app_state(pool).await;
+    let state = common::make_app_state(pool).await;
     let addr = spawn_middleware_app(state).await;
 
     let client = reqwest::Client::new();
@@ -878,7 +780,7 @@ async fn test_middleware_passes_through_for_unknown_key() {
 async fn test_middleware_attaches_headers_for_known_key() {
     let pool = common::test_pool().await;
     let (_org_id, _user_id, raw_key) = make_org_user_key(&pool).await;
-    let state = make_app_state(pool).await;
+    let state = common::make_app_state(pool).await;
     let addr = spawn_middleware_app(state).await;
 
     let client = reqwest::Client::new();
@@ -908,7 +810,7 @@ async fn test_middleware_returns_429_when_user_bucket_exhausted() {
         .await
         .unwrap();
 
-    let state = make_app_state(pool).await;
+    let state = common::make_app_state(pool).await;
     let addr = spawn_middleware_app(state).await;
     let client = reqwest::Client::new();
 
@@ -965,7 +867,7 @@ async fn test_middleware_identity_cap_kicks_in_before_user_bucket() {
         .await
         .unwrap();
 
-    let state = make_app_state(pool).await;
+    let state = common::make_app_state(pool).await;
     let addr = spawn_middleware_app(state).await;
     let client = reqwest::Client::new();
 
@@ -999,7 +901,7 @@ async fn test_middleware_skips_expired_key() {
         .await
         .unwrap();
 
-    let state = make_app_state(pool).await;
+    let state = common::make_app_state(pool).await;
     let addr = spawn_middleware_app(state).await;
 
     let client = reqwest::Client::new();
@@ -1117,6 +1019,8 @@ async fn test_cache_invalidation_user_budget() {
     let cache = RateLimitConfigCache::new(Duration::from_secs(300));
     let config = overslash_api::config::Config {
         async_execution: Default::default(),
+        google_directory: Default::default(),
+        staged_uploads: Default::default(),
         call_stream_idle_timeout_ms: 30_000,
         call_timeout_max_ms: 110_000,
         call_timeout_ms: 30_000,
@@ -1165,6 +1069,7 @@ async fn test_cache_invalidation_user_budget() {
         resolve_cache_namespace: None,
         default_rate_limit: 9999,
         default_rate_window_secs: 60,
+        ingress_rate_limits: overslash_api::config::IngressRateLimits::disabled(),
         allow_org_creation: true,
         trial_default_duration_days: 30,
         single_org_mode: None,
@@ -1190,6 +1095,7 @@ async fn test_cache_invalidation_user_budget() {
         preview_origin_allowlist: None,
         deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
+        trusted_proxies: Default::default(),
     };
 
     // Prime the cache
@@ -1309,6 +1215,8 @@ async fn test_cache_invalidation_org_flushes_all() {
     let cache = RateLimitConfigCache::new(Duration::from_secs(300));
     let config = overslash_api::config::Config {
         async_execution: Default::default(),
+        google_directory: Default::default(),
+        staged_uploads: Default::default(),
         call_stream_idle_timeout_ms: 30_000,
         call_timeout_max_ms: 110_000,
         call_timeout_ms: 30_000,
@@ -1357,6 +1265,7 @@ async fn test_cache_invalidation_org_flushes_all() {
         resolve_cache_namespace: None,
         default_rate_limit: 9999,
         default_rate_window_secs: 60,
+        ingress_rate_limits: overslash_api::config::IngressRateLimits::disabled(),
         allow_org_creation: true,
         trial_default_duration_days: 30,
         single_org_mode: None,
@@ -1382,6 +1291,7 @@ async fn test_cache_invalidation_org_flushes_all() {
         preview_origin_allowlist: None,
         deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
+        trusted_proxies: Default::default(),
     };
 
     let r1 = cache

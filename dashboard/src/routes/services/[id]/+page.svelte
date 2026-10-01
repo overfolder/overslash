@@ -52,7 +52,14 @@
 	import { probeRejected } from '$lib/public-request';
 	import { failureKind } from '$lib/setup-outcome';
 	import { connectViaPopup, PopupBlockedError } from '$lib/oauth-connect';
-	import EndpointTlsHint from '$lib/components/services/EndpointTlsHint.svelte';
+	import ServiceEndpointField from '$lib/components/services/ServiceEndpointField.svelte';
+	import MoreOptions from '$lib/components/services/MoreOptions.svelte';
+	import {
+		endpointIsMain,
+		endpointRequired,
+		splitParams,
+		type EndpointFacts
+	} from '$lib/instance-fields';
 
 
 	const id = $derived($page.params.id ?? '');
@@ -364,12 +371,27 @@
 	// field blank visibly means "inherit the org's deployment".
 	const inheritedUrl = $derived(template?.instance_defaults?.url
 	);
-	// A template that names no host has nothing to fall back to, so blanking the
-	// field breaks the instance. Mirrors the create form (D44) — reachable via
-	// `servers: []` or a `${VAR?}` endpoint the deployment left unset.
-	const editUrlRequired = $derived(
-		(template?.hosts?.length ?? 0) === 0 && !inheritedUrl
+	// Every endpoint and config pin is overridable; the ones an instance needs
+	// or the template promotes sit up front, the rest behind "Show more
+	// options". Same split as the create form (`$lib/instance-fields`).
+	const endpoint = $derived<EndpointFacts>({
+		configurable: template?.configurable_url === true && !isSystem,
+		defaultUrl: template?.default_url,
+		inheritedUrl,
+		promoted: template?.url_promoted === true
+	});
+	const editUrlRequired = $derived(endpointRequired(endpoint));
+	const urlInMain = $derived(endpointIsMain(endpoint));
+	const configSplit = $derived(
+		splitParams(
+			hasInstanceConfig ? (template?.instance_config_params ?? []) : [],
+			template?.instance_defaults?.config
+		)
 	);
+	const moreOptionsCount = $derived(
+		(endpoint.configurable && !urlInMain ? 1 : 0) + configSplit.more.length
+	);
+	let showMoreOptions = $state(false);
 	const identityById = $derived(new Map(identities.map((i) => [i.id, i])));
 	// Same labelling as the services list an admin arrives from: a user owner is
 	// named by their (domain-stripped) email, an agent by its name.
@@ -548,6 +570,13 @@
 			template = tpl;
 			editCredentials = seedCredentials(tpl, fresh);
 			editConfig = seedConfig(tpl, fresh);
+			// An override hidden behind a collapsed disclosure would read as
+			// "using the default" — open it whenever one is already set.
+			showMoreOptions =
+				(!!fresh.url && !(tpl?.url_promoted ?? false)) ||
+				splitParams(tpl?.instance_config_params ?? [], tpl?.instance_defaults?.config).more.some(
+					(p) => !!fresh.config?.[p.name]
+				);
 			actions = acts;
 			connections = conns;
 			identities = ids;
@@ -1006,47 +1035,19 @@
 					<span class="label">Name</span>
 					<input type="text" bind:value={editName} required minlength="1" disabled={isSystem} />
 				</label>
-				{#if isMcp && !isSystem}
-					<label class="field">
-						<span class="label">MCP server URL</span>
-						<input
-							type="text"
-							bind:value={editUrl}
-							placeholder={inheritedUrl ?? template?.mcp?.url ?? 'https://host/mcp'}
-						/>
-						<EndpointTlsHint url={editUrl} />
-						{#if inheritedUrl}
-							<small>Leave blank to use your org's deployment ({inheritedUrl}).</small>
-						{:else if template?.mcp?.url}
-							<small>Leave blank to use the template's default.</small>
-						{:else}
-							<small>The URL of the MCP server endpoint.</small>
-						{/if}
-					</label>
-				{:else if template?.configurable_url && !isSystem}
-					<label class="field">
-						<span class="label">Endpoint URL</span>
-						<input
-							type="text"
-							bind:value={editUrl}
-							placeholder={inheritedUrl ??
-								(template?.hosts?.[0]
-									? `https://${template.hosts[0]}`
-									: 'https://service.your-org.com')}
-						/>
-						<EndpointTlsHint url={editUrl} />
-						{#if editUrlRequired}
-							<small>Required — this template has no default endpoint.</small>
-						{:else if inheritedUrl}
-							<small>Leave blank to use your org's deployment ({inheritedUrl}).</small>
-						{:else}
-							<small>Point this instance at your own deployment. Leave blank to use the default.</small>
-						{/if}
-					</label>
+				{#if urlInMain}
+					<ServiceEndpointField
+						id="edit-service-url"
+						bind:url={editUrl}
+						mcp={isMcp}
+						defaultUrl={endpoint.defaultUrl}
+						{inheritedUrl}
+						required={editUrlRequired}
+					/>
 				{/if}
-				{#if hasInstanceConfig}
+				{#if configSplit.main.length > 0}
 					<ServiceInstanceConfig
-						params={template?.instance_config_params ?? []}
+						params={configSplit.main}
 						bind:config={editConfig}
 						inherited={template?.instance_defaults?.config}
 						idPrefix="edit-service-config"
@@ -1070,6 +1071,27 @@
 							loading={secretsLoading}
 						/>
 					</div>
+				{/if}
+				{#if moreOptionsCount > 0}
+					<MoreOptions bind:open={showMoreOptions} count={moreOptionsCount}>
+						{#if endpoint.configurable && !urlInMain}
+							<ServiceEndpointField
+								id="edit-service-url"
+								bind:url={editUrl}
+								mcp={isMcp}
+								defaultUrl={endpoint.defaultUrl}
+								{inheritedUrl}
+							/>
+						{/if}
+						{#if configSplit.more.length > 0}
+							<ServiceInstanceConfig
+								params={configSplit.more}
+								bind:config={editConfig}
+								inherited={template?.instance_defaults?.config}
+								idPrefix="edit-service-config"
+							/>
+						{/if}
+					</MoreOptions>
 				{/if}
 				<div class="row">
 					<span class="label">Owner</span>

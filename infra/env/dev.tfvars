@@ -142,3 +142,19 @@ email_reply_to = "support@overslash.com"
 
 # Async (non-blocking) action calls. On here first; prod follows once validated.
 enable_async_execution = true
+
+# Client-IP resolution (infra/README.md "Client IP & trusted proxies").
+# No GCLB on dev: Cloud Run's frontend (hop 1) appends the client directly.
+trusted_proxy_hops  = 1
+trusted_proxy_cidrs = ""
+# Flip after `gcloud secrets versions add overslash-dev-trusted-proxy-secret`
+# and setting the same value as OVERSLASH_TRUSTED_PROXY_SECRET in Vercel (Preview).
+enable_trusted_proxy_secret = true
+
+# Audit logging (CASA 6.7.1). Dev keeps its audit bucket UNLOCKED so the
+# retention and the module can still be iterated on. Do not flip this here.
+audit_log_retention_days = 400
+audit_log_bucket_locked  = false
+
+enable_google_directory_sync = true
+

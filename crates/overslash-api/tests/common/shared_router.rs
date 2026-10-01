@@ -190,7 +190,12 @@ async fn boot_shared_router() -> SharedHarness {
                     }
                 });
                 let listener = TcpListener::from_std(std_listener).unwrap();
-                axum::serve(listener, app).await.unwrap();
+                axum::serve(
+                    listener,
+                    app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+                )
+                .await
+                .unwrap();
             });
         })
         .expect("shared-router thread spawns");
@@ -234,12 +239,14 @@ fn build_shared_router(state: AppState) -> axum::Router {
         .merge(routes::groups::router())
         .merge(routes::rate_limits::router())
         .merge(routes::preferences::router())
-        .merge(routes::oauth_as::router())
-        .merge(routes::oauth::router())
+        .merge(overslash_api::mcp_oauth_routes(&state))
         .merge(routes::oauth::consent_router())
-        .merge(routes::mcp::router())
         .merge(routes::oauth_mcp_clients::router())
         .merge(routes::unsubscribe::router())
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            overslash_api::middleware::session_gate::session_gate,
+        ))
         // Test-pool middleware runs BEFORE subdomain_middleware so
         // the subdomain resolver (which calls state.db(...)) picks
         // up the correct per-test pool.
@@ -282,6 +289,7 @@ fn build_shared_state(registry: Arc<SharedRouterRegistry>, addr: SocketAddr) -> 
         mailer: Arc::new(overslash_core::email::NoopMailer),
         event_bus: overslash_api::services::events::EventBus::new(),
         resolve_cache: overslash_api::services::resolve_cache::in_memory(10_000),
+        session_cache: overslash_api::services::user_sessions::cache::in_memory(),
         test_resources: Some(registry),
         background_db: None,
     }
@@ -290,6 +298,8 @@ fn build_shared_state(registry: Arc<SharedRouterRegistry>, addr: SocketAddr) -> 
 fn shared_config(addr: SocketAddr) -> overslash_api::config::Config {
     overslash_api::config::Config {
         async_execution: Default::default(),
+        google_directory: Default::default(),
+        staged_uploads: Default::default(),
         call_stream_idle_timeout_ms: 30_000,
         call_timeout_max_ms: 110_000,
         call_timeout_ms: 30_000,
@@ -338,6 +348,7 @@ fn shared_config(addr: SocketAddr) -> overslash_api::config::Config {
         resolve_cache_namespace: None,
         default_rate_limit: 10000,
         default_rate_window_secs: 60,
+        ingress_rate_limits: overslash_api::config::IngressRateLimits::disabled(),
         allow_org_creation: true,
         trial_default_duration_days: 30,
         single_org_mode: None,
@@ -363,5 +374,6 @@ fn shared_config(addr: SocketAddr) -> overslash_api::config::Config {
         preview_origin_allowlist: None,
         deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
+        trusted_proxies: Default::default(),
     }
 }

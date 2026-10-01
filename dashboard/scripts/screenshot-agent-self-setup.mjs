@@ -23,7 +23,7 @@ try {
 	// ── 1. The org policy card ──────────────────────────────────────────
 	await setAgentSelfSetup(session, true);
 
-	const { page, ctx } = await snap.navigateAndSnap('agent-self-setup-org-page', '/org', {
+	const { page, ctx } = await snap.navigateAndSnap('agent-self-setup-org-page', '/org/agent-defaults', {
 		viewport: { width: 1400, height: 1100 },
 		fullPage: false,
 		waitFor: async (p) => {
@@ -53,7 +53,7 @@ try {
 
 	const { page: bfPage, ctx: bfCtx } = await snap.navigateAndSnap(
 		'agent-self-setup-backfill-page',
-		'/org',
+		'/org/agent-defaults',
 		{
 			viewport: { width: 1400, height: 1100 },
 			fullPage: false,

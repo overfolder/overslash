@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM mcp_url_elicitations\n          WHERE created_at < now() - make_interval(secs => $1)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Float8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "4c6f4dac03ace18960a5b264b56b7a59f59e7ca320a25e402db41be16253e8d1"
+}

@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM google_directory_connect_flows WHERE expires_at < now()",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "f8ab76689edd6a2e0c1ab93df084f717bb788cc61531f6948c39ee5cb44bb392"
+}

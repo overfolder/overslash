@@ -1,0 +1,161 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id, org_id, provider_key, encrypted_client_id, encrypted_client_secret, enabled, allowed_email_domains, is_default, group_sync_enabled, group_claim, created_at, updated_at\n         FROM org_idp_configs WHERE org_id = $1 AND provider_key = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "org_idp_configs",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "org_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "org_idp_configs",
+            "name": "org_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "provider_key",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "org_idp_configs",
+            "name": "provider_key"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "encrypted_client_id",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "org_idp_configs",
+            "name": "encrypted_client_id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "encrypted_client_secret",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "org_idp_configs",
+            "name": "encrypted_client_secret"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "enabled",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "org_idp_configs",
+            "name": "enabled"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "allowed_email_domains",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "org_idp_configs",
+            "name": "allowed_email_domains"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "is_default",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "org_idp_configs",
+            "name": "is_default"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "group_sync_enabled",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "org_idp_configs",
+            "name": "group_sync_enabled"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "group_claim",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "org_idp_configs",
+            "name": "group_claim"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "org_idp_configs",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "updated_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "org_idp_configs",
+            "name": "updated_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "88bb9e6193068168651eb02490142451096f70424934c43d6efffa8128839dae"
+}

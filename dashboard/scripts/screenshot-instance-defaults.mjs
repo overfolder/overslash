@@ -103,6 +103,9 @@ try {
 			{
 				viewport: { width: 1400, height: 1100 },
 				waitFor: async (p) => {
+					// An inherited endpoint is a default, so it waits behind the
+					// disclosure; open it to show the inherited placeholder.
+					await p.getByRole('button', { name: /Show more options/ }).click({ timeout: 15_000 });
 					await p.locator('text=Endpoint URL').first().waitFor({ timeout: 15_000 });
 					await p.waitForTimeout(400);
 				}

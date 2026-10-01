@@ -14,7 +14,7 @@ const session = await login('admin');
 const snap = await makeSnapper(session);
 
 try {
-	const { page, ctx } = await snap.navigateAndSnap('oauth-app-credentials-page', '/org', {
+	const { page, ctx } = await snap.navigateAndSnap('oauth-app-credentials-page', '/org/oauth', {
 		viewport: { width: 1400, height: 1100 },
 		fullPage: false,
 		waitFor: async (p) => {

@@ -146,6 +146,7 @@ fn child_node(pos: Pos, key: &str) -> Option<Node> {
     }
     let structural = match (pos, key) {
         (Pos::Root, "info") => Node::At(Pos::Info),
+        (Pos::Root, "servers") => Node::At(Pos::Server),
         (Pos::Root, "paths") => Node::MapOf(Pos::PathItem),
         (Pos::Root, "components") => Node::At(Pos::Components),
         (Pos::Root, k) if k == Ext::Mcp.key() => Node::At(Pos::McpBlock),

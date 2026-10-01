@@ -24,6 +24,7 @@
 //! token, already-consumed token and deleted identity all return the same bare
 //! `404`.
 
+use crate::services::rate_limit::refuse;
 use axum::{
     Router,
     extract::{Path, State},
@@ -98,25 +99,15 @@ async fn redeem(
     // Anonymous, so the global rate-limit middleware (which keys on the API-key
     // prefix) skips it entirely. Throttle here on the shared store, the same
     // way the download and magic-link endpoints do.
+    // Full address for the audit row; the throttle keys on its /64.
     let ip = client_ip.0.as_deref().unwrap_or("unknown");
+    let key = format!("up:redeem:ip:{}", client_ip.rate_limit_subject());
     let rl = state
         .rate_limiter(&ext)
-        .check_and_increment(
-            &format!("up:redeem:ip:{ip}"),
-            UPLOAD_IP_MAX,
-            UPLOAD_IP_WINDOW_SECS,
-        )
+        .check_and_increment(&key, UPLOAD_IP_MAX, UPLOAD_IP_WINDOW_SECS)
         .await;
     if !rl.allowed {
-        let retry_after = rl
-            .reset_at
-            .saturating_sub(crate::services::rate_limit::now_unix());
-        return crate::error::AppError::RateLimited {
-            limit: rl.limit,
-            reset_at: rl.reset_at,
-            retry_after,
-        }
-        .into_response();
+        return refuse(state.rate_limiter(&ext), "upload_ip", &key, &rl).await;
     }
 
     let not_found = || (StatusCode::NOT_FOUND, "unknown or expired token").into_response();
@@ -124,15 +115,29 @@ async fn redeem(
     // `claim` matches on hash, unexpired and unconsumed in one statement, so
     // from here an expired token, an unknown one and one whose single push
     // already happened are the same answer.
-    let row =
-        match upload_token::claim(state.db(&ext), &deferred_download::hash_token(&token)).await {
-            Ok(Some(r)) => r,
-            Ok(None) => return not_found(),
-            Err(e) => {
-                tracing::error!(error = %e, "upload: token lookup failed");
-                return (StatusCode::INTERNAL_SERVER_ERROR, "upload failed").into_response();
-            }
-        };
+    let token_hash = deferred_download::hash_token(&token);
+    let row = match upload_token::claim(state.db(&ext), &token_hash).await {
+        Ok(Some(r)) => r,
+        // Not a proxy upload: it may be a gateway-staged one, which lands in
+        // our own table instead of a service's. Same URL, same throttle, same
+        // uniform 404 when neither table holds the token.
+        Ok(None) => {
+            return crate::services::staged_upload::redeem(
+                &state,
+                &ext,
+                ip,
+                &token_hash,
+                &headers,
+                body,
+            )
+            .await
+            .unwrap_or_else(not_found);
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "upload: token lookup failed");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "upload failed").into_response();
+        }
+    };
 
     let scope = OrgScope::new(row.org_id, state.db_pool(&ext));
 

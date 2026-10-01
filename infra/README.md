@@ -125,7 +125,7 @@ the GitHub button on `/auth/providers` only once both are populated.
 | `iam` | Least-privilege SAs for Cloud Run, Cloud Build, Cloud Scheduler |
 | `artifact-registry` | Docker image repository with cleanup policy (+ optional Docker Hub pull-through mirror) |
 | `secret-manager` | DB password, encryption key, Google + GitHub login + Google services OAuth secrets |
-| `cloud-sql` | PostgreSQL 16 (Auth Proxy or private IP mode) |
+| `cloud-sql` | PostgreSQL 16 (Auth Proxy or private IP mode). TLS-only, deletion-protected, pgAudit on — see [docs/runbooks/cloud-sql-hardening.md](../docs/runbooks/cloud-sql-hardening.md) |
 | `cloud-run` | Overslash API with health checks and secret injection |
 | `cloud-build` | GitHub push trigger: build -> push -> deploy |
 | `infra-scheduler` | (Optional) Stop/start Cloud SQL on cron (Europe/Madrid) |
@@ -133,6 +133,7 @@ the GitHub button on `/auth/providers` only once both are populated.
 | `memorystore` | (Optional) Valkey via Memorystore |
 | `cloud-run-shortener` | (Optional) oversla.sh URL shortener |
 | `cloud-run-overfwd` | (Optional) Shared overfwd Mailbox Gateway behind `services/email.yaml` — see [docs/runbooks/mailbox-gateway.md](../docs/runbooks/mailbox-gateway.md) |
+| `audit-logging` | Data Access audit logs, a retained (and in prod **locked**) audit log bucket + sink, and an alert on unexpected secret reads — see [Audit logging](#audit-logging-casa-671) |
 
 ### Mailbox Gateway (overfwd)
 
@@ -143,6 +144,148 @@ steps per environment: a `mailbox[.dev] CNAME ghs.googlehosted.com` at the
 registrar, and Search Console verification of the apex. Full operating notes —
 key rotation, image upgrades, smoke tests — are in
 [docs/runbooks/mailbox-gateway.md](../docs/runbooks/mailbox-gateway.md).
+
+### Client IP & trusted proxies
+
+Every audit row's `ip_address` and every per-IP throttle (magic-link request,
+uploads, downloads) read the `ClientIp` extractor, which resolves the client
+right to left: it walks `X-Forwarded-For` from the socket peer leftwards and
+takes the first address it has no reason to trust. Anything left of that was
+written by the caller and is ignored. With nothing configured, the header is
+ignored entirely and the socket peer is the client. Code and decision table:
+`crates/overslash-api/src/services/client_ip.rs`.
+
+| Variable | tfvar | Meaning |
+|---|---|---|
+| `OVERSLASH_TRUSTED_PROXY_HOPS` | `trusted_proxy_hops` | Addresses, counting the socket peer, trusted by position |
+| `OVERSLASH_TRUSTED_PROXIES` | `trusted_proxy_cidrs` | CIDRs (or bare IPs) trusted wherever they appear |
+| `OVERSLASH_TRUSTED_PROXY_SECRET` | `enable_trusted_proxy_secret` + GSM `overslash-<env>-trusted-proxy-secret` | A request carrying it in `x-overslash-proxy-secret` has its client taken from `x-overslash-client-ip` in place of the proxy hop |
+
+A malformed value refuses the boot.
+
+What each path looks like at the container, and what gets recorded:
+
+| Path | `X-Forwarded-For` (peer = Google frontend) | Recorded |
+|---|---|---|
+| Agent → `api.dev.overslash.com` / `*.run.app` | `<spoof…>, <client>` | `<client>` (hop 1) |
+| Agent → `api.overslash.com` (GCLB) | `<spoof…>, <client>, 34.36.8.174` | `<client>` (LB by CIDR) |
+| Browser → `app.*` → Vercel rewrite → API | `<client>, <vercel-egress>[, <lb>]` | `<client>` with the secret, `<vercel-egress>` without |
+
+| Env | `trusted_proxy_hops` | `trusted_proxy_cidrs` |
+|---|---|---|
+| prod | `1` | `34.36.8.174/32,35.191.0.0/16,130.211.0.0/22` (LB address, then Google's LB proxy ranges) |
+| dev | `1` | `""` (no LB) |
+
+The prod LB address is a literal because `module.api_lb` depends on
+`module.cloud_run`. If `tofu output` ever shows a different `lb_ip`, update
+`prod.tfvars`. Until then, every request through the LB records the LB's address.
+
+**The Vercel hop.** Vercel connects to the API from egress IPs it does not
+publish, so its address can't be trusted by range. And the `X-Forwarded-For`
+it sends upstream on an external rewrite is **not** its own observation: it
+forwards the browser's header and does not reliably apply a middleware
+override of it (measured on dev). So `dashboard/middleware.ts`, on every path
+`vercel.json` rewrites to the API, stamps two headers of its own:
+`x-overslash-proxy-secret` (the value of `OVERSLASH_TRUSTED_PROXY_SECRET`, the
+same variable name the API reads) and `x-overslash-client-ip` (the address
+Vercel saw, `x-real-ip`). Both are set, never passed through. Without an
+address or the variable, both are stripped. On a secret match the API takes
+the client from `x-overslash-client-ip` and never reads XFF further left.
+Enabling it, per env:
+
+```bash
+SECRET=$(openssl rand -hex 32)
+printf %s "$SECRET" | gcloud secrets versions add overslash-<env>-trusted-proxy-secret --data-file=- --project <project>
+vercel env add OVERSLASH_TRUSTED_PROXY_SECRET production   # prod value; `preview` for dev
+# prod/dev.tfvars: enable_trusted_proxy_secret = true, then make tofu-apply ENV=<env>
+```
+
+Either order is safe. Until both halves hold the same value, dashboard traffic
+records the Vercel egress address. To rotate, repeat the steps with a new
+value. Dashboard requests record the egress address in the window between the
+two updates.
+
+**Verifying after a deploy.** `curl -si https://app.overslash.com/health | grep
+x-overslash-proxy-mw` should print `1` (the middleware ran and had a secret).
+Then make an audited call directly with a forged header, e.g.
+`curl -X PUT -H 'X-Forwarded-For: 203.0.113.9' -H "Authorization: Bearer $KEY" …/v1/secrets/probe -d '{"value":"x"}'`.
+The `secret.put` row in `/v1/audit` must show your own address, not
+`203.0.113.9`. Do the same from the dashboard: the row should show your
+browser's address, not a Vercel or Google one.
+
+### Audit logging (CASA 6.7.1)
+
+`module.audit_logging` turns on Data Access audit logs (`ADMIN_READ`, `DATA_READ`,
+`DATA_WRITE`) for Secret Manager, Cloud SQL (`cloudsql.googleapis.com`, which also carries pgAudit output) and Cloud Run; routes every Cloud
+Audit Log into a dedicated bucket `overslash-<env>-audit` kept for
+`audit_log_retention_days` (400); and alerts (P1, email) whenever a principal other than
+the runtime service account reads a secret payload. Policy and rationale:
+[docs/compliance/casa/secrets-access-policy.md](../docs/compliance/casa/secrets-access-policy.md).
+
+> **`audit_log_bucket_locked = true` is IRREVERSIBLE.** It is `true` in
+> `env/prod.tfvars` only. The apply that carries it locks `overslash-prod-audit`
+> forever: its retention can never be changed (not raised, not lowered), it cannot be
+> deleted until its last entry ages out, the lock cannot be lifted, and `tofu destroy`
+> on prod fails at that resource. Review the plan line `locked = true` /
+> `retention_days = 400` before typing `prod`.
+
+The unexpected-secret-access alert **fires on your own `tofu plan`**: the provider reads
+every `google_secret_manager_secret_version` on refresh, and prod reads the PagerDuty key
+as a data source. That is intended — human reads of platform secrets are meant to be seen.
+Expect one email per plan, naming you.
+
+**Applying it.** Dev first, then prod, and prod in two steps so the lock lands only on a
+bucket you have already watched fill:
+
+```bash
+# 1. Dev (unlocked).
+make tofu-plan ENV=dev          # expect the 8 audit-logging adds, 0 to change, 0 to destroy (plus any unrelated drift)
+make tofu-apply ENV=dev
+
+# 2. Verify on dev: Data Access on, sink writing, and a secret read shows up.
+gcloud projects get-iam-policy overslash-dev --format=json | jq .auditConfigs
+gcloud secrets versions access latest --secret=overslash-dev-pagerduty-integration-key --project=overslash-dev >/dev/null
+#    within ~2 min: the entry below, and a "[P1] overslash-dev Unexpected Secret Access" email naming you
+gcloud logging read 'protoPayload.methodName:"AccessSecretVersion"' --project=overslash-dev \
+  --bucket=overslash-dev-audit --location=europe-west1 --view=_AllLogs --limit=3 --freshness=1h
+
+# 3. Leave dev for a few days and read the real volume before prod:
+gcloud logging read 'logName:"cloudaudit.googleapis.com%2Fdata_access"' --project=overslash-dev \
+  --freshness=1d --format=json | wc -c
+
+# 4. Prod, UNLOCKED first. A command-line -var beats -var-file, so this one plan
+#    overrides prod.tfvars (TF_VAR_* would not — tfvars wins over the environment).
+cd infra && tofu workspace select prod && \
+  tofu plan -var-file=env/prod.tfvars -var audit_log_bucket_locked=false -out=prod.tfplan && cd ..
+#    expect the 8 audit-logging adds; the bucket shows locked = false
+make tofu-apply ENV=prod
+#    repeat the step-2 checks against overslash / overslash-prod-audit
+
+# 5. Prod, LOCK. Irreversible. The plan must show exactly one in-place update:
+#    module.audit_logging.google_logging_project_bucket_config.audit  locked: false -> true
+make tofu-plan ENV=prod
+make tofu-apply ENV=prod
+gcloud logging buckets describe overslash-prod-audit --location=europe-west1 --project=overslash
+#    expect: locked: true, retentionDays: 400
+```
+
+Reading Data Access entries needs `roles/logging.privateLogViewer` (Owners have it).
+
+If the first apply fails on the alert policy with `Cannot find metric(s) that match type
+= "logging.googleapis.com/user/…"`, the just-created log-based metric has not
+propagated yet: re-plan and apply again after a minute.
+
+**Cost.** Measured 2026-09-28: `overslash` ingests ~0.2 GiB of billable logs per 30 days
+and writes ~960 Admin Activity / System Event entries a day (~5 KiB each). Data Access
+adds, by estimate, 1,500–3,000 entries a day — dominated by the metrics-exporter job
+(every 5 min: a DB-password read plus Cloud SQL connector calls) and Cloud Run instance
+starts (one read per mounted secret) — so ~0.3–0.5 GiB/month, counted twice (the
+`_Default` copy and the audit bucket). That is ~1–1.5 GiB/month against Cloud Logging's
+50 GiB/project free ingestion allotment: **$0 ingestion**. Retention past 30 days bills at
+$0.01/GiB-month; at steady state (400 days, ~8 GiB held) that is **~$0.10/month**. The
+alert policy is one condition (~$0.10/month); the log-based metric is near-empty. Total
+**under $1/month per project**. Step 3 exists to replace this estimate with a measurement
+before the prod bucket is locked.
 
 ## Connectivity Modes
 
@@ -157,6 +300,7 @@ key rotation, image upgrades, smoke tests — are in
 | Cloud Run (scale to zero) | ~$0 |
 | Secret Manager (6 secrets) | ~$0.09 |
 | Artifact Registry | ~$0.10/GB |
+| Audit logging (Data Access + 400-day bucket + alert) | < $1 |
 | Cloud Scheduler (2 jobs) | ~$0 |
 | **Total** | **~$9-10/month** |
 

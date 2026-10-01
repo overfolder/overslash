@@ -10,6 +10,7 @@ resource "google_project_service" "apis" {
       "compute.googleapis.com",
       "cloudscheduler.googleapis.com",
       "monitoring.googleapis.com",
+      "logging.googleapis.com",
       "billingbudgets.googleapis.com",
     ],
     var.use_private_vpc ? [
@@ -19,6 +20,10 @@ resource "google_project_service" "apis" {
     var.enable_dns ? ["dns.googleapis.com"] : [],
     var.enable_api_lb ? ["certificatemanager.googleapis.com"] : [],
     var.enable_valkey ? ["redis.googleapis.com"] : [],
+    var.enable_bi ? ["bigquery.googleapis.com", "bigqueryconnection.googleapis.com"] : [],
+    # The directory service account's project must have the Admin SDK on, or
+    # every Workspace read 403s with "Admin SDK API has not been used".
+    var.enable_google_directory_sync ? ["admin.googleapis.com"] : [],
   ))
 
   service            = each.key
@@ -71,7 +76,32 @@ module "secret_manager" {
   enable_google_login = var.enable_google_login
   enable_github_login = var.enable_github_login
 
+  enable_google_directory_sync = var.enable_google_directory_sync
+
   depends_on = [google_project_service.apis]
+}
+
+# --- Google Workspace Directory sync: the instance's one service account.
+#     Every org syncs through it; a Workspace admin grants its client ID
+#     domain-wide delegation in admin.google.com. No IAM roles — it needs none
+#     in this project — and no key here: a key minted by Terraform would sit in
+#     state. It is created with gcloud and stored in the secret below
+#     (docs/runbooks/google-directory.md).
+resource "google_service_account" "google_directory" {
+  count        = var.enable_google_directory_sync ? 1 : 0
+  project      = var.project_id
+  account_id   = "${local.base_prefix}-gdir"
+  display_name = "Overslash Google Workspace Directory sync"
+  description  = "Domain-wide delegation target for admin.directory.group.readonly. Key lives in Secret Manager."
+}
+
+output "google_directory_service_account_email" {
+  value = try(google_service_account.google_directory[0].email, "")
+}
+
+output "google_directory_client_id" {
+  description = "What Workspace admins enter under Domain-wide delegation (the dashboard shows it too)."
+  value       = try(google_service_account.google_directory[0].unique_id, "")
 }
 
 # --- Cloud SQL ---
@@ -100,6 +130,23 @@ module "cloud_sql" {
     google_project_service.apis,
     module.networking,
   ]
+}
+
+# --- BI (BigQuery federation over the `bi` schema; docs/runbooks/bi.md) ---
+module "bi" {
+  count = var.enable_bi ? 1 : 0
+
+  source      = "./modules/bi"
+  project_id  = var.project_id
+  region      = var.region
+  base_prefix = local.base_prefix
+
+  sql_connection_name = module.cloud_sql.connection_name
+  sql_database        = module.cloud_sql.db_name
+  bi_viewers          = var.bi_viewers
+  publish_views       = var.bi_publish_views
+
+  depends_on = [google_project_service.apis]
 }
 
 # --- Cloud Run ---
@@ -168,6 +215,14 @@ module "cloud_run" {
 
   connection_return_url_hosts = var.connection_return_url_hosts
 
+  trusted_proxy_hops             = var.trusted_proxy_hops
+  trusted_proxy_cidrs            = var.trusted_proxy_cidrs
+  enable_trusted_proxy_secret    = var.enable_trusted_proxy_secret
+  trusted_proxy_secret_secret_id = module.secret_manager.trusted_proxy_secret_secret_id
+  bi_db_password_secret_id       = var.enable_bi ? module.bi[0].db_password_secret_id : ""
+
+  google_directory_sa_key_secret_id = module.secret_manager.google_directory_sa_key_secret_id
+
   redis_host = var.enable_valkey && var.use_private_vpc ? module.memorystore[0].redis_host : ""
   redis_port = var.enable_valkey && var.use_private_vpc ? module.memorystore[0].redis_port : ""
 
@@ -228,6 +283,30 @@ module "monitoring" {
     module.cloud_run,
     module.cloud_sql,
   ]
+}
+
+# --- Audit logging (CASA 6.7.1; docs/compliance/casa/secrets-access-policy.md) ---
+#
+# Data Access audit logs, a retained audit bucket + sink, and an alert on
+# AccessSecretVersion by anyone but the runtime. `audit_log_bucket_locked` is
+# IRREVERSIBLE once applied — see the module header.
+module "audit_logging" {
+  source      = "./modules/audit-logging"
+  project_id  = var.project_id
+  region      = var.region
+  base_prefix = local.base_prefix
+
+  retention_days = var.audit_log_retention_days
+  locked         = var.audit_log_bucket_locked
+
+  # Every secret consumer runs as this one SA: the API, the shortener, overfwd
+  # and the metrics-exporter job all take module.iam.cloud_run_sa_email.
+  expected_secret_accessors = [module.iam.cloud_run_sa_email]
+
+  alerts_enabled        = var.alert_email != ""
+  notification_channels = var.alert_email != "" ? [module.monitoring.email_channel_id] : []
+
+  depends_on = [google_project_service.apis]
 }
 
 # --- API Load Balancer (global HTTPS LB with wildcard Certificate Manager cert) ---

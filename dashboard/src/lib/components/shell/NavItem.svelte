@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { page } from '$app/stores';
 	import { isActive } from './nav-items';
+	import NavIcon, { type IconName } from './NavIcon.svelte';
 
 	let {
 		href,
@@ -11,7 +12,8 @@
 	}: {
 		href: string;
 		label: string;
-		icon: string;
+		icon: IconName;
+		/** Rail mode: icon on top with a small label underneath. */
 		collapsed?: boolean;
 		// When the parent renders multiple NavItems whose hrefs are prefixes
 		// of one another (e.g. /org and /org/groups), pass the parent's
@@ -26,45 +28,59 @@
 </script>
 
 <a {href} class="nav-item" class:active class:collapsed title={collapsed ? label : undefined}>
-	<span class="icon">{icon}</span>
-	{#if !collapsed}<span class="label">{label}</span>{/if}
+	<span class="icon"><NavIcon name={icon} /></span>
+	<span class="label">{label}</span>
 </a>
 
 <style>
 	.nav-item {
 		display: flex;
 		align-items: center;
-		gap: 0.75rem;
-		padding: 0.55rem 0.75rem;
-		border-radius: 6px;
-		color: var(--color-text-muted);
-		font-size: 0.9rem;
+		gap: 0.625rem;
+		padding: 0.5rem 0.75rem;
+		border-radius: 8px;
+		color: var(--color-text-secondary);
+		font: var(--text-label);
 		text-decoration: none;
 		transition:
-			background 0.15s,
-			color 0.15s;
-	}
-	.nav-item.collapsed {
-		justify-content: center;
-		padding: 0.55rem 0;
+			background 0.1s,
+			color 0.1s;
 	}
 	.nav-item:hover {
-		background: var(--color-neutral-100, var(--color-border));
+		background: color-mix(in srgb, var(--color-text) 6%, transparent);
 		color: var(--color-text);
 	}
 	.nav-item.active {
-		background: var(--color-primary-50, rgba(79, 70, 229, 0.1));
+		background: var(--color-primary-bg);
 		color: var(--color-primary);
-		font-weight: 600;
+		font-weight: 500;
 	}
 	.icon {
-		font-size: 1.1rem;
+		display: flex;
+		align-items: center;
+		justify-content: center;
 		width: 1.25rem;
-		text-align: center;
+		flex: none;
 	}
 	.label {
+		flex: 1;
 		white-space: nowrap;
 		overflow: hidden;
 		text-overflow: ellipsis;
+	}
+	/* Rail: the icon stacks over a small, still-readable label. */
+	.nav-item.collapsed {
+		flex-direction: column;
+		gap: 4px;
+		padding: 8px 0;
+	}
+	.nav-item.collapsed .label {
+		flex: none;
+		max-width: 100%;
+		font-size: 10.5px;
+		line-height: 13px;
+		text-align: center;
+		white-space: normal;
+		text-wrap: balance;
 	}
 </style>

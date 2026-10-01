@@ -217,6 +217,12 @@ pub struct ConfigVar {
     /// wins if several do.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub identity: bool,
+    /// When true, the instance form shows this field in its main section
+    /// rather than behind "Show more options". A `required` var is shown
+    /// there anyway; this is for an optional one the operator should still
+    /// see up front.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub promoted: bool,
 }
 
 /// Where a credential's value goes in the HTTP request.

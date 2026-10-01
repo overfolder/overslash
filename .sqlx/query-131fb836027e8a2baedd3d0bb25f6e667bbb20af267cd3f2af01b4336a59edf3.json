@@ -1,0 +1,32 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT\n              EXISTS (SELECT 1 FROM identity_groups ig\n                       WHERE ig.group_id = $1 AND ig.identity_id = $2) AS \"direct!\",\n              EXISTS (SELECT 1\n                        FROM group_directory_sources gds\n                        JOIN identity_directory_groups idg\n                          ON idg.directory_group_id = gds.directory_group_id\n                        JOIN identities i ON i.id = idg.identity_id AND i.org_id = $3\n                       WHERE gds.group_id = $1 AND idg.identity_id = $2) AS \"derived!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "direct!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "derived!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "131fb836027e8a2baedd3d0bb25f6e667bbb20af267cd3f2af01b4336a59edf3"
+}

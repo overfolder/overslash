@@ -41,12 +41,14 @@
 			id="{idPrefix}-{p.name}"
 			type="text"
 			bind:value={config[p.name]}
-			placeholder={inherited?.[p.name] ?? ''}
+			placeholder={inherited?.[p.name] ?? p.default ?? ''}
 			autocomplete="off"
 			spellcheck="false"
 		/>
 		{#if inherited?.[p.name]}
 			<small>Leave blank to inherit your org's default ({inherited[p.name]}).</small>
+		{:else if p.default}
+			<small>Default: <code>{p.default}</code>.{#if p.description} {p.description}{/if}</small>
 		{:else if p.description}
 			<small>{p.description}</small>
 		{/if}
@@ -100,5 +102,8 @@
 	small {
 		font-size: 0.75rem;
 		color: var(--color-text-muted);
+	}
+	small code {
+		font-size: 0.72rem;
 	}
 </style>

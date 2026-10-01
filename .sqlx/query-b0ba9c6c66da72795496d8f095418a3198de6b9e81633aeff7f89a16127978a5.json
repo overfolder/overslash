@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM staged_uploads WHERE id = ANY($1) AND identity_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "UuidArray",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b0ba9c6c66da72795496d8f095418a3198de6b9e81633aeff7f89a16127978a5"
+}

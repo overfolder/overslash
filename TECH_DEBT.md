@@ -30,35 +30,6 @@ their code, not ours), so the date is a policy call, not a measurement.
 
 ---
 
-## A Langfuse instance cannot be re-pointed to another region from the dashboard
-
-`services/langfuse.yaml` resolves its host from
-`${LANGFUSE_URL:https://cloud.langfuse.com}` (D44), so every deployment gets the
-vendor's EU cloud by default and can repoint the *whole* template with
-`OVERSLASH_TEMPLATE_VAR_LANGFUSE_URL`. But Langfuse Cloud also runs US, JP and
-HIPAA regions, and Langfuse is self-hostable — so on a multi-tenant deployment
-two orgs can legitimately need two different hosts, which the deployment
-variable cannot express.
-
-The executor already supports this: `effective_base`
-(`routes/actions/service_resolve.rs`) takes `service_instances.url` ahead of
-`hosts.first()` unconditionally, so `POST /v1/services` with a `url` works
-today and the integration tests rely on it. What does not work is the
-*dashboard*: `configurable_url` (`routes/templates/mod.rs`) renders the URL
-field only for a host-less template, an MCP runtime, or one with an
-`secret_source: org` scheme. Langfuse is none of the three, so a US-region org
-has to call the API directly — which fails rule 6 (vertical integration).
-
-Deliberately not fixed here. The obvious rule — "more than one `servers[]`
-entry means the operator picks" — is wrong for `services/x.yaml`, whose two
-entries (`api.twitter.com`, `api.x.com`) are one service under two domains
-rather than a choice. The honest fix is an explicit opt-in on the template
-(an `x-overslash-*` key saying the endpoint is operator-chosen), which is new
-vendor vocabulary and wants its own decision rather than riding along with a
-service template.
-
----
-
 ## SDK pins esbuild past tsup's declared range via an npm `override`
 
 `sdk/package.json` carries `overrides: { "esbuild": "^0.28.1" }`. It exists to
@@ -443,3 +414,28 @@ regenerating the file, to keep a 4-line schema change from arriving as a
 230-line diff. Fixing this properly is `make schema` plus a CI job that dumps a
 migrated database and fails on any difference — cheap, but it wants its own PR
 so the regeneration noise is reviewable on its own.
+
+---
+
+## The login ID token's signature is not verified
+
+Directory group sync (D107) reads group claims from `/userinfo` **and** the
+ID token, because Entra will not release `groups` on the v2 userinfo endpoint.
+`routes/auth/userinfo.rs::id_token_claims` base64-decodes the payload without
+checking the signature.
+
+This is defensible rather than sloppy: OIDC Core §3.1.3.7 explicitly permits
+skipping signature validation when the ID token is received directly from the
+token endpoint over TLS, which is this path — our own request, our own code,
+PKCE-bound. The `nonce` claim *is* checked against the one the login minted, so
+an ID token lifted from a different login is discarded rather than partially
+trusted. What is missing is defence against a compromised or
+man-in-the-middled token endpoint, which TLS is already the control for.
+
+To tighten: fetch the provider's JWKS and verify RS256/ES256 before reading
+claims. `oauth_providers.jwks_uri` already exists, is populated for the builtin
+providers by OIDC discovery, and is currently read by nothing. The fetch must
+go through `ssrf_guard::outbound_client` — the issuer-discovery surface in
+TODO §1.6 is the same class of problem and should be fixed with it rather than
+separately. Note the fakes mint no ID token at all, so the e2e IdP fakes would
+need a JWKS endpoint and a signed payload before this can be tested end to end.

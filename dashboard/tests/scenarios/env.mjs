@@ -18,6 +18,7 @@ import { resolve } from 'node:path';
  *   stripeUrl?: string,
  *   mcpUrl?: string,
  *   mcpPuppetUrl?: string,
+ *   googleDirectoryUrl?: string,
  *   overfwdUrl?: string,
  *   greenmailApiUrl?: string,
  *   greenmailSmtpPort?: string,
@@ -70,6 +71,7 @@ export function resolveEnv() {
 		stripeUrl: pick('STRIPE_URL'),
 		mcpUrl: pick('MCP_URL'),
 		mcpPuppetUrl: pick('MCP_PUPPET_URL'),
+		googleDirectoryUrl: pick('GOOGLE_DIRECTORY_URL'),
 		// Mail stack. `mailboxImap`/`mailboxSmtp` are container-network
 		// addresses — they are dialled by overfwd, not by the test process,
 		// so they are deliberately not host-reachable URLs.

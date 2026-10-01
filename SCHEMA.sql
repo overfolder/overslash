@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict c4ZOwNzpn1YqvUvZuguiaNIKICNL7i6say5iMyjrzQpjImZ1lV1UyxBIEteL3f4
+\restrict ucgw40mCIPlPgV5GqW8GKWP8CHVzpEgVOckGaAcWQqXjRgTefZmau7iSCU6Bnfd
 
 -- Dumped from database version 16.14 (Debian 16.14-1.pgdg12+1)
 -- Dumped by pg_dump version 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1)
@@ -267,6 +267,25 @@ COMMENT ON COLUMN public.connections.reauth_required IS 'When true, the connecti
 
 
 --
+-- Name: directory_groups; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.directory_groups (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    org_id uuid NOT NULL,
+    idp_config_id uuid,
+    source text DEFAULT 'oidc_claim'::text NOT NULL,
+    external_id text NOT NULL,
+    display_name text NOT NULL,
+    first_seen_at timestamp with time zone DEFAULT now() NOT NULL,
+    last_seen_at timestamp with time zone DEFAULT now() NOT NULL,
+    google_directory_org_id uuid,
+    CONSTRAINT directory_groups_google_directory_org_check CHECK (((source = 'google_directory'::text) = (google_directory_org_id IS NOT NULL))),
+    CONSTRAINT directory_groups_source_check CHECK ((source = ANY (ARRAY['oidc_claim'::text, 'google_directory'::text])))
+);
+
+
+--
 -- Name: download_tokens; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -325,6 +344,54 @@ COMMENT ON COLUMN public.download_tokens.credential_ref IS 'How to re-resolve th
 --
 
 COMMENT ON COLUMN public.download_tokens.call_result_id IS 'When set, redemption serves these stored bytes instead of replaying `request`. Mutually exclusive with `request` (download_tokens_one_byte_source).';
+
+
+--
+-- Name: group_directory_sources; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.group_directory_sources (
+    group_id uuid NOT NULL,
+    directory_group_id uuid NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: identity_directory_groups; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.identity_directory_groups (
+    identity_id uuid NOT NULL,
+    directory_group_id uuid NOT NULL,
+    synced_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: identity_groups; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.identity_groups (
+    identity_id uuid NOT NULL,
+    group_id uuid NOT NULL,
+    assigned_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: effective_identity_groups; Type: VIEW; Schema: public; Owner: -
+--
+
+CREATE VIEW public.effective_identity_groups AS
+ SELECT ig.identity_id,
+    ig.group_id
+   FROM public.identity_groups ig
+UNION
+ SELECT idg.identity_id,
+    gds.group_id
+   FROM (public.identity_directory_groups idg
+     JOIN public.group_directory_sources gds ON ((gds.directory_group_id = idg.directory_group_id)));
 
 
 --
@@ -492,6 +559,20 @@ COMMENT ON COLUMN public.executions.cancel_requested IS 'Cooperative cancel. Sto
 
 
 --
+-- Name: google_directory_connect_flows; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.google_directory_connect_flows (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    org_id uuid NOT NULL,
+    identity_id uuid NOT NULL,
+    pkce_verifier text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    expires_at timestamp with time zone NOT NULL
+);
+
+
+--
 -- Name: group_grants; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -569,17 +650,6 @@ CREATE TABLE public.identities (
     auto_call_on_approve boolean DEFAULT true NOT NULL,
     CONSTRAINT identities_is_org_admin_only_user CHECK (((kind = 'user'::text) OR (is_org_admin = false))),
     CONSTRAINT identities_kind_check CHECK ((kind = ANY (ARRAY['user'::text, 'agent'::text, 'sub_agent'::text])))
-);
-
-
---
--- Name: identity_groups; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.identity_groups (
-    identity_id uuid NOT NULL,
-    group_id uuid NOT NULL,
-    assigned_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
 
@@ -688,6 +758,20 @@ CREATE TABLE public.mcp_upstream_tokens (
 
 
 --
+-- Name: mcp_url_elicitations; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.mcp_url_elicitations (
+    elicit_id text NOT NULL,
+    agent_identity_id uuid NOT NULL,
+    action text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    answered_at timestamp with time zone,
+    CONSTRAINT mcp_url_elicitations_action_check CHECK ((action = ANY (ARRAY['accept'::text, 'decline'::text, 'cancel'::text])))
+);
+
+
+--
 -- Name: media_descriptors; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -737,8 +821,32 @@ CREATE TABLE public.oauth_connection_flows (
     return_url text,
     upgrade_connection_id uuid,
     service_instance_id uuid,
-    pin_service_instance_ids uuid[] DEFAULT '{}'::uuid[] NOT NULL
+    pin_service_instance_ids uuid[] DEFAULT '{}'::uuid[] NOT NULL,
+    completed_at timestamp with time zone,
+    failed_at timestamp with time zone,
+    failure text
 );
+
+
+--
+-- Name: COLUMN oauth_connection_flows.completed_at; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.oauth_connection_flows.completed_at IS 'Set by the OAuth callback when the flow produced a connection. Polled by URL-mode MCP elicitation.';
+
+
+--
+-- Name: COLUMN oauth_connection_flows.failed_at; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.oauth_connection_flows.failed_at IS 'Set by the OAuth callback when the flow ended in an error. Polled by URL-mode MCP elicitation.';
+
+
+--
+-- Name: COLUMN oauth_connection_flows.failure; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.oauth_connection_flows.failure IS 'Short reason the flow failed (provider OAuth error code, cancelled_by_user, or a coarse callback token). Set with failed_at.';
 
 
 --
@@ -837,6 +945,35 @@ COMMENT ON COLUMN public.oauth_providers.refresh_endpoint IS 'Where the refresh 
 
 
 --
+-- Name: org_google_directory_configs; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.org_google_directory_configs (
+    org_id uuid NOT NULL,
+    admin_subject text NOT NULL,
+    customer_id text DEFAULT 'my_customer'::text NOT NULL,
+    enabled boolean DEFAULT true NOT NULL,
+    sync_interval_hours integer DEFAULT 8 NOT NULL,
+    next_sync_at timestamp with time zone DEFAULT now() NOT NULL,
+    sync_requested_at timestamp with time zone,
+    lease_owner text,
+    lease_expires_at timestamp with time zone,
+    last_sync_started_at timestamp with time zone,
+    last_sync_finished_at timestamp with time zone,
+    last_sync_status text,
+    last_sync_error text,
+    last_sync_stats jsonb,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    domain text NOT NULL,
+    connected_by_identity_id uuid,
+    connected_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT org_google_directory_configs_last_sync_status_check CHECK ((last_sync_status = ANY (ARRAY['ok'::text, 'error'::text]))),
+    CONSTRAINT org_google_directory_configs_sync_interval_hours_check CHECK (((sync_interval_hours >= 1) AND (sync_interval_hours <= 168)))
+);
+
+
+--
 -- Name: org_idp_configs; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -851,6 +988,8 @@ CREATE TABLE public.org_idp_configs (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     is_default boolean DEFAULT false NOT NULL,
+    group_sync_enabled boolean DEFAULT false NOT NULL,
+    group_claim text DEFAULT 'groups'::text NOT NULL,
     CONSTRAINT org_idp_configs_creds_both_or_neither CHECK ((((encrypted_client_id IS NULL) AND (encrypted_client_secret IS NULL)) OR ((encrypted_client_id IS NOT NULL) AND (encrypted_client_secret IS NOT NULL))))
 );
 
@@ -1033,6 +1172,7 @@ CREATE TABLE public.secret_requests (
     require_user_session boolean DEFAULT false NOT NULL,
     service_instance_id uuid,
     credential_key text,
+    declined_at timestamp with time zone,
     CONSTRAINT secret_requests_service_binding_complete CHECK (((service_instance_id IS NULL) = (credential_key IS NULL)))
 );
 
@@ -1049,6 +1189,13 @@ COMMENT ON COLUMN public.secret_requests.service_instance_id IS 'Service instanc
 --
 
 COMMENT ON COLUMN public.secret_requests.credential_key IS 'Template securityScheme slot key to bind on fulfilment, validated against the template at mint time. NULL whenever service_instance_id is.';
+
+
+--
+-- Name: COLUMN secret_requests.declined_at; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.secret_requests.declined_at IS 'Set when the recipient pressed Deny on the provide page. Advisory; fulfilment still wins.';
 
 
 --
@@ -1204,6 +1351,55 @@ COMMENT ON COLUMN public.service_templates.delta IS 'Derived-layer content: mask
 
 
 --
+-- Name: staged_uploads; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.staged_uploads (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    org_id uuid NOT NULL,
+    identity_id uuid NOT NULL,
+    owner_user_id uuid NOT NULL,
+    token_hash bytea,
+    status text DEFAULT 'pending'::text NOT NULL,
+    filename text NOT NULL,
+    content_type text NOT NULL,
+    declared_size_bytes bigint NOT NULL,
+    declared_sha256 text,
+    size_bytes bigint,
+    sha256 text,
+    body_ciphertext bytea,
+    pinned_until timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    redeemed_at timestamp with time zone,
+    CONSTRAINT staged_uploads_declared_size_bytes_check CHECK ((declared_size_bytes > 0)),
+    CONSTRAINT staged_uploads_ready_has_bytes CHECK (((status = 'ready'::text) = ((body_ciphertext IS NOT NULL) AND (size_bytes IS NOT NULL) AND (sha256 IS NOT NULL)))),
+    CONSTRAINT staged_uploads_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'uploading'::text, 'ready'::text])))
+);
+
+
+--
+-- Name: TABLE staged_uploads; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.staged_uploads IS 'Bytes the gateway holds briefly so an HTTP action can carry them inline (x-overslash-staged-upload). Minted by overslash:upload_file, pushed to POST /v1/uploads/{token}, inlined at send time. Quota-bounded and TTL''d.';
+
+
+--
+-- Name: COLUMN staged_uploads.body_ciphertext; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.staged_uploads.body_ciphertext IS 'AES-256-GCM [version|nonce|ct+tag] over the raw bytes. NULL until redeemed.';
+
+
+--
+-- Name: COLUMN staged_uploads.pinned_until; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.staged_uploads.pinned_until IS 'Referenced by a pending approval or queued call until this time: not evictable, not swept.';
+
+
+--
 -- Name: upload_tokens; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -1274,6 +1470,25 @@ CREATE TABLE public.user_org_memberships (
     role text NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     CONSTRAINT user_org_memberships_role_check CHECK ((role = ANY (ARRAY['admin'::text, 'member'::text])))
+);
+
+
+--
+-- Name: user_sessions; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.user_sessions (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    user_id uuid,
+    identity_id uuid NOT NULL,
+    org_id uuid NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    last_seen_at timestamp with time zone DEFAULT now() NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    revoked_at timestamp with time zone,
+    revoked_reason text,
+    user_agent text,
+    ip_address text
 );
 
 
@@ -1474,6 +1689,22 @@ ALTER TABLE ONLY public.connections
 
 
 --
+-- Name: directory_groups directory_groups_org_id_source_idp_config_id_external_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.directory_groups
+    ADD CONSTRAINT directory_groups_org_id_source_idp_config_id_external_id_key UNIQUE NULLS NOT DISTINCT (org_id, source, idp_config_id, external_id);
+
+
+--
+-- Name: directory_groups directory_groups_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.directory_groups
+    ADD CONSTRAINT directory_groups_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: download_tokens download_tokens_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1519,6 +1750,22 @@ ALTER TABLE ONLY public.events
 
 ALTER TABLE ONLY public.executions
     ADD CONSTRAINT executions_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: google_directory_connect_flows google_directory_connect_flows_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.google_directory_connect_flows
+    ADD CONSTRAINT google_directory_connect_flows_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: group_directory_sources group_directory_sources_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.group_directory_sources
+    ADD CONSTRAINT group_directory_sources_pkey PRIMARY KEY (group_id, directory_group_id);
 
 
 --
@@ -1575,6 +1822,14 @@ ALTER TABLE ONLY public.identities
 
 ALTER TABLE ONLY public.identities
     ADD CONSTRAINT identities_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: identity_directory_groups identity_directory_groups_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.identity_directory_groups
+    ADD CONSTRAINT identity_directory_groups_pkey PRIMARY KEY (identity_id, directory_group_id);
 
 
 --
@@ -1658,6 +1913,14 @@ ALTER TABLE ONLY public.mcp_upstream_tokens
 
 
 --
+-- Name: mcp_url_elicitations mcp_url_elicitations_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mcp_url_elicitations
+    ADD CONSTRAINT mcp_url_elicitations_pkey PRIMARY KEY (elicit_id);
+
+
+--
 -- Name: media_descriptors media_descriptors_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1711,6 +1974,14 @@ ALTER TABLE ONLY public.oauth_preview_origins
 
 ALTER TABLE ONLY public.oauth_providers
     ADD CONSTRAINT oauth_providers_pkey PRIMARY KEY (key);
+
+
+--
+-- Name: org_google_directory_configs org_google_directory_configs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.org_google_directory_configs
+    ADD CONSTRAINT org_google_directory_configs_pkey PRIMARY KEY (org_id);
 
 
 --
@@ -1858,6 +2129,22 @@ ALTER TABLE ONLY public.service_templates
 
 
 --
+-- Name: staged_uploads staged_uploads_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.staged_uploads
+    ADD CONSTRAINT staged_uploads_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: staged_uploads staged_uploads_token_hash_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.staged_uploads
+    ADD CONSTRAINT staged_uploads_token_hash_key UNIQUE (token_hash);
+
+
+--
 -- Name: upload_tokens upload_tokens_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1879,6 +2166,14 @@ ALTER TABLE ONLY public.upload_tokens
 
 ALTER TABLE ONLY public.user_org_memberships
     ADD CONSTRAINT user_org_memberships_pkey PRIMARY KEY (user_id, org_id);
+
+
+--
+-- Name: user_sessions user_sessions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_sessions
+    ADD CONSTRAINT user_sessions_pkey PRIMARY KEY (id);
 
 
 --
@@ -2068,6 +2363,27 @@ CREATE INDEX idx_connections_provider ON public.connections USING btree (org_id,
 
 
 --
+-- Name: idx_directory_groups_google_directory_org; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_directory_groups_google_directory_org ON public.directory_groups USING btree (google_directory_org_id) WHERE (google_directory_org_id IS NOT NULL);
+
+
+--
+-- Name: idx_directory_groups_idp_config; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_directory_groups_idp_config ON public.directory_groups USING btree (idp_config_id);
+
+
+--
+-- Name: idx_directory_groups_org; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_directory_groups_org ON public.directory_groups USING btree (org_id);
+
+
+--
 -- Name: idx_executions_approval_id; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2114,6 +2430,20 @@ CREATE INDEX idx_executions_pending_expiry ON public.executions USING btree (exp
 --
 
 CREATE INDEX idx_executions_unread ON public.executions USING btree (org_id, completed_at) WHERE ((status = ANY (ARRAY['executed'::text, 'failed'::text])) AND (result_viewed_at IS NULL));
+
+
+--
+-- Name: idx_google_directory_connect_flows_expires; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_google_directory_connect_flows_expires ON public.google_directory_connect_flows USING btree (expires_at);
+
+
+--
+-- Name: idx_group_directory_sources_directory_group; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_group_directory_sources_directory_group ON public.group_directory_sources USING btree (directory_group_id);
 
 
 --
@@ -2191,6 +2521,20 @@ CREATE INDEX idx_identities_parent ON public.identities USING btree (parent_id) 
 --
 
 CREATE INDEX idx_identities_user ON public.identities USING btree (user_id);
+
+
+--
+-- Name: idx_identity_directory_groups_group; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_identity_directory_groups_group ON public.identity_directory_groups USING btree (directory_group_id);
+
+
+--
+-- Name: idx_identity_directory_groups_identity; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_identity_directory_groups_identity ON public.identity_directory_groups USING btree (identity_id);
 
 
 --
@@ -2278,6 +2622,13 @@ CREATE UNIQUE INDEX idx_mcp_upstream_tokens_current ON public.mcp_upstream_token
 
 
 --
+-- Name: idx_mcp_url_elicitations_created; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_mcp_url_elicitations_created ON public.mcp_url_elicitations USING btree (created_at);
+
+
+--
 -- Name: idx_memberships_org; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2324,6 +2675,13 @@ CREATE INDEX idx_oauth_mcp_clients_org ON public.oauth_mcp_clients USING btree (
 --
 
 CREATE INDEX idx_oauth_preview_origins_expires ON public.oauth_preview_origins USING btree (expires_at);
+
+
+--
+-- Name: idx_org_google_directory_configs_due; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_org_google_directory_configs_due ON public.org_google_directory_configs USING btree (next_sync_at) WHERE enabled;
 
 
 --
@@ -2565,6 +2923,13 @@ CREATE UNIQUE INDEX media_descriptors_ref_idx ON public.media_descriptors USING 
 
 
 --
+-- Name: org_google_directory_configs_domain_key; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX org_google_directory_configs_domain_key ON public.org_google_directory_configs USING btree (lower(domain));
+
+
+--
 -- Name: org_idp_configs_one_default_per_org; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2600,10 +2965,52 @@ CREATE UNIQUE INDEX service_action_embeddings_user_unique ON public.service_acti
 
 
 --
+-- Name: staged_uploads_expiry_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX staged_uploads_expiry_idx ON public.staged_uploads USING btree (expires_at);
+
+
+--
+-- Name: staged_uploads_identity_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX staged_uploads_identity_idx ON public.staged_uploads USING btree (identity_id, created_at);
+
+
+--
+-- Name: staged_uploads_org_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX staged_uploads_org_idx ON public.staged_uploads USING btree (org_id);
+
+
+--
 -- Name: upload_tokens_expiry_idx; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX upload_tokens_expiry_idx ON public.upload_tokens USING btree (expires_at);
+
+
+--
+-- Name: user_sessions_expires_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX user_sessions_expires_idx ON public.user_sessions USING btree (expires_at);
+
+
+--
+-- Name: user_sessions_identity_live_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX user_sessions_identity_live_idx ON public.user_sessions USING btree (identity_id) WHERE (revoked_at IS NULL);
+
+
+--
+-- Name: user_sessions_user_live_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX user_sessions_user_live_idx ON public.user_sessions USING btree (user_id) WHERE (revoked_at IS NULL);
 
 
 --
@@ -2779,6 +3186,30 @@ ALTER TABLE ONLY public.connections
 
 
 --
+-- Name: directory_groups directory_groups_google_directory_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.directory_groups
+    ADD CONSTRAINT directory_groups_google_directory_org_id_fkey FOREIGN KEY (google_directory_org_id) REFERENCES public.org_google_directory_configs(org_id) ON DELETE CASCADE;
+
+
+--
+-- Name: directory_groups directory_groups_idp_config_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.directory_groups
+    ADD CONSTRAINT directory_groups_idp_config_id_fkey FOREIGN KEY (idp_config_id) REFERENCES public.org_idp_configs(id) ON DELETE CASCADE;
+
+
+--
+-- Name: directory_groups directory_groups_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.directory_groups
+    ADD CONSTRAINT directory_groups_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
+
+
+--
 -- Name: download_tokens download_tokens_call_result_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2883,6 +3314,38 @@ ALTER TABLE ONLY public.executions
 
 
 --
+-- Name: google_directory_connect_flows google_directory_connect_flows_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.google_directory_connect_flows
+    ADD CONSTRAINT google_directory_connect_flows_identity_id_fkey FOREIGN KEY (identity_id) REFERENCES public.identities(id) ON DELETE CASCADE;
+
+
+--
+-- Name: google_directory_connect_flows google_directory_connect_flows_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.google_directory_connect_flows
+    ADD CONSTRAINT google_directory_connect_flows_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
+
+
+--
+-- Name: group_directory_sources group_directory_sources_directory_group_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.group_directory_sources
+    ADD CONSTRAINT group_directory_sources_directory_group_id_fkey FOREIGN KEY (directory_group_id) REFERENCES public.directory_groups(id) ON DELETE CASCADE;
+
+
+--
+-- Name: group_directory_sources group_directory_sources_group_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.group_directory_sources
+    ADD CONSTRAINT group_directory_sources_group_id_fkey FOREIGN KEY (group_id) REFERENCES public.groups(id) ON DELETE CASCADE;
+
+
+--
 -- Name: group_grants group_grants_group_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2944,6 +3407,22 @@ ALTER TABLE ONLY public.identities
 
 ALTER TABLE ONLY public.identities
     ADD CONSTRAINT identities_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
+-- Name: identity_directory_groups identity_directory_groups_directory_group_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.identity_directory_groups
+    ADD CONSTRAINT identity_directory_groups_directory_group_id_fkey FOREIGN KEY (directory_group_id) REFERENCES public.directory_groups(id) ON DELETE CASCADE;
+
+
+--
+-- Name: identity_directory_groups identity_directory_groups_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.identity_directory_groups
+    ADD CONSTRAINT identity_directory_groups_identity_id_fkey FOREIGN KEY (identity_id) REFERENCES public.identities(id) ON DELETE CASCADE;
 
 
 --
@@ -3067,6 +3546,14 @@ ALTER TABLE ONLY public.mcp_upstream_tokens
 
 
 --
+-- Name: mcp_url_elicitations mcp_url_elicitations_agent_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.mcp_url_elicitations
+    ADD CONSTRAINT mcp_url_elicitations_agent_identity_id_fkey FOREIGN KEY (agent_identity_id) REFERENCES public.identities(id) ON DELETE CASCADE;
+
+
+--
 -- Name: media_descriptors media_descriptors_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3120,6 +3607,22 @@ ALTER TABLE ONLY public.oauth_connection_flows
 
 ALTER TABLE ONLY public.oauth_mcp_clients
     ADD CONSTRAINT oauth_mcp_clients_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
+
+
+--
+-- Name: org_google_directory_configs org_google_directory_configs_connected_by_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.org_google_directory_configs
+    ADD CONSTRAINT org_google_directory_configs_connected_by_identity_id_fkey FOREIGN KEY (connected_by_identity_id) REFERENCES public.identities(id) ON DELETE SET NULL;
+
+
+--
+-- Name: org_google_directory_configs org_google_directory_configs_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.org_google_directory_configs
+    ADD CONSTRAINT org_google_directory_configs_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
 
 
 --
@@ -3355,6 +3858,30 @@ ALTER TABLE ONLY public.service_templates
 
 
 --
+-- Name: staged_uploads staged_uploads_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.staged_uploads
+    ADD CONSTRAINT staged_uploads_identity_id_fkey FOREIGN KEY (identity_id) REFERENCES public.identities(id) ON DELETE CASCADE;
+
+
+--
+-- Name: staged_uploads staged_uploads_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.staged_uploads
+    ADD CONSTRAINT staged_uploads_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
+
+
+--
+-- Name: staged_uploads staged_uploads_owner_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.staged_uploads
+    ADD CONSTRAINT staged_uploads_owner_user_id_fkey FOREIGN KEY (owner_user_id) REFERENCES public.identities(id) ON DELETE CASCADE;
+
+
+--
 -- Name: upload_tokens upload_tokens_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3395,6 +3922,30 @@ ALTER TABLE ONLY public.user_org_memberships
 
 
 --
+-- Name: user_sessions user_sessions_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_sessions
+    ADD CONSTRAINT user_sessions_identity_id_fkey FOREIGN KEY (identity_id) REFERENCES public.identities(id) ON DELETE CASCADE;
+
+
+--
+-- Name: user_sessions user_sessions_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_sessions
+    ADD CONSTRAINT user_sessions_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
+
+
+--
+-- Name: user_sessions user_sessions_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_sessions
+    ADD CONSTRAINT user_sessions_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+
+--
 -- Name: users users_personal_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -3430,5 +3981,5 @@ ALTER TABLE ONLY public.webhook_subscriptions
 -- PostgreSQL database dump complete
 --
 
-\unrestrict c4ZOwNzpn1YqvUvZuguiaNIKICNL7i6say5iMyjrzQpjImZ1lV1UyxBIEteL3f4
+\unrestrict ucgw40mCIPlPgV5GqW8GKWP8CHVzpEgVOckGaAcWQqXjRgTefZmau7iSCU6Bnfd
 

@@ -66,14 +66,14 @@ pub(super) async fn connect_authorize(
         ConnectGateOutcome::Deny => Ok(mismatch_html()),
         // Admin/actor who is not the owner: render the loud consent page. The
         // flow is NOT consumed here — the confirm POST is the boundary that
-        // re-validates and consumes. `set_cookie` is recomputed on confirm.
+        // re-validates and consumes. `remint` is recomputed on confirm.
         ConnectGateOutcome::NeedsConsent {
             owner_label,
             provider,
             ..
         } => Ok(admin_consent_html(&owner_label, &provider, &flow.id)),
-        ConnectGateOutcome::Allow { set_cookie } => {
-            consume_and_redirect(&state, &ext, &flow.id, set_cookie).await
+        ConnectGateOutcome::Allow { remint } => {
+            consume_and_redirect(&state, &ext, &headers, &flow.id, remint).await
         }
     }
 }
@@ -117,11 +117,47 @@ pub(super) async fn connect_authorize_confirm(
     match evaluate_connect_gate(&state, &ext, &session, &flow, allow_remint(&ext)).await? {
         ConnectGateOutcome::Deny => Ok(mismatch_html()),
         // Owner/auto-switch, or a consented admin/actor — both proceed.
-        ConnectGateOutcome::Allow { set_cookie }
-        | ConnectGateOutcome::NeedsConsent { set_cookie, .. } => {
-            consume_and_redirect(&state, &ext, &flow.id, set_cookie).await
+        ConnectGateOutcome::Allow { remint } | ConnectGateOutcome::NeedsConsent { remint, .. } => {
+            consume_and_redirect(&state, &ext, &headers, &flow.id, remint).await
         }
     }
+}
+
+/// POST target of the interstitial's Cancel button. Records the refusal on the
+/// flow (`failure = cancelled_by_user`) so a tool call waiting on this link as
+/// a URL-mode elicitation answers now, rather than timing out. Needs a session
+/// like the confirm POST it sits beside, so a cross-site form cannot end
+/// someone else's flow. Only an unconsumed flow can be cancelled: once the
+/// user has gone on to the provider, the provider's own answer is what counts.
+pub(super) async fn connect_authorize_cancel(
+    State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
+    headers: HeaderMap,
+    Form(params): Form<ConfirmParams>,
+) -> Result<Response> {
+    let session = match read_session(&state, &headers) {
+        Ok(s) => s,
+        Err(SessionError::Missing) => return Err(AppError::Unauthorized("missing session".into())),
+        Err(SessionError::Invalid) => {
+            return Err(AppError::Unauthorized("invalid session cookie".into()));
+        }
+    };
+    let Some(flow) = oauth_connection_flow::get_by_id(state.db(&ext), &params.id).await? else {
+        return Ok(gone_html("This OAuth link is invalid or has been revoked."));
+    };
+    // Only someone who could have *continued* this flow may cancel it: the
+    // same gate the confirm POST runs, so a signed-in user of another org who
+    // learns a flow id cannot end it. No re-mint — a cancel changes no
+    // session, so there is nothing to re-scope.
+    match evaluate_connect_gate(&state, &ext, &session, &flow, false).await? {
+        ConnectGateOutcome::Deny => return Ok(mismatch_html()),
+        ConnectGateOutcome::Allow { .. } | ConnectGateOutcome::NeedsConsent { .. } => {}
+    }
+    if flow.consumed_at.is_none() {
+        oauth_connection_flow::mark_finished(state.db(&ext), &flow.id, Err("cancelled_by_user"))
+            .await?;
+    }
+    Ok(cancelled_html())
 }
 
 /// Whether the connect gate may transparently re-mint the session cookie to the
@@ -137,7 +173,7 @@ fn allow_remint(ext: &axum::http::Extensions) -> bool {
 }
 
 /// Atomically claim the flow for redirect and 303 to the upstream provider,
-/// attaching `set_cookie` only on the winning consume (so we never re-scope a
+/// applying `remint` only on the winning consume (so we never re-scope a
 /// session for a flow we didn't actually start). `consume` is the gate's
 /// single-use UX flag — a concurrent click that already marked the row returns
 /// `None`, in which case we render the "already been used" page instead of
@@ -147,13 +183,15 @@ fn allow_remint(ext: &axum::http::Extensions) -> bool {
 async fn consume_and_redirect(
     state: &AppState,
     ext: &axum::http::Extensions,
+    headers: &HeaderMap,
     flow_id: &str,
-    set_cookie: Option<axum::http::HeaderValue>,
+    remint: Option<crate::routes::connect_gate::SessionRemint>,
 ) -> Result<Response> {
     match oauth_connection_flow::consume(state.db(ext), flow_id).await? {
         Some(row) => {
             let mut resp = Redirect::to(&row.upstream_authorize_url).into_response();
-            if let Some(cookie) = set_cookie {
+            if let Some(remint) = remint {
+                let cookie = remint.apply(state, ext, headers).await?;
                 resp.headers_mut().insert(header::SET_COOKIE, cookie);
             }
             Ok(resp)

@@ -37,6 +37,7 @@ fn mint_session(org_id: Uuid, identity_id: Uuid, user_id: Option<Uuid>, email: &
             exp: now + 3600,
             user_id,
             mcp_client_id: None,
+            jti: None,
         },
     )
     .expect("mint")

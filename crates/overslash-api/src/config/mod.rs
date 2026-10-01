@@ -8,15 +8,21 @@
 
 use std::collections::HashMap;
 
+mod async_execution;
 mod boot_policy;
 mod from_env;
+mod ingress_rate_limits;
 mod parse;
+mod staged_uploads;
 mod sweeps;
 
+pub use async_execution::AsyncExecutionConfig;
 pub use boot_policy::{
     BootReport, BootViolation, DeploymentEnv, KeyWeakness, assess_key, log_filter,
 };
+pub use ingress_rate_limits::IngressRateLimits;
 pub use parse::default_public_url;
+pub use staged_uploads::StagedUploadConfig;
 
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -126,6 +132,10 @@ pub struct Config {
     pub call_stream_idle_timeout_ms: u64,
     /// Async execution. See [`AsyncExecutionConfig`].
     pub async_execution: AsyncExecutionConfig,
+    /// Google Workspace Directory group sync. See [`GoogleDirectoryInstance`].
+    pub google_directory: GoogleDirectoryInstance,
+    /// Gateway-staged uploads. See [`StagedUploadConfig`].
+    pub staged_uploads: StagedUploadConfig,
     pub services_dir: String,
     pub google_auth_client_id: Option<String>,
     pub google_auth_client_secret: Option<String>,
@@ -229,6 +239,8 @@ pub struct Config {
     pub resolve_cache_namespace: Option<String>,
     pub default_rate_limit: u32,
     pub default_rate_window_secs: u32,
+    /// Per-IP and per-MCP-client limits on the MCP / OAuth subrouter.
+    pub ingress_rate_limits: IngressRateLimits,
     /// When `false`, `POST /v1/orgs` returns 403 and the dashboard hides the
     /// "Create org" CTA. Lets a self-hosted operator lock down org creation
     /// after initial setup. Default `true`.
@@ -339,6 +351,11 @@ pub struct Config {
     /// empty list disables the redirect feature entirely (callback falls
     /// back to the historical JSON response).
     pub connection_return_url_allowed_hosts: Vec<String>,
+    /// Proxies whose `X-Forwarded-For` entries the `ClientIp` extractor
+    /// believes. `OVERSLASH_TRUSTED_PROXY_HOPS` / `_PROXIES` / `_SECRET`;
+    /// the default trusts nothing, so the socket peer is the client. See
+    /// [`crate::services::client_ip`].
+    pub trusted_proxies: crate::services::client_ip::TrustedProxies,
 }
 
 /// A credential the *platform* holds on every org's behalf, for a service the
@@ -368,88 +385,22 @@ pub struct PlatformCredential {
     pub value: String,
 }
 
-/// Async (non-blocking) action execution — see DECISIONS D62.
+/// Google Workspace Directory group sync — the instance's one service account.
 ///
-/// Nested rather than five flat `Config` fields on purpose. Every `Config`
-/// field has to be repeated in the test builder and in ~14 test fixtures that
-/// list fields explicitly, so five flat knobs would be ~75 mechanical edits and
-/// every future async knob another 15. One nested field costs one line each.
-#[derive(Clone, Debug)]
-pub struct AsyncExecutionConfig {
-    /// `ASYNC_EXECUTION_ENABLED`. Off means `execution: "async"` is rejected at
-    /// the boundary and no worker or signal handler is spawned, so a
-    /// flag-off deployment behaves exactly as it did before this feature.
-    pub enabled: bool,
-    /// `ASYNC_CALL_TIMEOUT_MAX_MS`. The deployment ceiling for an async call,
-    /// passed to the same `call_timeout::resolve` the sync path uses.
-    ///
-    /// Much larger than `call_timeout_max_ms` because that number exists to sit
-    /// under a proxy's request cap, and no proxy is counting an async call. The
-    /// binding constraints instead are instance lifetime (Cloud Run may recycle
-    /// at any time) and retry economics (`max_attempts` defaults to 1, so a lost
-    /// job is a failed job).
-    pub call_timeout_max_ms: u64,
-    /// `ASYNC_WORKER_CONCURRENCY`. Jobs one replica runs at once.
-    ///
-    /// Default 2 is a *connection* budget, not a throughput guess: the request
-    /// pool (25) plus the background pool (6) is 31 per instance, and with
-    /// `max_instances = 3` that is 93 against a Postgres ceiling around 97.
-    /// Raising this requires raising `DB_BACKGROUND_MAX_CONNECTIONS` by the
-    /// same amount, and 3 x (DB_MAX_CONNECTIONS + DB_BACKGROUND_MAX_CONNECTIONS)
-    /// must stay under that ceiling.
-    pub worker_concurrency: usize,
-    /// `ASYNC_LEASE_TTL_SECS`. How long a claim stays valid without a
-    /// heartbeat. Independent of job duration — the heartbeat is what keeps a
-    /// long job alive — so this only needs to tolerate a GC pause or a slow
-    /// database, not a slow upstream.
-    pub lease_ttl_secs: u64,
-    /// `ASYNC_MAX_ATTEMPTS`. Attempts before a row that keeps losing its lease
-    /// is failed outright.
-    ///
-    /// Defaults to **1**: an action call is not idempotent and there is no
-    /// idempotency-key concept, so a POST that already reached the upstream
-    /// must not be replayed because a worker died. Operators who know their
-    /// actions are safe to retry raise it.
-    pub max_attempts: i32,
-    /// `HYBRID_HANDOFF_MS`. How long a `execution: "hybrid"` call waits on the
-    /// connection before answering 202 and letting the job finish off it.
-    ///
-    /// A deployment default, so it is *clamped* against the call's own budget
-    /// rather than refused — see `services::hybrid::resolve_handoff`. A caller
-    /// who names `handoff_after_ms` explicitly gets a 400 instead, which is the
-    /// same split `timeout_ms` already makes between a template default and a
-    /// number a caller asked for.
-    pub hybrid_handoff_ms: u64,
-    /// `HYBRID_HANDOFF_MAX_MS`. Ceiling on a caller-supplied `handoff_after_ms`.
-    ///
-    /// Well under `call_timeout_max_ms`: a handoff longer than the synchronous
-    /// connection ceiling cannot fire before the proxy cuts the connection, so
-    /// permitting one would only produce a 504 where the caller asked for a 202.
-    pub hybrid_handoff_max_ms: u64,
-    /// `HYBRID_MAX_INFLIGHT`. Hybrid jobs one replica runs at once.
-    ///
-    /// A hybrid call spawns its job from the *request* path, so unlike the
-    /// worker loop nothing else bounds it — N concurrent requests would be N
-    /// detached tasks against the same background pool `worker_concurrency` is
-    /// sized for. Over this, a hybrid call is accepted onto the ordinary async
-    /// queue instead: same envelope, same poll URL, no shape change the caller
-    /// can observe.
-    pub hybrid_max_inflight: usize,
-}
-
-impl Default for AsyncExecutionConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            call_timeout_max_ms: 900_000,
-            worker_concurrency: 2,
-            lease_ttl_secs: 60,
-            max_attempts: 1,
-            hybrid_handoff_ms: 5_000,
-            hybrid_handoff_max_ms: 30_000,
-            hybrid_max_inflight: 32,
-        }
-    }
+/// Every org on the instance syncs through this account: a Workspace admin
+/// grants its client ID domain-wide delegation in admin.google.com, and nothing
+/// credential-shaped is ever stored per org. `None` means the feature is off on
+/// this instance — the dashboard says so, and connect is refused.
+///
+/// Read from `OVERSLASH_GOOGLE_DIRECTORY_SA_KEY` (the JSON key itself — what a
+/// Secret Manager value surfaced as an env var looks like) or
+/// `OVERSLASH_GOOGLE_DIRECTORY_SA_KEY_FILE` (a path — a mounted Kubernetes or
+/// Docker secret). Parsed at boot: a malformed key, an unreadable file, or both
+/// variables set stops the process rather than surfacing at the first sweep.
+/// Nested for the same reason as [`AsyncExecutionConfig`].
+#[derive(Clone, Debug, Default)]
+pub struct GoogleDirectoryInstance {
+    pub service_account: Option<crate::services::google_directory::ServiceAccountKey>,
 }
 
 impl Config {
@@ -888,6 +839,8 @@ pub(crate) mod tests {
     pub(crate) fn empty_test_config() -> Config {
         Config {
             async_execution: Default::default(),
+            google_directory: Default::default(),
+            staged_uploads: Default::default(),
             call_stream_idle_timeout_ms: 30_000,
             call_timeout_max_ms: 110_000,
             call_timeout_ms: 30_000,
@@ -936,6 +889,7 @@ pub(crate) mod tests {
             resolve_cache_namespace: None,
             default_rate_limit: 0,
             default_rate_window_secs: 0,
+            ingress_rate_limits: Default::default(),
             allow_org_creation: true,
             trial_default_duration_days: 30,
             single_org_mode: None,
@@ -961,6 +915,7 @@ pub(crate) mod tests {
             preview_origin_allowlist: None,
             deployment_env: DeploymentEnv::Local,
             connection_return_url_allowed_hosts: Vec::new(),
+            trusted_proxies: Default::default(),
         }
     }
 }

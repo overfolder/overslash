@@ -93,6 +93,7 @@ impl Config {
                     .filter(|n| *n > 0)
                     .unwrap_or(32),
             },
+            staged_uploads: crate::config::StagedUploadConfig::from_env(),
             services_dir: env::or_default("SERVICES_DIR", "services"),
             google_auth_client_id: env::optional("GOOGLE_AUTH_CLIENT_ID"),
             google_auth_client_secret: env::optional("GOOGLE_AUTH_CLIENT_SECRET"),
@@ -147,6 +148,7 @@ impl Config {
             resolve_cache_namespace: env::optional("RESOLVE_CACHE_NAMESPACE"),
             default_rate_limit: env::parse_opt("DEFAULT_RATE_LIMIT").unwrap_or(1000),
             default_rate_window_secs: env::parse_opt("DEFAULT_RATE_WINDOW_SECS").unwrap_or(60),
+            ingress_rate_limits: IngressRateLimits::from_env(),
             allow_org_creation: env::flag_or("ALLOW_ORG_CREATION", true),
             trial_default_duration_days: env::parse_opt("TRIAL_DEFAULT_DURATION_DAYS")
                 .filter(|d| *d > 0)
@@ -172,6 +174,10 @@ impl Config {
             service_base_overrides: parse_service_base_overrides(
                 env::optional("OVERSLASH_SERVICE_BASE_OVERRIDES").as_deref(),
             ),
+            google_directory: parse_google_directory(
+                env::optional("OVERSLASH_GOOGLE_DIRECTORY_SA_KEY"),
+                env::optional("OVERSLASH_GOOGLE_DIRECTORY_SA_KEY_FILE"),
+            ),
             platform_credential: parse_platform_credential(
                 env::optional("OVERSLASH_PLATFORM_GATEWAY_SECRET_NAME").as_deref(),
                 env::optional("OVERSLASH_PLATFORM_GATEWAY_HOST").as_deref(),
@@ -190,6 +196,10 @@ impl Config {
             connection_return_url_allowed_hosts: parse_connection_return_url_allowed_hosts(
                 env::optional("OVERSLASH_CONNECTION_RETURN_URL_HOSTS").as_deref(),
             ),
+            // Fail-fast like `parse_or_die`: a dropped CIDR would quietly put
+            // every client behind that proxy into one rate-limit bucket.
+            trusted_proxies: crate::services::client_ip::TrustedProxies::from_env()
+                .unwrap_or_else(|e| panic!("{e}")),
         }
     }
 

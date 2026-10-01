@@ -43,6 +43,7 @@ fn mint_session_with_user(org_id: Uuid, identity_id: Uuid, user_id: Uuid) -> Str
         exp: now + 3600,
         user_id: Some(user_id),
         mcp_client_id: None,
+        jti: None,
     };
     jwt::mint(&secret, &claims).expect("mint jwt")
 }
@@ -110,6 +111,8 @@ async fn read_billing(pool: &PgPool, org_id: Uuid) -> (String, Option<OffsetDate
 async fn make_app_state(pool: PgPool) -> overslash_api::AppState {
     let config = overslash_api::config::Config {
         async_execution: Default::default(),
+        google_directory: Default::default(),
+        staged_uploads: Default::default(),
         call_stream_idle_timeout_ms: 30_000,
         call_timeout_max_ms: 110_000,
         call_timeout_ms: 30_000,
@@ -158,6 +161,7 @@ async fn make_app_state(pool: PgPool) -> overslash_api::AppState {
         resolve_cache_namespace: None,
         default_rate_limit: 1000,
         default_rate_window_secs: 60,
+        ingress_rate_limits: overslash_api::config::IngressRateLimits::disabled(),
         allow_org_creation: true,
         trial_default_duration_days: 30,
         single_org_mode: None,
@@ -183,6 +187,7 @@ async fn make_app_state(pool: PgPool) -> overslash_api::AppState {
         preview_origin_allowlist: None,
         deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
+        trusted_proxies: Default::default(),
     };
     let free_unlimited_cache = Arc::new(
         overslash_api::services::billing_tier::FreeUnlimitedCache::new(Duration::from_millis(1)),
@@ -207,6 +212,7 @@ async fn make_app_state(pool: PgPool) -> overslash_api::AppState {
         mailer: std::sync::Arc::new(overslash_core::email::NoopMailer),
         event_bus: overslash_api::services::events::EventBus::new(),
         resolve_cache: overslash_api::services::resolve_cache::in_memory(10_000),
+        session_cache: overslash_api::services::user_sessions::cache::in_memory(),
         test_resources: None,
         background_db: None,
     }

@@ -20,8 +20,8 @@ use overslash_db::repos::oauth_connection_flow;
 use overslash_db::scopes::{OrgScope, UserScope};
 
 use super::connect_gate::{
-    ConnectGateOutcome, SessionError, admin_consent_html, evaluate_connect_gate, gone_html,
-    mismatch_html, read_session,
+    ConnectGateOutcome, SessionError, admin_consent_html, cancelled_html, evaluate_connect_gate,
+    gone_html, mismatch_html, read_session,
 };
 use super::util::fmt_time;
 use crate::{
@@ -49,7 +49,7 @@ use crud::{
     delete_connection, get_connection, list_connections, set_connection_default,
     set_connection_keep, upgrade_connection_scopes,
 };
-use gate::{connect_authorize, connect_authorize_confirm};
+use gate::{connect_authorize, connect_authorize_cancel, connect_authorize_confirm};
 use initiate::{import_connection, initiate_connection};
 
 // Shared with the service-deletion cascade in `routes::services`.
@@ -81,4 +81,5 @@ pub fn router() -> Router<AppState> {
             "/connect-authorize/confirm",
             post(connect_authorize_confirm),
         )
+        .route("/connect-authorize/cancel", post(connect_authorize_cancel))
 }

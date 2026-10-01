@@ -1084,3 +1084,245 @@ Flow B (task-augmented `tools/call`) stays rejected with its revisit condition u
 **Rationale**: Path-gating keeps an advisory published against an unchanged lockfile from freezing every unrelated merge. It gets an SLA and an issue instead of a repo-wide block, and the daily scan guarantees it is seen within a day. npm audit gates at `high` because it has no per-advisory ignore, so anything it fails on can only be fixed. A no-fix moderate would otherwise leave CI red with no legitimate exit. OSV covers the moderate and low tail, and it does support time-boxed exceptions. It also overlaps the other two on purpose: on its first run it caught a dashboard `devalue` advisory that npm audit had not reported. The 90-day cap exists because cargo-deny has no expiry of its own, and an ignore that is never re-read silently outlives its justification. Tradeoff accepted: a PR can merge while a known advisory sits in an untouched lockfile, for up to its SLA.
 
 **Numbering**: allocated D95 by #661, then #657's merge indented this heading, so the allocator stopped seeing it and gave #657's decision D95 as well. This entry moved instead of that one because every other citation of D95 means the elicitation decision.
+
+## D102: Client IP is the rightmost untrusted address; the Vercel hop is trusted by a shared secret, not by address
+
+**Date**: 2026-09-26
+**Decision**: `ClientIp` walks `[socket peer, X-Forwarded-For right to left]` and returns the first address it has no reason to trust. An address is trusted by position (`OVERSLASH_TRUSTED_PROXY_HOPS`, which is 1 on Cloud Run), by range (`OVERSLASH_TRUSTED_PROXIES`, the GCLB address), or, for exactly one hop, because the request carries `OVERSLASH_TRUSTED_PROXY_SECRET` in `x-overslash-proxy-secret`, which the dashboard's Vercel Routing Middleware stamps on every rewrite to the API. With nothing configured, the header is ignored and the socket peer is the client. `X-Real-IP` is not read. All three variables are parsed at boot, and a malformed one refuses the boot.
+
+**Rationale**: CASA gap. The extractor took the leftmost XFF entry, so any caller could pick the address written to audit rows and mint a fresh per-IP throttle bucket per request. Only the right-hand end of the list is written by infrastructure we run.
+
+**Hops and CIDRs, not one or the other.** Cloud Run's frontend has no fixed address but always appends the client, so it can only be trusted by position. The GCLB has a fixed address, and trusting it by CIDR rather than as a second positional hop keeps a caller who reaches `*.run.app` directly (prod ingress is ALL) from having their own forged entry promoted: through the LB the chain is `<client>, <lb>`, and direct it is `<client>`. Either way the first non-LB address is the one Google appended.
+
+**The secret buys one hop, not a trusted range.** Vercel publishes no egress ranges, so without the secret every dashboard request would record a Vercel address and share one magic-link bucket per egress IP. Vercel overwrites XFF with the browser's address, so the one entry behind a vouched hop is trustworthy. The one after it is not, which is why a valid secret skips exactly one untrusted address. The middleware overwrites any client-supplied value and strips the header when unset, so a browser cannot forward its own. We didn't use a Vercel-specific header: `x-vercel-*` request headers can be forged by anyone who calls the API directly.
+
+**Correction (2026-09-28): the vouched hop names the client in its own header; XFF past it is never read.** The paragraph above assumed Vercel overwrites `X-Forwarded-For` with the browser's address, so the entry behind the vouched hop would be Vercel's observation. It isn't. Measured on dev with the secret live: a browser sending `X-Forwarded-For: 203.0.113.66` through `app.dev` had `203.0.113.66` recorded. On an external rewrite Vercel forwards the browser's header and only appends its egress. A middleware override of `X-Forwarded-For` doesn't fix it: the same forged header was replaced on one request and passed through on the next. The request the middleware *sees* is sanitized, though (`x-real-ip` is always the connecting address), and overrides of our own headers were applied in 40 of 40 forged attempts. So the middleware sends that address in `x-overslash-client-ip` next to the secret, and on a secret match the API takes the client from that header and stops walking. With the secret but no parseable name, the client is the vouching hop's own address. Nothing left of a vouching proxy is read, so no forged entry can ride along behind a valid secret.
+
+**Fail-closed on parse, fail-safe on absence.** A dropped CIDR would silently collapse every client behind that proxy into one bucket, so a typo refuses the boot rather than warning. An unset config is the safe direction, since nothing forged is ever believed, so prod only warns about it.
+
+## D103: `/mcp` also speaks MCP 2026-07-28, and its approval dialogs are multi round-trip requests with a signed `requestState` over the existing row
+
+**Date**: 2026-09-26
+**Decision**: `POST /mcp` is dual-era.
+- **Which era a request uses.** A request that carries `_meta["io.modelcontextprotocol/protocolVersion"]`, or is `server/discover`, is served as 2026-07-28 (`routes/mcp/modern.rs`). Everything else, `initialize` included, takes the unchanged `2025-06-18` path.
+- **What a modern request must carry.** The version must be `2026-07-28` (otherwise 400 `-32022`), and `MCP-Protocol-Version` / `Mcp-Method` / `Mcp-Name` must mirror the body (otherwise 400 `-32020`).
+- **What a modern request gets back.**
+  - `server/discover` advertises `["2026-07-28", "2025-06-18"]`.
+  - Every result carries `resultType` and `serverInfo`.
+  - `tools/list` and `server/discover` carry `ttlMs` plus `cacheScope: "private"`, because both are per caller.
+  - An unknown method is a 404 `-32601`.
+  - No session id is minted.
+- **Approval dialogs on a modern request.** The dialog is a multi round-trip request, not an SSE `elicitation/create`:
+  - The gated `tools/call` returns `input_required`, with the D99 decision form under `inputRequests.decision` and a `requestState`.
+  - The client retries with `inputResponses`.
+  - The retry runs the same `complete_from_elicitation` the legacy receiver runs, and answers with the result, the `isError` denial, the D99 follow-up (a second `input_required` under `remember`), or the D95 `pending_approval` envelope.
+- **What `requestState` is.** An HS256 token (`kind: "mcp_request_state"`) holding:
+  - the agent, and the MCP client;
+  - the elicitation row id and the step;
+  - a SHA-256 of the tool name plus key-sorted arguments;
+  - the `pending_approval` envelope;
+  - an expiry at the legacy 300s poll ceiling.
+- **What the retry checks.** The signature, `kind`, expiry, principal and digest, then that the row still belongs to the agent. The retry never dispatches the call a second time.
+- **Capabilities.** Eligibility reads the request's own `_meta` capabilities, and they are also recorded on `oauth_mcp_clients` for the dashboard. A client that lists elicitation modes gets a form only if it lists `form`, in both eras.
+
+**Rationale**: Claude Code (2.1.282+) declares `elicitation: { form, url }` only on a 2026-07-28 connection. It reaches that by probing `server/discover` first, and falls back to `initialize` on any non-modern answer. So URL-mode elicitation for Claude Code starts with speaking this era. That era has no server-to-client requests, which means the approval dialogs had to move onto the multi round-trip request (MRTR) shape before anything else could.
+
+**The dialogs keep the `pending_mcp_elicitations` row rather than going fully stateless.** The row already does jobs a `requestState` cannot:
+- it suppresses the approval's auto-call while a dialog is open;
+- a `cancel` on it starts D95's cooldown;
+- disconnect retires it;
+- it makes a duplicate retry idempotent, since `claim` lets only one retry resolve.
+
+The token adds what the retry needs to be served by any replica: the principal binding the spec requires, the envelope for the fallback and the follow-up, and the request digest. The digest stops a genuine state from being pasted onto a different call.
+
+**A modern row nobody retries is left to the existing sweeper.** Until it is reaped, the approval's auto-call stays suppressed for up to the same 360s a dead legacy originator already costs.
+
+**Verified against the real client.** Claude Code 2.1.283 negotiated 2026-07-28 against a local build. In headless mode it cancelled the dialog and got the envelope. Driven as an SDK host answering "Allow once", its retry executed the call. Codex 0.157.0 still negotiates `2025-06-18`, where nothing changed.
+
+## D104: Links the user must open become URL-mode elicitations that wait for the browser flow, and a declined link is never an answer
+
+**Date**: 2026-09-28
+**Decision**: When the client declares `elicitation.url`, every tool result that ends with a human opening a browser link is handed to the user as a URL-mode elicitation (`routes/mcp/url_elicitation.rs`), and the call answers only once that browser flow finishes. This is on by default wherever the client can do it. It does not depend on the "Approve in your client" toggle, because that toggle is about answering approvals *inside* the client, and URL mode sends the user out of it.
+
+| Link | Source | Done when | Then |
+|---|---|---|---|
+| `auth_url` | `needs_authentication`, `reauth_required`, `missing_scopes` | the OAuth callback stamps the flow `completed_at` (migration 126) | the call is **replayed** |
+| `provide_url` / setup `requests[]` | `request_secret`, `create_service` | the secret request is fulfilled | the original result is **reported**, marked `url_elicitation: "completed"` |
+| `connect.auth_url` | `create_service`, `create_connection` | the flow completes | reported |
+| `approval_url` | a permission gap whose form dialog is unavailable (opted out, form not declared) | the approval leaves `pending` | the approved action is **called** |
+
+- **Multiple links.** A multi-slot setup bundle hands over its links one at a time.
+- **Which links count.** Auth links count only when they are this server's own `/connect-authorize` URL. Setup and connect links count only from `service: "overslash"` platform results, so upstream data is never mistaken for one.
+- **When a hand-off does not complete.** A declined, dismissed, failed or timed-out hand-off (300s, the elicitation ceiling) returns the original body with a `url_elicitation` note: `declined`, `cancelled`, `failed` or `timed_out`.
+- **Nothing is resolved by a URL elicitation itself.** A declined approval link leaves the approval `pending`.
+- **Approval links and the form dialog.** An approval link holds the approval's auto-call off with the same `pending_mcp_elicitations` row a form dialog uses. It retires that row as `withdrawn` rather than `cancelled`, so it never starts the form cooldown. The cooldown does hold off the approval link, though.
+
+**On a 2025-era connection** the tool call's response is one SSE stream:
+- one `elicitation/create { mode: "url", elicitationId }` per link;
+- `notifications/elicitation/complete` after each;
+- then the result.
+
+The client's accept or decline arrives on a separate POST and crosses replicas through the `mcp_url_elicitations` table (migration 126, purged on the existing elicitation sweep).
+
+**On 2026-07-28** the call answers `input_required` with the link under `inputRequests.url` (no `elicitationId`, which that revision removed), and the plan rides in the signed `requestState` (`url_plan`). The client's retry after accepting waits for the flow, rendered as an SSE response with keep-alives, and answers with the next link or the result.
+
+**Rationale**: Every one of these envelopes already ended with the agent relaying a link and the user coming back to say "done". MCP forbids credentials and OAuth in a form dialog, so URL mode is the only in-client path for them.
+
+**Why the retry waits instead of answering at once.** Answering immediately with "link opened, call again" keeps no connection open. But the model tends to retry at once, and would mint a fresh link and a second prompt. That is what the prompt is meant to prevent. Instead, a connection is held only while a human is actively in the browser flow, bounded by the same ceiling the form dialogs use.
+
+**Why the fallback carries a note.** It is the original envelope rather than an error, so the agent keeps its link, and the note tells it that the user already saw the prompt. Only a real answer (a denial on the dashboard, a failed OAuth callback) ends the call as anything other than that fallback.
+
+**Verified against the real client.** Claude Code 2.1.283, driven as an SDK host on a local build, received the approval as a `mode: "url"` elicitation with no `elicitationId`. Its retry waited on the keep-alive stream until the approval was granted on the dashboard. The call then executed exactly once, even with auto-call on.
+
+## D105: BI is terraform-owned queries, federated into BigQuery, read as a column-allow-listed `bi` role
+
+**Date**: 2026-09-28
+**Decision**: Business-intelligence queries over prod data run in BigQuery, against the `overslash_bi` dataset. Each view there is an `EXTERNAL_QUERY` whose inner SQL is a file in `infra/modules/bi/sql/`, run live against Cloud SQL as the Postgres role `bi`. The API creates that role at boot, using a terraform-generated password mounted as `OVERSLASH_BI_DB_PASSWORD`, and replaces its grants with column-level SELECT on `overslash_db::bi::READABLE_COLUMNS`. `bi` belongs to no role. There is no migration, schema or view in Postgres. `tests/bi_views.rs` runs every BI query as `bi` in CI. Dashboards are built in Looker Studio. The whole surface is gated by `enable_bi`. Runbook: `docs/runbooks/bi.md`.
+**Rationale**: Cloud Monitoring stores time series, not rows. Putting org names or emails into it would mean log-based metrics that carry personal data, and it still could not show a table. Federation needs no pipeline and no extra service, reads live data, and is controlled by IAM.
+
+**Queries in terraform, not migrations.** A report change should not need an app release. Postgres views would also make every app migration that touches a referenced column drop and recreate them. And views created outside migrations would be worse still: CI never has them, so a migration could pass CI and then fail in prod.
+
+**The allow-list in Rust, applied at boot.** Nothing that runs `tofu` can reach the private-IP instance, so terraform can't issue grants. A `google_sql_user` always joins `cloudsqlsuperuser`, and revoking that needs ADMIN OPTION the app's user doesn't hold. The API already holds a privileged connection at boot, and keeping the list in code puts every widening through review. Revoking the table privilege first also revokes its column privileges, so shrinking the list takes effect on the next boot.
+
+**Tradeoff accepted:** every BI query runs on the primary instance. That is fine at current volume, and Datastream replication is the exit when it stops being fine.
+
+## D107: A directory group is a membership source, not a ceiling
+
+**Date**: 2026-09
+**Decision**: An org's own IdP may assert group membership, and that assertion lands in three new tables of its own rather than in `groups`. `directory_groups` records what the directory says exists; `identity_directory_groups` records what it says about one human and is owned outright by sync; `group_directory_sources` is the admin-drawn edge that turns the second into Layer 1 membership. A new view, `effective_identity_groups`, is the single definition of "which groups is this identity in" — `identity_groups` UNION one hop through that edge — and all eight membership read sites go through it. Sync runs only on an enabled `org_idp_configs` row with `group_sync_enabled`, only for `kind = 'user'` identities, and only at sign-in. `org_idp_configs` gains `group_sync_enabled` (default false) and `group_claim` (default `groups`). System groups refuse a directory source. Full design at [docs/design/directory-group-sync.md](docs/design/directory-group-sync.md).
+
+**Rationale**: The obvious shape is to make an external group a fourth `system_kind` under a reserved name prefix, and it is wrong for a reason that only shows up once sync is authoritative. **Authoritative sync has to delete.** If derived membership lives in `identity_groups`, the delete runs against the same table that holds every assignment an admin made by hand, and correctness rests on every current and future writer respecting a `source` discriminator. Split the tables and the same guarantee is structural: `replace_memberships_for_identity` writes one table, that table contains nothing an admin authored, and no bug in it can reach a manual assignment. That is the whole argument — the rest is downstream of it.
+
+Downstream, the split pays for itself twice more. **Name prefixes stop being necessary**: `google:engineering` exists only to dodge `groups_org_id_name_key`, a collision that cannot occur once the two live apart. And **`GET /v1/groups` stays about ceilings**: every surface that lists groups — the picker on service creation, `GroupSearch`, `IdentityPickerModal`, the group list — would otherwise need to learn to exclude a fourth class, which is the tax `system_kind = 'self'` already charges once (`?include_self=`, and the `!= 'self'` filters through `routes/groups.rs`). An org with two hundred Okta groups would bury the three that carry grants.
+
+**Discovery is not granting.** A discovered directory group has no grants and no way to acquire them; it confers access only where an admin has drawn the edge. This keeps the privilege decision where D12 puts every other one — with the org admin — while letting the IdP own the part it is actually authoritative about, which is who belongs together. It also makes many-to-many free: two directory groups can feed one ceiling, and one can feed several.
+
+**A directory group is keyed on its reporter.** `(org_id, source, idp_config_id, external_id)`, not on the name alone. Two IdPs are two trust domains, so a name they both report is two groups; merging them would let one IdP's claim place people in a group the other's users hold, and — because membership is reconciled per `(idp_config_id, source)` — would strand the first IdP's memberships outside its own `DELETE` the moment the second login rewrote the shared row, so a revocation could never land. `NULLS NOT DISTINCT` keeps the future non-login sources collapsing onto one row each.
+
+**An absent claim is not an empty claim.** `None` (key missing, JSON null, or a shape we do not parse) changes nothing; `Some([])` revokes. Collapsing the two would mean an admin renaming a claim in Okta, or an IdP dropping it from a release policy, silently strips every user's derived access at their next sign-in — an org-wide outage triggered by an upstream edit nobody connected to Overslash. This is why the claim is modelled `Option<Vec<String>>` and why a malformed element is skipped rather than voiding the list.
+
+**Only a dedicated `org_idp_configs` row may sync.** A dedicated row already wins over managed sign-in in `org_signin::resolve_org_signin_credentials`, so its presence *is* the statement that this login came through the org's own IdP. A `groups` claim arriving on the Overslash-managed path comes from the operator's shared Google or GitHub OAuth app and says nothing about this org — admitting it would let one tenant's IdP name another tenant's groups, which is exactly what D12 forbids.
+
+**System groups refuse the edge.** Admins is the sharp case: its membership is held in lockstep with `identities.is_org_admin` by `sync_admins_group_tx`, so a mapping would confer org-admin without ever setting the flag and leave the two views disagreeing — admin becomes a thing an IdP hands out. Myself has exactly one member by construction and Everyone already holds the whole org, so a mapping onto either is incoherent or a no-op. `is_identity_in_admins` is deliberately left reading the base table rather than the view, so the guarantee survives even a bypassed handler guard.
+
+**One hop, and a view rather than a copied CTE.** Directory groups cannot contain each other, so the expansion is not recursive and the Layer 1 ceiling query stays a flat join. A view is the single definition; the alternative is the same CTE pasted into eight `sqlx::query!` literals, where one that forgets the second arm produces access that works on one screen and 404s on another. General group-in-group nesting is not built and not blocked.
+
+**Login-time only, and never fatal.** No sweeper: the stale window is a session lifetime, and a periodic re-sync needs a stored org-level directory credential that the OIDC path does not require at all. A sync failure is logged and the sign-in proceeds — being unable to reach the dashboard because an IdP changed a claim shape is a worse outcome than a stale ceiling, which the next login repairs. The ID token is read alongside `/userinfo` because Entra will not release `groups` on the v2 userinfo endpoint; its signature is unverified, which OIDC Core §3.1.3.7 permits for a token fetched directly from the token endpoint over TLS against our own PKCE-bound code, and its `nonce` is checked against the one this login minted. Hardening to `jwks_uri` verification is in TECH_DEBT.md.
+
+## D106: A URL hand-off always ends in an answer that says why, and never hands back a link that is already used up
+
+**Date**: 2026-09-28
+**Decision**: This refines D104. Every way a URL-mode hand-off can end now reaches the waiting tool call promptly and is reported.
+
+**Refusals recorded in the browser end the wait at once and are reported as `declined`,** with the reason in `url_elicitation_error`:
+- `access_denied`: the provider's own Deny. The callback now accepts an `error=` redirect with no `code` instead of rejecting it at the query extractor, which used to leave the call waiting out its timeout.
+- `cancelled_by_user`: the consent interstitial's Cancel, now a `POST /connect-authorize/cancel`. It runs the same connect-gate check as confirm, so only someone who could have continued the flow can cancel it.
+- `declined_on_page`: the provide page's Deny, now `POST /public/secrets/provide/{id}/decline`. It uses the link's own token and is advisory: a later submission still fulfils the request.
+
+Other callback failures are reported as `failed` with a coarse, allow-listed reason, stored on the flow (migration 127). A provider error code is relayed only if it fits RFC 6749's character set.
+
+**An auth link is re-run rather than handed back** when it can no longer be opened: it was refused, it failed, or it was opened and then abandoned. The flow was consumed when the user opened it, so the original `auth_url` is dead. Re-running mints a fresh one, and the note rides on the new envelope. A link that is still openable goes back as it is: the client declined it, or it timed out without anyone opening it. That way no second flow is minted and no first one is orphaned.
+
+**Old-protocol clients get `notifications/elicitation/complete` whenever the out-of-band part ended**, whether it succeeded, was refused, failed or timed out. Previously this happened only on success.
+
+**A new-protocol retry that arrives after its `requestState` expired gets an answer rather than a JSON-RPC error.** The signature and binding are still checked, and states more than a day past expiry are rejected. The answer is the D95 envelope for a form dialog, or the plan's fallback marked `timed_out` for a URL hand-off. Nothing is resolved, executed or advanced on the strength of a stale state.
+
+**A new-protocol wait runs on its own task.** A client that drops mid-wait no longer cancels it: the approval's auto-call hold is always released, and an approval granted meanwhile still runs.
+
+**Rationale**: The fallback is only useful if it arrives, and only honest if it is live. A refusal that left the call waiting 300s told the agent nothing for five minutes, and "failed" without a reason cannot be told apart from "the user said no". Handing back a consumed `auth_url` gave the agent a link that could only fail, and with it a loop.
+
+**A stale state is answered, but never acted on.** Its signature proves the server issued it to this caller for this call, so returning the fallback it carries leaks nothing. Acting on it would let an answer outlive the window the spec requires the state to be bounded by.
+
+## D108: Every credential is metered where it authenticates; the pre-credential OAuth surface is metered per IP
+
+**Date**: 2026-09
+**Decision**: The `/v1` rate-limit middleware now charges the same principal the auth extractors resolve, in the same order — session cookie, then bearer — not just `osk_` keys. An **MCP access token** is charged exactly like an agent key: the owner-user bucket plus the agent's identity cap. A **dashboard session** is charged to a bucket of its own, `rl:{org}:session:{identity}`, sized by the same user-budget resolution chain (per-user → group → org → `DEFAULT_RATE_LIMIT`) and exempt from the identity cap. The `/oauth/*` + `/.well-known/oauth-*` + `/mcp` subrouter gets a separate layer (`middleware/ingress_rate_limit.rs`): per client IP on the OAuth handshake (`OAUTH_RATE_LIMIT`, 120/60s), a stricter per-IP cap on `POST /oauth/register` (`OAUTH_REGISTER_RATE_LIMIT`, 20/3600s), and per MCP client on `/mcp` (`MCP_RATE_LIMIT`, 600/60s), falling back to the IP bucket when `/mcp` carries no attributable credential. Those three are instance-wide env settings, `0` turns one off, and an unparseable value stops the boot.
+
+**Rationale**: The session is a separate bucket, not the user's shared one, because the shared bucket is the one a runaway agent drains, and the dashboard is where its owner goes to stop it. The session still gets a ceiling, just not one an agent can exhaust. MCP tool calls are charged at `/v1` and not at `/mcp` because `routes::mcp::forward` re-issues each one as a loopback `/v1` request carrying the client's own bearer. Charging there counts each call once, against the same budget as that user's other agents. The advisory `x-overslash-transport` header can't be used to skip the second count, because any caller can set it. The `/mcp` bucket is therefore a transport ceiling on top, and it is what bounds `tools/list`, `ping` and `initialize`, which never reach `/v1`. The OAuth limits are instance-level rather than org settings because the traffic mostly arrives before the caller has proven an org: DCR in particular is anonymous, and every success writes a row. They key on `ClientIp`, so behind a configured trusted proxy a forged `X-Forwarded-For` does not buy a fresh bucket. DCR is checked before the handshake bucket so that a refused registration doesn't spend the budget the rest of that client's flow needs.
+
+## D110: Google Workspace groups are pulled with a delegated service account, bounded by domain, and a partial pull never revokes
+
+**Date**: 2026-09
+**Decision**: This refines D107 for a second source. Google releases no group claim, so a Workspace org's groups are read from the Admin SDK Directory API and written to the same `directory_groups` / `identity_directory_groups` tables under `source = 'google_directory'`, `idp_config_id = NULL`. The credential is a service account with domain-wide delegation for `admin.directory.group.readonly` alone, impersonating an admin the org names. It is stored encrypted in `org_google_directory_configs` (migration 129), one row per org, and never returned. Sync runs three ways: a per-user pull spawned at sign-in that the callback never waits on, a sweep every `sync_interval_hours` (default 8), and an admin's *Sync now*, of which at most one can be queued. Mapping is unchanged: a Google group grants nothing until an admin draws the edge. Full design in [docs/design/directory-group-sync.md](docs/design/directory-group-sync.md).
+
+**Rationale**: D107's "login-time only" held because the claim path had no credential to sweep with; this source does, so the stale window no longer has to be a session lifetime, and removals in Google land without the removed person signing in. Everything else follows from keeping D107's guarantees under a writer that pulls instead of being told.
+
+**A service account, not an admin's OAuth consent.** Consent binds sync to one person: it stops when they leave or lose the admin role, and a sweep has nobody signed in to refresh as. Delegation is granted by the org's Workspace admin, scoped to one read-only scope, and outlives any individual.
+
+**The key's `token_uri` is ignored.** Assertions are exchanged only at `https://oauth2.googleapis.com/token`. Honouring the field would let whoever uploads a key send a signed, replayable assertion for the org's Workspace to a host of their choosing.
+
+**Domains, not sign-in path, bound whom it speaks about.** D107 limits the claim path to an org's own IdP because the claim rides a login. A delegated credential is already the org's own, so it may speak about the org's humans whichever IdP they signed in through — but only those whose email falls under a configured domain. Anyone else is never touched.
+
+**A partial listing never revokes.** The sweep is authoritative, so it must distinguish "Google says no" from "Google did not answer" exactly as D107 distinguishes an empty claim from an absent one. Every page of every listing must succeed before any membership row changes; otherwise the run records its error and revokes nothing.
+
+**Direct membership only.** The per-user endpoint reports direct groups; expanding nesting in the sweep alone would make membership flap between sign-in and sweep. It also keeps D107's single hop.
+
+**At most one queued manual run, structurally.** The queue is one nullable column that a click sets only if unset and a claim clears. Repeated clicks cannot pile up sweeps against Google's quota, and a click during a run still gets its follow-up.
+
+## D109: A rate-limit deny is logged once per bucket per window, under a global budget
+
+**Date**: 2026-09
+**Decision**: Every deny is counted in `overslash_rate_limit_decisions_total`. It is logged only when it is the request that takes its bucket over the limit (`RateLimitResult::first_denied`, `count == max + 1`), and then only while a fleet-wide budget of 60 lines a minute lasts. The budget is `rl:deny-log-budget` in the same store. A line dropped for budget increments `overslash_rate_limit_deny_log_suppressed_total{scope}`. Per-IP throttles key an IPv6 client on its /64.
+
+**Rationale**: A log line per deny lets whoever is being throttled decide how much we log, which turns the limiter into a log-flooding tool. The metric can count every deny because a counter costs the same at any volume, but it can't say *who*: an org or IP label would create one series per org or IP. The crossing request is the natural "once": both stores increment and then compare, so exactly one request per window sees `max + 1`. That holds across instances, because Valkey's `INCR` is atomic, and it needs no state of its own and no eviction. It bounds the logs only as far as buckets are bounded, though. Credential buckets exist only for credentials that verified, but IP buckets can be minted at will. The global budget closes that, and the suppressed counter makes the closing visible. The /64 is the IPv6 unit because one subscriber is handed a whole /64 and can source from any address in it, so a per-address key limits neither the requests nor the log lines.
+
+## D111: A dashboard session is a server-side row; the cookie only names it, and is checked before anything meters or reads it
+
+**Date**: 2026-09
+**Decision**: The session JWT keeps its 7-day lifetime but carries a `jti` naming a `user_sessions` row (migration 130). `middleware/session_gate.rs` runs outside every router layer and, on each request with a session cookie, checks the row: revoked, expired or missing → the cookie is removed from the request and cleared on the response; a row since re-scoped to another identity (an older copy of a cookie the browser has already replaced) → removed but not cleared. Revocation happens on logout, on every new sign-in in the same browser, on identity change (the IdP reporting a different email at sign-in revokes all the human's sessions; an admin rewriting a member's email revokes that member's), on admin removal and archive (sessions scoped to that org only), and self-service from Account → Sessions. Switch-org, OAuth-consent org switch, the connect gate's auto-switch and org creation *re-scope* the same row instead of minting another; the connect gate defers its re-scope until the flow is actually won. A session JWT without a `jti` is honoured only if `exp - iat` ≤ 24 h. Checks are cached in Valkey (live 30 s, dead 1 h, `DEL` on revoke); with no `REDIS_URL` there is no cache at all.
+
+**Rationale**: CASA 2.2.1/2.2.3 fail any 7-day token that logout cannot kill, and a per-request primary-key lookup is the cheapest thing that makes it killable while keeping the UX. The gate strips rather than rejects so that the dozen existing cookie readers — extractors, both rate limiters, the "is anyone signed in?" checks on public pages — needed no change and cannot disagree. It sits *before* the D108 limiters on purpose: a stolen cookie its owner has since signed out must not be able to drain the owner's session bucket, so a dead session is anonymous by the time anything meters it. That leaves the gate's own lookup unmetered, which is why dead verdicts are cached (death is terminal and a `jti` is never reissued). A process-local cache is refused in production because one replica cannot evict another's copy, turning "logout works" into "logout works within the TTL on whichever replica you hit". The 24-hour stateless allowance is CASA 2.2.3 verbatim; the only token that uses it is the 10-minute loopback session `mcp_session` mints for itself, and it is also what turned away every pre-`jti` cookie — a one-time sign-out on deploy. Re-scoping keeps one row per browser, so the sessions list reads as devices, not org hops.
+
+## D112: Secret reads are audit-logged to a 400-day bucket that is locked in prod, and every non-runtime read notifies
+
+**Date**: 2026-09-28
+**Decision**: Data Access audit logs (`ADMIN_READ`, `DATA_READ`, `DATA_WRITE`) are on for Secret Manager, Cloud SQL and Cloud Run. Cloud SQL is keyed `cloudsql.googleapis.com`, the name its audit logs carry, not the `sqladmin` API endpoint. Every Cloud Audit Log in the project is sunk to `overslash-<env>-audit`, retained 400 days. The bucket is locked in prod (`audit_log_bucket_locked = true` in `prod.tfvars`) and left unlocked in dev. A log-based metric counts `AccessSecretVersion` by any principal outside `expected_secret_accessors`, which today is only the run service account. The module refuses a non-service-account entry. A P1 email alert fires on any non-zero minute. `infra/modules/audit-logging/`; policy in `docs/compliance/casa/secrets-access-policy.md`. CASA 6.7.1.
+**Rationale**: 400 days is one 12-month CASA cycle plus slack, and it equals GCP's `_Required` bucket, so Admin Activity and Data Access age out together. A lock can never be undone, and a locked retention can never change. So the floor was picked deliberately, and the lock goes only where the log is evidence. Humans are never exempt from the alert, because a person reading the vault master key is exactly the event 6.7.1 wants seen. The price is one email for each operator `tofu plan`, since the provider reads every secret version on refresh. The alert is therefore P1 email, not a P0 page. `_Default` stays at 30 days because it holds application logs, not evidence.
+
+## D113: Google Workspace sync uses one service account per instance, and an org proves its Workspace by signing in with Google
+
+**Date**: 2026-09
+**Decision**: This supersedes D110's credential. There is no per-org service-account key: the per-org upload, its encrypted column, and the typed admin email and domains are gone (migration 131 drops them and the existing configs). The instance has one service account, supplied by the operator through `OVERSLASH_GOOGLE_DIRECTORY_SA_KEY` (the JSON key) or `OVERSLASH_GOOGLE_DIRECTORY_SA_KEY_FILE` (a path to it), parsed at boot. A customer's Workspace admin authorises that account's client ID in admin.google.com — the dashboard shows the client ID and scope — and then connects by signing in with Google: the `hd` Google reports becomes the org's `domain`, the verified email becomes the impersonated admin, and `domain` is unique per instance. Everything else in D110 — the triggers, the queue, direct-only membership, the partial-listing and domain rules — is unchanged. Operator setup: [docs/runbooks/google-directory.md](docs/runbooks/google-directory.md).
+
+**Rationale**: Per-org keys made every customer create a Google Cloud project, enable the Admin SDK, download a key and hand it to us — a setup most Workspace admins cannot do and should not have to. The vendor pattern is one account the customer grants delegation to, and the setup collapses to one screen in their own admin console.
+
+**Sharing the account moves tenant isolation from Google into Overslash.** With per-org keys, a key could only read Workspaces that had delegated to *that* key. With one account, every connected Workspace has delegated to the same client ID, so an org that could type an admin email could read any of them. The sign-in is the replacement boundary: Google, not the org, says which Workspace this is, and the service account can only act as the admin who proved it. The connect is single-use and bound to the browser session that started it, or an org admin could send the Google link to another Workspace's admin and attach that directory to their own org. One org per Workspace per instance closes the last gap.
+
+**Why sign-in rather than a DNS TXT record.** It proves the right thing — an *admin of the Workspace*, not merely someone who controls DNS — and the same sign-in supplies the admin to impersonate, so nothing is typed that could be wrong. It costs self-hosters a Google sign-in client, which a Google Workspace integration already implies.
+
+**Why the key comes in through env, not a keyless `signJwt`.** One mechanism for hosted and self-hosted alike, and a file path for platforms where the JSON should not sit in the environment. On Cloud Run the value comes from Secret Manager, created by Terraform with a placeholder and filled with `gcloud`, so the private key never enters Terraform state.
+
+## D114: HTTP-action attachments are gateway-staged bytes, referenced by id and inlined only at send time
+
+**Date**: 2026-09-30
+**Decision**: A request-body property marked `x-overslash-staged-upload: {inline_as: base64}` takes a list of `{upload_id}` references to bytes Overslash itself holds. `overslash:upload_file` (a platform action, `risk: write`) takes the file's `filename`, exact `size_bytes`, and optionally `content_type` and `sha256`, and mints a single-use URL. The caller PUTs the bytes to the existing `POST|PUT /v1/uploads/{token}` route, which now falls through to a new `staged_uploads` table (migration 132) when no `upload_tokens` row holds the token. The bytes are measured and hashed, held to the declared size and digest, encrypted with the AES-256-GCM keyring and stored for `STAGED_UPLOAD_TTL_SECS` (24h). Sending is two steps:
+- **At resolution** (`staged_upload::describe`, in `resolve.rs` where every Mode C body is built), each `{upload_id}` is replaced with the stored descriptor: `{upload_id, filename, content_type, size_bytes, sha256}`. That lookup is scoped to the org and the caller's owner user. The approval disclosure, the replay payload and the audit row therefore name the real file, and none of them holds a byte of it.
+- **At send time** (`staged_upload::wire_body`, next to credential injection in both `call.rs` and `action_caller::call_action_request`, and so on the inline, approval-replay, async and hybrid paths alike), the descriptors become `{filename, content_type, content_base64}`. That is overfwd ≥ 0.6.0's shape.
+
+The request carries only `ActionRequest.staged_uploads`, a list of field names set from the template. It rides approvals and replay payloads the way `SecretRef` does. `deliver: "url"` is refused for such an action, because the deferred replay would not inline anything. `services/email.yaml` `send` gains `attachments` and an `Attachments` disclosure row.
+
+Abuse bounds, all in this change:
+- **Size**: `STAGED_UPLOAD_MAX_BYTES` (10 MiB, hard-clamped at 20 MiB) applies to one upload and to one call's total. At most 20 attachments per call.
+- **Quotas**: per identity (50 MiB, 50 live uploads) and per org (200 MiB). Quotas count from the mint, which writes the row with the declared size reserved, so a burst of mints cannot outrun them. The check runs in one transaction under a per-org advisory lock.
+- **Concurrency**: `STAGED_UPLOAD_CONCURRENCY` (4) is one process-wide semaphore held while a body is buffered on redemption and while it is inlined and in flight on send. A saturated replica answers 503 before a token is spent.
+- **Rows**: a failed push deletes its row instead of re-arming it.
+- **Key rotation**: `staged_uploads.body_ciphertext` joins `key_rotation::TARGETS` with a per-target batch cap of 4 rows.
+
+Over quota, a mint is refused with 429 `staged_upload_quota_exceeded`, carrying the live usage and `evictable_bytes`/`evictable_count`. `force: true` evicts the **caller's own** oldest uploads until the new one fits. It never touches another identity's uploads, an upload mid-push, or one **pinned** by a pending approval or queued call (`pinned_until`, set when the approval, async row or hybrid job is written). Eviction is all or nothing: if what is evictable cannot make room, nothing is deleted. The sweeper and the liveness checks treat a pinned row as alive past its TTL.
+
+**Rationale**: The Mailbox Gateway is stateless by design: it holds no credentials or mail at rest. So D76's shape, which streams the bytes into the service's own storage and hands back its reference, has nowhere to point. There were three options:
+- **overfwd stores them.** That breaks overfwd's defining property, and it needs shared storage behind a multi-instance Cloud Run service.
+- **The agent inlines base64 itself.** That puts every byte of every attachment through a context window and into the approval payload, which is the problem D51/D61/D76 exist to avoid.
+- **Overslash stages them.** This keeps D76's capability model: a single-use token, the anonymous redeemer contributes only bytes, and everything a reviewer sees is fixed or verified before the send.
+
+Splitting descriptor from bytes, and swapping them at the same point credentials are injected, is what keeps a 10 MB file out of `approvals.replay_payload`. It also makes the reviewer's view authoritative: the descriptor comes from our table, and whatever else the caller wrote beside `upload_id` is discarded. The dial re-checks the stored digest against the approved one.
+
+Bytes at rest are a new cost, so every bound above is enforced here rather than left to a follow-up. The mint rate is bounded by the existing per-key rate limiter and the push by the per-IP redemption throttle. Eviction is limited to the caller's own uploads, so one agent cannot delete a colleague's attachment out from under a send; pins exist so that a human reviewing an approval cannot have its attachment expire or be evicted mid-review. Postgres `BYTEA` rather than object storage: there is no bucket in this deployment yet, the quotas bound the table, and D61 already stores encrypted blobs the same way.
+
+`upload_file` stays an ordinary gated write for agents. It is not added to the four seeded self-setup anchors, because widening those is a separate call. A user who wants it frictionless grants `overslash:upload_file:*` once, or answers "Allow & Remember".
+
+## D115: Every instance endpoint and config field is overridable; a template only decides which ones the form shows up front
+
+**Date**: 2026-09
+**Decision**: `configurable_url` on the template detail is true for every template except the `http` pseudo-service and `runtime: platform`. It is no longer tied to being host-less, MCP, or carrying a `secret_source: org` scheme. The detail also reports `default_url`, which is `mcp.url` or `ServiceDefinition::default_base_url()` (the same function `effective_base` falls back to), and `url_promoted`. Each `instance_config_params` entry gains `default` and `promoted`. A new extension, `x-overslash-promoted` (alias `promoted`), is read on `servers[]` (only `servers[0]` counts) and wherever `x-overslash-instance-config` is read. An `x-overslash-config` var takes a plain `promoted: true`. The instance form shows a field in its main section when the instance cannot work without it (required, and neither the template nor an org layer supplies a default) or when it is promoted. Everything else goes behind "Show more options", and every field with a default names that default. Shipped promotions: Langfuse's endpoint, and email's `X-Mailbox-Imap`/`X-Mailbox-Smtp`.
+**Rationale**: The executor already took `service_instances.url` ahead of the template host for every template, and `POST /v1/services` already accepted it. The old `configurable_url` rule hid a working capability from the dashboard: a Langfuse org in the US region had to call the API directly. Promotion had to be an explicit author choice. The count of `servers[]` entries is not a signal, because `x.yaml` lists two domains of one service. Prominence is decided per field, by whether more than about a third of operators would change it, and not per template. That keeps single-endpoint SaaS forms short while no default is ever invisible. This adds no capability: pointing an instance at another host was already possible through the API, and `check_endpoint`'s TLS/SSRF rules still apply to every override.

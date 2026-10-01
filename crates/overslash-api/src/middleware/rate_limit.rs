@@ -1,33 +1,115 @@
-use axum::http::HeaderValue;
-use axum::response::IntoResponse;
+use axum::http::{Extensions, HeaderMap, HeaderValue};
 use axum::{extract::State, http::Request, middleware::Next, response::Response};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::AppState;
-use crate::error::AppError;
-use crate::services::rate_limit::now_unix;
+use crate::cookies;
+use crate::services::jwt;
+use crate::services::rate_limit::refuse;
+
+/// Who a `/v1` request is charged to. Resolved the same way the auth
+/// extractors resolve the caller — session cookie first, then the bearer — so
+/// the principal that pays is the principal that authenticates. Nothing here
+/// authenticates anything: an unresolvable request passes through and the
+/// extractor rejects it.
+enum Principal {
+    /// An `osk_` API key or an MCP access token: an identity acting for an
+    /// owner user, whose bucket all of that user's agents share.
+    Identity {
+        org_id: Uuid,
+        identity_id: Uuid,
+        owner_user_id: Option<Uuid>,
+    },
+    /// A dashboard session cookie. Its own bucket, sized from the same user
+    /// budget, so a runaway agent cannot lock its owner out of the dashboard
+    /// they would use to stop it.
+    Session { org_id: Uuid, identity_id: Uuid },
+}
+
+async fn resolve_principal(
+    state: &AppState,
+    headers: &HeaderMap,
+    ext: &Extensions,
+) -> Option<Principal> {
+    if let Some(claims) = verify_session_cookie(state, headers) {
+        return Some(Principal::Session {
+            org_id: claims.org,
+            identity_id: claims.sub,
+        });
+    }
+
+    if let Some(prefix) = osk_prefix(headers) {
+        let (org_id, identity_id, owner_user_id) = resolve_identity(state, ext, &prefix).await?;
+        return Some(Principal::Identity {
+            org_id,
+            identity_id: identity_id?,
+            owner_user_id,
+        });
+    }
+
+    // MCP access token. `routes::mcp::forward` re-issues every tool call here
+    // over loopback with the client's own bearer, so this is where MCP traffic
+    // pays against its owner's budget — once per call, like any agent key.
+    let claims = verify_mcp_bearer(state, headers)?;
+    let owner_user_id = owner_of(state, ext, claims.org, claims.sub).await;
+    Some(Principal::Identity {
+        org_id: claims.org,
+        identity_id: claims.sub,
+        owner_user_id,
+    })
+}
+
+/// The claims of a valid dashboard session cookie, or `None`.
+pub fn verify_session_cookie(state: &AppState, headers: &HeaderMap) -> Option<jwt::Claims> {
+    let token = cookies::read_session(headers, state)?;
+    jwt::verify(
+        &jwt::signing_key_bytes(&state.config.signing_key),
+        &token,
+        jwt::AUD_SESSION,
+    )
+    .ok()
+}
+
+/// The claims of a valid MCP access token (`aud=mcp`) in the Authorization
+/// header, or `None`. Signature and expiry only — whether the identity still
+/// exists is the auth extractor's call.
+pub fn verify_mcp_bearer(state: &AppState, headers: &HeaderMap) -> Option<jwt::Claims> {
+    let auth = headers.get("authorization")?.to_str().ok()?;
+    let token = auth.strip_prefix("Bearer ")?;
+    if token.starts_with("osk_") {
+        return None;
+    }
+    jwt::verify(
+        &jwt::signing_key_bytes(&state.config.signing_key),
+        token,
+        jwt::AUD_MCP,
+    )
+    .ok()
+}
 
 pub async fn rate_limit_middleware(
     State(state): State<AppState>,
     request: Request<axum::body::Body>,
     next: Next,
 ) -> Response {
-    // Extract API key prefix from Authorization header
-    let prefix = match extract_osk_prefix(&request) {
-        Some(p) => p,
-        None => return next.run(request).await, // No API key auth → skip rate limiting
+    let Some(principal) = resolve_principal(&state, request.headers(), request.extensions()).await
+    else {
+        // No credential we can attribute → let the auth extractor reject it.
+        return next.run(request).await;
     };
 
-    // Resolve identity from prefix cache
-    let identity = match resolve_identity(&state, request.extensions(), &prefix).await {
-        Some(id) => id,
-        None => return next.run(request).await, // Unknown key → let auth extractor reject
+    let (org_id, identity_id, owner_user_id, is_session) = match principal {
+        Principal::Identity {
+            org_id,
+            identity_id,
+            owner_user_id,
+        } => (org_id, Some(identity_id), owner_user_id, false),
+        Principal::Session {
+            org_id,
+            identity_id,
+        } => (org_id, Some(identity_id), None, true),
     };
-
-    let org_id = identity.0;
-    let identity_id = identity.1;
-    let owner_user_id = identity.2;
 
     // Free-unlimited courtesy tier: bypass user bucket + identity cap entirely.
     // Set out-of-band by an operator via `UPDATE orgs SET plan='free_unlimited'`.
@@ -59,6 +141,9 @@ pub async fn rate_limit_middleware(
     // For identity-bound keys, bucket on the owning user (so all agents share).
     // For org-level keys (no identity_id), bucket on the org itself — otherwise
     // unbound keys would bypass rate limiting entirely.
+    //
+    // A session is a user identity, so its budget resolves through the same
+    // user chain; only the bucket it counts against differs.
     let user_id = owner_user_id.or(identity_id);
     let (bucket_key, budget) = if let Some(user_id) = user_id {
         let budget = state
@@ -70,7 +155,8 @@ pub async fn rate_limit_middleware(
                 user_id,
             )
             .await;
-        (format!("rl:{org_id}:user:{user_id}"), budget)
+        let bucket = if is_session { "session" } else { "user" };
+        (format!("rl:{org_id}:{bucket}:{user_id}"), budget)
     } else {
         // Org-level fallback: use the org default (or system fallback)
         let budget = state
@@ -79,29 +165,34 @@ pub async fn rate_limit_middleware(
             .await;
         (format!("rl:{org_id}:org"), budget)
     };
-    let user_scope_label = if user_id.is_some() { "user" } else { "org" };
+    let user_scope_label = match (is_session, user_id.is_some()) {
+        (true, _) => "session",
+        (false, true) => "user",
+        (false, false) => "org",
+    };
     let user_budget = {
         let result = state
             .rate_limiter(request.extensions())
             .check_and_increment(&bucket_key, budget.max_requests, budget.window_seconds)
             .await;
         if !result.allowed {
-            overslash_metrics::rate_limit::record_decision(user_scope_label, "deny");
-            let now = now_unix();
-            let retry_after = result.reset_at.saturating_sub(now);
-            return AppError::RateLimited {
-                limit: result.limit,
-                reset_at: result.reset_at,
-                retry_after,
-            }
-            .into_response();
+            return refuse(
+                state.rate_limiter(request.extensions()),
+                user_scope_label,
+                &bucket_key,
+                &result,
+            )
+            .await;
         }
         overslash_metrics::rate_limit::record_decision(user_scope_label, "allow");
         Some(result)
     };
 
-    // Counter 2: Identity cap (optional, tighter ceiling for specific agents)
-    if let Some(identity_id) = identity_id
+    // Counter 2: Identity cap (optional, tighter ceiling for specific agents).
+    // Not for sessions: the cap is an agent throttle, and a human's own
+    // identity cap would otherwise double-charge their dashboard clicks.
+    if !is_session
+        && let Some(identity_id) = identity_id
         && let Some(cap) = state
             .rate_limit_cache(request.extensions())
             .resolve_identity_cap(state.db(request.extensions()), org_id, identity_id)
@@ -113,15 +204,13 @@ pub async fn rate_limit_middleware(
             .check_and_increment(&key, cap.max_requests, cap.window_seconds)
             .await;
         if !result.allowed {
-            overslash_metrics::rate_limit::record_decision("identity_cap", "deny");
-            let now = now_unix();
-            let retry_after = result.reset_at.saturating_sub(now);
-            return AppError::RateLimited {
-                limit: result.limit,
-                reset_at: result.reset_at,
-                retry_after,
-            }
-            .into_response();
+            return refuse(
+                state.rate_limiter(request.extensions()),
+                "identity_cap",
+                &key,
+                &result,
+            )
+            .await;
         }
         overslash_metrics::rate_limit::record_decision("identity_cap", "allow");
     }
@@ -148,7 +237,13 @@ pub async fn rate_limit_middleware(
 
 /// Extract the 12-char `osk_` prefix from the Authorization header.
 pub fn extract_osk_prefix(request: &Request<axum::body::Body>) -> Option<String> {
-    let auth = request.headers().get("authorization")?.to_str().ok()?;
+    osk_prefix(request.headers())
+}
+
+/// [`extract_osk_prefix`] over bare headers, for callers that must not hold
+/// the request (it is not `Sync`) across an await.
+pub fn osk_prefix(headers: &HeaderMap) -> Option<String> {
+    let auth = headers.get("authorization")?.to_str().ok()?;
     let key = auth.strip_prefix("Bearer ")?;
     if !key.starts_with("osk_") || key.len() < 12 {
         return None;
@@ -186,19 +281,23 @@ pub async fn resolve_identity(
         return None;
     }
 
-    // Resolve owner_user_id from the identity, bounded to the key's org.
     let identity_id = key_row.identity_id;
-    let scope = overslash_db::OrgScope::new(key_row.org_id, state.db_pool(ext));
-    let owner_user_id = match scope.get_identity(identity_id).await {
-        Ok(Some(identity)) => {
-            if identity.kind == "user" {
-                Some(identity.id)
-            } else {
-                identity.owner_id
-            }
-        }
-        _ => None,
-    };
-
+    let owner_user_id = owner_of(state, ext, key_row.org_id, identity_id).await;
     Some((key_row.org_id, Some(identity_id), owner_user_id))
+}
+
+/// The user whose bucket an identity spends: itself for a user, its owner for
+/// an agent. Bounded to `org_id`.
+async fn owner_of(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    org_id: Uuid,
+    identity_id: Uuid,
+) -> Option<Uuid> {
+    let scope = overslash_db::OrgScope::new(org_id, state.db_pool(ext));
+    match scope.get_identity(identity_id).await {
+        Ok(Some(identity)) if identity.kind == "user" => Some(identity.id),
+        Ok(Some(identity)) => identity.owner_id,
+        _ => None,
+    }
 }

@@ -40,7 +40,7 @@
 		{:else}
 			<div class="warn">⚠</div>
 			<p class="error">{errorMsg}</p>
-			<a href="/org" class="btn-secondary">Back to settings</a>
+			<a href="/org/billing" class="btn-secondary">Back to settings</a>
 		{/if}
 	</div>
 </div>

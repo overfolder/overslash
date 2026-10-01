@@ -16,6 +16,12 @@ variable "enable_google_login" {
   description = "Provision the Google LOGIN OAuth client secrets (Sign-in with Google). On by default to preserve existing behavior."
 }
 
+variable "enable_google_directory_sync" {
+  type        = bool
+  default     = false
+  description = "Create the secret holding the instance's Google Workspace Directory service-account JSON key."
+}
+
 variable "enable_github_login" {
   type        = bool
   default     = false
@@ -229,6 +235,34 @@ resource "google_secret_manager_secret_version" "google_services_client_secret" 
 #     service both read this secret. Value populated manually via
 #     `gcloud secrets versions add` (random 32+ byte base64). ---
 
+# --- Google Workspace Directory service-account key. The instance's one
+#     service account (root `google_service_account.google_directory`); every
+#     org syncs through it. Value populated manually — `gcloud iam
+#     service-accounts keys create` then `gcloud secrets versions add
+#     --data-file` — so the private key never enters Terraform state. The API
+#     parses it at boot and refuses to start on REPLACE_ME, which is why the
+#     root flag must only be enabled after the real key is in.
+#     See docs/runbooks/google-directory.md. ---
+
+resource "google_secret_manager_secret" "google_directory_sa_key" {
+  count     = var.enable_google_directory_sync ? 1 : 0
+  secret_id = "${var.base_prefix}-google-directory-sa-key"
+  project   = var.project_id
+  replication {
+    auto {}
+  }
+}
+
+resource "google_secret_manager_secret_version" "google_directory_sa_key" {
+  count       = var.enable_google_directory_sync ? 1 : 0
+  secret      = google_secret_manager_secret.google_directory_sa_key[0].id
+  secret_data = "REPLACE_ME"
+
+  lifecycle {
+    ignore_changes = [secret_data]
+  }
+}
+
 resource "google_secret_manager_secret" "shortener_api_key" {
   secret_id = "${var.base_prefix}-shortener-api-key"
   project   = var.project_id
@@ -364,6 +398,29 @@ resource "google_secret_manager_secret_version" "email_api_key" {
   }
 }
 
+# --- Trusted-proxy secret ---
+# Shared with the dashboard's Vercel middleware, which stamps it on the
+# requests it proxies so the API can trust that one extra hop when resolving
+# the client IP (crates/overslash-api/src/services/client_ip.rs). Only mounted
+# into Cloud Run once `enable_trusted_proxy_secret` is on — the API refuses to
+# boot on a value shorter than 32 bytes, REPLACE_ME included.
+resource "google_secret_manager_secret" "trusted_proxy_secret" {
+  secret_id = "${var.base_prefix}-trusted-proxy-secret"
+  project   = var.project_id
+  replication {
+    auto {}
+  }
+}
+
+resource "google_secret_manager_secret_version" "trusted_proxy_secret" {
+  secret      = google_secret_manager_secret.trusted_proxy_secret.id
+  secret_data = "REPLACE_ME"
+
+  lifecycle {
+    ignore_changes = [secret_data]
+  }
+}
+
 output "stripe_secret_key_secret_id" {
   value = google_secret_manager_secret.stripe_secret_key.secret_id
 }
@@ -374,6 +431,10 @@ output "stripe_webhook_secret_secret_id" {
 
 output "db_password_secret_id" {
   value = google_secret_manager_secret.db_password.secret_id
+}
+
+output "google_directory_sa_key_secret_id" {
+  value = try(google_secret_manager_secret.google_directory_sa_key[0].secret_id, "")
 }
 
 output "shortener_api_key_secret_id" {
@@ -423,6 +484,10 @@ output "google_services_client_secret_secret_id" {
 
 output "pagerduty_integration_key_secret_id" {
   value = google_secret_manager_secret.pagerduty_integration_key.secret_id
+}
+
+output "trusted_proxy_secret_secret_id" {
+  value = google_secret_manager_secret.trusted_proxy_secret.secret_id
 }
 
 output "email_api_key_secret_id" {

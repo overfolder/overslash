@@ -3,7 +3,7 @@
 
 use super::super::alias::{
     APIKEY_SEC_ALIASES, Alias, HTTP_SEC_ALIASES, INFO_ALIASES, MCP_TOOL_ALIASES,
-    OAUTH2_SEC_ALIASES, OPERATION_ALIASES, PARAMETER_ALIASES, ROOT_ALIASES,
+    OAUTH2_SEC_ALIASES, OPERATION_ALIASES, PARAMETER_ALIASES, ROOT_ALIASES, SERVER_ALIASES,
 };
 use super::super::ext::{Pos, SchemeKind};
 
@@ -16,6 +16,7 @@ pub(super) fn alias_table(pos: Pos) -> &'static [Alias] {
     match pos {
         Pos::Root => ROOT_ALIASES,
         Pos::Info => INFO_ALIASES,
+        Pos::Server => SERVER_ALIASES,
         Pos::Operation | Pos::PlatformAction => OPERATION_ALIASES,
         Pos::Parameter | Pos::BodyProperty | Pos::McpToolProperty => PARAMETER_ALIASES,
         Pos::McpTool | Pos::McpToolDiscovered => MCP_TOOL_ALIASES,
@@ -98,6 +99,7 @@ pub(super) fn allowed_plain(pos: Pos) -> Option<&'static [&'static str]> {
             "schema",
             "content",
         ],
+        Pos::Server => &["url", "description", "variables"],
         Pos::Components => &[
             "schemas",
             "responses",

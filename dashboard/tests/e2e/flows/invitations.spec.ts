@@ -6,6 +6,7 @@ import {
 	deleteOrg,
 	freshOrgSlug,
 	login,
+	sessionFromContext,
 	setManagedSignin
 } from '../../scenarios/index.mjs';
 
@@ -18,6 +19,16 @@ import {
 // pending identity carrying that same email in another org can be picked
 // instead of the real one. Minting the session up front sidesteps it — and
 // it's why these orgs are all run-private rather than the shared `dev-org`.
+//
+// The invitation cards only render in the expanded sidebar — the default rail
+// collapses them to a count — so every test pins the expanded state.
+test.beforeEach(async ({ page }) => {
+	await page.addInitScript(() => {
+		try {
+			window.localStorage.setItem('ovs_sidebar_collapsed', 'false');
+		} catch {}
+	});
+});
 
 test('an invited user sees the invitation in the sidebar and can accept it', async ({ page }) => {
 	const homeSlug = freshOrgSlug('inv-home');
@@ -45,8 +56,11 @@ test('an invited user sees the invitation in the sidebar and can accept it', asy
 		// because the org is now a membership, not an invitation.
 		await expect(section).toHaveCount(0, { timeout: 20_000 });
 
+		// The switch re-scoped the server-side session and replaced the
+		// browser's cookie; the copy `login()` captured is now refused.
+		const switched = await sessionFromContext(page.context(), invitee);
 		const memberships = await api<{ memberships: { org_id: string; role: string }[] }>(
-			invitee,
+			switched,
 			'/v1/account/memberships'
 		);
 		const joined = memberships.memberships.find((m) => m.org_id === acme.orgId);

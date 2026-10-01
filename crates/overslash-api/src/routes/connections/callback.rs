@@ -5,8 +5,26 @@ use super::*;
 
 #[derive(Deserialize)]
 pub(super) struct OAuthCallbackParams {
-    code: String,
+    /// Absent when the provider redirects back with `error=` instead — the
+    /// user pressed Deny, or the provider refused the request. Optional so
+    /// that redirect reaches the handler and is recorded on the flow, rather
+    /// than bouncing off the query extractor as an anonymous 400.
+    #[serde(default)]
+    code: Option<String>,
     state: String,
+    /// RFC 6749 §4.1.2.1 error code (`access_denied`, …).
+    #[serde(default)]
+    error: Option<String>,
+}
+
+/// An RFC 6749 error code as it may be stored and shown to an agent: the
+/// spec restricts codes to a small printable set, and anything else a
+/// provider sends is collapsed to a fixed token rather than relayed.
+fn provider_error_code(raw: &str) -> &str {
+    let ok = !raw.is_empty()
+        && raw.len() <= 64
+        && raw.bytes().all(|b| b.is_ascii_lowercase() || b == b'_');
+    if ok { raw } else { "provider_error" }
 }
 
 /// Successful-path payload of [`oauth_callback`]. Wrapped here so the
@@ -72,6 +90,27 @@ pub(super) async fn oauth_callback(
 
     let redirect_target = resolve_redirect_target(&state, &flow);
 
+    // The provider sent the user back without a code: they refused, or the
+    // provider did. Record why, so a tool call waiting on this link (URL-mode
+    // elicitation) ends now and can say so, then answer like any other
+    // callback failure.
+    let code = match (params.error.as_deref(), params.code.as_deref()) {
+        (None, Some(code)) if !code.is_empty() => code.to_string(),
+        (error, _) => {
+            let reason = error.map(provider_error_code).unwrap_or("missing_code");
+            if let Err(e) =
+                oauth_connection_flow::mark_finished(state.db(&ext), flow_id, Err(reason)).await
+            {
+                tracing::warn!(flow_id, "failed to record oauth flow outcome: {e}");
+            }
+            let err = AppError::BadRequest(format!("authorization was not granted: {reason}"));
+            return match redirect_target {
+                Some(redir) => error_redirect(redir, &err),
+                None => err.into_response(),
+            };
+        }
+    };
+
     // The default callback `redirect_uri`. Every flow now completes through this
     // browser callback — there is no per-flow redirect override any more.
     // Recomputed from config so it byte-matches what the authorize URL was built
@@ -93,7 +132,7 @@ pub(super) async fn oauth_callback(
         &state,
         &ext,
         &ip,
-        &params,
+        &code,
         flow.org_id,
         flow.identity_id,
         &flow.provider_key,
@@ -106,6 +145,18 @@ pub(super) async fn oauth_callback(
         &redirect_uri,
     )
     .await;
+
+    // Record how the flow ended. An MCP tool call that handed this link to
+    // its user as a URL-mode elicitation is polling for it. Best-effort: the
+    // connection itself is already written, and a missed stamp only means
+    // that caller waits out its timeout and falls back to the link.
+    let finished = match &outcome {
+        Ok(_) => Ok(()),
+        Err(err) => Err(redirect_reason_token(err)),
+    };
+    if let Err(e) = oauth_connection_flow::mark_finished(state.db(&ext), flow_id, finished).await {
+        tracing::warn!(flow_id, "failed to record oauth flow outcome: {e}");
+    }
 
     match (outcome, redirect_target) {
         (Ok(payload), Some(redir)) => success_redirect(redir, &payload),
@@ -248,7 +299,7 @@ async fn oauth_callback_inner(
     state: &AppState,
     ext: &axum::http::Extensions,
     ip: &ClientIp,
-    params: &OAuthCallbackParams,
+    code: &str,
     org_id: Uuid,
     identity_id: Uuid,
     provider_key: &str,
@@ -287,7 +338,7 @@ async fn oauth_callback_inner(
         &provider,
         &creds.client_id,
         &creds.client_secret,
-        &params.code,
+        code,
         redirect_uri,
         code_verifier,
     )

@@ -117,6 +117,24 @@ variable "vercel_preview_origin_regex" {
   default     = ""
 }
 
+variable "trusted_proxy_hops" {
+  description = "Client-IP resolution: addresses, counting the socket peer, trusted by position (OVERSLASH_TRUSTED_PROXY_HOPS). 1 on Cloud Run. See infra/README.md \"Client IP & trusted proxies\"."
+  type        = number
+  default     = 0
+}
+
+variable "trusted_proxy_cidrs" {
+  description = "Client-IP resolution: CIDRs trusted anywhere in X-Forwarded-For (OVERSLASH_TRUSTED_PROXIES) — the GCLB address when enable_api_lb. Empty = none."
+  type        = string
+  default     = ""
+}
+
+variable "enable_trusted_proxy_secret" {
+  description = "Mount OVERSLASH_TRUSTED_PROXY_SECRET into Cloud Run. Set the secret's value first (>= 32 bytes); the API refuses to boot on REPLACE_ME."
+  type        = bool
+  default     = false
+}
+
 variable "connection_return_url_hosts" {
   description = "Comma-separated hostnames (no scheme, no path) allowed as OAuth return_url targets after the code exchange. E.g. `api-dev.overfolder.com` for the overfolder dev tenant. Empty = feature disabled (Overslash returns JSON; no redirect)."
   type        = string
@@ -129,6 +147,30 @@ variable "use_private_vpc" {
   description = "Use VPC private networking for Cloud SQL (true) or Cloud SQL Auth Proxy over public IP (false)"
   type        = bool
   default     = false
+}
+
+variable "enable_google_directory_sync" {
+  description = "Google Workspace Directory group sync: create the instance's directory service account and the Secret Manager secret its JSON key lives in, enable the Admin SDK API, and feed the key to the API as OVERSLASH_GOOGLE_DIRECTORY_SA_KEY. Populate the secret (docs/runbooks/google-directory.md) BEFORE enabling — the API refuses to boot on a key that does not parse."
+  type        = bool
+  default     = false
+}
+
+variable "enable_bi" {
+  description = "Provision the BI surface: a BigQuery connection + overslash_bi dataset over the Postgres `bi` schema (docs/runbooks/bi.md)."
+  type        = bool
+  default     = false
+}
+
+variable "bi_publish_views" {
+  description = "Create the overslash_bi BigQuery views. Second step after enable_bi: turn on once an API release containing overslash_db::bi has booted with enable_bi applied (docs/runbooks/bi.md)."
+  type        = bool
+  default     = false
+}
+
+variable "bi_viewers" {
+  description = "IAM members (e.g. user:a@b.com) allowed to query overslash_bi. Project owners already can."
+  type        = list(string)
+  default     = []
 }
 
 variable "enable_valkey" {
@@ -308,15 +350,21 @@ variable "enable_overfwd" {
 variable "overfwd_image" {
   description = "overfwd image path *relative to the Docker Hub mirror*, digest-pinned (e.g. `angelmanuel/overfwd@sha256:…`). A moving tag would be an unreviewed third-party code change reaching production on the next revision roll, so a digest is required."
   type        = string
-  # v0.4.0 — the release where an unparseable IMAP SEARCH key returns a 400
-  # naming the fix instead of `200 []`, an empty key means ALL, and /email/search
-  # answers `{results, total, truncated}` rather than a bare array. The `search`
-  # action's description in `services/email.yaml` documents that contract, so a
-  # downgrade would make the shipped template lie to agents.
+  # v0.6.0 — adds inline base64 `attachments` on POST /email/send (≤ 20 parts,
+  # 10 MiB decoded by default via OVERFWD_MAX_ATTACHMENT_BYTES; the send body
+  # limit rises to 16 MiB with it). Nothing in `services/email.yaml` sends
+  # attachments yet; this pin is the floor the attachments feature builds on.
   #
-  # Still ≥ v0.3.0, which introduced OVERFWD_BLOCK_PRIVATE_ENDPOINTS — the
-  # module turns that on and would fail closed against an older image.
-  default = "angelmanuel/overfwd@sha256:adaf72343c74699ebdbb517d2e9e299f0631729379b527ef96c9a20f87d0989a"
+  # Still ≥ v0.4.0 — the release where an unparseable IMAP SEARCH key returns a
+  # 400 naming the fix instead of `200 []`, an empty key means ALL, and
+  # /email/search answers `{results, total, truncated}` rather than a bare
+  # array. The `search` action's description in `services/email.yaml`
+  # documents that contract, so a downgrade would make the shipped template lie
+  # to agents. And ≥ v0.3.0, which introduced OVERFWD_BLOCK_PRIVATE_ENDPOINTS —
+  # the module turns that on and would fail closed against an older image.
+  #
+  # Multi-arch OCI index digest (amd64 + arm64), not a per-platform manifest.
+  default = "angelmanuel/overfwd@sha256:6b2c426dae2639c751313015104bb0271dbb8082c8d2daf701a5e9bda24edf9f"
 
   validation {
     condition     = can(regex("@sha256:[0-9a-f]{64}$", var.overfwd_image))
@@ -452,6 +500,20 @@ variable "billing_account_id" {
   description = "GCP billing account ID. Empty = skip the billing-budget alert."
   type        = string
   default     = ""
+}
+
+# --- Audit logging (CASA 6.7.1) ---
+
+variable "audit_log_retention_days" {
+  description = "Retention of the dedicated audit log bucket. 400 = GCP's own `_Required` bucket, one CASA cycle plus slack. Cannot be changed once the bucket is locked."
+  type        = number
+  default     = 400
+}
+
+variable "audit_log_bucket_locked" {
+  description = "IRREVERSIBLE. Lock the audit log bucket's retention. Once applied it can never be unlocked, its retention can never change, and the bucket cannot be deleted until its contents age out. Off by default; prod.tfvars turns it on."
+  type        = bool
+  default     = false
 }
 
 variable "enable_metrics_sidecar" {

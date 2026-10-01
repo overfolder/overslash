@@ -27,8 +27,13 @@ const svc = await seedService(session, {
 	url: 'https://mailbox.example.com'
 });
 
-const endpointInput = (p) =>
-	p.locator('label.field', { hasText: 'Endpoint URL' }).locator('input').first();
+const endpointInput = (p) => p.getByLabel('Endpoint URL').first();
+
+// Email's endpoint has a deployment default, so the create form keeps it
+// behind "Show more options".
+const openMoreOptions = async (p) => {
+	await p.getByRole('button', { name: /Show more options/ }).click({ timeout: 15_000 });
+};
 
 const snap = await makeSnapper(session);
 try {
@@ -37,6 +42,7 @@ try {
 		const { ctx, page } = await snap.navigateAndSnap('outbound-tls-new-blank', '/services/new?template=email', {
 			viewport: { width: 1400, height: 1100 },
 			waitFor: async (p) => {
+				await openMoreOptions(p);
 				await endpointInput(p).waitFor({ timeout: 15_000 });
 			}
 		});

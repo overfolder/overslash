@@ -66,7 +66,8 @@
 		if (!freeUnlimited) {
 			const params = new URLSearchParams({
 				name: orgName.trim(),
-				slug: orgSlug.trim()
+				slug: orgSlug.trim(),
+				paid: '1'
 			});
 			window.location.href = `/billing/new-team?${params.toString()}`;
 			return;
