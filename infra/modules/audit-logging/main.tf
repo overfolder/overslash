@@ -85,23 +85,32 @@ resource "google_logging_project_sink" "audit" {
 # one of the expected runtime service accounts. A caller with no principalEmail
 # at all fails the NOT and is counted, which is the safe direction.
 #
-# This fires on every `tofu plan` by a human: the google provider refreshes each
+# A `tofu plan`/`apply` reads every secret: the google provider refreshes each
 # google_secret_manager_secret_version by reading its payload, and the monitoring
-# module reads the PagerDuty key as a data source. That is intended — a human
-# reading secret payloads is precisely the event the policy says must be seen —
-# and each notification names the principal, so it is attributable to the apply.
+# module reads the PagerDuty key as a data source. Reads by a principal in
+# `terraform_operators` whose user agent is the google provider's are therefore
+# not counted. The same principal reading through the Console, `gcloud` or
+# `bin/db-shell.sh` still is. The user agent is caller-supplied, so this
+# exemption rests on the operator's credential, not on the header; every read
+# still lands in the retained audit bucket.
 
 locals {
   expected_accessor_clause = join(" OR ", [
     for p in var.expected_secret_accessors : "protoPayload.authenticationInfo.principalEmail=\"${p}\""
   ])
 
-  unexpected_secret_access_filter = join("\n", [
+  terraform_operator_clause = join(" OR ", [
+    for p in var.terraform_operators : "protoPayload.authenticationInfo.principalEmail=\"${p}\""
+  ])
+
+  unexpected_secret_access_filter = join("\n", concat([
     "logName:\"/logs/cloudaudit.googleapis.com%2Fdata_access\"",
     "protoPayload.serviceName=\"secretmanager.googleapis.com\"",
     "protoPayload.methodName:\"AccessSecretVersion\"",
     "NOT (${local.expected_accessor_clause})",
-  ])
+    ], length(var.terraform_operators) == 0 ? [] : [
+    "NOT ((${local.terraform_operator_clause}) AND protoPayload.requestMetadata.callerSuppliedUserAgent:\"terraform-provider-google/\")",
+  ]))
 }
 
 resource "google_logging_metric" "unexpected_secret_access" {
@@ -157,7 +166,10 @@ resource "google_monitoring_alert_policy" "unexpected_secret_access" {
         alignment_period     = "60s"
         per_series_aligner   = "ALIGN_SUM"
         cross_series_reducer = "REDUCE_SUM"
-        group_by_fields      = ["metric.label.principal", "metric.label.secret"]
+        # One incident per principal, not per (principal, secret): a single
+        # read session touching every secret is one event to triage. Which
+        # secrets were read comes from the audit-log query in the docs below.
+        group_by_fields = ["metric.label.principal"]
       }
 
       trigger {
@@ -170,9 +182,9 @@ resource "google_monitoring_alert_policy" "unexpected_secret_access" {
     mime_type = "text/markdown"
     content   = <<-EOT
       A principal outside the expected runtime service accounts read a Secret Manager payload.
-      The incident names the principal and the secret.
+      The incident names the principal; the query below lists the secrets it read.
 
-      1. Your own `tofu plan`/`apply`, a `bin/db-shell.sh` session, or a documented break-glass read? Note it on the incident and close it.
+      1. A `tofu plan`/`apply` by someone outside `terraform_operators`, a `bin/db-shell.sh` session, a Console view, or a documented break-glass read? Note it on the incident and close it.
       2. Otherwise treat it as a credential exposure: follow docs/compliance/casa/secrets-access-policy.md ("Responding to an alert") — rotate the secret, then find how the principal got access.
 
       Query: `logName:"cloudaudit.googleapis.com%2Fdata_access" protoPayload.methodName:"AccessSecretVersion"` in the ${google_logging_project_bucket_config.audit.bucket_id} bucket.

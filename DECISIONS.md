@@ -1332,3 +1332,9 @@ Bytes at rest are a new cost, so every bound above is enforced here rather than 
 **Date**: 2026-10
 **Decision**: `enable_live_map = true` in `infra/env/prod.tfvars`, so prod sets `OVERSLASH_LIVE_MAP` and emits the per-call `action.called` / `action.completed` events. This reverses D58's "never in production"; the rest of D58 (topic, emission site, audience, the flag itself) stands.
 **Rationale**: D58 gated the events on volume, not correctness — one durable `events` row per action call on the hottest path. That cost is bounded: `events` is pruned after 7 days (`RETENTION_DAYS` in `services/events/bus.rs`), so the table holds a rolling week of calls rather than growing without limit. The flag stays, so another deployment can still leave it off.
+
+## D-NEXT: Named operators' Terraform reads of secrets do not alert
+
+**Date**: 2026-10
+**Decision**: The audit-logging module takes `terraform_operators`, a per-environment list of principals (humans or service accounts). A secret read by one of them whose user agent carries `terraform-provider-google/` is left out of the unexpected-secret-access metric. Their Console, `gcloud` and `db-shell.sh` reads still count. Both environments list the owner's account and the factory agent's service account. The alert now groups by principal only, so one read session opens one incident instead of one per secret. This narrows D112's "humans are never exempt"; the rest of D112 stands.
+**Rationale**: Every plan reads every secret, so under D112 each routine apply raised about 20 P1 emails. An alert that fires on every apply teaches operators to close it unread, which defeats it for the reads that matter. The exemption is limited to the one client that reads routinely. The trade-off is explicit: the user agent is caller-supplied, so a stolen operator credential could read quietly by imitating the provider. Every read still lands in the 400-day audit bucket, so it remains attributable after the fact.

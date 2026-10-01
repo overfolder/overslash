@@ -38,12 +38,18 @@ variable "audited_services" {
 
 variable "expected_secret_accessors" {
   type        = list(string)
-  description = "Principal emails whose AccessSecretVersion calls are the normal runtime path and do not alert. Service accounts only — a human reading a secret payload must always notify. See docs/compliance/casa/secrets-access-policy.md."
+  description = "Principal emails whose AccessSecretVersion calls are the normal runtime path and do not alert. Service accounts only — humans reading through Terraform are exempted by terraform_operators instead, and nowhere else. See docs/compliance/casa/secrets-access-policy.md."
 
   validation {
     condition     = length(var.expected_secret_accessors) > 0 && alltrue([for p in var.expected_secret_accessors : endswith(p, ".gserviceaccount.com")])
-    error_message = "expected_secret_accessors must be a non-empty list of service-account emails. Human principals are never exempt from the alert."
+    error_message = "expected_secret_accessors must be a non-empty list of service-account emails. Human principals belong in terraform_operators, which exempts only their Terraform reads."
   }
+}
+
+variable "terraform_operators" {
+  type        = list(string)
+  default     = []
+  description = "Principal emails (humans or service accounts) whose secret reads through the google Terraform provider do not alert — the reads every `tofu plan`/`apply` makes. Their reads by any other client (Console, gcloud, db-shell) still alert. See docs/compliance/casa/secrets-access-policy.md."
 }
 
 variable "alerts_enabled" {
