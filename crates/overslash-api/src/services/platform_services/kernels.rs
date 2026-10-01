@@ -49,6 +49,40 @@ pub(crate) async fn require_owned_by_ceiling_or_admin(
     Err(AppError::NotFound("service instance not found".into()))
 }
 
+/// Read gate for an instance addressed **by id**: the reach `GET /v1/services`
+/// gives the caller, so every row the listing shows also opens by id.
+///
+/// Deliberately wider than [`require_owned_by_ceiling_or_admin`], which is the
+/// *write* gate: besides the caller's and its ceiling user's own rows, it
+/// admits rows granted to one of the ceiling user's groups (how every
+/// org-level instance is shared — creating one requires a grant) and, for an
+/// `is_org_admin` caller, everything, matching the admin "show all" listing.
+/// Reusing the write gate here made every org-level instance 404 on the
+/// dashboard detail page.
+async fn require_readable_by_caller(
+    scope: &OrgScope,
+    row: &overslash_db::repos::service_instance::ServiceInstanceRow,
+    auth_identity: Uuid,
+) -> Result<(), AppError> {
+    if row.owner_identity_id == Some(auth_identity) {
+        return Ok(());
+    }
+    let ceiling_user_id = group_ceiling::resolve_ceiling_user_id(scope, auth_identity).await?;
+    if row.owner_identity_id == Some(ceiling_user_id)
+        || scope
+            .get_visible_service_ids(ceiling_user_id)
+            .await?
+            .contains(&row.id)
+        || scope
+            .get_identity(auth_identity)
+            .await?
+            .is_some_and(|i| i.is_org_admin)
+    {
+        return Ok(());
+    }
+    Err(AppError::NotFound("service instance not found".into()))
+}
+
 /// List service instances visible to the caller.
 ///
 /// When `admin_view_all` is true, the group ceiling is bypassed and every
@@ -242,7 +276,7 @@ pub async fn kernel_get_service(
         // uses below, so it has to re-impose the same reach itself.
         let row = scope.get_service_instance(uuid).await?;
         if let Some(ref row) = row {
-            require_owned_by_ceiling_or_admin(&scope, row, auth_identity, ctx.access_level).await?;
+            require_readable_by_caller(&scope, row, auth_identity).await?;
         }
         row
     } else {
