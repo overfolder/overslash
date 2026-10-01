@@ -370,6 +370,10 @@
 			await groupsApi.removeMember(groupId, id);
 			memberIds = memberIds.filter((m) => m !== id);
 		} catch (e) {
+			// 409: the directory asserts this membership and our origins were
+			// stale. Reload so the row shows its "via" badge and loses Remove,
+			// then surface why — load() clears `error`, so set it after.
+			if (e instanceof ApiError && e.status === 409) await load();
 			error = apiErrText(e);
 		}
 	}

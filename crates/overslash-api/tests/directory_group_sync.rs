@@ -656,10 +656,14 @@ async fn a_derived_member_cannot_be_hand_removed() {
         .unwrap();
     assert_eq!(resp.status(), 409);
     let body: Value = resp.json().await.unwrap();
-    let msg = body.to_string();
+    let msg = body["error"].as_str().unwrap();
     assert!(
-        msg.contains("directory"),
+        msg.contains("remove the mapping under the group's directory sources"),
         "the refusal should point at the mapping: {msg}"
+    );
+    assert!(
+        !msg.contains("  "),
+        "no stray whitespace in the message: {msg:?}"
     );
 
     // Still a member — the refusal was not a silent no-op.
