@@ -304,7 +304,7 @@ async fn call_action(
     // slightly earlier `service` resolution would be a bad trade.
     //
     // Gated: each call costs one durable `events` row, on the hottest path in
-    // the system. `live_map_enabled` is set on dev, never in production.
+    // the system. `live_map_enabled` is opt-in per deployment (on for dev and prod).
     let activity = match (state.config.live_map_enabled, auth.identity_id) {
         (true, Some(actor)) => Some(CallActivity {
             call_id: Uuid::new_v4(),
