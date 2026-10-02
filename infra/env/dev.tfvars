@@ -56,9 +56,15 @@ cloud_sql_tier         = "db-f1-micro"
 cloud_sql_disk_size_gb = 10
 cloud_sql_zone         = "europe-west1-b"
 
-# Cloud Run — scale to zero, minimal resources
+# Cloud Run — one warm instance (see below)
+# 2Gi: the embedding backfill re-embeds every action whose source text changed,
+# 32 texts per fastembed call, at boot. A template-wide edit (a service
+# description, say) makes that one ~600 MiB burst on top of steady state, and
+# an instance killed mid-burst never persists the vectors, so it crashloops.
+# Dev hit it at 512Mi on 2026-10-02 (>=1255 MiB used); prod had already OOMed
+# once at 1Gi (1173 MiB on 2026-09-28) with no burst at all.
 cloud_run_cpu    = "1"
-cloud_run_memory = "512Mi"
+cloud_run_memory = "2Gi"
 # Async execution needs an instance to exist in order to drain its queue, and
 # Cloud Run's autoscaler is request-driven — a pending row creates no scale-out
 # pressure. At 0 a queued job would sit until unrelated traffic warmed an
