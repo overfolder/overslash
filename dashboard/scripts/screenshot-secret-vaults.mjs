@@ -63,7 +63,7 @@ try {
 				}
 			});
 			await page.locator('button:has-text("New Secret")').first().click();
-			await page.locator('text=Org-wide').waitFor({ timeout: 10_000 });
+			await page.locator('label.check').waitFor({ timeout: 10_000 });
 			await page.fill('#new-name', 'billing_api_key');
 			await page.fill('#new-value', 'sk_live_demo');
 			await page.locator('label.check input').check();
