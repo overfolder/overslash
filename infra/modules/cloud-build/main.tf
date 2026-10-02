@@ -112,14 +112,21 @@ resource "google_cloudbuild_trigger" "deploy" {
     # release-please merge pushed after it. Deploy only while $COMMIT_SHA is
     # still the branch tip; if it moved, the newer push's build deploys. A
     # manual run pinned to a SHA has no $BRANCH_NAME and always deploys, which
-    # keeps rollbacks working.
+    # keeps rollbacks working. If the tip cannot be read (GitHub or network
+    # down), it fails open and deploys, as before the check existed: a build
+    # that pushed but never deployed is the worse outcome.
     step {
       name       = "gcr.io/google.com/cloudsdktool/cloud-sdk"
       entrypoint = "bash"
       args = ["-c", <<-EOT
         set -eu
         if [ -n "$BRANCH_NAME" ]; then
-          tip=$(git ls-remote "https://github.com/${var.github_owner}/${var.github_repo}.git" "refs/heads/$BRANCH_NAME" | cut -f1)
+          if out=$(git ls-remote "https://github.com/${var.github_owner}/${var.github_repo}.git" "refs/heads/$BRANCH_NAME"); then
+            tip=$(printf '%s' "$$out" | cut -f1)
+          else
+            echo "Could not read the tip of $BRANCH_NAME; deploying $COMMIT_SHA."
+            tip=""
+          fi
           if [ -n "$$tip" ] && [ "$$tip" != "$COMMIT_SHA" ]; then
             echo "Skipping deploy: $BRANCH_NAME moved to $$tip; its build deploys instead of $COMMIT_SHA."
             exit 0

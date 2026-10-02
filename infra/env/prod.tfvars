@@ -32,8 +32,14 @@ cloud_sql_disk_size_gb = 10
 cloud_sql_zone         = "europe-west1-b"
 
 # Cloud Run — one always-warm instance (no cold starts), minimal resources
+# 2Gi: the embedding backfill re-embeds every action whose source text changed,
+# 32 texts per fastembed call, at boot. A template-wide edit (a service
+# description, say) makes that one ~600 MiB burst on top of steady state, and
+# an instance killed mid-burst never persists the vectors, so it crashloops.
+# Dev hit it at 512Mi on 2026-10-02 (>=1255 MiB used); prod had already OOMed
+# once at 1Gi (1173 MiB on 2026-09-28) with no burst at all.
 cloud_run_cpu           = "1"
-cloud_run_memory        = "1Gi"
+cloud_run_memory        = "2Gi"
 cloud_run_min_instances = 1
 cloud_run_max_instances = 3
 

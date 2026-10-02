@@ -15,23 +15,38 @@
 # an instance points at. It lives in the instance's `config` map; only the
 # secret key costs a vault entry, and it rotates on its own.
 #
-# ## v4, and what is deliberately missing
+# ## Cloud (v4) and self-hosted, in one template
 #
-# Langfuse v4 sunsets a large part of the v1/v2 read surface on Langfuse Cloud
-# on 2026-11-16, and self-hosted v4 already refuses it in the default
-# `events_only` write mode. None of it is modelled here:
+# Langfuse runs two read surfaces at once, and which one works depends on the
+# deployment rather than on anything the caller chooses:
 #
-#   GET  /api/public/traces, /traces/{id}      → GET /api/public/v2/observations
-#   GET  /api/public/observations(+/{id})      → GET /api/public/v2/observations
-#   GET  /api/public/sessions(+/{id})          → v2/observations, filter sessionId
-#   GET  /api/public/metrics                   → GET /api/public/v2/metrics
-#   GET  /api/public/v2/scores(+/{id})         → GET /api/public/v3/scores
-#   POST /api/public/ingestion                 → OpenTelemetry, not this gateway
-#   /api/public/dataset-run-items              → /api/public/experiment-items
-#   /api/public/datasets/{name}/runs*          → /api/public/experiments
+#   • Langfuse Cloud serves the v4 surface (v2 observations, v2 metrics, v3
+#     scores, experiments) and sunsets the older one on 2026-11-16.
+#   • Self-hosted Langfuse — every v3.x release, checked against v3.225.11 —
+#     ships the v4 handlers but gates them: v2 observations, v2 metrics and
+#     experiments answer 404 or 501 ("v2 APIs are currently in beta and only
+#     available on Langfuse Cloud") unless the instance opted into a v4 write
+#     mode, and v3 scores 404 on releases that predate it. What a self-hosted
+#     instance actually reads is the older surface.
 #
-# A template built on the obvious spellings would ship already-dead, which is
-# why `tests/langfuse.rs` carries a guard asserting no action reaches one.
+# So both are modelled. The Cloud actions keep the plain names; the
+# self-hosted counterparts are:
+#
+#   list_observations → list_traces, get_trace, list_observations_self_hosted,
+#                       get_observation, list_sessions, get_session
+#   get_metrics       → get_metrics_self_hosted   (GET /api/public/metrics)
+#   list_scores       → list_scores_self_hosted, get_score   (/v2/scores)
+#   list_experiments  → list_dataset_runs, get_dataset_run
+#   list_experiment_items → list_dataset_run_items
+#
+# Each side's description names the other, so an agent that gets a 501 or 404
+# knows where to go next. Every self-hosted description opens with
+# "Self-hosted Langfuse read API", and `tests/langfuse_self_hosted.rs` holds
+# every action on an old path to that marker and to GET: the old surface is
+# read-only here. Its writes (`POST /api/public/ingestion`, dataset-run-item
+# creation) stay out — ingestion belongs in the application's SDK, not behind
+# an approval gate. One template for both is a stopgap; TECH_DEBT.md records
+# the versioned template-family idea that would replace it.
 #
 # Also excluded, for reasons that are not deprecation:
 #
@@ -83,8 +98,11 @@ info:
     token usage and cost; aggregate latency, cost and token metrics over a
     query DSL; read and write evaluation scores; manage versioned prompts and
     the deployment labels that decide which version live SDKs serve; and curate
-    datasets, dataset items and experiment runs. Auth is a Langfuse project key
-    pair sent as HTTP Basic.
+    datasets, dataset items and experiment runs. Works against Langfuse Cloud
+    and self-hosted Langfuse: on a self-hosted instance read traces, sessions,
+    observations, scores and metrics through the actions marked "Self-hosted
+    Langfuse read API". Auth is a Langfuse project key pair sent as HTTP
+    Basic.
 servers:
   - url: ${LANGFUSE_URL:https://cloud.langfuse.com}
     x-overslash-promoted: true
@@ -179,9 +197,9 @@ paths:
         One page of observations — spans, generations, events, tool and agent
         calls — newest first. This and get_metrics are the only real-time read
         paths; every other endpoint here can lag ingestion by about ten
-        minutes. This is also the v4 replacement for listing traces and
-        sessions, which no longer have endpoints of their own: filter by
-        `traceId` or `sessionId` instead.
+        minutes. On Langfuse Cloud this is also how you list traces
+        and sessions, which have no v4 endpoints of their own: filter by
+        `traceId` or `sessionId`.
 
         `fields` is the most important argument. `core` (id, traceId,
         startTime, endTime, parentObservationId, type) is always returned and
@@ -195,6 +213,10 @@ paths:
         a single-digit `limit`. For counts, costs and latencies across many
         rows use get_metrics instead — it aggregates upstream and returns a
         small table rather than the rows themselves.
+
+        On a self-hosted Langfuse this endpoint answers 501 or 404 — it is
+        Cloud-only there. Use list_traces, get_trace and
+        list_observations_self_hosted instead.
       parameters:
         - name: fields
           in: query
@@ -226,8 +248,8 @@ paths:
           in: query
           x-overslash-aliases: [session_id]
           description: >-
-            Only observations in this session. Sessions have no endpoint of
-            their own in v4 — this is how you read one.
+            Only observations in this session. On Langfuse Cloud sessions
+            have no v4 endpoint of their own — this is how you read one.
           schema:
             type: string
         - name: userId
@@ -374,6 +396,9 @@ paths:
         (id, traceId, userId, sessionId, observationId, parentObservationId)
         may be filtered on but NOT grouped by — a grouping dimension naming one
         returns 400.
+
+        On a self-hosted Langfuse this endpoint answers 501 or 404 — use
+        get_metrics_self_hosted instead.
       parameters:
         - name: query
           in: query
@@ -509,7 +534,8 @@ paths:
         `annotation` (authorUserId, queueId). The subject filters are mutually
         exclusive: traceId, sessionId and experimentId cannot be combined, and
         observationId requires traceId because observation ids are scoped to a
-        trace.
+        trace. On a self-hosted Langfuse that predates this endpoint it
+        answers 404 — use list_scores_self_hosted instead.
       parameters:
         - name: limit
           in: query
@@ -780,6 +806,36 @@ paths:
           schema:
             type: string
   /api/public/traces/{traceId}:
+    get:
+      operationId: get_trace
+      summary: "Get trace {traceId}"
+      risk: read
+      description: >-
+        Self-hosted Langfuse read API. One trace with its observations, scores
+        and cost/latency metrics. Use this on a self-hosted Langfuse, where the
+        Cloud-only list_observations answers 501 or 404; on Langfuse Cloud
+        filter list_observations by `traceId` instead (Cloud retires this
+        endpoint on 2026-11-16). With no `fields` every group comes back, and
+        each nested observation carries its whole input and output, so a long
+        agent run can be past the response cap. Ask for
+        `fields=core,scores,metrics` first, then read individual steps with
+        get_observation.
+      parameters:
+        - name: traceId
+          in: path
+          required: true
+          x-overslash-aliases: [trace_id, id]
+          description: Trace id, from list_traces.
+          schema:
+            type: string
+        - name: fields
+          in: query
+          description: >-
+            Comma-separated field groups: core (always), io, scores,
+            observations, metrics. Unset returns all of them. An excluded
+            observations or scores group comes back as an empty array.
+          schema:
+            type: string
     delete:
       operationId: delete_trace
       summary: "Delete trace {traceId}"
@@ -803,6 +859,143 @@ paths:
           schema:
             type: string
   /api/public/traces:
+    get:
+      operationId: list_traces
+      summary: "List traces[ named {name}][ in session {sessionId}][ for user {userId}]"
+      risk: read
+      pagination:
+        page_size:
+          param: limit
+          # 25, not the upstream's 50: see `fields` below.
+          default: 25
+        next:
+          style: page
+          param: page
+        items: data
+      description: >-
+        Self-hosted Langfuse read API. One page of traces — one row per agent
+        run or request — newest first, with name, user, session, tags, cost
+        and latency. Use this on a self-hosted Langfuse, where the Cloud-only
+        list_observations answers 501 or 404; on Langfuse Cloud use
+        list_observations with `isRootObservation=true` instead (Cloud retires
+        this endpoint on 2026-11-16). `fields` defaults here to
+        `core,metrics`; adding `io` or `observations` returns whole prompts
+        and completions for every row, so lower `limit` when you ask for them,
+        or open one trace with get_trace.
+      parameters:
+        - name: page
+          in: query
+          description: Page number, 1-based.
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          description: Traces per page. Leave unset for 25.
+          schema:
+            type: integer
+        - name: fields
+          in: query
+          description: >-
+            Comma-separated field groups: core (always), io, scores,
+            observations, metrics. Langfuse returns every group when this is
+            absent, which is why it defaults to `core,metrics` here.
+          schema:
+            type: string
+            default: core,metrics
+        - name: userId
+          in: query
+          x-overslash-aliases: [user_id]
+          description: Only traces tagged with this end-user id.
+          schema:
+            type: string
+        - name: name
+          in: query
+          description: Only traces with this exact name.
+          schema:
+            type: string
+        - name: sessionId
+          in: query
+          x-overslash-aliases: [session_id]
+          description: Only traces in this session.
+          schema:
+            type: string
+        - name: fromTimestamp
+          in: query
+          x-overslash-aliases: [from_timestamp, since]
+          description: Only traces at or after this ISO 8601 datetime.
+          schema:
+            type: string
+            format: date-time
+        - name: toTimestamp
+          in: query
+          x-overslash-aliases: [to_timestamp, until]
+          description: Only traces before this ISO 8601 datetime.
+          schema:
+            type: string
+            format: date-time
+        - name: orderBy
+          in: query
+          x-overslash-aliases: [order_by]
+          description: >-
+            `field.asc` or `field.desc`, over id, timestamp, name, userId,
+            release, version, public, bookmarked or sessionId. Example:
+            `timestamp.asc`.
+          schema:
+            type: string
+        - name: tags
+          in: query
+          description: Only traces carrying all of these tags. Repeats on the wire, so pass a list.
+          schema:
+            type: array
+            items:
+              type: string
+        - name: version
+          in: query
+          description: Only traces carrying this version string.
+          schema:
+            type: string
+        - name: release
+          in: query
+          description: Only traces carrying this release string.
+          schema:
+            type: string
+        - name: environment
+          in: query
+          description: One or more environments. Repeats on the wire, so pass a list.
+          schema:
+            type: array
+            items:
+              type: string
+        - name: filter
+          in: query
+          description: >-
+            Structured filter conditions, as a JSON array — pass the array
+            itself or its serialized form. Takes precedence over every scalar
+            filter above. Each condition is {type, column, operator, value},
+            plus `key` for the object types. Columns include id, name,
+            timestamp, userId, sessionId, environment, version, release, tags,
+            bookmarked, metadata, latency, inputTokens, outputTokens,
+            totalTokens, inputCost, outputCost and totalCost.
+          schema:
+            type: string
+            contentMediaType: application/json
+            contentSchema:
+              type: array
+              items:
+                type: object
+                required: [type, column, operator]
+                properties:
+                  type:
+                    type: string
+                    enum: [datetime, string, number, stringOptions, categoryOptions, arrayOptions, stringObject, numberObject, booleanObject, boolean, "null"]
+                  column:
+                    type: string
+                  operator:
+                    type: string
+                  value: {}
+                  key:
+                    type: string
     delete:
       operationId: delete_traces
       # No interpolation: the only parameter is an array, and a label reading
@@ -1409,7 +1602,8 @@ paths:
         The v4 replacement for /api/public/datasets/{name}/runs.
         `fromStartTime` is **required** — Langfuse demands a lower bound so the
         query stays fast on large projects, and omitting it is a 400, not an
-        unbounded query. `fields=scores` adds each run's aggregate scores.
+        unbounded query. `fields=scores` adds each run's aggregate scores. On
+        a self-hosted Langfuse this answers 404 — use list_dataset_runs.
       parameters:
         - name: fromStartTime
           in: query
@@ -1514,7 +1708,8 @@ paths:
         is how you export an eval run. The v4 replacement for
         /api/public/dataset-run-items. `fromStartTime` is **required**.
         `fields` defaults to `core,dataset`; adding `io` returns whole inputs
-        and outputs, so lower `limit` when you ask for it.
+        and outputs, so lower `limit` when you ask for it. On a
+        self-hosted Langfuse this answers 404 — use list_dataset_run_items.
       parameters:
         - name: fromStartTime
           in: query
@@ -1603,3 +1798,617 @@ paths:
                   operator:
                     type: string
                   value: {}
+  # ── Self-hosted read API ──────────────────────────────────────────────────
+  #
+  # Everything below (plus the GETs on /traces and /traces/{traceId} above) is
+  # the read surface a self-hosted Langfuse actually serves. See the header
+  # comment. Every description opens with "Self-hosted Langfuse read API", and
+  # `tests/langfuse_self_hosted.rs` holds every action on these paths to that
+  # marker and to GET.
+  /api/public/sessions:
+    get:
+      operationId: list_sessions
+      summary: List sessions
+      risk: read
+      pagination:
+        page_size:
+          param: limit
+          default: 50
+        next:
+          style: page
+          param: page
+        items: data
+      description: >-
+        Self-hosted Langfuse read API. One page of sessions — groups of traces
+        that share a `sessionId`, such as one chat conversation. Use this on a
+        self-hosted Langfuse; on Langfuse Cloud filter list_observations by
+        `sessionId` instead (Cloud retires this endpoint on 2026-11-16). Read
+        one session's traces with get_session.
+      parameters:
+        - name: page
+          in: query
+          description: Page number, 1-based.
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          description: Sessions per page. Leave unset for 50.
+          schema:
+            type: integer
+        - name: fromTimestamp
+          in: query
+          x-overslash-aliases: [from_timestamp, since]
+          description: Only sessions created at or after this ISO 8601 datetime.
+          schema:
+            type: string
+            format: date-time
+        - name: toTimestamp
+          in: query
+          x-overslash-aliases: [to_timestamp, until]
+          description: Only sessions created before this ISO 8601 datetime.
+          schema:
+            type: string
+            format: date-time
+        - name: environment
+          in: query
+          description: One or more environments. Repeats on the wire, so pass a list.
+          schema:
+            type: array
+            items:
+              type: string
+  /api/public/sessions/{sessionId}:
+    get:
+      operationId: get_session
+      summary: "Get session {sessionId}"
+      risk: read
+      description: >-
+        Self-hosted Langfuse read API. One session and every trace in it. The
+        traces are not paginated, so a very long session can be past the
+        response cap; list_traces filtered by `sessionId` pages through the same
+        rows. Use this on a self-hosted Langfuse; on Langfuse Cloud filter
+        list_observations by `sessionId` instead.
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          x-overslash-aliases: [session_id, id]
+          description: Session id, from list_sessions or a trace's `sessionId`.
+          schema:
+            type: string
+  /api/public/observations:
+    get:
+      operationId: list_observations_self_hosted
+      summary: "List observations[ of type {type}][ on trace {traceId}]"
+      risk: read
+      pagination:
+        page_size:
+          param: limit
+          # 25 for the same reason as list_observations: every row carries its
+          # whole input and output, and this endpoint has no field groups to
+          # turn them off.
+          default: 25
+        next:
+          style: page
+          param: page
+        items: data
+      description: >-
+        Self-hosted Langfuse read API. One page of observations — spans,
+        generations, events, tool and agent calls — with their inputs,
+        outputs, model, token usage and cost. Use this on a self-hosted
+        Langfuse, where list_observations answers 501 or 404 because its v2
+        endpoint is Cloud-only; on Langfuse Cloud use list_observations
+        (Cloud retires this endpoint on 2026-11-16). There are no field groups
+        here: every row carries its whole input and output, so narrow to one
+        `traceId` and keep `limit` small. For counts, costs and latencies
+        across many rows use get_metrics_self_hosted.
+      parameters:
+        - name: page
+          in: query
+          description: Page number, 1-based.
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          description: Observations per page. Leave unset for 25.
+          schema:
+            type: integer
+        - name: traceId
+          in: query
+          x-overslash-aliases: [trace_id]
+          description: Only observations belonging to this trace.
+          schema:
+            type: string
+        - name: userId
+          in: query
+          x-overslash-aliases: [user_id]
+          description: Only observations tagged with this end-user id.
+          schema:
+            type: string
+        - name: name
+          in: query
+          description: Only observations with this exact name.
+          schema:
+            type: string
+        - name: type
+          in: query
+          description: >-
+            Observation type. GENERATION is an LLM call, SPAN a unit of work,
+            TOOL a tool invocation, AGENT an agent step.
+          schema:
+            type: string
+            enum: [SPAN, GENERATION, EVENT, AGENT, TOOL, CHAIN, RETRIEVER, EVALUATOR, EMBEDDING, GUARDRAIL]
+        - name: level
+          in: query
+          description: Only observations logged at this level.
+          schema:
+            type: string
+            enum: [DEBUG, DEFAULT, WARNING, ERROR]
+        - name: parentObservationId
+          in: query
+          x-overslash-aliases: [parent_observation_id]
+          description: Only children of this observation.
+          schema:
+            type: string
+        - name: environment
+          in: query
+          description: One or more environments. Repeats on the wire, so pass a list.
+          schema:
+            type: array
+            items:
+              type: string
+        - name: version
+          in: query
+          description: Only observations carrying this version string.
+          schema:
+            type: string
+        - name: fromStartTime
+          in: query
+          x-overslash-aliases: [from_start_time, since]
+          description: Only observations starting at or after this ISO 8601 datetime.
+          schema:
+            type: string
+            format: date-time
+        - name: toStartTime
+          in: query
+          x-overslash-aliases: [to_start_time, until]
+          description: Only observations starting before this ISO 8601 datetime.
+          schema:
+            type: string
+            format: date-time
+        - name: filter
+          in: query
+          description: >-
+            Structured filter conditions, as a JSON array — pass the array
+            itself or its serialized form. Takes precedence over every scalar
+            filter above. Each condition is {type, column, operator, value},
+            plus `key` for the object types. Columns include id, type, name,
+            traceId, startTime, endTime, environment, level, statusMessage,
+            version, latency, timeToFirstToken, inputTokens, outputTokens,
+            totalTokens, inputCost, outputCost, totalCost, model, promptName,
+            promptVersion and metadata.
+          schema:
+            type: string
+            contentMediaType: application/json
+            contentSchema:
+              type: array
+              items:
+                type: object
+                required: [type, column, operator]
+                properties:
+                  type:
+                    type: string
+                    enum: [datetime, string, number, stringOptions, categoryOptions, arrayOptions, stringObject, numberObject, boolean, "null"]
+                  column:
+                    type: string
+                  operator:
+                    type: string
+                  value: {}
+                  key:
+                    type: string
+  /api/public/observations/{observationId}:
+    get:
+      operationId: get_observation
+      summary: "Get observation {observationId}"
+      risk: read
+      description: >-
+        Self-hosted Langfuse read API. One observation — a span, generation or
+        event — with its whole input, output, model, usage and cost. Use this
+        on a self-hosted Langfuse; on Langfuse Cloud use list_observations
+        with `fields=core,io` and a `filter` on `id`.
+      parameters:
+        - name: observationId
+          in: path
+          required: true
+          x-overslash-aliases: [observation_id, id]
+          description: Observation id, from list_observations_self_hosted or get_trace.
+          schema:
+            type: string
+  /api/public/v2/scores:
+    get:
+      operationId: list_scores_self_hosted
+      summary: "List scores[ named {name}]"
+      risk: read
+      pagination:
+        page_size:
+          param: limit
+          default: 50
+          max: 100
+        next:
+          style: page
+          param: page
+        items: data
+      description: >-
+        Self-hosted Langfuse read API. One page of evaluation scores on
+        traces, observations, sessions and dataset runs. Use this on a
+        self-hosted Langfuse, where list_scores answers 404 on releases that
+        predate its v3 endpoint; on Langfuse Cloud use list_scores (Cloud
+        retires this endpoint on 2026-11-16). `value` follows `dataType`: a
+        number for NUMERIC and BOOLEAN, a string for CATEGORICAL, TEXT and
+        CORRECTION.
+      parameters:
+        - name: page
+          in: query
+          description: Page number, 1-based.
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          description: Scores per page. Maximum 100 — a higher value is a 400.
+          schema:
+            type: integer
+        - name: name
+          in: query
+          description: Only scores with this name.
+          schema:
+            type: string
+        - name: traceId
+          in: query
+          x-overslash-aliases: [trace_id]
+          description: Only scores on this trace.
+          schema:
+            type: string
+        - name: observationId
+          in: query
+          x-overslash-aliases: [observation_id]
+          description: Comma-separated observation ids.
+          schema:
+            type: string
+        - name: sessionId
+          in: query
+          x-overslash-aliases: [session_id]
+          description: Only scores on this session.
+          schema:
+            type: string
+        - name: datasetRunId
+          in: query
+          x-overslash-aliases: [dataset_run_id]
+          description: Only scores on this dataset run.
+          schema:
+            type: string
+        - name: userId
+          in: query
+          x-overslash-aliases: [user_id]
+          description: Only scores whose trace carries this end-user id.
+          schema:
+            type: string
+        - name: source
+          in: query
+          description: Only scores from this source.
+          schema:
+            type: string
+            enum: [ANNOTATION, API, EVAL]
+        - name: dataType
+          in: query
+          x-overslash-aliases: [data_type]
+          description: Only scores of this data type.
+          schema:
+            type: string
+            enum: [NUMERIC, BOOLEAN, CATEGORICAL, CORRECTION, TEXT]
+        - name: operator
+          in: query
+          description: >-
+            Comparison applied with `value`, such as `>=` or `=`. Only
+            meaningful together with `value`.
+          schema:
+            type: string
+        - name: value
+          in: query
+          description: Numeric value compared with `operator`.
+          schema:
+            type: number
+        - name: scoreIds
+          in: query
+          x-overslash-aliases: [score_ids]
+          description: Comma-separated score ids.
+          schema:
+            type: string
+        - name: configId
+          in: query
+          x-overslash-aliases: [config_id]
+          description: Only scores from this score config.
+          schema:
+            type: string
+        - name: queueId
+          in: query
+          x-overslash-aliases: [queue_id]
+          description: Only scores from this annotation queue.
+          schema:
+            type: string
+        - name: environment
+          in: query
+          description: One or more environments. Repeats on the wire, so pass a list.
+          schema:
+            type: array
+            items:
+              type: string
+        - name: traceTags
+          in: query
+          x-overslash-aliases: [trace_tags]
+          description: Only scores whose trace carries all of these tags.
+          schema:
+            type: array
+            items:
+              type: string
+        - name: fromTimestamp
+          in: query
+          x-overslash-aliases: [from_timestamp, since]
+          description: Only scores created at or after this ISO 8601 datetime.
+          schema:
+            type: string
+            format: date-time
+        - name: toTimestamp
+          in: query
+          x-overslash-aliases: [to_timestamp, until]
+          description: Only scores created before this ISO 8601 datetime.
+          schema:
+            type: string
+            format: date-time
+        - name: fields
+          in: query
+          description: >-
+            Comma-separated field groups: score, trace. Both are returned when
+            unset; `score` alone drops the trace's userId, tags, environment
+            and sessionId.
+          schema:
+            type: string
+  /api/public/v2/scores/{scoreId}:
+    get:
+      operationId: get_score
+      summary: "Get score {scoreId}"
+      risk: read
+      description: >-
+        Self-hosted Langfuse read API. One score by id. Use this on a
+        self-hosted Langfuse; on Langfuse Cloud use list_scores with an `id`
+        filter.
+      parameters:
+        - name: scoreId
+          in: path
+          required: true
+          x-overslash-aliases: [score_id, id]
+          description: Score id, from list_scores_self_hosted.
+          schema:
+            type: string
+  /api/public/metrics:
+    get:
+      operationId: get_metrics_self_hosted
+      summary: Run an aggregate metrics query
+      risk: read
+      # No `pagination:` block, for the same reason as get_metrics: one
+      # aggregate table bounded by `config.row_limit`.
+      description: >-
+        Self-hosted Langfuse read API. Aggregate cost, latency, token usage and
+        score statistics over a time window, grouped by dimensions you choose.
+        Use this on a self-hosted Langfuse, where get_metrics answers 501 or
+        404 because its v2 endpoint is Cloud-only; on Langfuse Cloud use
+        get_metrics (Cloud retires this endpoint on 2026-11-16). Unlike
+        get_metrics this has a `traces` view, so per-trace questions — cost
+        per run, runs per user — can be answered directly.
+      parameters:
+        - name: query
+          in: query
+          required: true
+          description: >-
+            The metrics query — pass the object itself or its serialized form.
+            `view` picks the table: `traces`, `observations`,
+            `scores-numeric`, `scores-boolean` or `scores-categorical`.
+            Measures include count, latency, inputTokens, outputTokens,
+            totalTokens, inputCost, outputCost, totalCost and, for score views,
+            value. Dimensions include name, userId, sessionId, environment,
+            release, version, tags and, for observations, providedModelName.
+            Example — daily spend by trace name over a week:
+            {"view":"traces",
+            "dimensions":[{"field":"name"}],
+            "metrics":[{"measure":"totalCost","aggregation":"sum"}],
+            "timeDimension":{"granularity":"day"},
+            "fromTimestamp":"2026-09-01T00:00:00Z",
+            "toTimestamp":"2026-09-08T00:00:00Z"}
+          schema:
+            type: string
+            contentMediaType: application/json
+            contentSchema:
+              type: object
+              required: [view, metrics, fromTimestamp, toTimestamp]
+              properties:
+                view:
+                  type: string
+                  enum: [traces, observations, scores-numeric, scores-boolean, scores-categorical]
+                metrics:
+                  type: array
+                  description: At least one measure/aggregation pair.
+                  items:
+                    type: object
+                    required: [measure, aggregation]
+                    properties:
+                      measure:
+                        type: string
+                      aggregation:
+                        type: string
+                        enum: [sum, avg, count, max, min, p50, p75, p90, p95, p99, histogram]
+                dimensions:
+                  type: array
+                  items:
+                    type: object
+                    required: [field]
+                    properties:
+                      field:
+                        type: string
+                filters:
+                  type: array
+                  items:
+                    type: object
+                    required: [column, operator, type]
+                    properties:
+                      column:
+                        type: string
+                      operator:
+                        type: string
+                      value: {}
+                      type:
+                        type: string
+                      key:
+                        type: string
+                timeDimension:
+                  type: object
+                  required: [granularity]
+                  properties:
+                    granularity:
+                      type: string
+                      enum: [auto, minute, hour, day, week, month]
+                fromTimestamp:
+                  type: string
+                  format: date-time
+                toTimestamp:
+                  type: string
+                  format: date-time
+                orderBy:
+                  type: array
+                  items:
+                    type: object
+                    required: [field, direction]
+                    properties:
+                      field:
+                        type: string
+                      direction:
+                        type: string
+                        enum: [asc, desc]
+                config:
+                  type: object
+                  properties:
+                    bins:
+                      type: number
+                      description: Histogram buckets, 1-100. Default 10.
+                    row_limit:
+                      type: number
+                      description: Maximum rows returned, 1-1000.
+  /api/public/datasets/{datasetName}/runs:
+    get:
+      operationId: list_dataset_runs
+      summary: "List runs of dataset '{datasetName}'"
+      risk: read
+      pagination:
+        page_size:
+          param: limit
+          default: 50
+        next:
+          style: page
+          param: page
+        items: data
+      description: >-
+        Self-hosted Langfuse read API. One page of a dataset's runs — each run
+        is one experiment over the dataset's items. Use this on a self-hosted
+        Langfuse, where list_experiments answers 404 because its endpoint
+        needs Langfuse v4; on Langfuse Cloud use list_experiments (Cloud
+        retires this endpoint on 2026-11-16).
+      parameters:
+        - name: datasetName
+          in: path
+          required: true
+          x-overslash-aliases: [dataset_name, name]
+          description: Dataset name, from list_datasets.
+          schema:
+            type: string
+        - name: page
+          in: query
+          description: Page number, 1-based.
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          description: Runs per page. Leave unset for 50.
+          schema:
+            type: integer
+  /api/public/datasets/{datasetName}/runs/{runName}:
+    get:
+      operationId: get_dataset_run
+      summary: "Get run '{runName}' of dataset '{datasetName}'"
+      risk: read
+      description: >-
+        Self-hosted Langfuse read API. One dataset run with its run items —
+        which dataset item ran against which trace. Use this on a self-hosted
+        Langfuse; on Langfuse Cloud use list_experiments and
+        list_experiment_items.
+      parameters:
+        - name: datasetName
+          in: path
+          required: true
+          x-overslash-aliases: [dataset_name]
+          description: Dataset name, from list_datasets.
+          schema:
+            type: string
+        - name: runName
+          in: path
+          required: true
+          x-overslash-aliases: [run_name, name]
+          description: Run name, from list_dataset_runs.
+          schema:
+            type: string
+  /api/public/dataset-run-items:
+    get:
+      operationId: list_dataset_run_items
+      summary: "List items of run '{runName}'"
+      risk: read
+      pagination:
+        page_size:
+          param: limit
+          default: 50
+        next:
+          style: page
+          param: page
+        items: data
+      description: >-
+        Self-hosted Langfuse read API. One page of a dataset run's items — each
+        links one dataset item to the trace it produced; read the trace with
+        get_trace for its output. Use this on a self-hosted Langfuse, where
+        list_experiment_items answers 404 because its endpoint needs Langfuse
+        v4; on Langfuse Cloud use list_experiment_items (Cloud retires this
+        endpoint on 2026-11-16).
+      parameters:
+        - name: datasetId
+          in: query
+          required: true
+          x-overslash-aliases: [dataset_id]
+          description: Dataset id — the `id` from get_dataset, not its name.
+          schema:
+            type: string
+        - name: runName
+          in: query
+          required: true
+          x-overslash-aliases: [run_name]
+          description: Run name, from list_dataset_runs.
+          schema:
+            type: string
+        - name: page
+          in: query
+          description: Page number, 1-based.
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          description: Items per page. Leave unset for 50.
+          schema:
+            type: integer

@@ -94,6 +94,7 @@ mod integration;
 mod invite_adoption;
 mod key_rotation;
 mod langfuse;
+mod langfuse_self_hosted;
 mod large_file;
 mod layered_templates;
 mod linkedin;
