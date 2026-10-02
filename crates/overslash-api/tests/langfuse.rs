@@ -4,9 +4,8 @@
 //! Five things are worth proving here that a unit test cannot:
 //!
 //!   1. the shipped YAML compiles into the actions and risk classes it claims;
-//!   2. no action reaches an endpoint Langfuse Cloud sunsets on 2026-11-16 —
-//!      the failure mode this template exists to avoid, and the only one that
-//!      arrives on a calendar date rather than on a code change;
+//!   2. (in `langfuse_self_hosted.rs`) every action on an endpoint Langfuse
+//!      Cloud sunsets on 2026-11-16 is a marked, read-only self-hosted action;
 //!   3. the key pair reaches the upstream as `Authorization: Basic
 //!      base64(pk:sk)` and nowhere else. The two halves are joined by a jq
 //!      template, so a mistake here is a credential that is subtly wrong
@@ -34,7 +33,7 @@ const SECRET_KEY: &str = "sk-lf-11111111-1111-1111-1111-111111111111";
 /// What `"Basic " + (.public_key + ":" + .secret_key | @base64)` must render
 /// to. Computed here rather than pasted so the test states the rule, not a
 /// checksum of it.
-fn expected_basic() -> String {
+pub(crate) fn expected_basic() -> String {
     use base64::Engine as _;
     format!(
         "Basic {}",
@@ -42,7 +41,7 @@ fn expected_basic() -> String {
     )
 }
 
-fn shipped_registry() -> overslash_core::registry::ServiceRegistry {
+pub(crate) fn shipped_registry() -> overslash_core::registry::ServiceRegistry {
     let ws_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
@@ -96,10 +95,23 @@ fn langfuse_yaml_parses() {
         "delete_dataset_item",
         "list_experiments",
         "list_experiment_items",
+        // The self-hosted read surface — see langfuse_self_hosted.rs.
+        "list_traces",
+        "get_trace",
+        "list_sessions",
+        "get_session",
+        "list_observations_self_hosted",
+        "get_observation",
+        "list_scores_self_hosted",
+        "get_score",
+        "get_metrics_self_hosted",
+        "list_dataset_runs",
+        "get_dataset_run",
+        "list_dataset_run_items",
     ] {
         assert!(svc.actions.contains_key(action), "missing action: {action}");
     }
-    assert_eq!(svc.actions.len(), 21, "the curated set is 21 actions");
+    assert_eq!(svc.actions.len(), 33, "the curated set is 33 actions");
 
     // The delete-class set, named rather than counted: each of these erases
     // telemetry or prompt history irreversibly, and a *new* one appearing
@@ -129,56 +141,6 @@ fn langfuse_yaml_parses() {
         .test_action()
         .expect("langfuse declares a credential probe");
     assert_eq!(probe.0, "list_projects");
-}
-
-/// Langfuse Cloud sunsets the whole v1 read surface on 2026-11-16, and
-/// self-hosted v4 already refuses it under the default `events_only` write
-/// mode. Every one of these paths has a v4 replacement that this template
-/// models instead.
-///
-/// This is the one failure in the service that arrives on a date rather than
-/// on a commit: a contributor "helpfully" adding `GET /api/public/traces` back
-/// would see it pass every other test, ship, and break in production on a day
-/// nobody is looking at this file.
-#[test]
-fn no_action_targets_an_endpoint_langfuse_sunsets() {
-    const SUNSET: &[&str] = &[
-        "/api/public/ingestion",
-        "/api/public/metrics",
-        "/api/public/observations",
-        "/api/public/observations/{observationId}",
-        "/api/public/sessions",
-        "/api/public/sessions/{sessionId}",
-        "/api/public/dataset-run-items",
-        "/api/public/v2/scores",
-        "/api/public/v2/scores/{scoreId}",
-    ];
-
-    let reg = shipped_registry();
-    let svc = reg.get("langfuse").unwrap();
-
-    for (key, action) in &svc.actions {
-        assert!(
-            !SUNSET.contains(&action.path.as_str()),
-            "{key} targets {}, which Langfuse Cloud sunsets on 2026-11-16",
-            action.path
-        );
-        // `/api/public/traces` survives only for its two DELETE verbs; the
-        // GETs on it and on `/traces/{traceId}` are sunset. Keyed on the verb
-        // so the surviving deletes stay expressible.
-        if action.method == "GET" {
-            assert!(
-                !action.path.starts_with("/api/public/traces"),
-                "{key} reads {} — sunset; use list_observations",
-                action.path
-            );
-            assert!(
-                !action.path.starts_with("/api/public/datasets/"),
-                "{key} reads {} — sunset; use list_experiments",
-                action.path
-            );
-        }
-    }
 }
 
 /// Both pagination shapes, asserted where they are declared rather than only
@@ -399,7 +361,7 @@ async fn start_mock_langfuse() -> (SocketAddr, SeenLog) {
 /// Boot the API on the shipped registry, seed the `langfuse_secret_key` vault
 /// entry, and create an org-level `langfuse` instance pointed at the mock with
 /// the public key set as instance config.
-async fn setup(
+pub(crate) async fn setup(
     pool: sqlx::PgPool,
     mock: SocketAddr,
     access_level: &str,
@@ -448,7 +410,7 @@ async fn setup(
     (base, client, agent_key, admin_key)
 }
 
-async fn call(
+pub(crate) async fn call(
     base: &str,
     client: &reqwest::Client,
     agent_key: &str,
@@ -714,7 +676,7 @@ async fn a_metrics_query_missing_required_fields_is_refused_locally() {
 }
 
 /// Decode one `key=value` pair out of a raw query string.
-fn url_param(query: &str, key: &str) -> Option<String> {
+pub(crate) fn url_param(query: &str, key: &str) -> Option<String> {
     query.split('&').find_map(|pair| {
         let (k, v) = pair.split_once('=')?;
         (k == key).then(|| urlencoding::decode(v).ok().map(|s| s.into_owned()))?
