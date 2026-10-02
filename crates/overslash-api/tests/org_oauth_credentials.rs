@@ -6,6 +6,7 @@
 use crate::common;
 
 use overslash_core::crypto;
+use overslash_core::types::SecretNamespace::Org;
 use reqwest::Client;
 use serde_json::{Value, json};
 
@@ -59,14 +60,14 @@ async fn test_put_creates_two_org_secrets_and_lists() {
     let scope = overslash_db::scopes::OrgScope::new(org_id, pool.clone());
     assert!(
         scope
-            .get_current_secret_value("OAUTH_GOOGLE_CLIENT_ID")
+            .get_current_secret_value(&Org.path("OAUTH_GOOGLE_CLIENT_ID"))
             .await
             .unwrap()
             .is_some()
     );
     assert!(
         scope
-            .get_current_secret_value("OAUTH_GOOGLE_CLIENT_SECRET")
+            .get_current_secret_value(&Org.path("OAUTH_GOOGLE_CLIENT_SECRET"))
             .await
             .unwrap()
             .is_some()
@@ -107,7 +108,7 @@ async fn test_delete_removes_both_secrets() {
     let scope = overslash_db::scopes::OrgScope::new(org_id, pool.clone());
     assert!(
         scope
-            .get_secret_by_name("OAUTH_GOOGLE_CLIENT_ID")
+            .get_secret(&Org.path("OAUTH_GOOGLE_CLIENT_ID"))
             .await
             .unwrap()
             .is_none(),
@@ -133,14 +134,14 @@ async fn test_delete_is_atomic_across_both_secret_names() {
     let scope = overslash_db::scopes::OrgScope::new(org_id, pool);
     assert!(
         scope
-            .get_secret_by_name("OAUTH_GOOGLE_CLIENT_ID")
+            .get_secret(&Org.path("OAUTH_GOOGLE_CLIENT_ID"))
             .await
             .unwrap()
             .is_some()
     );
     assert!(
         scope
-            .get_secret_by_name("OAUTH_GOOGLE_CLIENT_SECRET")
+            .get_secret(&Org.path("OAUTH_GOOGLE_CLIENT_SECRET"))
             .await
             .unwrap()
             .is_some()
@@ -157,14 +158,14 @@ async fn test_delete_is_atomic_across_both_secret_names() {
     // Both gone after DELETE.
     assert!(
         scope
-            .get_secret_by_name("OAUTH_GOOGLE_CLIENT_ID")
+            .get_secret(&Org.path("OAUTH_GOOGLE_CLIENT_ID"))
             .await
             .unwrap()
             .is_none()
     );
     assert!(
         scope
-            .get_secret_by_name("OAUTH_GOOGLE_CLIENT_SECRET")
+            .get_secret(&Org.path("OAUTH_GOOGLE_CLIENT_SECRET"))
             .await
             .unwrap()
             .is_none()
@@ -333,7 +334,7 @@ async fn test_put_creates_new_secret_version_on_update() {
 
     let scope = overslash_db::scopes::OrgScope::new(org_id, pool);
     let row = scope
-        .get_secret_by_name("OAUTH_GOOGLE_CLIENT_ID")
+        .get_secret(&Org.path("OAUTH_GOOGLE_CLIENT_ID"))
         .await
         .unwrap()
         .unwrap();
@@ -407,7 +408,7 @@ async fn test_cross_tenant_isolation() {
     let scope_b = overslash_db::scopes::OrgScope::new(org_b, pool);
     assert!(
         scope_b
-            .get_current_secret_value("OAUTH_GOOGLE_CLIENT_ID")
+            .get_current_secret_value(&Org.path("OAUTH_GOOGLE_CLIENT_ID"))
             .await
             .unwrap()
             .is_none()

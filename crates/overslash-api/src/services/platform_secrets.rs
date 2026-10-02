@@ -75,6 +75,7 @@ pub async fn kernel_request_secret(
     if input.secret_name.trim().is_empty() {
         return Err(AppError::BadRequest("secret_name is required".into()));
     }
+    crate::services::secret_paths::validate_new_secret_name(input.secret_name.trim())?;
 
     // Org-level API keys (no identity binding) cannot mint a request — the
     // row's `identity_id` and `requested_by` are NOT NULL, and there's no
@@ -133,8 +134,10 @@ pub async fn kernel_request_secret(
     // Read the version being superseded before minting, so a forced request
     // reports what was actually there when the agent asked.
     let warning = if input.force {
+        let ns = service_setup::fill_namespace(&scope, target, input.service_id).await?;
         service_setup::conflicting_secret_names(
             &scope,
+            ns,
             &[(None, input.secret_name.trim().to_string())],
         )
         .await?

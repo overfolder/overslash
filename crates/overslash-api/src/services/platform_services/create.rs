@@ -219,11 +219,28 @@ pub async fn kernel_create_service(
 
     // Reconcile per-scheme `credentials` with the legacy `secret_name` alias
     // into the map to store + the mirrored scalar (rolling-deploy compat).
-    let (credentials, stored_secret_name) = reconcile_credentials(
+    let reconciled = reconcile_credentials(
         &template_def,
         input.credentials.as_ref(),
         input.secret_name.as_deref(),
     )?;
+    // Every binding on a new instance is a change: it may only name the
+    // owner's own vault (the caller's, for an org-level service), or — for
+    // an admin — the org vault.
+    let writer = crate::services::secret_paths::BindingWriter {
+        caller_user: group_ceiling::resolve_ceiling_user_id(&scope, auth_identity).await?,
+        caller_is_admin: ctx.access_level >= AccessLevel::Admin,
+        instance_owner: owner_identity_id,
+    };
+    let (credentials, stored_secret_name) = canonicalize_bindings(
+        &scope,
+        &writer,
+        &template_def,
+        reconciled,
+        &CredentialsMap::new(),
+        None,
+    )
+    .await?;
 
     let config = validate_instance_config(&template_def, input.config.as_ref())?;
 
@@ -312,15 +329,19 @@ pub async fn kernel_create_service(
     let force_credentials = input.force.unwrap_or(false);
     if !input.skip_credentials.unwrap_or(false)
         && !force_credentials
-        && owner_identity_id.is_some()
+        && let Some(owner) = owner_identity_id
         && !pending_slots.is_empty()
     {
         let candidates: Vec<(Option<String>, String)> = pending_slots
             .iter()
             .map(|s| (Some(s.key.clone()), s.default_secret_name.clone()))
             .collect();
+        // The auto-mint fills the owner's vault (`fill_namespace`); only a
+        // name already there is a conflict.
+        let ns = overslash_core::types::SecretNamespace::User(owner);
         let conflicts =
-            crate::services::service_setup::conflicting_secret_names(&scope, &candidates).await?;
+            crate::services::service_setup::conflicting_secret_names(&scope, ns, &candidates)
+                .await?;
         if !conflicts.is_empty() {
             return Err(crate::services::service_setup::conflict_error_for_create(
                 conflicts,
@@ -461,7 +482,11 @@ pub async fn kernel_create_service(
     };
 
     let row_id = row.id;
-    let mut detail = row_to_detail(row);
+    // Bindings read relative to the caller's own vault (`row_to_detail`).
+    let viewer = group_ceiling::resolve_ceiling_user_id(&scope, auth_identity)
+        .await
+        .ok();
+    let mut detail = row_to_detail(row, viewer);
     detail.credentials_status = credentials_status;
     // Set from the definition already in hand rather than through
     // `template_view`, which would resolve the template a second time — but

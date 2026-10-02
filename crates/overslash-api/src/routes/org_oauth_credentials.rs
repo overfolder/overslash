@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use overslash_core::crypto;
+use overslash_core::types::SecretNamespace::Org;
 use overslash_db::OrgScope;
 use overslash_db::repos::{audit::AuditEntry, oauth_provider};
 
@@ -83,8 +84,10 @@ async fn list_credentials(
         // Org-secret-backed credentials take precedence in the UI listing —
         // they are the layer admins manage.
         if let (Some(id_version), Some(_)) = (
-            scope.get_current_secret_value(&id_name).await?,
-            scope.get_current_secret_value(&secret_name).await?,
+            scope.get_current_secret_value(&Org.path(&*id_name)).await?,
+            scope
+                .get_current_secret_value(&Org.path(&*secret_name))
+                .await?,
         ) {
             let client_id =
                 String::from_utf8(crypto::decrypt(&enc_key, &id_version.encrypted_value)?)
@@ -150,13 +153,13 @@ async fn put_credentials(
     // Atomic: both secret versions land in one transaction. If the second
     // write fails, the first rolls back too — no half-configured state
     // where the id is rotated but the secret is stale.
-    // Org-OAuth credentials are admin-only (AdminAcl gates this route). The
-    // calling admin owns the slot for visibility purposes; in practice the
-    // dashboard list path admin-shortcuts so all admins see it regardless.
+    // Org-OAuth credentials are admin-only (AdminAcl gates this route) and
+    // live in the org vault — the only namespace the client-credential
+    // resolver reads `OAUTH_*` from.
     scope
         .put_secrets(
+            Org,
             &[(&id_name, &encrypted_id), (&secret_name, &encrypted_secret)],
-            acl.identity_id,
             acl.identity_id,
         )
         .await?;
@@ -206,7 +209,10 @@ async fn delete_credentials(
     // UPDATE fails, the first rolls back too — no orphan half-deleted
     // secret pair. `deleted > 0` distinguishes "something was removed"
     // from "nothing was configured for this provider".
-    let deleted = scope.soft_delete_secrets(&[&id_name, &secret_name]).await? > 0;
+    let deleted = scope
+        .soft_delete_secrets(Org, &[&id_name, &secret_name])
+        .await?
+        > 0;
 
     if deleted {
         let _ = scope

@@ -75,7 +75,20 @@ async fn create_identity(
         .json()
         .await
         .unwrap();
-    resp["id"].as_str().unwrap().parse().unwrap()
+    let id: Uuid = resp["id"].as_str().unwrap().parse().unwrap();
+    // Secrets live in per-user vaults: the inline `test_token` every agent
+    // here sends resolves in its owner user's vault, so seed it there.
+    if kind == "user" {
+        let put = reqwest::Client::new()
+            .put(format!("{base}/v1/secrets/test_token?owner={id}"))
+            .header("Authorization", format!("Bearer {org_key}"))
+            .json(&json!({"value": "secret123"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(put.status(), 200);
+    }
+    id
 }
 
 async fn create_api_key(

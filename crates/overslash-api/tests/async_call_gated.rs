@@ -91,7 +91,8 @@ where
 
     client
         .put(format!("{base}/v1/secrets/tk"))
-        .header(common::auth(&admin_key).0, common::auth(&admin_key).1)
+        // The agent's own user vault — inline secrets resolve only there.
+        .header(common::auth(&agent_key).0, common::auth(&agent_key).1)
         .json(&json!({"value": "v"}))
         .send()
         .await

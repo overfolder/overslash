@@ -4,15 +4,18 @@
 -->
 <script lang="ts">
 	import { ApiError } from '$lib/session';
-	import { putSecret } from '$lib/api/secrets';
+	import { putSecret, type SecretVault } from '$lib/api/secrets';
 
 	let {
 		secretName,
+		vault,
 		currentVersion,
 		onClose,
 		onSaved
 	}: {
 		secretName: string;
+		/** Which vault the secret lives in (`?owner=` / `?scope=org`). */
+		vault?: SecretVault;
 		currentVersion: number;
 		onClose: () => void;
 		onSaved: () => void;
@@ -30,7 +33,7 @@
 		saving = true;
 		error = null;
 		try {
-			await putSecret(secretName, value);
+			await putSecret(secretName, value, undefined, vault);
 			onSaved();
 		} catch (e) {
 			error = e instanceof ApiError ? `Save failed (${e.status})` : 'Save failed';

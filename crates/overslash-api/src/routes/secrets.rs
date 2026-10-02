@@ -1,13 +1,15 @@
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     routing::{get, post, put},
 };
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
+use overslash_core::types::SecretNamespace;
 use overslash_db::repos::audit::AuditEntry;
 use overslash_db::scopes::OrgScope;
+use uuid::Uuid;
 
 use crate::{
     AppState,
@@ -38,23 +40,89 @@ struct PutSecretRequest {
     value: String,
     /// If set, attribute the new secret version to this user identity instead
     /// of the calling agent. Caller must be the user itself or an agent whose
-    /// owner is this user. Secrets are org-scoped, so this only changes
+    /// owner is this user. The secret lands in the caller's user vault either
+    /// way (an agent's vault *is* its owner's), so this only changes
     /// `created_by` attribution.
     #[serde(default)]
     on_behalf_of: Option<uuid::Uuid>,
 }
 
+/// Which vault a `/v1/secrets/{name}` request addresses. Secret names are
+/// unique per vault, not per org, so a name alone is not an address.
+///
+/// * neither set — the caller's own user vault (an agent's is its owner's)
+/// * `owner=<user identity id>` — that user's vault; admin-only unless it is
+///   the caller's own
+/// * `scope=org` — the org-wide vault; admin-only
+#[derive(Deserialize, Default)]
+struct NamespaceQuery {
+    #[serde(default)]
+    owner: Option<Uuid>,
+    #[serde(default)]
+    scope: Option<String>,
+}
+
+/// The caller's own vault: its ceiling user's.
+async fn own_namespace(scope: &OrgScope, identity_id: Uuid) -> Result<SecretNamespace> {
+    Ok(SecretNamespace::User(
+        crate::services::group_ceiling::resolve_ceiling_user_id(scope, identity_id).await?,
+    ))
+}
+
+/// Resolve the `?owner=` / `?scope=` selector against the caller. `Ok(None)`
+/// means "out of reach": callers answer 404 so a vault's contents are not
+/// probeable by non-admins.
+async fn select_namespace(
+    scope: &OrgScope,
+    identity_id: Uuid,
+    q: &NamespaceQuery,
+) -> Result<Option<SecretNamespace>> {
+    let own = own_namespace(scope, identity_id).await?;
+    let wanted = match (q.scope.as_deref(), q.owner) {
+        (Some("org"), None) => SecretNamespace::Org,
+        (Some("user") | None, None) => return Ok(Some(own)),
+        (Some("user") | None, Some(owner)) => SecretNamespace::User(owner),
+        (Some(other), _) => {
+            return Err(AppError::BadRequest(format!(
+                "invalid scope `{other}`: expected `user` or `org`, and `owner` only with `user`"
+            )));
+        }
+    };
+    if wanted == own {
+        return Ok(Some(own));
+    }
+    if !is_admin(scope, identity_id).await? {
+        return Ok(None);
+    }
+    if let SecretNamespace::User(owner) = wanted {
+        match scope.get_identity(owner).await? {
+            Some(i) if i.kind == "user" => {}
+            _ => return Ok(None),
+        }
+    }
+    Ok(Some(wanted))
+}
+
+fn not_found(name: &str) -> AppError {
+    AppError::NotFound(format!("secret '{name}' not found"))
+}
+
 /// Dashboard-shaped metadata. Returned to user-kind callers (session auth
-/// or, in principle, a user-bound API key). Includes the slot owner so
+/// or, in principle, a user-bound API key). Includes the vault owner so
 /// the dashboard can render an "Owner" column.
 #[derive(Serialize)]
 struct SecretMetadata {
     name: String,
     current_version: i32,
-    /// Identity that owns the slot (`secrets.owner_identity_id`). `None` for
-    /// legacy/org-wide rows (admin-only). Set on first insert and preserved
-    /// across subsequent versions.
+    /// The vault: the owning user identity, `None` for the org vault.
     owner_identity_id: Option<uuid::Uuid>,
+    /// `user` or `org`.
+    scope: &'static str,
+    /// Canonical secret path — what a service binding stores.
+    path: String,
+    /// The vault owner's name / email, for display. `None` for the org vault.
+    owner_name: Option<String>,
+    owner_email: Option<String>,
     #[serde(with = "time::serde::rfc3339")]
     created_at: OffsetDateTime,
     #[serde(with = "time::serde::rfc3339")]
@@ -117,6 +185,7 @@ struct RevealResponse {
     value: String,
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn put_secret(
     State(state): State<AppState>,
     ReqExt(ext): ReqExt,
@@ -124,45 +193,34 @@ async fn put_secret(
     scope: OrgScope,
     ip: ClientIp,
     Path(name): Path<String>,
+    Query(q): Query<NamespaceQuery>,
     Json(req): Json<PutSecretRequest>,
 ) -> Result<Json<PutSecretResponse>> {
     let auth = acl;
-    let enc_key = state.config.keyring()?;
-    let encrypted = crypto::encrypt(&enc_key, req.value.as_bytes())?;
+    crate::services::secret_paths::validate_new_secret_name(&name)?;
+    let caller_id = auth.identity_id.ok_or_else(|| {
+        AppError::Unauthorized("identity-bound auth required to write secrets".into())
+    })?;
 
-    let owner = crate::services::group_ceiling::resolve_owner_identity(
+    // `on_behalf_of` is validated (target == caller's owner) and names the
+    // version's `created_by`; the vault is the selector's — by default the
+    // caller's own, which for an agent is already its owner's.
+    let created_by = crate::services::group_ceiling::resolve_owner_identity(
         &scope,
         auth.identity_id,
         req.on_behalf_of,
     )
     .await?;
+    let ns = select_namespace(&scope, caller_id, &q)
+        .await?
+        .ok_or_else(|| AppError::Forbidden("only org admins may write another vault".into()))?;
 
-    // If the slot already exists, the resolved owner must match it
-    // exactly (admins exempt). Otherwise the COALESCE in repo `put`
-    // would silently let an agent rotate someone else's secret — the
-    // original owner stays put, but the value flips. Strict match
-    // forces explicit `on_behalf_of` for shared rotation: an agent
-    // wanting to rotate a parent-user-owned slot must declare
-    // `on_behalf_of: <user_id>`. Mirror the read-path 404 so an
-    // out-of-reach slot's existence isn't leaked.
-    let caller_id = auth.identity_id.ok_or_else(|| {
-        AppError::Unauthorized("identity-bound auth required to write secrets".into())
-    })?;
-    if let Some(existing) = scope.get_secret_by_name(&name).await?
-        && !is_admin(&scope, caller_id).await?
-        && existing.owner_identity_id != owner
-    {
-        return Err(AppError::NotFound(format!("secret '{name}' not found")));
-    }
-
-    // API-driven writes: the resolved identity is both the version's
-    // `created_by` (audit attribution) and the slot's `owner_identity_id`
-    // (visibility key). The slot's owner is fixed by the first writer;
-    // the COALESCE in repo `put` preserves it on subsequent versions.
+    let enc_key = state.config.keyring()?;
+    let encrypted = crypto::encrypt(&enc_key, req.value.as_bytes())?;
     // No distinct "provisioning user" — that's only set by the standalone
     // secret-provide page flow.
     let (secret, _version) = scope
-        .put_secret(&name, &encrypted, owner, owner, None)
+        .put_secret(&ns.path(&*name), &encrypted, created_by, None)
         .await?;
 
     let _ = OrgScope::new(auth.org_id, state.db_pool(&ext))
@@ -176,6 +234,7 @@ async fn put_secret(
                 "name": &secret.name,
                 "version": secret.current_version,
                 "owner_identity_id": secret.owner_identity_id,
+                "path": ns.path(&*secret.name).to_canonical(),
             }),
             description: None,
             ip_address: ip.0.as_deref(),
@@ -216,14 +275,43 @@ async fn is_admin(scope: &OrgScope, identity_id: uuid::Uuid) -> Result<bool> {
     Ok(level >= AccessLevel::Admin)
 }
 
-fn build_secret_meta(row: overslash_db::repos::secret::SecretRow) -> SecretMetadata {
+/// `owners` maps vault-owner identity ids to their (name, email).
+fn build_secret_meta(
+    row: overslash_db::repos::secret::SecretRow,
+    owners: &std::collections::HashMap<Uuid, (String, Option<String>)>,
+) -> SecretMetadata {
+    let ns = SecretNamespace::from_owner(row.owner_identity_id);
+    let owner = row.owner_identity_id.and_then(|id| owners.get(&id));
     SecretMetadata {
+        path: ns.path(&*row.name).to_canonical(),
+        scope: match ns {
+            SecretNamespace::User(_) => "user",
+            SecretNamespace::Org => "org",
+        },
+        owner_name: owner.map(|(n, _)| n.clone()),
+        owner_email: owner.and_then(|(_, e)| e.clone()),
         name: row.name,
         current_version: row.current_version,
         owner_identity_id: row.owner_identity_id,
         created_at: row.created_at,
         updated_at: row.updated_at,
     }
+}
+
+/// Name/email of every identity owning one of `rows`, in one query.
+async fn owner_index(
+    scope: &OrgScope,
+    rows: &[overslash_db::repos::secret::SecretRow],
+) -> Result<std::collections::HashMap<Uuid, (String, Option<String>)>> {
+    if rows.iter().all(|r| r.owner_identity_id.is_none()) {
+        return Ok(Default::default());
+    }
+    Ok(scope
+        .list_identities()
+        .await?
+        .into_iter()
+        .map(|i| (i.id, (i.name, i.email)))
+        .collect())
 }
 
 fn build_secret_name_row(row: overslash_db::repos::secret::SecretRow) -> SecretNameRow {
@@ -241,26 +329,23 @@ async fn get_secret(
     session: SessionAuth,
     scope: OrgScope,
     Path(name): Path<String>,
+    Query(q): Query<NamespaceQuery>,
 ) -> Result<Json<SecretDetail>> {
     debug_assert_eq!(session.org_id, scope.org_id());
-    let secret = scope
-        .get_secret_by_name(&name)
+    // An out-of-reach vault answers exactly like a missing name.
+    let path = select_namespace(&scope, session.identity_id, &q)
         .await?
-        .ok_or_else(|| AppError::NotFound(format!("secret '{name}' not found")))?;
+        .ok_or_else(|| not_found(&name))?
+        .path(&*name);
+    let secret = scope
+        .get_secret(&path)
+        .await?
+        .ok_or_else(|| not_found(&name))?;
 
-    if !is_admin(&scope, session.identity_id).await?
-        && !scope
-            .secret_visible_to_identity(&name, session.identity_id)
-            .await?
-    {
-        // Same shape as the not-found above to avoid leaking the
-        // existence of an out-of-subtree secret name.
-        return Err(AppError::NotFound(format!("secret '{name}' not found")));
-    }
-
-    let versions = scope.list_secret_versions(&name).await?;
-    let used_by = scope.list_services_using_secret(&name).await?;
-    let meta = build_secret_meta(secret);
+    let versions = scope.list_secret_versions(&path).await?;
+    let used_by = scope.list_services_using_secret(&path).await?;
+    let owners = owner_index(&scope, std::slice::from_ref(&secret)).await?;
+    let meta = build_secret_meta(secret, &owners);
 
     Ok(Json(SecretDetail {
         meta,
@@ -298,10 +383,11 @@ enum SecretListResponse {
 
 async fn list_secrets(
     // Accepts session cookie, MCP bearer (aud=mcp), and `osk_` API keys.
-    // Visibility is computed against the caller's identity subtree
-    // (descendants via `identities.parent_id`); admins see everything.
+    // A caller sees its own user vault (an agent's is its owner's); admins
+    // see every vault, or one when a selector names it.
     auth: AuthContext,
     scope: OrgScope,
+    Query(q): Query<NamespaceQuery>,
 ) -> Result<Json<SecretListResponse>> {
     debug_assert_eq!(auth.org_id, scope.org_id());
 
@@ -309,10 +395,14 @@ async fn list_secrets(
         AppError::Unauthorized("identity-bound auth required for /v1/secrets".into())
     })?;
 
-    let rows = if is_admin(&scope, identity_id).await? {
+    let selected = q.owner.is_some() || q.scope.is_some();
+    let rows = if !selected && is_admin(&scope, identity_id).await? {
         scope.list_secrets().await?
     } else {
-        scope.list_secrets_visible_to_identity(identity_id).await?
+        match select_namespace(&scope, identity_id, &q).await? {
+            Some(ns) => scope.list_secrets_in(ns).await?,
+            None => Vec::new(),
+        }
     };
 
     // Branch on the calling identity's kind: user-kind (or admin via flag)
@@ -323,7 +413,12 @@ async fn list_secrets(
         .ok_or_else(|| AppError::Unauthorized("calling identity no longer exists".into()))?;
 
     let response = if identity.kind == "user" {
-        SecretListResponse::Dashboard(rows.into_iter().map(build_secret_meta).collect())
+        let owners = owner_index(&scope, &rows).await?;
+        SecretListResponse::Dashboard(
+            rows.into_iter()
+                .map(|r| build_secret_meta(r, &owners))
+                .collect(),
+        )
     } else {
         SecretListResponse::BearerNarrow(rows.into_iter().map(build_secret_name_row).collect())
     };
@@ -338,19 +433,17 @@ async fn reveal_version(
     scope: OrgScope,
     ip: ClientIp,
     Path((name, version)): Path<(String, i32)>,
+    Query(q): Query<NamespaceQuery>,
 ) -> Result<Json<RevealResponse>> {
     debug_assert_eq!(session.org_id, scope.org_id());
 
-    if !is_admin(&scope, session.identity_id).await?
-        && !scope
-            .secret_visible_to_identity(&name, session.identity_id)
-            .await?
-    {
-        return Err(AppError::NotFound(format!("secret '{name}' not found")));
-    }
+    let path = select_namespace(&scope, session.identity_id, &q)
+        .await?
+        .ok_or_else(|| not_found(&name))?
+        .path(&*name);
 
     let row = scope
-        .get_secret_value_at_version(&name, version)
+        .get_secret_value_at_version(&path, version)
         .await?
         .ok_or_else(|| {
             AppError::NotFound(format!("secret '{name}' version {version} not found"))
@@ -368,7 +461,11 @@ async fn reveal_version(
             action: "secret.revealed",
             resource_type: Some("secret"),
             resource_id: None,
-            detail: serde_json::json!({ "name": &name, "version": version }),
+            detail: serde_json::json!({
+                "name": &name,
+                "path": path.to_canonical(),
+                "version": version,
+            }),
             description: None,
             ip_address: ip.0.as_deref(),
         })
@@ -378,6 +475,7 @@ async fn reveal_version(
     Ok(Json(RevealResponse { version, value }))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn restore_version(
     State(state): State<AppState>,
     ReqExt(ext): ReqExt,
@@ -386,20 +484,18 @@ async fn restore_version(
     scope: OrgScope,
     ip: ClientIp,
     Path((name, version)): Path<(String, i32)>,
+    Query(q): Query<NamespaceQuery>,
 ) -> Result<Json<PutSecretResponse>> {
     debug_assert_eq!(session.org_id, scope.org_id());
     let auth = acl;
 
-    if !is_admin(&scope, session.identity_id).await?
-        && !scope
-            .secret_visible_to_identity(&name, session.identity_id)
-            .await?
-    {
-        return Err(AppError::NotFound(format!("secret '{name}' not found")));
-    }
+    let path = select_namespace(&scope, session.identity_id, &q)
+        .await?
+        .ok_or_else(|| not_found(&name))?
+        .path(&*name);
 
     let row = scope
-        .get_secret_value_at_version(&name, version)
+        .get_secret_value_at_version(&path, version)
         .await?
         .ok_or_else(|| {
             AppError::NotFound(format!("secret '{name}' version {version} not found"))
@@ -408,11 +504,9 @@ async fn restore_version(
     // Re-use the existing put path so the new version row inherits all the
     // standard book-keeping (next version number, created_by, audit). We
     // attribute restoration to the caller — the original creator is still
-    // visible in the version list. `owner_identity_id` is preserved by the
-    // repo's COALESCE on conflict; pass `None` here to make that explicit
-    // (the slot already exists, so no first-insert branch can run).
+    // visible in the version list. The vault is the one the version came from.
     let (secret, new_version) = scope
-        .put_secret(&name, &row.encrypted_value, auth.identity_id, None, None)
+        .put_secret(&path, &row.encrypted_value, auth.identity_id, None)
         .await?;
 
     let _ = OrgScope::new(auth.org_id, state.db_pool(&ext))
@@ -424,6 +518,7 @@ async fn restore_version(
             resource_id: None,
             detail: serde_json::json!({
                 "name": &name,
+                "path": path.to_canonical(),
                 "from_version": version,
                 "new_version": new_version.version,
             }),
@@ -446,9 +541,17 @@ async fn delete_secret(
     scope: OrgScope,
     ip: ClientIp,
     Path(name): Path<String>,
+    Query(q): Query<NamespaceQuery>,
 ) -> Result<Json<serde_json::Value>> {
     let auth = acl;
-    let deleted = scope.soft_delete_secret(&name).await?;
+    let caller_id = auth.identity_id.ok_or_else(|| {
+        AppError::Unauthorized("identity-bound auth required to delete secrets".into())
+    })?;
+    let Some(ns) = select_namespace(&scope, caller_id, &q).await? else {
+        return Err(not_found(&name));
+    };
+    let path = ns.path(&*name);
+    let deleted = scope.soft_delete_secret(&path).await?;
     overslash_metrics::secrets::record_op("delete", if deleted { "ok" } else { "not_found" });
     if deleted {
         let _ = OrgScope::new(auth.org_id, state.db_pool(&ext))
@@ -458,7 +561,7 @@ async fn delete_secret(
                 action: "secret.deleted",
                 resource_type: Some("secret"),
                 resource_id: None,
-                detail: serde_json::json!({ "name": &name }),
+                detail: serde_json::json!({ "name": &name, "path": path.to_canonical() }),
                 description: None,
                 ip_address: ip.0.as_deref(),
             })

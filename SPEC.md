@@ -741,9 +741,41 @@ This is distinct from the permission key system (which gates action execution). 
 
 Every write creates a new version. Latest is always used for injection. Earlier versions can be restored (creates a new version pointing to the old value). Version history records who created each version and when, enabling audit and confident rollback.
 
-### Scoping
+### Scoping: vaults and secret paths
 
-Secrets belong to the identity that created them. When agents set up integrations, they use `on_behalf_of` to create secrets at the owner-user level — so all agents under that user share them.
+Secrets live in **vaults**. Every user has one, and the org has one more:
+
+- **A user's vault** holds the secrets that user, or any agent under that user, writes. An agent has no vault of its own; its vault is its owner user's (the ceiling user). So every agent under a user shares that user's secrets, and `on_behalf_of` only changes who `created_by` names.
+- **The org vault** holds org-wide credentials: org OAuth app credentials (`OAUTH_{PROVIDER}_CLIENT_ID` / `_SECRET`) and the defaults that `secret_source: org` credential slots fall back to (e.g. `overfwd_gateway_key`). Only org admins write it (`?scope=org`).
+
+A name is unique **per vault**, not per org (`UNIQUE NULLS NOT DISTINCT (org_id, owner_identity_id, name)`). Two users can each own a `shortcut_api_token`, and neither can see, bind, or inject the other's.
+
+A service binding (`service_instances.credentials` values, the legacy `secret_name`) stores a **secret path** that names the vault:
+
+| Path | Meaning |
+|------|---------|
+| `org/<name>` | the org vault |
+| `<user identity id>/<name>` | that user's vault (the stored, canonical form) |
+| `<handle>/<name>` | input only. A user's email, email local part, or name, accepted when exactly one user in the org matches. |
+| `user:<user>/<name>` | the explicit user form, for a user whose handle is literally `org` |
+| `<name>` | input only. A bare name means the vault the binding is written into. |
+
+New secret names may not contain `/` or start with `user:`. The dashboard shows a binding as `<short handle>/<name>`, or as the plain name when it points into the vault the field writes to.
+
+**Write rule (binding).** On service create or update, every binding whose value *changes* must point into the writer's own vault:
+- for a user-level service, the service owner's vault (the owner, or an admin editing it);
+- for an org-level service, the editing admin's own vault.
+
+Org admins may also bind the org vault: on any slot of an org-level service, and on `secret_source: org` slots of a user-level service. Bindings an update leaves unchanged are kept verbatim. That is how a shared org service keeps using the secret of the admin who configured it after another admin edits it. Any other binding is refused with 403.
+
+**Read rule (execution).**
+- A user-level service only ever resolves its owner's vault and the org vault. A stored binding into anyone else's vault (possible only for rows written before vaults existed) is reported as a missing credential and never resolved.
+- An org-level service resolves the path it stores; the write rule vouched for it.
+- An unbound `secret_source: org` slot reads the owner's own copy of its default first, then the org vault's.
+
+Inline secrets (Mode A, and explicit `secrets` on a call) resolve **only in the caller's own vault**. A path into another user's vault, or into the org vault, is refused with 403, admins included: Mode A can target any host, so org credentials reach a request only through a template that fixes the host.
+
+Deleting a user deletes their vault.
 
 ### Access Model
 
@@ -751,16 +783,16 @@ Secret values are encrypted at rest. Access to values depends on the actor:
 
 | Actor | List names | Read values | Write |
 |-------|------------|-------------|-------|
-| **User** (dashboard) | own subtree | own subtree | own subtree |
-| **Agent** (API) | own subtree (names only, via bearer GET `/v1/secrets`) | — | own subtree |
-| **Org admin** (User with `is_org_admin = true`) | all org | all org | all org |
+| **User** (dashboard) | own vault | own vault | own vault |
+| **Agent** (API) | its owner user's vault (names only, via bearer GET `/v1/secrets`) | — | its owner user's vault |
+| **Org admin** (User with `is_org_admin = true`) | every vault | every vault | every vault, incl. the org vault |
 
-Each secret carries an explicit `owner_identity_id` (the identity that wrote v1, or `on_behalf_of` target). Visibility for non-admin callers is "the owner is the caller, or any descendant of the caller via `identities.parent_id`". The namespace is org-wide — `(org_id, name)` is unique — so two agents under the same user cannot mint the same name.
+`/v1/secrets/{name}` addresses the caller's own vault. An admin reaches another one with `?owner=<user identity id>` or `?scope=org`. A non-admin naming a vault other than their own gets a 404, so a vault's contents cannot be probed.
 
 > **Org admin** is an attribute on a User identity, not a separate principal. There is no standalone "org" identity that can authenticate or hold API keys — every authenticated caller is a User or an Agent. Agents earn admin authority the same way they earn any other permission: by being placed in a group with `admin` access on the **`overslash`** meta service (a system-managed `service_instance` that represents Overslash itself within each org). The `is_org_admin` flag is the fast path for Users and is kept in sync with membership of the system **Admins** group.
 
-- **Users** can view and manage secret values for all secrets in their subtree (their own + their agents' secrets) via the dashboard.
-- **Agents** can list the *names* of secrets in their own subtree via bearer-authenticated `GET /v1/secrets` — the response is a narrow `{name, version_count, last_rotated_at}` shape with no values, no owner identity, and no creation timestamps. Reveal/restore/detail remain dashboard-only. Secret values are only injected at action execution time, gated by the permission chain.
+- **Users** can view and manage secret values for every secret in their vault (their own and their agents' writes) via the dashboard.
+- **Agents** can list the *names* of secrets in their owner user's vault via bearer-authenticated `GET /v1/secrets` — the response is a narrow `{name, version_count, last_rotated_at}` shape with no values, no owner identity, and no creation timestamps. Reveal/restore/detail remain dashboard-only. Secret values are only injected at action execution time, gated by the permission chain.
 - **Org admins** can view and manage all secrets across the org. This follows the standard model for org-managed credential stores (same as 1Password Teams, AWS Secrets Manager, etc.) and is required for compliance, debugging, and offboarding scenarios.
 
 ---
@@ -771,9 +803,9 @@ Overslash handles OAuth flows (authorization URL generation, code exchange, toke
 
 OAuth client credentials resolve via a three-tier cascade. At execution time, the OAuth engine walks the cascade top-to-bottom and uses the first match:
 
-1. **User-level BYOC** — the user provides their own OAuth app credentials for a provider, stored as versioned secrets in the user's vault with well-known names: `OAUTH_{PROVIDER}_CLIENT_ID` and `OAUTH_{PROVIDER}_CLIENT_SECRET` (e.g., `OAUTH_GOOGLE_CLIENT_ID`). This lets power users or contractors use their own GCP/GitHub/etc. project without touching org config.
+1. **User-level BYOC** — the user provides their own OAuth app credentials for a provider, stored as a BYOC credential (`byoc_credentials`, encrypted) bound to the user. This lets power users or contractors use their own GCP/GitHub/etc. project without touching org config.
 
-2. **Org-level** — org-admins configure OAuth app credentials for a provider at the org level, stored as org-level secrets with the same well-known naming convention. All users in the org inherit these credentials for services that use the provider. This is the recommended path for Google Workspace customers (see below).
+2. **Org-level** — org-admins configure OAuth app credentials for a provider at the org level, stored in the org vault (§6) under well-known names: `OAUTH_{PROVIDER}_CLIENT_ID` and `OAUTH_{PROVIDER}_CLIENT_SECRET` (e.g., `OAUTH_GOOGLE_CLIENT_ID`). Only the org vault is read for these. A same-named secret in a user's vault is never used as an OAuth app. All users in the org inherit these credentials for services that use the provider. This is the recommended path for Google Workspace customers (see below).
 
 3. **Overslash system credentials** — managed by instance operators via environment variables, used as defaults for all orgs. Covers consumer accounts and low-stakes scopes where a shared Overslash-verified app is acceptable.
 

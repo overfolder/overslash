@@ -667,6 +667,7 @@ pub(super) async fn call_action_impl(
         &scope,
         req.service.as_deref(),
         &action_req,
+        identity_id,
     )
     .await?;
 

@@ -88,6 +88,13 @@ pub(super) async fn resolve_request(
     // partner. Host allow-listing still happens at callback time.
     let return_url_hint = platform_connections::parse_return_url(req.return_url.as_deref())?;
     let return_url_hint = return_url_hint.as_deref();
+    // Inline secrets (Mode A, explicit `secrets`) reach the caller's own vault only.
+    let explicit_secrets = crate::services::secret_paths::canonicalize_explicit_refs(
+        scope,
+        ceiling_user_id,
+        &req.secrets,
+    )
+    .await?;
 
     // Service + HTTP verb (SPEC §8): caller-supplied method + path/url
     // against a service instance. Auth is auto-injected from the binding;
@@ -135,7 +142,7 @@ pub(super) async fn resolve_request(
             ceiling_user_id,
             &instance,
             &svc,
-            &req.secrets,
+            &explicit_secrets,
             return_url_hint,
         )
         .await?;
@@ -715,7 +722,7 @@ pub(super) async fn resolve_request(
             ceiling_user_id,
             &instance,
             &svc,
-            &req.secrets,
+            &explicit_secrets,
             return_url_hint,
         )
         .await?;
@@ -844,6 +851,7 @@ pub(super) async fn resolve_request(
                         scope,
                         Some(service_key),
                         &probe,
+                        ceiling_user_id,
                     )
                     .await
                     .and_then(|values| {

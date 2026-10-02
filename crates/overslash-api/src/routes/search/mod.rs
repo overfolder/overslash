@@ -787,7 +787,14 @@ async fn collect_visible_templates(
             .push(InstanceRow {
                 name: r.name,
                 account_email,
-                secret_name: r.secret_name,
+                // Relative to the instance, as on the services API.
+                secret_name: r.secret_name.as_deref().map(|v| {
+                    crate::services::secret_paths::relative_to_instance(
+                        r.owner_identity_id,
+                        ceiling_user_id,
+                        v,
+                    )
+                }),
                 scopes,
                 discovered_tools: r.discovered_tools.map(|j| j.0),
             });

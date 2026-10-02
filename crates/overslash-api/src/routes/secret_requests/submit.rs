@@ -103,15 +103,15 @@ pub(super) async fn submit_provide(
     let encrypted = crypto::encrypt(&enc_key, body.value.as_bytes())?;
 
     let scope = OrgScope::new(row.org_id, state.db_pool(&ext));
-    // The target identity captured at request-creation time owns the slot
-    // (visibility) and is also the version's `created_by` (attribution).
-    // The slot's `owner_identity_id` is set on first insert and preserved
-    // by repo `put`'s COALESCE on subsequent versions.
+    // The target identity captured at request-creation time is the version's
+    // `created_by` (attribution); the vault is the one the request fills.
+    let path = super::request_namespace(&scope, &row)
+        .await?
+        .path(&*row.secret_name);
     let (stored, _ver) = scope
         .put_secret(
-            &row.secret_name,
+            &path,
             &encrypted,
-            Some(row.identity_id),
             Some(row.identity_id),
             provisioned_by_user_id,
         )
@@ -127,7 +127,7 @@ pub(super) async fn submit_provide(
         &ext,
         &scope,
         &row,
-        &stored.name,
+        &path.to_canonical(),
         provisioned_by_user_id,
         ip.0.as_deref(),
     )

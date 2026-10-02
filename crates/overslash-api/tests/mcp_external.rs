@@ -241,7 +241,8 @@ async fn setup_template_and_grants(ctx: SetupCtx<'_>) -> uuid::Uuid {
     if let Some((name, value)) = auth_bearer_secret {
         let resp = client
             .put(format!("{base}/v1/secrets/{name}"))
-            .header(auth(admin_key).0, auth(admin_key).1)
+            // The agent's own user vault — the only one its service reads.
+            .header(auth(agent_key).0, auth(agent_key).1)
             .json(&json!({"value": value}))
             .send()
             .await

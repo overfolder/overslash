@@ -20,7 +20,10 @@ use uuid::Uuid;
 use overslash_core::{
     crypto,
     secret_injection::inject_secrets,
-    types::{ActionRequest, ActionResult, AuthHeader, FilteredBody, McpAuth},
+    types::{
+        ActionRequest, ActionResult, AuthHeader, FilteredBody, McpAuth, ParsedBinding,
+        SecretNamespace, SecretPath,
+    },
 };
 use overslash_db::repos::audit::AuditEntry;
 use overslash_db::scopes::OrgScope;
@@ -306,14 +309,23 @@ pub enum CallOutcome {
 /// composes multi-secret credentials here, the one place plaintext exists.
 /// The composed value is deliberately confined to this function's return: it
 /// must not reach `ActionRequest`, which is persisted for approval replay.
+///
+/// Bindings are secret paths (`SecretPath`), qualified when the request was
+/// built — by the instance read rule or, for inline secrets, by
+/// `canonicalize_explicit_refs`. Only a payload persisted before secrets were
+/// namespaced still holds a bare name; it resolves in `requester`'s own vault
+/// and nowhere else.
 pub async fn resolve_credential_values(
     state: &AppState,
     scope: &OrgScope,
     service_key: Option<&str>,
     action_req: &ActionRequest,
+    requester: Uuid,
 ) -> Result<HashMap<String, String>, AppError> {
     let enc_key = state.config.keyring()?;
     let mut out = HashMap::new();
+    // Resolved on first bare name only — the common path never needs it.
+    let mut requester_ns: Option<SecretNamespace> = None;
 
     for secret_ref in &action_req.secrets {
         // An approval created before credential templates shipped carries the
@@ -344,8 +356,31 @@ pub async fn resolve_credential_values(
                 .collect()
         };
 
-        for (slot, secret_name) in bindings {
-            let Some(version) = scope.get_current_secret_value(secret_name).await? else {
+        for (slot, binding) in bindings {
+            let path = match SecretPath::parse(binding) {
+                ParsedBinding::Qualified(p) => p,
+                ParsedBinding::Bare(name) => {
+                    let ns = match requester_ns {
+                        Some(ns) => ns,
+                        None => {
+                            let user = crate::services::group_ceiling::resolve_ceiling_user_id(
+                                scope, requester,
+                            )
+                            .await?;
+                            *requester_ns.insert(SecretNamespace::User(user))
+                        }
+                    };
+                    ns.path(name)
+                }
+                ParsedBinding::Handle { .. } => {
+                    return Err(AppError::BadRequest(format!(
+                        "credential '{}' names secret `{binding}` by handle; re-issue the call",
+                        secret_ref.name
+                    )));
+                }
+            };
+            let secret_name = path.name.as_str();
+            let Some(version) = scope.get_current_secret_value(&path).await? else {
                 // Nothing in the org vault. One rung below it sits the platform
                 // itself, for the services the platform hosts (D39) — the
                 // shared Mailbox Gateway's key, which no org should have to
@@ -353,9 +388,16 @@ pub async fn resolve_credential_values(
                 // is re-checked here, not just at resolve time, so an approval
                 // created against the platform gateway and replayed after the
                 // instance was repointed elsewhere cannot carry the key out.
-                if let Some(platform) = state
-                    .config
-                    .platform_credential_for(secret_name, &action_req.url)
+                //
+                // Only for the org vault: the platform stands in for an org
+                // default, never for a user's own secret.
+                if let Some(platform) = (path.ns == SecretNamespace::Org)
+                    .then(|| {
+                        state
+                            .config
+                            .platform_credential_for(secret_name, &action_req.url)
+                    })
+                    .flatten()
                 {
                     slot_values.insert(slot.to_string(), platform.to_string());
                     continue;
@@ -410,8 +452,14 @@ pub async fn call_action_request(
     auth_header: Option<&AuthHeader>,
 ) -> Result<CallOutcome, AppError> {
     // ── Resolve secrets ──────────────────────────────────────────────
-    let secret_values =
-        resolve_credential_values(ctx.state, ctx.scope, ctx.service_key, action_req).await?;
+    let secret_values = resolve_credential_values(
+        ctx.state,
+        ctx.scope,
+        ctx.service_key,
+        action_req,
+        ctx.identity_id,
+    )
+    .await?;
 
     let (resolved_url, mut resolved_headers) = inject_secrets(action_req, &secret_values)
         .map_err(|e| AppError::BadRequest(e.to_string()))?;

@@ -100,6 +100,10 @@ pub async fn kernel_list_services(
     let auth_identity = ctx.identity_id.ok_or_else(|| {
         AppError::BadRequest("listing services requires an identity-bound API key".into())
     })?;
+    // Bindings read relative to the caller's own vault (`row_to_summary`).
+    let viewer = group_ceiling::resolve_ceiling_user_id(&scope, auth_identity)
+        .await
+        .ok();
     let identity_id = Some(auth_identity);
 
     let rows = if admin_view_all {
@@ -251,7 +255,7 @@ pub async fn kernel_list_services(
             });
             let groups = groups_by_service.remove(&row.id).unwrap_or_default();
             let test_action = template.and_then(crate::routes::actions::probe::describe);
-            let mut summary = row_to_summary(row, groups);
+            let mut summary = row_to_summary(row, groups, viewer);
             summary.credentials_status = credentials_status;
             summary.icon_url = icon_url;
             summary.test_action = test_action;
@@ -308,7 +312,11 @@ pub async fn kernel_get_service(
         &ctx.config.public_url,
     )
     .await;
-    let mut detail = row_to_detail(row);
+    // Bindings read relative to the caller's own vault (`row_to_detail`).
+    let viewer = group_ceiling::resolve_ceiling_user_id(&scope, auth_identity)
+        .await
+        .ok();
+    let mut detail = row_to_detail(row, viewer);
     detail.credentials_status = credentials_status;
     detail.icon_url = tv.icon_url;
     detail.test_action = tv.test_action;
@@ -410,7 +418,23 @@ pub async fn kernel_update_service(
             base.remove(sole);
         }
         let legacy = input.secret_name.as_ref().and_then(|o| o.as_deref());
-        let (map, mut scalar) = reconcile_credentials(template_def, Some(&base), legacy)?;
+        let reconciled = reconcile_credentials(template_def, Some(&base), legacy)?;
+        // Changed bindings may only name a vault this caller may bind;
+        // untouched ones are kept whatever vault they point at.
+        let writer = crate::services::secret_paths::BindingWriter {
+            caller_user: group_ceiling::resolve_ceiling_user_id(&scope, auth_identity).await?,
+            caller_is_admin: ctx.access_level >= AccessLevel::Admin,
+            instance_owner: existing.owner_identity_id,
+        };
+        let (map, mut scalar) = canonicalize_bindings(
+            &scope,
+            &writer,
+            template_def,
+            reconciled,
+            &existing.credentials.0,
+            existing.secret_name.as_deref(),
+        )
+        .await?;
         // A credentials-only request on a template with no instance-source
         // slot (MCP bearer) mustn't clobber the scalar the map doesn't cover.
         if instance_slots.is_empty() && input.secret_name.is_none() {
@@ -522,7 +546,11 @@ pub async fn kernel_update_service(
     let row_credentials = row.credentials.0.clone();
     let row_secret_name = row.secret_name.clone();
     let row_connection_id = row.connection_id;
-    let mut detail = row_to_detail(row);
+    // Bindings read relative to the caller's own vault (`row_to_detail`).
+    let viewer = group_ceiling::resolve_ceiling_user_id(&scope, auth_identity)
+        .await
+        .ok();
+    let mut detail = row_to_detail(row, viewer);
     detail.icon_url = tv.icon_url;
     detail.test_action = tv.test_action;
 

@@ -147,8 +147,22 @@ pub(crate) async fn resolve_effective_mcp(
         McpAuth::Bearer {
             secret_name: tpl_sn,
         } => {
-            let sn = match instance.secret_name.as_deref().or(tpl_sn.as_deref()) {
-                Some(s) => s.to_string(),
+            // The instance's binding is a secret path under the read rule; a
+            // template default is a bare name, read in the instance's own
+            // namespace (owner's vault, or the org vault for an org service).
+            let path = match (instance.secret_name.as_deref(), tpl_sn.as_deref()) {
+                (Some(bound), _) => crate::services::secret_paths::readable_instance_binding(
+                    instance.owner_identity_id,
+                    bound,
+                ),
+                (None, Some(default)) => Some(
+                    overslash_core::types::SecretNamespace::from_owner(instance.owner_identity_id)
+                        .path(default),
+                ),
+                (None, None) => None,
+            };
+            let sn = match path {
+                Some(p) => p.to_canonical(),
                 None => {
                     return Err(mcp_missing_config_error(
                         scope,

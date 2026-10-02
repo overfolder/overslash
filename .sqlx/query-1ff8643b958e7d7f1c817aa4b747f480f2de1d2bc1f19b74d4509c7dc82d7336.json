@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT sv.id, sv.secret_id, sv.version, sv.encrypted_value, sv.created_at, sv.created_by, sv.provisioned_by_user_id\n         FROM secret_versions sv\n         JOIN secrets s ON sv.secret_id = s.id\n         WHERE s.org_id = $1 AND s.name = $2 AND s.deleted_at IS NULL AND sv.version = $3",
+  "query": "SELECT sv.id, sv.secret_id, sv.version, sv.encrypted_value, sv.created_at, sv.created_by, sv.provisioned_by_user_id\n         FROM secret_versions sv\n         JOIN secrets s ON sv.secret_id = s.id\n         WHERE s.org_id = $1 AND s.owner_identity_id IS NOT DISTINCT FROM $3 AND s.name = $2 AND s.deleted_at IS NULL AND sv.version = s.current_version",
   "describe": {
     "columns": [
       {
@@ -85,7 +85,7 @@
       "Left": [
         "Uuid",
         "Text",
-        "Int4"
+        "Uuid"
       ]
     },
     "nullable": [
@@ -98,5 +98,5 @@
       true
     ]
   },
-  "hash": "b2a7d8f3d4be2f61c787ad012516f70fc60fcbffaacc2d0ea591e2897e16ac2e"
+  "hash": "1ff8643b958e7d7f1c817aa4b747f480f2de1d2bc1f19b74d4509c7dc82d7336"
 }

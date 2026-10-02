@@ -15,11 +15,34 @@ import type {
 	SecretSummary
 } from '$lib/types';
 
-export const listSecrets = (signal?: AbortSignal) =>
-	session.get<SecretSummary[]>('/v1/secrets', signal);
+/**
+ * Which vault a request addresses. Secret names are unique per vault, not per
+ * org: omitted means the caller's own; `owner` names a user's vault and
+ * `scope: 'org'` the org-wide one (both admin-only unless it is your own).
+ */
+export type SecretVault = { owner?: string | null; scope?: 'org' };
 
-export const getSecret = (name: string, signal?: AbortSignal) =>
-	session.get<SecretDetail>(`/v1/secrets/${encodeURIComponent(name)}`, signal);
+/** `?owner=` / `?scope=` for a vault selector, with its leading `?`/`&`. */
+function vaultQuery(v: SecretVault | undefined, sep: '?' | '&' = '?'): string {
+	if (!v) return '';
+	if (v.scope === 'org') return `${sep}scope=org`;
+	if (v.owner) return `${sep}owner=${encodeURIComponent(v.owner)}`;
+	return '';
+}
+
+/** The vault selector for a secret row as the list returned it. */
+export function vaultOf(s: SecretSummary): SecretVault {
+	return s.scope === 'org' ? { scope: 'org' } : { owner: s.owner_identity_id };
+}
+
+export const listSecrets = (vault?: SecretVault, signal?: AbortSignal) =>
+	session.get<SecretSummary[]>(`/v1/secrets${vaultQuery(vault)}`, signal);
+
+export const getSecret = (name: string, vault?: SecretVault, signal?: AbortSignal) =>
+	session.get<SecretDetail>(
+		`/v1/secrets/${encodeURIComponent(name)}${vaultQuery(vault)}`,
+		signal
+	);
 
 /**
  * Create or update a secret. Each call appends a new version; the previous
@@ -28,10 +51,11 @@ export const getSecret = (name: string, signal?: AbortSignal) =>
 export const putSecret = (
 	name: string,
 	value: string,
-	on_behalf_of?: string
+	on_behalf_of?: string,
+	vault?: SecretVault
 ) =>
 	session.put<{ name: string; version: number }>(
-		`/v1/secrets/${encodeURIComponent(name)}`,
+		`/v1/secrets/${encodeURIComponent(name)}${vaultQuery(vault)}`,
 		on_behalf_of ? { value, on_behalf_of } : { value }
 	);
 
@@ -39,9 +63,9 @@ export const putSecret = (
  * Reveal a specific version's plaintext. Server records `secret.revealed`
  * in the audit log on success.
  */
-export const revealSecretVersion = (name: string, version: number) =>
+export const revealSecretVersion = (name: string, version: number, vault?: SecretVault) =>
 	session.post<SecretReveal>(
-		`/v1/secrets/${encodeURIComponent(name)}/versions/${version}/reveal`,
+		`/v1/secrets/${encodeURIComponent(name)}/versions/${version}/reveal${vaultQuery(vault)}`,
 		{}
 	);
 
@@ -50,11 +74,13 @@ export const revealSecretVersion = (name: string, version: number) =>
  * old value (the original is never deleted). Audit-logged as
  * `secret.restored`.
  */
-export const restoreSecretVersion = (name: string, version: number) =>
+export const restoreSecretVersion = (name: string, version: number, vault?: SecretVault) =>
 	session.post<{ name: string; version: number }>(
-		`/v1/secrets/${encodeURIComponent(name)}/versions/${version}/restore`,
+		`/v1/secrets/${encodeURIComponent(name)}/versions/${version}/restore${vaultQuery(vault)}`,
 		{}
 	);
 
-export const deleteSecret = (name: string) =>
-	session.delete<{ deleted: boolean }>(`/v1/secrets/${encodeURIComponent(name)}`);
+export const deleteSecret = (name: string, vault?: SecretVault) =>
+	session.delete<{ deleted: boolean }>(
+		`/v1/secrets/${encodeURIComponent(name)}${vaultQuery(vault)}`
+	);

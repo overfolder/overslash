@@ -151,6 +151,8 @@ mod response_filter;
 mod response_too_large_hint;
 mod scope_extract;
 mod search;
+mod secret_isolation;
+mod secret_namespaces;
 mod secret_requests;
 mod secrets_chain_visibility;
 mod secrets_dashboard;
