@@ -3,7 +3,9 @@
 //! A connection belongs to one user (D23), and a pinned `connection_id` is
 //! the credential every call through the instance authenticates with. So the
 //! rule mirrors the secret write rule (D119): an instance may only pin a
-//! connection owned by the instance's own owner, for the provider its
+//! connection owned by the instance's own owner (or by one of that owner's
+//! own agents — a legacy shape D23 re-homed, still the same user), for the
+//! provider its
 //! template authenticates with. An org-level instance has no owner and
 //! cannot pin one at all. The same check runs at call time
 //! ([`pinned_connection_usable`]), so a row written before this rule — or by
@@ -29,7 +31,7 @@ pub(super) async fn validate_connection_binding(
         .get_connection(connection_id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("connection '{connection_id}' not found")))?;
-    if connection.identity_id != expected_owner {
+    if !belongs_to_user(scope, expected_owner, connection.identity_id).await? {
         return Err(AppError::Forbidden(
             "connection belongs to another identity; a service can only use its owner's \
              connections"
@@ -54,38 +56,35 @@ pub(super) async fn validate_connection_binding(
     }
 }
 
+/// Is `conn_identity` the user `owner`, or one of `owner`'s own agents?
+async fn belongs_to_user(
+    scope: &OrgScope,
+    owner: Uuid,
+    conn_identity: Uuid,
+) -> Result<bool, AppError> {
+    if conn_identity == owner {
+        return Ok(true);
+    }
+    Ok(scope
+        .get_identity(conn_identity)
+        .await?
+        .is_some_and(|i| i.kind != "user" && i.owner_id == Some(owner)))
+}
+
 /// The call-time half: may an instance owned by `instance_owner` authenticate
 /// with pinned connection `conn`, for a template whose OAuth provider is
-/// `provider`? `false` means "treat the pin as absent" — never use it.
-pub fn pinned_connection_usable(
+/// `provider` (`None` = the caller checks the provider itself)? `false` means
+/// "treat the pin as absent" — never use it.
+pub async fn pinned_connection_usable(
+    scope: &OrgScope,
     instance_owner: Option<Uuid>,
     conn_identity: Uuid,
     conn_provider: &str,
     provider: Option<&str>,
-) -> bool {
-    instance_owner == Some(conn_identity) && provider.is_none_or(|p| p == conn_provider)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::pinned_connection_usable;
-    use uuid::Uuid;
-
-    #[test]
-    fn only_the_owners_connection_for_the_right_provider() {
-        let (owner, other) = (Uuid::new_v4(), Uuid::new_v4());
-        for (inst, conn, cprov, tprov, want) in [
-            (Some(owner), owner, "google", Some("google"), true),
-            (Some(owner), owner, "google", None, true),
-            (Some(owner), other, "google", Some("google"), false),
-            (Some(owner), owner, "github", Some("google"), false),
-            (None, owner, "google", Some("google"), false),
-        ] {
-            assert_eq!(
-                pinned_connection_usable(inst, conn, cprov, tprov),
-                want,
-                "{inst:?} {conn} {cprov} {tprov:?}"
-            );
-        }
-    }
+) -> Result<bool, AppError> {
+    let Some(owner) = instance_owner else {
+        return Ok(false);
+    };
+    Ok(provider.is_none_or(|p| p == conn_provider)
+        && belongs_to_user(scope, owner, conn_identity).await?)
 }

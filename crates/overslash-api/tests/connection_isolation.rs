@@ -18,6 +18,7 @@ use common::{auth, start_api_with_registry, start_mock};
 
 struct Member {
     user_id: Uuid,
+    agent_id: Uuid,
     user_key: String,
     agent_key: String,
     /// The user's Google connection; its access token is `<name>-token`.
@@ -118,6 +119,7 @@ async fn member(o: &OrgBase, name: &str) -> Member {
     .await;
     Member {
         user_id,
+        agent_id,
         user_key,
         agent_key: key["key"].as_str().unwrap().to_string(),
         connection,
@@ -181,6 +183,14 @@ async fn setup() -> Org {
 }
 
 impl Org {
+    async fn org_id_for_tests(&self) -> Uuid {
+        sqlx::query_scalar("SELECT org_id FROM identities WHERE id = $1")
+            .bind(self.julia.user_id)
+            .fetch_one(&self.pool)
+            .await
+            .unwrap()
+    }
+
     async fn create(&self, key: &str, body: Value) -> (u16, Value) {
         let r = self
             .client
@@ -454,4 +464,58 @@ async fn an_upgrade_flow_never_leaks_a_foreign_account_email() {
     assert!(!body.contains("angel@gmail.test"), "leaked: {body}");
     assert!(!body.contains("angel%40gmail.test"), "leaked: {body}");
     let _ = o.angel.user_id;
+}
+
+/// A connection owned by one of the owner's own agents (a legacy shape D23
+/// re-homed) is still the same user's and may be pinned; one owned by
+/// another user's agent may not, and is ignored if planted.
+#[tokio::test]
+async fn an_agents_connection_counts_only_for_its_own_user() {
+    let o = setup().await;
+    let julias_agent_conn = seed_connection(
+        &o.pool,
+        o.org_id_for_tests().await,
+        o.julia.agent_id,
+        "julia-agent-token",
+        "julia-agent@gmail.test",
+    )
+    .await;
+    let angels_agent_conn = seed_connection(
+        &o.pool,
+        o.org_id_for_tests().await,
+        o.angel.agent_id,
+        "angel-agent-token",
+        "angel-agent@gmail.test",
+    )
+    .await;
+    let id = o.julias_calendar().await;
+    assert_eq!(
+        o.update(
+            &o.julia.user_key,
+            &id,
+            json!({"connection_id": angels_agent_conn})
+        )
+        .await,
+        403
+    );
+    assert_eq!(
+        o.update(
+            &o.julia.user_key,
+            &id,
+            json!({"connection_id": julias_agent_conn})
+        )
+        .await,
+        200
+    );
+    let (_, body) = o.call().await;
+    assert!(body.contains("julia-agent-token"), "{body}");
+
+    sqlx::query("UPDATE service_instances SET connection_id = $2 WHERE id = $1::uuid")
+        .bind(&id)
+        .bind(angels_agent_conn)
+        .execute(&o.pool)
+        .await
+        .unwrap();
+    let (_, body) = o.call().await;
+    assert!(!body.contains("angel-agent-token"), "leaked: {body}");
 }

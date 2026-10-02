@@ -80,14 +80,21 @@ pub(crate) async fn resolve_instance_connection(
             // the same read rule as the HTTP resolver. Anything else is
             // treated as no connection: never resolved into another user's
             // token (which this path would send to `instance.url`).
-            scope.get_connection(conn_id).await?.filter(|c| {
-                crate::services::platform_services::pinned_connection_usable(
-                    inst.owner_identity_id,
-                    c.identity_id,
-                    &c.provider_key,
-                    Some(provider),
-                )
-            })
+            match scope.get_connection(conn_id).await? {
+                Some(c)
+                    if crate::services::platform_services::pinned_connection_usable(
+                        scope,
+                        inst.owner_identity_id,
+                        c.identity_id,
+                        &c.provider_key,
+                        Some(provider),
+                    )
+                    .await? =>
+                {
+                    Some(c)
+                }
+                _ => None,
+            }
         } else if inst.use_default_connection {
             user_scope.find_my_connection_by_provider(provider).await?
         } else {
