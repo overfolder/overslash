@@ -729,6 +729,14 @@ pub(crate) async fn caller_has_group_access_to_connection(
              JOIN identities i ON i.id = ig.identity_id
              JOIN groups g ON g.id = gg.group_id
              JOIN service_instances si ON si.id = gg.service_instance_id
+             -- Only a pin the instance owner actually owns grants anything —
+             -- theirs, or one of their own agents' (the same rule as
+             -- `connection_binding`): a pin into someone else's connection
+             -- must not widen access.
+             JOIN connections c ON c.id = si.connection_id
+             JOIN identities ci ON ci.id = c.identity_id
+                               AND (ci.id = si.owner_identity_id
+                                    OR (ci.kind <> 'user' AND ci.owner_id = si.owner_identity_id))
              WHERE ig.identity_id = $1
                AND i.org_id = $2
                AND g.org_id = $2
