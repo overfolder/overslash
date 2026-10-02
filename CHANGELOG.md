@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.16.0](https://github.com/overfolder/overslash/compare/v0.15.0...v0.16.0) (2026-10-02)
+
+
+### Features
+
+* **services:** Langfuse reads on self-hosted instances ([#716](https://github.com/overfolder/overslash/issues/716)) ([a4dd1ae](https://github.com/overfolder/overslash/commit/a4dd1aecd90527eeb2f08b310109367c5f8cba43))
+
+
+### Bug Fixes
+
+* **infra:** make the deploy guard's fail-open explicit ([#715](https://github.com/overfolder/overslash/issues/715)) ([532c49e](https://github.com/overfolder/overslash/commit/532c49e197d8543a684ac669f6e23954cb7bc7fd))
+* **infra:** raise the API's Cloud Run memory to 2Gi in dev and prod ([#717](https://github.com/overfolder/overslash/issues/717)) ([2fa71f0](https://github.com/overfolder/overslash/commit/2fa71f0206a79fed432d58429d7a73790aeff911))
+
 ## [0.15.0](https://github.com/overfolder/overslash/compare/v0.14.0...v0.15.0) (2026-10-01)
 
 
