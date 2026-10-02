@@ -1,10 +1,10 @@
-//! End-to-end coverage for identity-owned secrets + bearer-mode visibility.
+//! End-to-end coverage for per-user secret vaults + bearer-mode visibility.
 //!
-//! Two agents under the same user each PUT a different secret. Each
-//! agent's bearer-mode list must return only its own; their parent user
-//! (session) must see both via the subtree walk; the admin sees every
-//! row in the org. Values must never appear in the wire payload under
-//! any auth shape.
+//! Two agents under the same user each PUT a different secret. Both land in
+//! their user's vault, so both agents (and the user's session) see both. An
+//! agent of a *different* user sees neither, and its same-named write lands
+//! in its own vault without touching theirs. The admin sees every row in the
+//! org. Values must never appear in the wire payload under any auth shape.
 
 #![allow(clippy::disallowed_methods)]
 
@@ -107,7 +107,7 @@ fn assert_no_value_field(rows: &[Value]) {
 }
 
 #[tokio::test]
-async fn agents_see_only_their_own_subtree_secrets() {
+async fn agents_share_their_users_vault_and_nobody_elses() {
     let pool = common::test_pool().await;
     let (api_addr, client) = common::start_api(pool).await;
     let base = format!("http://{api_addr}");
@@ -144,8 +144,8 @@ async fn agents_see_only_their_own_subtree_secrets() {
     let (a2_id, a2_key) =
         create_child_with_key(&base, &client, org_id, user_id, &admin_key, "a2", "agent").await;
 
-    // A1 owns secret_a; A2 owns secret_b. Each PUT is via the agent's
-    // own bearer, so `owner_identity_id` is set to that agent's id.
+    // A1 writes secret_a; A2 writes secret_b. An agent's vault is its owner
+    // user's, so both land in U's vault.
     let r1 = client
         .put(format!("{base}/v1/secrets/secret_a"))
         .header("Authorization", format!("Bearer {a1_key}"))
@@ -164,17 +164,46 @@ async fn agents_see_only_their_own_subtree_secrets() {
         .unwrap();
     assert_eq!(r2.status(), 200, "a2 put: {:?}", r2.text().await);
 
-    // ── A1's bearer-mode list: sees secret_a only ───────────────────────
-    let resp = client
-        .get(format!("{base}/v1/secrets"))
-        .header("Authorization", format!("Bearer {a1_key}"))
+    // A second user V with an agent B: a different vault.
+    let v: Value = client
+        .post(format!("{base}/v1/identities"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({"name": "v", "kind": "user"}))
         .send()
         .await
+        .unwrap()
+        .json()
+        .await
         .unwrap();
-    assert_eq!(resp.status(), 200);
-    let body: Vec<Value> = resp.json().await.unwrap();
-    let names: Vec<&str> = body.iter().map(|r| r["name"].as_str().unwrap()).collect();
-    assert_eq!(names, vec!["secret_a"], "A1 should see only secret_a");
+    let v_id: Uuid = v["id"].as_str().unwrap().parse().unwrap();
+    let (_b_id, b_key) =
+        create_child_with_key(&base, &client, org_id, v_id, &admin_key, "b", "agent").await;
+
+    let list = |key: String| {
+        let client = client.clone();
+        let base = base.clone();
+        async move {
+            let resp = client
+                .get(format!("{base}/v1/secrets"))
+                .header("Authorization", format!("Bearer {key}"))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), 200);
+            let body: Vec<Value> = resp.json().await.unwrap();
+            assert_no_value_field(&body);
+            let mut names: Vec<String> = body
+                .iter()
+                .map(|r| r["name"].as_str().unwrap().to_string())
+                .collect();
+            names.sort();
+            (names, body)
+        }
+    };
+
+    // ── Both of U's agents see U's whole vault ──────────────────────────
+    let (names, body) = list(a1_key.clone()).await;
+    assert_eq!(names, ["secret_a", "secret_b"], "A1 sees U's vault");
     // Bearer narrow shape — confirm contract.
     assert!(body[0]["version_count"].is_i64());
     assert!(body[0]["last_rotated_at"].is_string());
@@ -185,41 +214,21 @@ async fn agents_see_only_their_own_subtree_secrets() {
             .contains_key("owner_identity_id"),
         "bearer narrow shape must not surface owner",
     );
-    assert_no_value_field(&body);
+    let (names, _) = list(a2_key.clone()).await;
+    assert_eq!(names, ["secret_a", "secret_b"], "A2 sees U's vault");
 
-    // ── A2's bearer-mode list: sees secret_b only ───────────────────────
-    let resp = client
-        .get(format!("{base}/v1/secrets"))
-        .header("Authorization", format!("Bearer {a2_key}"))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 200);
-    let body: Vec<Value> = resp.json().await.unwrap();
-    let names: Vec<&str> = body.iter().map(|r| r["name"].as_str().unwrap()).collect();
-    assert_eq!(names, vec!["secret_b"], "A2 should see only secret_b");
-    assert_no_value_field(&body);
+    // ── Another user's agent sees none of it ────────────────────────────
+    let (names, _) = list(b_key.clone()).await;
+    assert!(names.is_empty(), "B must not see U's vault: {names:?}");
 
     // ── Admin (bearer org-admin key) sees every row ─────────────────────
-    // Admin is_org_admin short-circuits the visibility CTE entirely; this
-    // is the privileged path most likely to silently regress.
-    let resp = client
-        .get(format!("{base}/v1/secrets"))
-        .header("Authorization", format!("Bearer {admin_key}"))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 200);
-    let body: Vec<Value> = resp.json().await.unwrap();
-    let mut admin_names: Vec<&str> = body.iter().map(|r| r["name"].as_str().unwrap()).collect();
-    admin_names.sort();
+    let (names, _) = list(admin_key.clone()).await;
     assert!(
-        admin_names.contains(&"secret_a") && admin_names.contains(&"secret_b"),
-        "admin must see every row in the org, got: {admin_names:?}",
+        names.contains(&"secret_a".to_string()) && names.contains(&"secret_b".to_string()),
+        "admin must see every row in the org, got: {names:?}",
     );
-    assert_no_value_field(&body);
 
-    // ── Parent user (session): sees both via subtree walk ───────────────
+    // ── U's session: both, owned by U ───────────────────────────────────
     let cookie = mint_session_cookie(org_id, user_id);
     let resp = client
         .get(format!("{base}/v1/secrets"))
@@ -231,21 +240,19 @@ async fn agents_see_only_their_own_subtree_secrets() {
     let body: Vec<Value> = resp.json().await.unwrap();
     let mut names: Vec<&str> = body.iter().map(|r| r["name"].as_str().unwrap()).collect();
     names.sort();
-    assert_eq!(
-        names,
-        vec!["secret_a", "secret_b"],
-        "user U should see both descendants' secrets",
-    );
-    // Dashboard shape — owner column must be present and point at A1 / A2.
-    let row_a = body.iter().find(|r| r["name"] == "secret_a").unwrap();
-    let row_b = body.iter().find(|r| r["name"] == "secret_b").unwrap();
-    assert_eq!(row_a["owner_identity_id"], a1_id.to_string());
-    assert_eq!(row_b["owner_identity_id"], a2_id.to_string());
+    assert_eq!(names, vec!["secret_a", "secret_b"]);
+    for row in &body {
+        assert_eq!(row["owner_identity_id"], user_id.to_string());
+        assert_eq!(row["scope"], "user");
+        assert_eq!(
+            row["path"],
+            format!("{user_id}/{}", row["name"].as_str().unwrap())
+        );
+    }
+    let _ = (a1_id, a2_id);
     assert_no_value_field(&body);
 
-    // ── Sibling isolation: A1 cannot view detail of A2's secret ─────────
-    // Detail stays session-only by design — agents that try see 401 from
-    // the SessionAuth extractor before any visibility check runs.
+    // ── Agents never reach the detail endpoint ──────────────────────────
     let resp = client
         .get(format!("{base}/v1/secrets/secret_b"))
         .header("Authorization", format!("Bearer {a1_key}"))
@@ -254,27 +261,30 @@ async fn agents_see_only_their_own_subtree_secrets() {
         .unwrap();
     assert_eq!(resp.status(), 401, "agents must not reach detail endpoint");
 
-    // ── Sibling isolation on writes: A1 cannot rotate A2's secret ───────
-    // Without the put-path visibility gate, the COALESCE on owner would
-    // preserve A2 as the slot owner, but A1's value would have replaced
-    // A2's — a silent hijack. The handler 404s the same way the read
-    // path does, hiding the slot's existence from A1.
+    // ── B writing the same name fills B's own vault, not U's ────────────
     let resp = client
         .put(format!("{base}/v1/secrets/secret_b"))
-        .header("Authorization", format!("Bearer {a1_key}"))
+        .header("Authorization", format!("Bearer {b_key}"))
         .json(&json!({"value": "hijack"}))
         .send()
         .await
         .unwrap();
+    assert_eq!(resp.status(), 200);
+    let v: Value = resp.json().await.unwrap();
     assert_eq!(
-        resp.status(),
-        404,
-        "A1 must not be able to rotate A2's secret",
+        v["version"], 1,
+        "a fresh secret in B's vault, not v2 of U's"
     );
+    // …nor can B address U's vault explicitly.
+    let resp = client
+        .put(format!("{base}/v1/secrets/secret_b?owner={user_id}"))
+        .header("Authorization", format!("Bearer {b_key}"))
+        .json(&json!({"value": "hijack"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 403);
 
-    // Confirm A2's value is unchanged by reading via U's session +
-    // reveal (admin path is overkill; U is the parent and can reveal).
-    let cookie = mint_session_cookie(org_id, user_id);
     let reveal: Value = client
         .post(format!("{base}/v1/secrets/secret_b/versions/1/reveal"))
         .header("cookie", format!("__Host-oss_session={cookie}"))
@@ -284,8 +294,5 @@ async fn agents_see_only_their_own_subtree_secrets() {
         .json()
         .await
         .unwrap();
-    assert_eq!(
-        reveal["value"], "beta",
-        "A2's value must survive A1's hijack attempt",
-    );
+    assert_eq!(reveal["value"], "beta", "U's value must survive B's write");
 }

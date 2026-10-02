@@ -277,13 +277,18 @@ async fn push(
         });
     }
 
-    let resolved =
-        deferred_download::resolve_for_replay(state, scope, row.service_key.as_deref(), &request)
-            .await
-            .map_err(|e| Pushed::Failed {
-                status: StatusCode::BAD_GATEWAY,
-                detail: format!("upload credential resolution failed: {e}"),
-            })?;
+    let resolved = deferred_download::resolve_for_replay(
+        state,
+        scope,
+        row.service_key.as_deref(),
+        &request,
+        row.identity_id,
+    )
+    .await
+    .map_err(|e| Pushed::Failed {
+        status: StatusCode::BAD_GATEWAY,
+        detail: format!("upload credential resolution failed: {e}"),
+    })?;
 
     let mut out_headers = resolved.headers.clone();
     for name in FORWARDED_UPLOAD_HEADERS {

@@ -122,6 +122,7 @@ async fn redeem(
         &scope,
         row.service_key.as_deref(),
         &request,
+        row.identity_id,
     )
     .await
     {

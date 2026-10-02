@@ -352,9 +352,17 @@
 		if (!((usesSecret && !usesOAuth) || mcpNeedsSecret)) return;
 		secretsLoaded = true;
 		secretsLoading = true;
-		listSecrets()
-			.then((s) => {
-				availableSecrets = s;
+		// Suggest only what a new binding may name: the creator's own vault as
+		// bare names, plus — for an org admin — the org vault as `org/<name>`.
+		// (An admin's unfiltered list spans every user's vault.)
+		const me = ($page as any).data?.user?.identity_id as string | undefined;
+		const admin = ($page as any).data?.user?.is_org_admin === true;
+		Promise.all([
+			listSecrets(me ? { owner: me } : undefined),
+			admin ? listSecrets({ scope: 'org' }).catch(() => []) : Promise.resolve([])
+		])
+			.then(([own, org]) => {
+				availableSecrets = [...own, ...org.map((s) => ({ ...s, name: `org/${s.name}` }))];
 			})
 			.catch(() => {
 				/* leave list empty — picker still works as free-text input */
@@ -695,7 +703,13 @@
 			if (!value) continue;
 			const name = names[slot] ?? secretName.trim();
 			if (!name) continue;
-			await putSecret(name, value);
+			// `org/<name>` names the org vault (admin-only); anything else is
+			// the creator's own.
+			if (name.startsWith('org/')) {
+				await putSecret(name.slice(4), value, undefined, { scope: 'org' });
+			} else {
+				await putSecret(name, value);
+			}
 		}
 	}
 

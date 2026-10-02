@@ -37,6 +37,7 @@
 		TemplateDetail
 	} from '$lib/types';
 	import { listSecrets } from '$lib/api/secrets';
+	import { bindingToWire, secretPathLabel } from '$lib/secretPath';
 	import ServiceIcon from '$lib/components/ServiceIcon.svelte';
 	import StatusBadge from '$lib/components/services/StatusBadge.svelte';
 	import TestResult from '$lib/components/services/TestResult.svelte';
@@ -84,6 +85,13 @@
 	// ("gateway", "mailbox"). Seeded from svc.credentials with the legacy
 	// scalar secret_name mapped into its instance-source slot for display.
 	let editCredentials = $state<Record<string, string>>({});
+	// Bindings are secret paths (`$lib/secretPath`). The form shows each one's
+	// short label; these remember the label it was seeded with and the stored
+	// canonical path, so an untouched field saves back verbatim — keeping a
+	// shared service bound to another admin's secret when someone edits it.
+	let seededCredLabels: Record<string, string> = {};
+	let storedCredentials: Record<string, string> = {};
+	let seededSecretLabel = '';
 	let editConfig = $state<Record<string, string>>({});
 	let editUrl = $state('');
 	let editUseDefaultConnection = $state(true);
@@ -504,7 +512,34 @@
 		if (instanceSlots.length === 1 && !map[instanceSlots[0].key] && s.secret_name) {
 			map[instanceSlots[0].key] = s.secret_name;
 		}
-		return map;
+		storedCredentials = map;
+		const labels: Record<string, string> = {};
+		for (const [k, v] of Object.entries(map)) labels[k] = pathLabel(v, s);
+		seededCredLabels = labels;
+		return { ...labels };
+	}
+
+	// The vault a bare name lands in: the service owner's, or — on an
+	// org-level service — the editor's own.
+	function homeVault(s: ServiceInstanceDetail | null): string | undefined {
+		return s?.owner_identity_id ?? currentUserId;
+	}
+
+	function pathLabel(raw: string, s: ServiceInstanceDetail): string {
+		return secretPathLabel(raw, homeVault(s), identityById, allowedDomains);
+	}
+
+	function seedSecret(s: ServiceInstanceDetail): string {
+		seededSecretLabel = pathLabel(s.secret_name ?? '', s);
+		return seededSecretLabel;
+	}
+
+	function credentialsToWire(shown: Record<string, string>): Record<string, string> {
+		const out: Record<string, string> = {};
+		for (const [k, v] of Object.entries(shown)) {
+			out[k] = bindingToWire(v, seededCredLabels[k] ?? '', storedCredentials[k] ?? '');
+		}
+		return out;
 	}
 
 	// Seed one entry per instance-pinnable param with the instance's stored
@@ -542,7 +577,6 @@
 			svc = fresh;
 			editName = fresh.name;
 			editConnection = fresh.connection_id ?? '';
-			editSecret = fresh.secret_name ?? '';
 			editUrl = fresh.url ?? '';
 			editUseDefaultConnection = fresh.use_default_connection;
 			const [tpl, acts, conns, ids, sGroups, gs] = await Promise.all([
@@ -568,7 +602,10 @@
 			]);
 			if (ctrl.signal.aborted) return;
 			template = tpl;
+			// Identities first: the binding labels resolve owners through them.
+			identities = ids;
 			editCredentials = seedCredentials(tpl, fresh);
+			editSecret = seedSecret(fresh);
 			editConfig = seedConfig(tpl, fresh);
 			// An override hidden behind a collapsed disclosure would read as
 			// "using the default" — open it whenever one is already set.
@@ -614,10 +651,12 @@
 					editConnection !== (svc.connection_id ?? '')
 						? editConnection || null
 						: undefined,
-				credentials: sendCredentials ? cleanServiceMap(editCredentials) : undefined,
+				credentials: sendCredentials
+					? cleanServiceMap(credentialsToWire(editCredentials))
+					: undefined,
 				config: hasInstanceConfig ? cleanServiceMap(editConfig) : undefined,
 				secret_name:
-					!sendCredentials && editSecret !== (svc.secret_name ?? '')
+					!sendCredentials && editSecret !== seededSecretLabel
 						? editSecret || null
 						: undefined,
 				url:
@@ -629,6 +668,7 @@
 			});
 			svc = updated;
 			editCredentials = seedCredentials(template, updated);
+			editSecret = seedSecret(updated);
 			editConfig = seedConfig(template, updated);
 		} catch (e) {
 			// The server's reason, not just its status: a refused endpoint (plain
@@ -896,9 +936,15 @@
 		if (!fieldVisible) return;
 		secretsLoaded = true;
 		secretsLoading = true;
-		listSecrets()
-			.then((s) => {
-				availableSecrets = s;
+		// Suggest only what this binding may name: the home vault's secrets
+		// as bare names, plus — for an admin — the org vault's as `org/<name>`.
+		const home = homeVault(svc);
+		Promise.all([
+			listSecrets(home ? { owner: home } : undefined),
+			isAdmin ? listSecrets({ scope: 'org' }).catch(() => []) : Promise.resolve([])
+		])
+			.then(([own, org]) => {
+				availableSecrets = [...own, ...org.map((s) => ({ ...s, name: `org/${s.name}` }))];
 			})
 			.catch(() => {
 				/* leave empty — picker still works as free-text input */

@@ -4,17 +4,20 @@
 -->
 <script lang="ts">
 	import { ApiError } from '$lib/session';
-	import { deleteSecret } from '$lib/api/secrets';
+	import { deleteSecret, type SecretVault } from '$lib/api/secrets';
 	import type { SecretUsedByView } from '$lib/types';
 
 	let {
 		secretName,
+		vault,
 		versionCount,
 		usedBy,
 		onClose,
 		onDeleted
 	}: {
 		secretName: string;
+		/** Which vault the secret lives in (`?owner=` / `?scope=org`). */
+		vault?: SecretVault;
 		versionCount: number;
 		usedBy: SecretUsedByView[];
 		onClose: () => void;
@@ -32,7 +35,7 @@
 		busy = true;
 		error = null;
 		try {
-			await deleteSecret(secretName);
+			await deleteSecret(secretName, vault);
 			onDeleted();
 		} catch (e) {
 			error = e instanceof ApiError ? `Delete failed (${e.status})` : 'Delete failed';

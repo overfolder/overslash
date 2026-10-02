@@ -5,16 +5,19 @@
 -->
 <script lang="ts">
 	import { ApiError } from '$lib/session';
-	import { restoreSecretVersion } from '$lib/api/secrets';
+	import { restoreSecretVersion, type SecretVault } from '$lib/api/secrets';
 
 	let {
 		secretName,
+		vault,
 		fromVersion,
 		currentVersion,
 		onClose,
 		onRestored
 	}: {
 		secretName: string;
+		/** Which vault the secret lives in (`?owner=` / `?scope=org`). */
+		vault?: SecretVault;
 		fromVersion: number;
 		currentVersion: number;
 		onClose: () => void;
@@ -31,7 +34,7 @@
 		busy = true;
 		error = null;
 		try {
-			await restoreSecretVersion(secretName, fromVersion);
+			await restoreSecretVersion(secretName, fromVersion, vault);
 			onRestored();
 		} catch (e) {
 			error = e instanceof ApiError ? `Restore failed (${e.status})` : 'Restore failed';

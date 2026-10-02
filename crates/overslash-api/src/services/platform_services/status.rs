@@ -24,12 +24,24 @@ pub async fn compute_credentials_status(
         None => ScopeKnowledge::NoConnection,
         Some(opt) => scope_knowledge(opt.as_deref()),
     };
+    // A binding the read rule refuses (a user-level instance pointing into
+    // another user's vault) counts as unbound, exactly as it resolves.
+    let readable = |v: &str| {
+        crate::services::secret_paths::readable_instance_binding(row.owner_identity_id, v).is_some()
+    };
+    let credentials: CredentialsMap = row
+        .credentials
+        .iter()
+        .filter(|(_, v)| readable(v))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    let secret_name = row.secret_name.as_deref().filter(|v| readable(v));
     derive_credentials_status(
         &template,
         row.auth_mode.as_deref(),
         scopes,
-        &row.credentials,
-        row.secret_name.as_deref(),
+        &credentials,
+        secret_name,
     )
 }
 

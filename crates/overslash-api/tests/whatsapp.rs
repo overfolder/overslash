@@ -373,7 +373,8 @@ async fn register_template_with(ctx: RegisterCtx<'_>, yaml: String) {
 
     let resp = client
         .put(format!("{base}/v1/secrets/{secret_name}"))
-        .header(auth(admin_key).0, auth(admin_key).1)
+        // The agent's own user vault — the only one its service reads.
+        .header(auth(agent_key).0, auth(agent_key).1)
         .json(&json!({ "value": secret_value }))
         .send()
         .await
@@ -1086,7 +1087,8 @@ async fn setup_media(pool: sqlx::PgPool) -> (String, Client, String, SocketAddr)
 
     client
         .put(format!("{base}/v1/secrets/whatsapp_token"))
-        .header(auth(&admin_key).0, auth(&admin_key).1)
+        // The agent's own user vault — the only one its service reads.
+        .header(auth(&agent_key).0, auth(&agent_key).1)
         .json(&json!({ "value": "stub-token" }))
         .send()
         .await

@@ -3,7 +3,7 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/stores';
 	import { ApiError, session } from '$lib/session';
-	import { getSecret } from '$lib/api/secrets';
+	import { getSecret, type SecretVault } from '$lib/api/secrets';
 	import type { Identity, SecretDetail, SecretVersionView } from '$lib/types';
 	import OwnerCell from '$lib/components/secrets/OwnerCell.svelte';
 	import { formatIdentity } from '$lib/identityDisplay';
@@ -13,6 +13,14 @@
 	import DeleteSecretModal from '$lib/components/secrets/DeleteSecretModal.svelte';
 
 	const name = $derived($page.params.name ?? '');
+	// Names are unique per vault: `?owner=<id>` / `?scope=org` say which one.
+	// Neither means the viewer's own.
+	const vault = $derived.by<SecretVault | undefined>(() => {
+		const q = $page.url.searchParams;
+		if (q.get('scope') === 'org') return { scope: 'org' };
+		const owner = q.get('owner');
+		return owner ? { owner } : undefined;
+	});
 	const currentUserId = $derived(($page as any).data?.user?.identity_id as string | undefined);
 	const allowedDomains = $derived((($page as any).data?.allowedDomains ?? []) as string[]);
 
@@ -34,7 +42,7 @@
 		error = null;
 		try {
 			const [d, ids] = await Promise.all([
-				getSecret(name),
+				getSecret(name, vault),
 				session.get<Identity[]>('/v1/identities').catch(() => [] as Identity[])
 			]);
 			detail = d;
@@ -217,6 +225,7 @@
 
 {#if detail && revealing}
 	<RevealModal
+		{vault}
 		secretName={detail.name}
 		version={revealing}
 		onClose={() => (revealing = null)}
@@ -225,6 +234,7 @@
 
 {#if detail && updating}
 	<UpdateValueModal
+		{vault}
 		secretName={detail.name}
 		{currentVersion}
 		onClose={() => (updating = false)}
@@ -237,6 +247,7 @@
 
 {#if detail && restoring}
 	<RestoreVersionModal
+		{vault}
 		secretName={detail.name}
 		fromVersion={restoring.version}
 		{currentVersion}
@@ -250,6 +261,7 @@
 
 {#if detail && deleting}
 	<DeleteSecretModal
+		{vault}
 		secretName={detail.name}
 		versionCount={detail.versions.length}
 		usedBy={detail.used_by}

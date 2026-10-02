@@ -146,7 +146,8 @@ async fn bootstrap_with_auto_call_on(
 
     client
         .put(format!("{base}/v1/secrets/tk"))
-        .header("Authorization", format!("Bearer {admin_key}"))
+        // The agent's own user vault — inline secrets resolve only there.
+        .header("Authorization", format!("Bearer {agent_key}"))
         .json(&json!({"value": "v"}))
         .send()
         .await

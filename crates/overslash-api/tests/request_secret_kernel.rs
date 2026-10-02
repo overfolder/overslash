@@ -346,9 +346,11 @@ async fn forcing_over_a_taken_name_mints_with_a_warning() {
     .await;
 
     let name = format!("rotate-{}", Uuid::new_v4().simple());
+    // In the agent's own user vault — the one its request fills. (An admin's
+    // same-named secret lives in another vault and is no conflict.)
     let put = client
         .put(format!("{base}/v1/secrets/{name}"))
-        .header("Authorization", format!("Bearer {admin_key}"))
+        .header("Authorization", format!("Bearer {agent_key}"))
         .json(&json!({"value": "original"}))
         .send()
         .await

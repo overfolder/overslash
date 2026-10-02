@@ -1230,6 +1230,13 @@ CREATE TABLE public.secrets (
 
 
 --
+-- Name: COLUMN secrets.owner_identity_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.secrets.owner_identity_id IS 'Namespace: the owning user identity, or NULL for the org-wide vault. Unique with (org_id, name).';
+
+
+--
 -- Name: service_action_embeddings; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -1288,7 +1295,7 @@ COMMENT ON COLUMN public.service_instances.status IS 'Lifecycle: active (callabl
 -- Name: COLUMN service_instances.credentials; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.service_instances.credentials IS 'Per-scheme secret bindings: {securityScheme key -> secret NAME in the org vault}. Names only, never values. Empty map falls back to legacy secret_name for the sole instance-source scheme.';
+COMMENT ON COLUMN public.service_instances.credentials IS 'Per-scheme secret bindings: {securityScheme key -> secret path}. A path is org/<name> or <user identity uuid>/<name> (SecretPath). Names only, never values. Empty map falls back to legacy secret_name for the sole instance-source scheme.';
 
 
 --
@@ -2089,11 +2096,11 @@ ALTER TABLE ONLY public.secret_versions
 
 
 --
--- Name: secrets secrets_org_id_name_key; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: secrets secrets_org_owner_name_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.secrets
-    ADD CONSTRAINT secrets_org_id_name_key UNIQUE (org_id, name);
+    ADD CONSTRAINT secrets_org_owner_name_key UNIQUE NULLS NOT DISTINCT (org_id, owner_identity_id, name);
 
 
 --
@@ -2808,6 +2815,13 @@ CREATE INDEX idx_secret_versions_provisioned_by ON public.secret_versions USING 
 --
 
 CREATE INDEX idx_secret_versions_secret ON public.secret_versions USING btree (secret_id);
+
+
+--
+-- Name: idx_secrets_org_name; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_secrets_org_name ON public.secrets USING btree (org_id, name);
 
 
 --
@@ -3790,7 +3804,7 @@ ALTER TABLE ONLY public.secrets
 --
 
 ALTER TABLE ONLY public.secrets
-    ADD CONSTRAINT secrets_owner_identity_id_fkey FOREIGN KEY (owner_identity_id) REFERENCES public.identities(id) ON DELETE SET NULL;
+    ADD CONSTRAINT secrets_owner_identity_id_fkey FOREIGN KEY (owner_identity_id) REFERENCES public.identities(id) ON DELETE CASCADE;
 
 
 --

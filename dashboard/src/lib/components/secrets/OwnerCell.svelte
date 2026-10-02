@@ -32,7 +32,7 @@
 		display === null
 			? ownerId
 				? 'unknown'
-				: 'system'
+				: 'org-wide'
 			: isSelf
 				? `${display.primary} (you)`
 				: display.primary

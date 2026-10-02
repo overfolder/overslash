@@ -1483,10 +1483,16 @@ export interface ActionResult {
 export interface SecretSummary {
   name: string;
   current_version: number;
-  /** Slot-owner identity (`secrets.owner_identity_id` column). Set on
-   * first insert and preserved across subsequent versions; NULL for
-   * legacy/org-wide rows that are admin-only (SPEC §6). */
+  /** The vault: the owning user identity, NULL for the org-wide vault
+   * (admin-only). Names are unique per vault, not per org (SPEC §6). */
   owner_identity_id: string | null;
+  /** `user` or `org`. */
+  scope?: 'user' | 'org';
+  /** Canonical secret path — what a service binding stores
+   * (`$lib/secretPath`). */
+  path?: string;
+  owner_name?: string | null;
+  owner_email?: string | null;
   created_at: string;
   updated_at: string;
 }

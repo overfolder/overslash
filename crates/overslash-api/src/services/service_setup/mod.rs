@@ -41,7 +41,7 @@ pub use slots::{
 };
 
 pub use conflicts::{
-    conflict_error_for_create, conflict_error_for_request, conflicting_secret_names,
+    conflict_error_for_create, conflict_error_for_request, conflicting_secret_names, fill_namespace,
 };
 
 /// Dashboard route the minted URL points at when the request names a service.
@@ -211,8 +211,10 @@ pub async fn mint(
     // fourth caller must not be able to reintroduce the silent overwrite by
     // forgetting it.
     if !req.force {
+        let ns = fill_namespace(&scope, req.target_identity, req.service_instance_id).await?;
         let conflicts = conflicting_secret_names(
             &scope,
+            ns,
             &[(
                 req.credential_key.map(str::to_string),
                 req.secret_name.to_string(),
@@ -400,7 +402,8 @@ pub async fn mint_bundle(
             .iter()
             .map(|s| (Some(s.key.clone()), s.default_secret_name.clone()))
             .collect();
-        conflicting_secret_names(&scope, &candidates)
+        let ns = fill_namespace(&scope, owner_identity_id, Some(service_instance_id)).await?;
+        conflicting_secret_names(&scope, ns, &candidates)
             .await?
             .into_iter()
             .map(|c| SetupWarning {

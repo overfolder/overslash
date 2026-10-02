@@ -58,6 +58,7 @@ pub mod rate_limit;
 pub mod resolve_cache;
 pub mod response_filter;
 pub mod scope_extract;
+pub mod secret_paths;
 pub mod service_setup;
 pub mod session;
 pub mod short_url;

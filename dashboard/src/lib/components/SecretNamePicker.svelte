@@ -49,7 +49,10 @@
 		return available.filter((s) => s.name.toLowerCase().includes(q)).slice(0, 8);
 	});
 
-	const isUnknownValue = $derived(value.length > 0 && !isExactMatch);
+	// A path (`<handle>/<name>`, `org/<name>`) names another vault the
+	// suggestions don't list, so "not in the list" says nothing about whether
+	// it exists — only flag bare names as new.
+	const isUnknownValue = $derived(value.length > 0 && !isExactMatch && !value.includes('/'));
 
 	// Hide the dropdown when the typed value already names a vault secret —
 	// there's nothing to suggest and "No matches" would be both wrong and
