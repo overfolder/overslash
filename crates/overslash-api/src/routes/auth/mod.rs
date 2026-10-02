@@ -142,6 +142,30 @@ struct NormalizedUserInfo {
 /// a no-op.
 pub(crate) fn org_app_url(state: &AppState, slug: &str, path: &str) -> Option<String> {
     let apex = state.config.app_host_suffix.as_deref()?;
+    Some(slug_host_url(state, slug, apex, path))
+}
+
+/// The MCP endpoint an agent of `org` should be pointed at — what the
+/// dashboard's "Connect an agent" tip renders (`ownMcpUrlFor`), built
+/// server-side for surfaces with no browser origin to go on (the invite
+/// email).
+///
+/// On a subdomain deployment a corp org gets `<slug>.<api apex>/mcp`: per
+/// D26 the subdomain is an enforced enrollment lock, so the agent lands in
+/// this org. Personal orgs aren't reachable by subdomain
+/// (`personal_org_unreachable`), and a single-host deployment has no
+/// subdomains at all — both fall back to the dashboard origin's `/mcp`,
+/// which serves (or rewrites to) the API.
+pub(crate) fn org_mcp_url(state: &AppState, org: &overslash_db::repos::org::OrgRow) -> String {
+    match state.config.api_host_suffix.as_deref() {
+        Some(apex) if !org.is_personal => slug_host_url(state, &org.slug, apex, "/mcp"),
+        _ => state.config.dashboard_url_for("/mcp"),
+    }
+}
+
+/// `<scheme>://<slug>.<apex><port><path>`, with scheme and port taken from
+/// `public_url` (see [`org_app_url`]).
+fn slug_host_url(state: &AppState, slug: &str, apex: &str, path: &str) -> String {
     let scheme = if state.config.public_url.starts_with("https://") {
         "https"
     } else {
@@ -161,7 +185,7 @@ pub(crate) fn org_app_url(state: &AppState, slug: &str, path: &str) -> Option<St
     } else {
         format!("/{path}")
     };
-    Some(format!("{scheme}://{slug}.{apex}{port_suffix}{path}"))
+    format!("{scheme}://{slug}.{apex}{port_suffix}{path}")
 }
 
 /// If login originated on a corp subdomain, build an absolute redirect to

@@ -78,6 +78,22 @@ async fn create_invite_sends_notification_email() {
         "body should mention the invited role, got: {}",
         msg.html
     );
+    // No API apex configured → single-host form: the dashboard origin's /mcp.
+    let mcp_url = format!("{base}/mcp");
+    assert!(
+        msg.html.contains(&format!(
+            "claude mcp add --transport http --scope user overslash {mcp_url}"
+        )),
+        "body should carry the Claude Code connect command, got: {}",
+        msg.html
+    );
+    assert!(
+        msg.html.contains(&format!(
+            "npx -y mcp-add --name overslash --type http --url {mcp_url}"
+        )),
+        "body should carry the generic MCP connect command, got: {}",
+        msg.html
+    );
     // Org-invite is transactional → no unsubscribe wiring.
     assert!(
         !msg.html.to_lowercase().contains("unsubscribe"),
@@ -125,5 +141,51 @@ async fn duplicate_invite_does_not_send_second_email() {
         sends.len(),
         1,
         "duplicate-invite 409 must not fire a second email; got {sends:?}"
+    );
+}
+
+#[tokio::test]
+async fn invite_email_connect_command_uses_org_api_subdomain() {
+    // On a subdomain deployment the command must target `<slug>.<api apex>`:
+    // the subdomain is the enrollment lock that lands the agent in this org.
+    let pool = common::test_pool().await;
+    let mailer = Arc::new(CapturedMailer::default());
+    let (addr, client) = common::start_api_with_mailer(pool, mailer.clone(), |cfg| {
+        cfg.public_url = "https://app.example.test".into();
+        cfg.api_host_suffix = Some("api.example.test".into());
+    })
+    .await;
+    let base = format!("http://{addr}");
+    let (org_id, _, _, org_admin_key) = common::bootstrap_org_identity(&base, &client).await;
+
+    let resp = client
+        .post(format!("{base}/v1/org-invites"))
+        .header("authorization", format!("Bearer {org_admin_key}"))
+        .json(&json!({ "email": "agentdev@example.com", "role": "member" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let org: Value = client
+        .get(format!("{base}/v1/orgs/{org_id}"))
+        .header("authorization", format!("Bearer {org_admin_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let slug = org["slug"].as_str().expect("org slug");
+
+    let sends = mailer.sends.lock().await;
+    assert_eq!(sends.len(), 1);
+    let expected = format!(
+        "claude mcp add --transport http --scope user overslash https://{slug}.api.example.test/mcp"
+    );
+    assert!(
+        sends[0].html.contains(&expected),
+        "expected `{expected}` in body, got: {}",
+        sends[0].html
     );
 }
