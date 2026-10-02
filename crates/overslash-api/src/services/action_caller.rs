@@ -356,9 +356,21 @@ pub async fn resolve_credential_values(
                 .collect()
         };
 
+        // Template-compiled refs always carry explicit bindings and dial the
+        // template's pinned host; a ref with none is the raw-HTTP shape, whose
+        // name the caller chose and whose host is arbitrary.
+        let template_compiled = !secret_ref.bindings.is_empty();
         for (slot, binding) in bindings {
-            let path = match SecretPath::parse(binding) {
-                ParsedBinding::Qualified(p) => p,
+            // Where to look, in order.
+            let candidates: Vec<SecretPath> = match SecretPath::parse(binding) {
+                ParsedBinding::Qualified(p) => vec![p],
+                // A bare name only comes from a payload persisted before
+                // vaults existed. It resolves in the requester's own vault —
+                // and, for a template-compiled ref, then in the org vault,
+                // where the migration moved org-source defaults and OAuth app
+                // credentials. Never the org vault for raw HTTP: an old
+                // pending approval must not become a way to send an org
+                // secret to a host of the caller's choosing.
                 ParsedBinding::Bare(name) => {
                     let ns = match requester_ns {
                         Some(ns) => ns,
@@ -370,7 +382,11 @@ pub async fn resolve_credential_values(
                             *requester_ns.insert(SecretNamespace::User(user))
                         }
                     };
-                    ns.path(name)
+                    let mut c = vec![ns.path(name.clone())];
+                    if template_compiled {
+                        c.push(SecretNamespace::Org.path(name));
+                    }
+                    c
                 }
                 ParsedBinding::Handle { .. } => {
                     return Err(AppError::BadRequest(format!(
@@ -379,9 +395,17 @@ pub async fn resolve_credential_values(
                     )));
                 }
             };
-            let secret_name = path.name.as_str();
-            let Some(version) = scope.get_current_secret_value(&path).await? else {
-                // Nothing in the org vault. One rung below it sits the platform
+            let mut found = None;
+            for path in &candidates {
+                if let Some(v) = scope.get_current_secret_value(path).await? {
+                    found = Some(v);
+                    break;
+                }
+            }
+            let last = candidates.last().expect("at least one candidate");
+            let secret_name = last.name.as_str();
+            let Some(version) = found else {
+                // Nothing in the vault. One rung below it sits the platform
                 // itself, for the services the platform hosts (D39) — the
                 // shared Mailbox Gateway's key, which no org should have to
                 // store. Bound to both the secret name and the host: the URL
@@ -391,7 +415,7 @@ pub async fn resolve_credential_values(
                 //
                 // Only for the org vault: the platform stands in for an org
                 // default, never for a user's own secret.
-                if let Some(platform) = (path.ns == SecretNamespace::Org)
+                if let Some(platform) = (last.ns == SecretNamespace::Org)
                     .then(|| {
                         state
                             .config

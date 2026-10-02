@@ -799,3 +799,88 @@ async fn migration_133_qualifies_bindings_and_rehomes_secrets() {
     .unwrap();
     assert_eq!(left, 0);
 }
+
+/// Payloads persisted before vaults (pending approvals, download/upload
+/// tokens) carry bare names. A template-compiled ref falls back to the org
+/// vault — where the migration moved org-source defaults — but a raw-HTTP ref
+/// never does: an old approval must not send an org secret to a host of the
+/// caller's choosing.
+#[tokio::test]
+async fn legacy_bare_names_replay_into_the_org_vault_only_for_templates() {
+    use overslash_core::types::{ActionRequest, SecretRef};
+    let o = setup().await;
+    put_secret(
+        &o,
+        &o.admin_key,
+        "overfwd_gateway_key",
+        "org-gw",
+        "?scope=org",
+    )
+    .await;
+    put_secret(&o, &o.julia.user_key, "own_tok", "julia-own", "").await;
+
+    let state = common::make_app_state(o.pool.clone()).await;
+    let org_id: Uuid = sqlx::query_scalar("SELECT org_id FROM identities WHERE id = $1")
+        .bind(o.julia.user_id)
+        .fetch_one(&o.pool)
+        .await
+        .unwrap();
+    let scope = overslash_db::OrgScope::new(org_id, o.pool.clone());
+    let req = |secret: SecretRef| ActionRequest {
+        method: "GET".into(),
+        url: "https://gateway.example/x".into(),
+        headers: Default::default(),
+        body: None,
+        secrets: vec![secret],
+        staged_uploads: Vec::new(),
+    };
+    let resolve = |r: ActionRequest| {
+        let (state, scope) = (state.clone(), scope.clone());
+        let julia = o.julia.user_id;
+        async move {
+            overslash_api::services::action_caller::resolve_credential_values(
+                &state, &scope, None, &r, julia,
+            )
+            .await
+        }
+    };
+
+    // Template-compiled (explicit bindings): requester's vault, then org.
+    let templated = SecretRef {
+        name: "gateway".into(),
+        header_name: Some("Authorization".into()),
+        bindings: [("gateway".to_string(), "overfwd_gateway_key".to_string())].into(),
+        ..Default::default()
+    };
+    let got = resolve(req(templated)).await.unwrap();
+    assert_eq!(got.get("gateway").map(String::as_str), Some("org-gw"));
+    let own = SecretRef {
+        name: "tok".into(),
+        header_name: Some("X".into()),
+        bindings: [("tok".to_string(), "own_tok".to_string())].into(),
+        ..Default::default()
+    };
+    assert_eq!(
+        resolve(req(own))
+            .await
+            .unwrap()
+            .get("tok")
+            .map(String::as_str),
+        Some("julia-own")
+    );
+
+    // Raw-HTTP shape (no bindings, caller-chosen name): own vault only.
+    let raw = SecretRef {
+        name: "overfwd_gateway_key".into(),
+        header_name: Some("X-Leak".into()),
+        ..Default::default()
+    };
+    let err = resolve(req(raw)).await.unwrap_err();
+    assert!(
+        matches!(
+            err,
+            overslash_api::error::AppError::CredentialMissing { .. }
+        ),
+        "{err:?}"
+    );
+}
