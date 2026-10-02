@@ -349,7 +349,11 @@ pub async fn kernel_update_service(
     let touches_credentials = input.credentials.is_some() || input.secret_name.is_some();
     // `config` is validated against the same template definition, so resolve
     // it once here rather than twice inside each branch.
-    let template_def = if touches_credentials || input.config.is_some() || input.auth_mode.is_some()
+    let pins_connection = matches!(input.connection_id, Some(Some(_)));
+    let template_def = if touches_credentials
+        || input.config.is_some()
+        || input.auth_mode.is_some()
+        || pins_connection
     {
         let template_lookup_identity = existing.owner_identity_id.or(Some(auth_identity));
         Some(
@@ -444,6 +448,21 @@ pub async fn kernel_update_service(
     } else {
         (None, None)
     };
+
+    // A newly pinned connection must be the owner's own, for the template's
+    // provider — the same check create runs. Unpinning (`null`) needs none.
+    if let Some(Some(connection_id)) = input.connection_id {
+        let template_def = template_def
+            .as_ref()
+            .expect("resolved above whenever a connection is pinned");
+        super::connection_binding::validate_connection_binding(
+            &scope,
+            existing.owner_identity_id,
+            template_def,
+            connection_id,
+        )
+        .await?;
+    }
 
     // https only, as on create (CASA 4.1.1).
     if let Some(Some(ref url)) = input.url

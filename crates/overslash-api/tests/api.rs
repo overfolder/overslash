@@ -47,6 +47,7 @@ mod compact_response;
 mod connection_account_picture;
 mod connection_credential_source;
 mod connection_import;
+mod connection_isolation;
 mod connection_owner_migration;
 mod connection_webhooks;
 mod connections_admin_view;

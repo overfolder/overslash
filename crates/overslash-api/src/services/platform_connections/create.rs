@@ -196,9 +196,13 @@ pub(crate) async fn kernel_create_connection_for_identity(
     let login_hint = match parse_login_hint(input.login_hint.as_deref())? {
         Some(explicit) => Some(explicit),
         None => match input.upgrade_connection_id {
+            // Only the flow identity's own connection: another user's row
+            // must not lend its account email to a URL this caller receives.
+            // (The callback refuses a foreign upgrade target anyway.)
             Some(conn_id) => OrgScope::new(ctx.org_id, ctx.db.clone())
                 .get_connection(conn_id)
                 .await?
+                .filter(|c| c.identity_id == identity_id)
                 .and_then(|c| c.account_email),
             None => None,
         },
