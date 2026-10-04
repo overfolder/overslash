@@ -148,13 +148,30 @@ fn default_grant_access_level() -> String {
     "write".into()
 }
 
+/// Distinguish an absent key from an explicit `null` on a nullable field.
+///
+/// Plain `Option<Option<T>>` deserializes both to `None`, so `null` meant
+/// "leave unchanged" and a pinned connection, a URL override or a legacy
+/// `secret_name` could never be cleared. This makes a present `null`
+/// `Some(None)`. Same helper as `routes::orgs::settings`.
+fn double_option<'de, D, T>(de: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Deserialize::deserialize(de).map(Some)
+}
+
 #[derive(Debug, Deserialize, Default)]
 pub struct UpdateServiceInput {
     pub name: Option<String>,
+    /// `null` unpins; absent leaves it unchanged.
+    #[serde(default, deserialize_with = "double_option")]
     pub connection_id: Option<Option<Uuid>>,
     /// Legacy scalar alias for the template's sole instance-source secret
     /// scheme (or the MCP bearer secret). Rejected when the template declares
     /// several instance-source schemes — bind those via `credentials`.
+    #[serde(default, deserialize_with = "double_option")]
     pub secret_name: Option<Option<String>>,
     /// Per-scheme secret bindings: securityScheme key → secret NAME in the
     /// org vault. `Some` = whole-map replace (an empty map clears every
@@ -167,6 +184,8 @@ pub struct UpdateServiceInput {
     /// a template param marked `x-overslash-instance-config`.
     #[serde(default)]
     pub config: Option<ConfigMap>,
+    /// `null` clears the override; absent leaves it unchanged.
+    #[serde(default, deserialize_with = "double_option")]
     pub url: Option<Option<String>>,
     /// `Some` = update the flag; `None` = leave unchanged.
     pub use_default_connection: Option<bool>,

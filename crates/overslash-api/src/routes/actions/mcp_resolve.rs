@@ -76,7 +76,25 @@ pub(crate) async fn resolve_instance_connection(
     let user_scope = UserScope::new(scope.org_id(), owner_identity_id, scope.db().clone());
     let connection = if let Some(inst) = instance {
         if let Some(conn_id) = inst.connection_id {
-            scope.get_connection(conn_id).await?
+            // Only the instance owner's own connection, for this provider —
+            // the same read rule as the HTTP resolver. Anything else is
+            // treated as no connection: never resolved into another user's
+            // token (which this path would send to `instance.url`).
+            match scope.get_connection(conn_id).await? {
+                Some(c)
+                    if crate::services::platform_services::pinned_connection_usable(
+                        scope,
+                        inst.owner_identity_id,
+                        c.identity_id,
+                        &c.provider_key,
+                        Some(provider),
+                    )
+                    .await? =>
+                {
+                    Some(c)
+                }
+                _ => None,
+            }
         } else if inst.use_default_connection {
             user_scope.find_my_connection_by_provider(provider).await?
         } else {

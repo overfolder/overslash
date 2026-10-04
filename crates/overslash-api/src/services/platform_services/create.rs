@@ -132,43 +132,13 @@ pub async fn kernel_create_service(
     // If the caller pinned a connection, assert it actually belongs to this
     // service's owner and targets the same OAuth provider.
     if let Some(connection_id) = input.connection_id {
-        let expected_owner = owner_identity_id.ok_or_else(|| {
-            AppError::BadRequest(
-                "org-level services cannot pin a connection_id (connections are identity-owned)"
-                    .into(),
-            )
-        })?;
-        let connection = scope
-            .get_connection(connection_id)
-            .await?
-            .ok_or_else(|| AppError::NotFound(format!("connection '{connection_id}' not found")))?;
-        let connection_acceptable =
-            connection.identity_id == expected_owner || connection.identity_id == auth_identity;
-        if !connection_acceptable {
-            return Err(AppError::Forbidden(
-                "connection belongs to another identity".into(),
-            ));
-        }
-
-        // Covers both an HTTP `oauth` scheme and an MCP `auth.kind: oauth`
-        // provider — a pinned connection on an mcp-oauth template (HubSpot,
-        // Slack) must validate the same as an HTTP OAuth template.
-        let expected_provider = template_oauth_provider(&template_def).map(str::to_string);
-        match expected_provider {
-            Some(tpl_provider) if tpl_provider != connection.provider_key => {
-                return Err(AppError::BadRequest(format!(
-                    "connection_provider_mismatch: template '{}' uses '{}' but connection is for '{}'",
-                    input.template_key, tpl_provider, connection.provider_key
-                )));
-            }
-            None => {
-                return Err(AppError::BadRequest(format!(
-                    "connection_provider_mismatch: template '{}' does not use OAuth",
-                    input.template_key
-                )));
-            }
-            _ => {}
-        }
+        super::connection_binding::validate_connection_binding(
+            &scope,
+            owner_identity_id,
+            &template_def,
+            connection_id,
+        )
+        .await?;
     }
 
     // secret_name / url validation against template requirements.

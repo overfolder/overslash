@@ -422,7 +422,36 @@ pub(crate) async fn resolve_instance_auth(
         // disconnected instance recovers on the next call after reauth
         // without us needing to touch the binding here.
         let conn = match scope.get_connection(conn_id).await {
-            Ok(Some(c)) => Some(c),
+            // The read rule for pinned connections: only the instance owner's
+            // own (or their agent's), for a provider this template
+            // authenticates with. A pin into anyone else's connection
+            // (written before the check existed) is treated as absent, never
+            // resolved into their token.
+            Ok(Some(c)) => {
+                let provider_ok = svc.auth.iter().any(|a| {
+                    matches!(a, overslash_core::types::ServiceAuth::OAuth { provider, .. }
+                        if *provider == c.provider_key)
+                });
+                if provider_ok
+                    && crate::services::platform_services::pinned_connection_usable(
+                        scope,
+                        instance.owner_identity_id,
+                        c.identity_id,
+                        &c.provider_key,
+                        None,
+                    )
+                    .await?
+                {
+                    Some(c)
+                } else {
+                    tracing::warn!(
+                        instance_id = %instance.id,
+                        connection_id = %c.id,
+                        "pinned connection is not the instance owner's (or wrong provider); ignoring"
+                    );
+                    None
+                }
+            }
             Ok(None) => None,
             Err(e) => {
                 return Err(AppError::Internal(format!(
