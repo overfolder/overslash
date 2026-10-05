@@ -38,17 +38,54 @@ fn org_instance_reads_stored_path() {
 #[test]
 fn default_cascade() {
     let owner = Uuid::new_v4();
+    let slots = OrgVaultGate::Slots([("k".to_string(), "org_k".to_string())].into());
     assert_eq!(
-        org_default_candidates(Some(owner), "k"),
+        org_default_candidates(Some(owner), "k", "k", &slots),
         vec![
             SecretNamespace::User(owner).path("k"),
-            SecretNamespace::Org.path("k")
+            // The org/global tier's name, not the owner's template's.
+            SecretNamespace::Org.path("org_k")
         ]
     );
     assert_eq!(
-        org_default_candidates(None, "k"),
+        org_default_candidates(None, "k", "k", &OrgVaultGate::Open),
         vec![SecretNamespace::Org.path("k")]
     );
+    // An overridden destination keeps the owner's own copy and drops the org's.
+    assert_eq!(
+        org_default_candidates(Some(owner), "k", "k", &OrgVaultGate::Closed),
+        vec![SecretNamespace::User(owner).path("k")]
+    );
+    // A slot the org tier doesn't source from the org gets no org fallback.
+    assert_eq!(
+        org_default_candidates(Some(owner), "other", "k", &slots),
+        vec![SecretNamespace::User(owner).path("k")]
+    );
+}
+
+#[test]
+fn the_org_vault_gate_applies_to_explicit_bindings() {
+    let owner = Uuid::new_v4();
+    let own = format!("{owner}/tok");
+    let slots = OrgVaultGate::Slots([("gateway".to_string(), "gk".to_string())].into());
+    // Own vault: the gate is irrelevant.
+    for gate in [&OrgVaultGate::Open, &slots, &OrgVaultGate::Closed] {
+        assert!(readable_slot_binding(Some(owner), &own, gate, Some("x")).is_some());
+    }
+    // Org vault: only through an admitted org-source slot.
+    assert!(readable_slot_binding(Some(owner), "org/gk", &slots, Some("gateway")).is_some());
+    assert!(readable_slot_binding(Some(owner), "org/gk", &slots, Some("token")).is_none());
+    assert!(readable_slot_binding(Some(owner), "org/gk", &slots, None).is_none());
+    assert!(
+        readable_slot_binding(
+            Some(owner),
+            "org/gk",
+            &OrgVaultGate::Closed,
+            Some("gateway")
+        )
+        .is_none()
+    );
+    assert!(readable_slot_binding(None, "org/gk", &OrgVaultGate::Open, None).is_some());
 }
 
 // ── Exhaustive invariants ──────────────────────────────────────────────

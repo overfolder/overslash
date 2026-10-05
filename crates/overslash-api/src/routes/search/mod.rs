@@ -681,16 +681,16 @@ async fn collect_visible_templates(
         )
         .await?;
 
-    // Batch-load connections so we can surface `account_email` per
-    // instance without an N+1. Org-tier connections (no owning identity)
-    // still flow through the same scope-checked fetch.
-    let connection_ids: Vec<Uuid> = instances
-        .iter()
-        .filter_map(|r| r.connection_id)
-        .collect::<HashSet<_>>()
-        .into_iter()
-        .collect();
-    let connections_by_id = scope.get_connections_by_ids(&connection_ids).await?;
+    // Batch-load pinned connections so we can surface `account_email` per
+    // instance without an N+1 — only pins the call path would use
+    // (`usable_pins`), so a foreign pin never shows a colleague's account.
+    let pins_by_instance = crate::services::platform_services::usable_pins(
+        scope,
+        instances
+            .iter()
+            .filter_map(|r| r.connection_id.map(|c| (r.id, r.owner_identity_id, c))),
+    )
+    .await?;
 
     // Provider key per template (OAuth templates only), so instances without an
     // explicit connection binding can auto-resolve their owner-provider
@@ -750,7 +750,7 @@ async fn collect_visible_templates(
             }
             continue;
         }
-        let bound_conn = r.connection_id.and_then(|id| connections_by_id.get(&id));
+        let bound_conn = pins_by_instance.get(&r.id);
         // A bound OAuth connection is authoritative — it is the account the
         // call actually authenticates as. The config value is the fallback for
         // secret-based instances, which have no connection to ask.
@@ -765,8 +765,8 @@ async fn collect_visible_templates(
                     .filter(|s| !s.trim().is_empty())
                     .map(str::to_string)
             });
-        let scopes = if let Some(cid) = r.connection_id {
-            match connections_by_id.get(&cid) {
+        let scopes = if r.connection_id.is_some() {
+            match pins_by_instance.get(&r.id) {
                 Some(c) => InstanceScopes::from_recorded(c.scopes.as_deref()),
                 None => InstanceScopes::NoConnection,
             }

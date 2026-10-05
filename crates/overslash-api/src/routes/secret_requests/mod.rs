@@ -446,12 +446,10 @@ async fn get_setup(
         .get_service_instance(service_id)
         .await?
         .ok_or_else(|| AppError::NotFound("not_found".into()))?;
-    let def = crate::services::platform_services::resolve_template_definition(
+    let def = crate::services::platform_services::instance_template(
         state.db(&ext),
         &state.registry,
-        row.org_id,
-        instance.owner_identity_id,
-        &instance.template_key,
+        &instance,
     )
     .await?;
 

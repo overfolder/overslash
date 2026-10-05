@@ -380,7 +380,7 @@ async fn oauth_callback_inner(
             // the connection, update tokens, keep the same row id so every
             // service pointing at it stays bound.
             let existing = scope
-                .get_connection(existing_id)
+                .get_connection_any_owner(existing_id)
                 .await?
                 .ok_or_else(|| AppError::NotFound("connection not found".into()))?;
             if existing.identity_id != identity_id || existing.provider_key != provider_key {
@@ -524,10 +524,30 @@ async fn oauth_callback_inner(
             Ok(None) => {
                 service_instance_bind_error = Some("service_instance_not_found");
             }
-            Ok(Some(instance)) if instance.owner_identity_id != Some(identity_id) => {
-                service_instance_bind_error = Some("service_instance_owner_mismatch");
-            }
-            Ok(Some(_)) => {
+            Ok(Some(instance)) => {
+                // The connection-pin rule (`connection_binding`): the
+                // instance's owner's own connection, for its template's
+                // provider.
+                match crate::services::platform_services::check_pin(
+                    &scope,
+                    state.db(ext),
+                    &state.registry,
+                    &instance,
+                    identity_id,
+                    provider_key,
+                )
+                .await
+                {
+                    Ok(Ok(())) => {}
+                    Ok(Err(code)) => {
+                        service_instance_bind_error = Some(code);
+                        continue;
+                    }
+                    Err(_) => {
+                        service_instance_bind_error = Some("service_instance_bind_failed");
+                        continue;
+                    }
+                }
                 let bind_input = overslash_db::repos::service_instance::UpdateServiceInstance {
                     auth_mode: None,
                     name: None,

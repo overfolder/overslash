@@ -74,6 +74,15 @@ When running in a Kanban worktree (`.cline/worktrees/<id>/`), `make local` autom
    hand-roll the same snap as `while !s.is_char_boundary(n) { n -= 1 }` — just
    as correct; no need to churn them.
 6. **Vertical integration.** Every task that introduces new functionality must also implement the corresponding dashboard UI if it makes sense to expose it. Backend-only tasks are acceptable only when there is no user-facing surface (e.g., internal refactors, infra, CI). Do not split "build the API" and "build the dashboard page" into separate tasks — deliver them together.
+7. **A stored reference to an owned resource goes through its binding
+   policy — on write *and* on read.** Secret paths: `secret_paths`
+   (`BindingWriter` / `readable_slot_binding`); pinned connections:
+   `connection_binding` (`validate_connection_binding`, `check_pin`,
+   `pinned_connection`, `usable_pins`); BYOC pins: `byoc_binding`; an
+   instance's template: `instance_template`. Never call an `*_any_owner`
+   getter (or read a secret value) outside the `binding_guard` allowlist —
+   the test fails, and the entry you add must say why the owner check is
+   already done. A new reference type gets its own policy module.
 
 ## Agent skills
 

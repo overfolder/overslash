@@ -174,7 +174,7 @@ async fn list_byoc(
     let caller_identity = acl
         .identity_id
         .ok_or_else(|| AppError::Forbidden("identity-bound credential required for BYOC".into()))?;
-    let rows = scope.list_byoc_credentials().await?;
+    let rows = scope.list_byoc_credentials_any_owner().await?;
     let is_admin = acl.access_level >= AccessLevel::Admin;
 
     Ok(Json(
@@ -196,7 +196,7 @@ async fn get_byoc(
         .identity_id
         .ok_or_else(|| AppError::Forbidden("identity-bound credential required for BYOC".into()))?;
     let row = scope
-        .get_byoc_credential(id)
+        .get_byoc_credential_any_owner(id)
         .await?
         .ok_or_else(|| AppError::NotFound("BYOC credential not found".into()))?;
     if row.identity_id != caller_identity && acl.access_level < AccessLevel::Admin {
@@ -227,7 +227,7 @@ async fn update_byoc(
     // Self-or-admin: load the row first (org-scoped, so a cross-org id is a
     // NotFound) and check ownership before touching secret material.
     let existing = scope
-        .get_byoc_credential(id)
+        .get_byoc_credential_any_owner(id)
         .await?
         .ok_or_else(|| AppError::NotFound("BYOC credential not found".into()))?;
     if existing.identity_id != caller_identity && acl.access_level < AccessLevel::Admin {
@@ -293,7 +293,7 @@ async fn delete_byoc(
     // Self-or-admin: look up the row first to check ownership. `get_byoc_credential`
     // is org-scoped, so cross-org reads return None here.
     let row = scope
-        .get_byoc_credential(id)
+        .get_byoc_credential_any_owner(id)
         .await?
         .ok_or_else(|| AppError::NotFound("BYOC credential not found".into()))?;
     if row.identity_id != caller_identity && acl.access_level < AccessLevel::Admin {

@@ -141,14 +141,12 @@ async fn list_services(
                 &state.registry,
                 &scope,
                 &row,
-                row.owner_identity_id,
             )
             .await;
             let tv = platform_services::template_view(
                 state.db(&ext),
                 &state.registry,
                 &row,
-                row.owner_identity_id,
                 &state.config.public_url,
             )
             .await;
@@ -257,14 +255,12 @@ async fn get_service(
             &state.registry,
             &scope,
             &row,
-            row.owner_identity_id,
         )
         .await;
         let tv = platform_services::template_view(
             state.db(&ext),
             &state.registry,
             &row,
-            row.owner_identity_id,
             &state.config.public_url,
         )
         .await;
@@ -423,7 +419,6 @@ async fn update_service_status(
         state.db(&ext),
         &state.registry,
         &row,
-        row.owner_identity_id,
         &state.config.public_url,
     )
     .await;
@@ -601,12 +596,10 @@ async fn list_service_actions(
     // Resolve the same template + connection the exec path would use, then
     // annotate each scope-bearing action with its coverage so the agent sees
     // `needs_reconnect` here instead of after a 403.
-    let mut def = super::templates::resolve_template_definition(
-        &state,
-        &ext,
-        instance.org_id,
-        instance.owner_identity_id,
-        &instance.template_key,
+    let mut def = crate::services::platform_services::instance_template(
+        state.db(&ext),
+        &state.registry,
+        &instance,
     )
     .await?;
     // Overlay this instance's MCP resync result on top of the template's
@@ -684,12 +677,10 @@ async fn resync_mcp_service(
     }
 
     // Resolve the same template the exec path would use.
-    let def = super::templates::resolve_template_definition(
-        &state,
-        &ext,
-        instance.org_id,
-        instance.owner_identity_id,
-        &instance.template_key,
+    let def = crate::services::platform_services::instance_template(
+        state.db(&ext),
+        &state.registry,
+        &instance,
     )
     .await?;
     if def.runtime != Runtime::Mcp {

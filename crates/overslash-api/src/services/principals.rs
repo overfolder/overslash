@@ -60,13 +60,14 @@ pub async fn resolve_service_principals(
         .collect();
 
     // Batch-load bound connections so we read `account_email` without an N+1.
-    let connection_ids: Vec<Uuid> = active
-        .iter()
-        .filter_map(|r| r.connection_id)
-        .collect::<HashSet<_>>()
-        .into_iter()
-        .collect();
-    let connections_by_id = scope.get_connections_by_ids(&connection_ids).await?;
+    // Only pins the call path would use — never a colleague's account.
+    let pins_by_instance = crate::services::platform_services::usable_pins(
+        scope,
+        active
+            .iter()
+            .filter_map(|r| r.connection_id.map(|c| (r.id, r.owner_identity_id, c))),
+    )
+    .await?;
 
     // Auto-resolved owner-provider connections, deduped by (owner, provider).
     let mut owner_provider_email: HashMap<(Uuid, String), Option<String>> = HashMap::new();
@@ -81,9 +82,8 @@ pub async fn resolve_service_principals(
 
         // 1. A bound connection is authoritative — it is the account the call
         //    authenticates as.
-        let mut principal = r
-            .connection_id
-            .and_then(|cid| connections_by_id.get(&cid))
+        let mut principal = pins_by_instance
+            .get(&r.id)
             .and_then(|c| c.account_email.clone());
 
         // 2. Unbound OAuth instance: the owner-provider connection the exec path

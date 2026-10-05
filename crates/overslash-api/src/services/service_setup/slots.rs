@@ -193,14 +193,8 @@ pub async fn validate_binding(
     // instance — the flow this whole surface exists for — would miss a
     // user-tier template and fail with "template not found". Every other
     // instance-view path passes `owner_identity_id` for the same reason.
-    let template = crate::services::platform_services::resolve_template_definition(
-        scope.db(),
-        registry,
-        scope.org_id(),
-        row.owner_identity_id,
-        &row.template_key,
-    )
-    .await?;
+    let template =
+        crate::services::platform_services::instance_template(scope.db(), registry, &row).await?;
 
     let key = resolve_slot_key(&template, credential_key)?;
     Ok((row, key))
