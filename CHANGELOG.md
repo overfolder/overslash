@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.18.0](https://github.com/overfolder/overslash/compare/v0.17.0...v0.18.0) (2026-10-05)
+
+
+### Features
+
+* **api:** whoami returns user name/email and agent name ([#731](https://github.com/overfolder/overslash/issues/731)) ([7a58aff](https://github.com/overfolder/overslash/commit/7a58aff16dbbee54a0b399f35566a24cc6c30f14))
+* **audit:** secret request audit rows name the secret ([#730](https://github.com/overfolder/overslash/issues/730)) ([06c98ee](https://github.com/overfolder/overslash/commit/06c98eef0f484a2ca82a9f9714b8ece6773560e4))
+* leave org with full cleanup + admin remove-member UI ([#733](https://github.com/overfolder/overslash/issues/733)) ([9ce18ef](https://github.com/overfolder/overslash/commit/9ce18ef84b0515e6e16f024905b4b7b0fdc0a521))
+* **ops:** sweep the database for cross-user and cross-org references ([#738](https://github.com/overfolder/overslash/issues/738)) ([c67f5fa](https://github.com/overfolder/overslash/commit/c67f5faa53147c691419e3c8cfaad4d7019d8202))
+
+
+### Bug Fixes
+
+* **api:** take the client IP from an LB-stamped header behind the prod GCLB ([#734](https://github.com/overfolder/overslash/issues/734)) ([cfa2fd8](https://github.com/overfolder/overslash/commit/cfa2fd8afd59d0bfe6b193f80916d6daa0b1162c))
+* **deps:** bump devalue to 5.9.4 and xxhash-rust to 0.8.18 (audit) ([#732](https://github.com/overfolder/overslash/issues/732)) ([dcda2f8](https://github.com/overfolder/overslash/commit/dcda2f8442f6333abae1d9d598ff62140684a80c))
+* **security:** gate same-org approval, permission-rule and service-instance reads by relationship ([#737](https://github.com/overfolder/overslash/issues/737)) ([8a0450b](https://github.com/overfolder/overslash/commit/8a0450b47ec744e74f886d2a383a103e0f0d5695))
+* **security:** one binding policy per stored reference; fence owner-blind getters ([#735](https://github.com/overfolder/overslash/issues/735)) ([518f512](https://github.com/overfolder/overslash/commit/518f512e2b5db1c3d28f09c8be38652ed9e103e7))
+* **services:** a binding to a deleted secret reverts the service to needs setup ([#736](https://github.com/overfolder/overslash/issues/736)) ([f0a5b9f](https://github.com/overfolder/overslash/commit/f0a5b9f25235fc717f041b421165cbe8d0ac9e08))
+
 ## [0.17.0](https://github.com/overfolder/overslash/compare/v0.16.0...v0.17.0) (2026-10-05)
 
 
