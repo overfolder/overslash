@@ -78,6 +78,19 @@ async fn key_for_identity(
     body["key"].as_str().expect("api key minted").to_string()
 }
 
+/// Store `name` in the caller's vault. A binding counts as a credential only
+/// while the secret it names exists.
+async fn put_secret(base: &str, client: &reqwest::Client, api_key: &str, name: &str) {
+    let resp = client
+        .put(format!("{base}/v1/secrets/{name}"))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .json(&json!({"value": "tok"}))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success(), "secret put: {}", resp.status());
+}
+
 async fn create_service(
     base: &str,
     client: &reqwest::Client,
@@ -244,6 +257,7 @@ async fn a_bound_token_instance_reports_ok_rather_than_needing_authentication() 
     let base = format!("http://{api_addr}");
     let (_org, _ident, api_key, admin_key) = common::bootstrap_org_identity(&base, &client).await;
     seed_dual_mode_template(&base, &client, &admin_key, "dm-bound").await;
+    put_secret(&base, &client, &api_key, "my_vault_token").await;
 
     let (status, body) = create_service(
         &base,
@@ -501,6 +515,7 @@ async fn a_stale_connection_does_not_blank_the_badge_after_switching_to_a_token(
     let owner_key =
         key_for_identity(&base, &client, &admin_key, org_id, &owner_id.to_string()).await;
 
+    put_secret(&base, &client, &owner_key, "my_vault_token").await;
     // Switch to the token mode and bind its slot in the same call.
     let resp = client
         .put(format!("{base}/v1/services/{id}/manage"))

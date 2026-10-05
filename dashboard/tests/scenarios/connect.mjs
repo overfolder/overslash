@@ -43,7 +43,9 @@ export async function connectGithubService(session, page, opts = {}) {
 
 	await page.goto(`${session.dashboardUrl}/services/${seeded.id}`);
 	await page.getByRole('button', { name: 'credentials' }).click();
-	await expect(page.getByText('needs setup')).toBeVisible();
+	// Scoped to the tab's Status row: the page header carries the same badge.
+	const statusRow = page.locator('.row', { has: page.locator('.label', { hasText: 'Status' }) });
+	await expect(statusRow.getByText('needs setup')).toBeVisible();
 
 	const [popup] = await Promise.all([
 		page.waitForEvent('popup'),

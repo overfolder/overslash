@@ -196,6 +196,31 @@ pub async fn kernel_list_services(
         }
     }
 
+    // The org-vault gate each row's calls are held to, and which of the
+    // secrets those gated bindings name still exist: a binding the read rule
+    // refuses, or one whose secret was deleted, classifies as unbound
+    // ("needs setup") — the same as the per-service detail.
+    let mut gates: HashMap<Uuid, crate::services::secret_paths::OrgVaultGate> = HashMap::new();
+    let mut bound = Vec::new();
+    for row in &rows {
+        let Some(tpl) = templates.get(&(row.owner_identity_id, row.template_key.clone())) else {
+            continue;
+        };
+        let Ok(gate) = instance_org_gate(&ctx.db, &ctx.registry, row, tpl).await else {
+            continue;
+        };
+        bound.extend(bound_paths(row, &|v: &str, slot: Option<&str>| {
+            crate::services::secret_paths::readable_slot_binding(
+                row.owner_identity_id,
+                v,
+                &gate,
+                slot,
+            )
+        }));
+        gates.insert(row.id, gate);
+    }
+    let live_secrets = live_secret_paths(&scope, bound).await;
+
     let summaries = rows
         .into_iter()
         .map(|row| {
@@ -232,12 +257,26 @@ pub async fn kernel_list_services(
                 } else {
                     ScopeKnowledge::NoConnection
                 };
+                let Some(gate) = gates.get(&row.id) else {
+                    // No derivable gate: omit the badge, as the detail path does.
+                    return None;
+                };
+                let resolve = |v: &str, slot: Option<&str>| {
+                    crate::services::secret_paths::readable_slot_binding(
+                        row.owner_identity_id,
+                        v,
+                        gate,
+                        slot,
+                    )
+                };
+                let (credentials, secret_name) =
+                    live_bindings(&row, &resolve, |p| live_secrets.contains(p));
                 derive_credentials_status(
                     tpl,
                     row.auth_mode.as_deref(),
                     scopes,
-                    &row.credentials,
-                    row.secret_name.as_deref(),
+                    &credentials,
+                    secret_name.as_deref(),
                 )
             });
             // The bulk list already has the resolved template in hand from its

@@ -1,6 +1,8 @@
 //! Credential-health classification: effective-scope resolution, per-action
 //! scope coverage, and the pure `CredentialsStatus` classifier.
 
+use overslash_core::types::{SecretNamespace, SecretPath};
+
 use super::templates::*;
 use super::*;
 
@@ -20,41 +22,118 @@ pub async fn compute_credentials_status(
         None => ScopeKnowledge::NoConnection,
         Some(opt) => scope_knowledge(opt.as_deref()),
     };
-    // A binding the read rule refuses (a user-level instance pointing into
-    // another user's vault, or into the org vault from a destination its
-    // owner moved) counts as unbound, exactly as it resolves.
-    let base_of = if template.runtime == overslash_core::types::Runtime::Mcp {
-        crate::routes::actions::mcp_base
-    } else {
-        crate::routes::actions::effective_base
-    };
-    let gate = crate::services::secret_paths::OrgVaultGate::for_instance(
-        db,
-        registry,
-        row,
-        base_of(Some(row), &template).as_deref(),
-        base_of,
-    )
-    .await
-    .ok()?;
-    let readable = |v: &str, slot: Option<&str>| {
-        crate::services::secret_paths::readable_slot_binding(row.owner_identity_id, v, &gate, slot)
-            .is_some()
-    };
-    let credentials: CredentialsMap = row
-        .credentials
-        .iter()
-        .filter(|(k, v)| readable(v, Some(k)))
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect();
-    let secret_name = row.secret_name.as_deref().filter(|v| readable(v, None));
+    let (credentials, secret_name) = resolved_bindings(db, registry, scope, row, &template).await?;
     derive_credentials_status(
         &template,
         row.auth_mode.as_deref(),
         scopes,
         &credentials,
-        secret_name,
+        secret_name.as_deref(),
     )
+}
+
+/// How a stored binding resolves for the badge: the path a call through this
+/// instance would read for `(stored, slot)`, or `None` when it reads nothing.
+pub(crate) type BindingResolver<'a> = dyn Fn(&str, Option<&str>) -> Option<SecretPath> + 'a;
+
+/// The org-vault gate a call through `row` is held to — the same derivation
+/// execution makes, so the badge counts exactly the bindings a call resolves.
+pub(crate) async fn instance_org_gate(
+    db: &sqlx::PgPool,
+    registry: &overslash_core::registry::ServiceRegistry,
+    row: &ServiceInstanceRow,
+    template: &ServiceDefinition,
+) -> Result<crate::services::secret_paths::OrgVaultGate, AppError> {
+    let base_of = if template.runtime == Runtime::Mcp {
+        crate::routes::actions::mcp_base
+    } else {
+        crate::routes::actions::effective_base
+    };
+    crate::services::secret_paths::OrgVaultGate::for_instance(
+        db,
+        registry,
+        row,
+        base_of(Some(row), template).as_deref(),
+        base_of,
+    )
+    .await
+}
+
+/// The instance's bindings as a call would resolve them, for the classifier.
+/// `None` when the gate cannot be derived (the badge is then omitted rather
+/// than guessed).
+pub(crate) async fn resolved_bindings(
+    db: &sqlx::PgPool,
+    registry: &overslash_core::registry::ServiceRegistry,
+    scope: &OrgScope,
+    row: &ServiceInstanceRow,
+    template: &ServiceDefinition,
+) -> Option<(CredentialsMap, Option<String>)> {
+    let gate = instance_org_gate(db, registry, row, template).await.ok()?;
+    let resolve = |v: &str, slot: Option<&str>| {
+        crate::services::secret_paths::readable_slot_binding(row.owner_identity_id, v, &gate, slot)
+    };
+    let live = live_secret_paths(scope, bound_paths(row, &resolve)).await;
+    Some(live_bindings(row, &resolve, |p| live.contains(p)))
+}
+
+/// Every path `row`'s bindings resolve to under `resolve`.
+pub(crate) fn bound_paths(
+    row: &ServiceInstanceRow,
+    resolve: &BindingResolver<'_>,
+) -> Vec<SecretPath> {
+    row.credentials
+        .iter()
+        .filter_map(|(k, v)| resolve(v, Some(k)))
+        .chain(row.secret_name.as_deref().and_then(|v| resolve(v, None)))
+        .collect()
+}
+
+/// The instance's bindings as a call would resolve them: a binding the read
+/// rule refuses (another user's vault, or the org vault from a destination
+/// the owner moved) or one naming a secret that no longer exists (deleted
+/// after it was bound) is dropped. Its slot then reads as unbound and the
+/// service reverts to needing setup, instead of claiming `Ok` while every
+/// call fails with `secret not found`.
+pub(crate) fn live_bindings(
+    row: &ServiceInstanceRow,
+    resolve: &BindingResolver<'_>,
+    exists: impl Fn(&SecretPath) -> bool,
+) -> (CredentialsMap, Option<String>) {
+    let live = |v: &str, slot: Option<&str>| resolve(v, slot).is_some_and(|p| exists(&p));
+    let credentials: CredentialsMap = row
+        .credentials
+        .iter()
+        .filter(|(k, v)| live(v, Some(k)))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    let secret_name = row.secret_name.clone().filter(|v| live(v, None));
+    (credentials, secret_name)
+}
+
+/// Which of `paths` name a live secret: one vault listing per namespace
+/// referenced, so a bulk listing pays per vault, not per row.
+///
+/// A namespace whose listing fails counts every path into it as live — a
+/// transient DB error must not flip healthy services to "needs setup".
+pub(crate) async fn live_secret_paths(
+    scope: &OrgScope,
+    paths: impl IntoIterator<Item = SecretPath>,
+) -> HashSet<SecretPath> {
+    let wanted: HashSet<SecretPath> = paths.into_iter().collect();
+    let namespaces: HashSet<SecretNamespace> = wanted.iter().map(|p| p.ns).collect();
+    let mut live = HashSet::with_capacity(wanted.len());
+    for ns in namespaces {
+        match scope.list_secrets_in(ns).await {
+            Ok(rows) => live.extend(rows.into_iter().map(|s| ns.path(s.name))),
+            Err(e) => {
+                tracing::warn!(error = %e, "listing secrets for credential status failed");
+                live.extend(wanted.iter().filter(|p| p.ns == ns).cloned());
+            }
+        }
+    }
+    live.retain(|p| wanted.contains(p));
+    live
 }
 
 /// The fields of an instance view that come from its *template* rather than
@@ -255,8 +334,9 @@ pub fn derive_credentials_status(
     // A required credential slot is unbound when the execution-time resolution
     // chain (`credentials[slot]` → legacy `secret_name` for instance-source
     // → fixed `default_secret_name` for org-source) yields no name. Mirrors
-    // `resolve_instance_auth`; whether the named secret actually exists in
-    // the vault is a send-time concern a pure classifier can't check. In
+    // `resolve_instance_auth`. Whether the named secret still exists in the
+    // vault is not checked here — callers drop dead bindings first with
+    // [`live_bindings`], so a deleted secret reads as unbound. In
     // particular a template whose slots are all org-source needs no instance
     // binding at all — it must NOT report NeedsAuthentication just because the
     // instance's scalar `secret_name` is empty.
@@ -654,6 +734,82 @@ mod tests {
             ),
             Some(CredentialsStatus::NeedsAuthentication)
         );
+    }
+
+    fn instance_row(
+        owner: Option<Uuid>,
+        credentials: &[(&str, &str)],
+        secret_name: Option<&str>,
+    ) -> ServiceInstanceRow {
+        let now = time::OffsetDateTime::now_utc();
+        ServiceInstanceRow {
+            id: Uuid::new_v4(),
+            org_id: Uuid::new_v4(),
+            owner_identity_id: owner,
+            name: "svc".into(),
+            template_source: "global".into(),
+            template_key: "t".into(),
+            template_id: None,
+            connection_id: None,
+            secret_name: secret_name.map(str::to_string),
+            credentials: sqlx::types::Json(
+                credentials
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect(),
+            ),
+            config: sqlx::types::Json(Default::default()),
+            url: None,
+            use_default_connection: true,
+            auth_mode: None,
+            status: "active".into(),
+            is_system: false,
+            created_at: now,
+            updated_at: now,
+            discovered_tools: None,
+            discovered_at: None,
+        }
+    }
+
+    /// A binding whose secret was deleted reads as unbound, so the badge
+    /// reverts to "needs setup" — as does one the read rule refuses.
+    #[test]
+    fn live_bindings_drops_deleted_and_unreadable_secrets() {
+        let owner = Uuid::new_v4();
+        let other = Uuid::new_v4();
+        let live_path = SecretNamespace::User(owner).path("kept");
+        let row = instance_row(
+            Some(owner),
+            &[
+                ("a", &format!("{owner}/kept")),
+                ("b", &format!("{owner}/deleted")),
+                ("c", &format!("{other}/kept")),
+                ("d", "org/kept"),
+            ],
+            // Legacy bare scalar: resolves in the owner's own vault.
+            Some("kept"),
+        );
+        let exists = |p: &SecretPath| *p == live_path || *p == SecretNamespace::Org.path("kept");
+        let resolver = |gate: crate::services::secret_paths::OrgVaultGate| {
+            move |v: &str, slot: Option<&str>| {
+                crate::services::secret_paths::readable_slot_binding(Some(owner), v, &gate, slot)
+            }
+        };
+        let open = resolver(crate::services::secret_paths::OrgVaultGate::Open);
+        let (credentials, secret_name) = live_bindings(&row, &open, exists);
+        let mut keys: Vec<&str> = credentials.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, ["a", "d"]);
+        assert_eq!(secret_name.as_deref(), Some("kept"));
+
+        // The gate still applies: a closed one drops the live org binding.
+        let closed = resolver(crate::services::secret_paths::OrgVaultGate::Closed);
+        let (credentials, _) = live_bindings(&row, &closed, exists);
+        assert_eq!(credentials.keys().collect::<Vec<_>>(), ["a"]);
+
+        let (credentials, secret_name) = live_bindings(&row, &open, |_| false);
+        assert!(credentials.is_empty());
+        assert_eq!(secret_name, None);
     }
 
     fn scoped_action(required: &[&str]) -> ServiceAction {

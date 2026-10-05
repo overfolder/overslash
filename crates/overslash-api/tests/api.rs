@@ -162,6 +162,7 @@ mod secrets_dashboard;
 mod security_headers;
 mod service_auth_modes;
 mod service_connection_cleanup;
+mod service_deleted_secret;
 mod service_get_by_id;
 mod service_icons;
 mod service_instances;

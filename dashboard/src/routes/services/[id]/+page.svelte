@@ -1005,6 +1005,11 @@
 							<StatusBadge variant="needs-reconnect" label="needs reconnection" />
 						{:else if svc.credentials_status === 'partially_degraded'}
 							<StatusBadge variant="partially-degraded" label="partial scopes" />
+						{:else if svc.credentials_status === 'needs_authentication' && svc.status !== 'pending_setup'}
+							<!-- A live service with nothing usable behind its credential —
+							     typically the secret it was bound to has been deleted.
+							     A pending one already reads "Awaiting setup". -->
+							<StatusBadge variant="needs-setup" />
 						{/if}
 					</div>
 					{#if svc.status === 'pending_setup'}

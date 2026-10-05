@@ -425,13 +425,20 @@ pub async fn kernel_create_service(
             .await;
     }
 
+    // A binding naming a secret that doesn't exist (yet) is not a credential.
+    // Should the gate not derive, classify the bindings as stored rather
+    // than drop the badge on a fresh service.
+    let (live_credentials, live_secret_name) =
+        resolved_bindings(&ctx.db, &ctx.registry, &scope, &row, &template_def)
+            .await
+            .unwrap_or_else(|| ((*row.credentials).clone(), row.secret_name.clone()));
     let credentials_status = derive_credentials_status(
         &template_def,
         row.auth_mode.as_deref(),
         // No connection bulk-fetch here; if pinned, look it up.
         ScopeKnowledge::NoConnection,
-        &row.credentials,
-        row.secret_name.as_deref(),
+        &live_credentials,
+        live_secret_name.as_deref(),
     );
     // If a connection was pinned at create time, refine via real scopes.
     let credentials_status = if row.connection_id.is_some() {
@@ -444,8 +451,8 @@ pub async fn kernel_create_service(
                     &template_def,
                     row.auth_mode.as_deref(),
                     scope_knowledge(conn.scopes.as_deref()),
-                    &row.credentials,
-                    row.secret_name.as_deref(),
+                    &live_credentials,
+                    live_secret_name.as_deref(),
                 )
             })
             .or(credentials_status)
