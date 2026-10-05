@@ -217,6 +217,40 @@ async fn the_owner_lists_its_agents_approvals_by_identity() {
     assert!(body.contains(&p.approval_id), "{body}");
 }
 
+/// An identity's permission rules say what it may do unattended, so they are
+/// read by the same relationship: the identity, its ancestors, and org admins.
+/// A same-org stranger gets 404 — the cross-tenant answer.
+#[tokio::test]
+async fn a_stranger_never_reads_another_users_permission_rules() {
+    let o = org(false).await;
+    let (owner_id, owner_key) = o.identity("user", None).await;
+    let (agent_id, agent_key) = o.identity("agent", Some(owner_id)).await;
+    let (_, stranger_key) = o.identity("user", None).await;
+    let canary = format!("canary{}", Uuid::new_v4().simple());
+    let (status, body) = o
+        .post(
+            "/v1/permissions",
+            &o.admin_key,
+            json!({"identity_id": agent_id, "action_pattern": format!("http:GET:{canary}.example.com/*")}),
+        )
+        .await;
+    assert_eq!(status, 200, "seed rule: {body}");
+
+    let path = format!("/v1/permissions?identity_id={agent_id}");
+    for (who, key) in [
+        ("agent", &agent_key),
+        ("owner", &owner_key),
+        ("admin", &o.admin_key),
+    ] {
+        let (status, body) = o.get(&path, key).await;
+        assert_eq!(status, 200, "{who}: {body}");
+        assert!(body.contains(&canary), "{who} must see the rule: {body}");
+    }
+    let (status, body) = o.get(&path, &stranger_key).await;
+    assert_eq!(status, 404, "stranger must 404: {body}");
+    assert!(!body.contains(&canary));
+}
+
 /// A private, user-level service instance: its owner, and an org admin, read
 /// its groups and actions by id; another user in the org gets 404 on both.
 #[tokio::test]

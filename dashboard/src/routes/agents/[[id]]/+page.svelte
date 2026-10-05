@@ -156,10 +156,11 @@
 		($page.data as { user?: { is_org_admin?: boolean } })?.user?.is_org_admin === true
 	);
 
-	// Approvals are visible to org admins and to the identities involved —
-	// the requester's chain and the resolver's chain. A non-admin selecting a
-	// node outside their own tree sees none of its approvals, so the panel says
-	// why instead of looking like that node has nothing pending.
+	// Approvals and permission rules are visible to org admins and to the
+	// identities involved — for rules the node's own chain, for approvals the
+	// requester's and the resolver's. A non-admin selecting a node outside
+	// their own tree sees neither, so the panel says why instead of looking
+	// like that node has nothing pending and no rules.
 	function inMyTree(id: string): boolean {
 		const byId = new Map(identities.map((i) => [i.id, i]));
 		for (let cur = byId.get(id); cur; cur = cur.parent_id ? byId.get(cur.parent_id) : undefined) {
@@ -167,7 +168,7 @@
 		}
 		return false;
 	}
-	const approvalsHidden = $derived(!isAdmin && selected !== null && !inMyTree(selected.id));
+	const outsideMyTree = $derived(!isAdmin && selected !== null && !inMyTree(selected.id));
 
 	// The MCP endpoint to hand the operator, with this org's slug already in it.
 	// Rendering it live (rather than a `<your-org>` placeholder) is the point:
@@ -291,7 +292,9 @@
 		detail.disconnectError = null;
 		try {
 			const [rules, apr, mcpResp] = await Promise.all([
-				listPermissions(id),
+				// The API answers 404 for a node outside the caller's tree; skip
+				// the call rather than surface that as a panel error.
+				!isAdmin && !inMyTree(id) ? Promise.resolve([]) : listPermissions(id),
 				listApprovals(id),
 				session
 					.get<{ connection: McpConnection | null }>(
@@ -790,7 +793,12 @@
 				     too, so the only thing needed to surface them here is rendering. -->
 				{#snippet rulesSection()}
 					<h3 class="section-title">Permission Rules</h3>
-					{#if !detail || (detail.loading && detail.rules.length === 0)}
+					{#if outsideMyTree}
+						<p class="muted" style="font-size:0.85rem;">
+							Permission rules outside your own tree are visible only to org admins and to the
+							identities above them.
+						</p>
+					{:else if !detail || (detail.loading && detail.rules.length === 0)}
 						<p class="muted" style="font-size:0.85rem;">Loading rules…</p>
 					{:else if detail.rules.length === 0}
 						<p class="muted" style="font-size:0.85rem;">No rules.</p>
@@ -948,7 +956,7 @@
 								</div>
 							{/each}
 						</div>
-					{:else if approvalsHidden}
+					{:else if outsideMyTree}
 						<h3 class="section-title">Pending Approvals</h3>
 						<p class="muted approvals-hidden">
 							Approvals outside your own tree are visible only to org admins and to the people
