@@ -1385,7 +1385,7 @@ This amends D32 (map values are paths, not names in "the org vault") and D85 (re
 **Rationale**: The twin of D119 for connections. Create checked a pin's owner; update did not, and the resolvers loaded the pin org-wide — so a member could re-pin their own service onto a colleague's connection and act as that account, and on an MCP-OAuth instance (whose `url` the same update sets) receive the colleague's bearer token at a host of their choosing. Connection ids are not secret (they appear on group-shared instances), so the check has to be on ownership, at write and at read; the read-side rule also neutralises any pin written before the fix. Cross-org was already closed (every lookup filters `org_id`).
 
 
-## D-NEXT: Behind the GCLB, the client IP comes from a header the LB stamps, and the API is reachable only through the LB
+## D121: Behind the GCLB, the client IP comes from a header the LB stamps, and the API is reachable only through the LB
 
 **Date**: 2026-10
 **Decision**: When `enable_api_lb` is on (prod), the LB backend adds `X-Overslash-Edge-Client-Ip: {client_ip_address}`, the API reads it via `OVERSLASH_TRUSTED_CLIENT_IP_HEADER`, and the API's Cloud Run ingress is `INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER`. The header names the first untrusted hop; the D102 proxy secret still swaps a vouching Vercel hop for the browser it names. XFF is walked (hops=2, LB by CIDR) only when the header is absent. Without the LB (dev), ingress stays open, no header is trusted, and hops stays 1. Both the header setting and the ingress are derived from `enable_api_lb` in `infra/main.tf`, so they can't drift apart.
