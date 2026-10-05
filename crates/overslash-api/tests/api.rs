@@ -17,6 +17,7 @@ mod common;
 mod directory_group_sync;
 
 mod account_invitations;
+mod account_leave_org;
 mod actions_reauth;
 mod actions_reauth_return_url;
 mod actions_validate;

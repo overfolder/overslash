@@ -1,6 +1,6 @@
 /**
- * Account-level, cross-org endpoints: org switching and the invitations
- * addressed to the signed-in user.
+ * Account-level, cross-org endpoints: org switching, leaving an org and the
+ * invitations addressed to the signed-in user.
  *
  * Source of truth: `crates/overslash-api/src/routes/account_invitations.rs`
  * and `crates/overslash-api/src/routes/auth/session.rs` (switch-org).
@@ -53,6 +53,29 @@ export async function switchOrg(orgId: string): Promise<void> {
 		window.location.href = res.redirect_to;
 	} else {
 		window.location.reload();
+	}
+}
+
+/**
+ * Leave an org. The server archives the caller's identity there (their
+ * agents go with it, API keys revoked) and drops the membership.
+ *
+ * Leaving the org the session is scoped to re-points the session at the
+ * personal org; the server answers with the URL to land on and we
+ * hard-navigate there (never resolves in that case). Without a personal org
+ * the session simply ends, so we reload onto the sign-in page.
+ */
+export async function leaveOrg(orgId: string, isCurrent: boolean): Promise<void> {
+	const res = await session.delete<{ status: string; org_id: string; redirect_to?: string }>(
+		`/v1/account/memberships/${encodeURIComponent(orgId)}`
+	);
+	if (res?.redirect_to) {
+		window.location.href = res.redirect_to;
+		return new Promise(() => {});
+	}
+	if (isCurrent) {
+		window.location.reload();
+		return new Promise(() => {});
 	}
 }
 
