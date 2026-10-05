@@ -2,6 +2,9 @@
 
 use super::*;
 
+use crate::services::approval_access::may_read_approval;
+use overslash_core::permissions::AccessLevel;
+
 #[derive(Deserialize)]
 pub(super) struct ListQuery {
     /// Optional visibility filter (SPEC §5 — Visibility Scoping):
@@ -14,10 +17,15 @@ pub(super) struct ListQuery {
     ///     current resolver, or any descendant of theirs is. Excludes
     ///     approvals the caller requested themselves.
     ///
-    /// Unset preserves the legacy org-wide listing.
+    /// Unset lists the pending approvals the caller may see
+    /// ([`crate::services::approval_access`]): the whole org for an org admin,
+    /// otherwise those whose requester or current resolver is the caller or
+    /// one of its descendants. A non-admin is narrowed, not refused.
     scope: Option<String>,
-    /// Optional: list pending approvals for a specific identity (used by the
-    /// identity hierarchy view). Caller must own the identity's org.
+    /// Optional: list pending approvals requested by a specific identity (the
+    /// identity hierarchy view). Rows the caller may not see are dropped, so a
+    /// foreign identity yields only what is routed through the caller's
+    /// subtree — usually nothing.
     identity_id: Option<Uuid>,
     /// Optional: filter results to a specific approval status
     /// (pending | allowed | denied | expired).
@@ -38,7 +46,8 @@ pub(super) async fn list_approvals(
             .get_identity(identity_id)
             .await?
             .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
-        let rows = scope.list_mine_approvals(identity_id).await?;
+        let mut rows = scope.list_mine_approvals(identity_id).await?;
+        retain_readable(&scope, &acl, &mut rows).await?;
         return Ok(Json(
             batch_responses(&scope, &state.registry, rows, &acl).await?,
         ));
@@ -75,7 +84,15 @@ pub(super) async fn list_approvals(
                 "invalid scope '{other}': expected 'mine', 'assigned', or 'actionable'"
             )));
         }
-        None => scope.list_pending_approvals().await?,
+        None if acl.access_level >= AccessLevel::Admin => scope.list_pending_approvals().await?,
+        None => {
+            // `OrgAcl` refuses a credential without an identity, so this is
+            // never `None` in practice; an empty list is the safe answer.
+            let Some(caller) = acl.identity_id else {
+                return Ok(Json(Vec::new()));
+            };
+            scope.list_visible_pending_approvals(caller).await?
+        }
     };
     let mut rows = rows;
     if let Some(ref s) = q.status {
@@ -84,6 +101,56 @@ pub(super) async fn list_approvals(
     Ok(Json(
         batch_responses(&scope, &state.registry, rows, &acl).await?,
     ))
+}
+
+/// Drop the rows `acl` may not see. Cheap for the common shapes: admin and
+/// self short-circuit without a query, so only a non-admin looking across
+/// identities pays an ancestry walk per row.
+async fn retain_readable(
+    scope: &OrgScope,
+    acl: &OrgAcl,
+    rows: &mut Vec<overslash_db::repos::approval::ApprovalRow>,
+) -> Result<()> {
+    let mut kept = Vec::with_capacity(rows.len());
+    for row in rows.drain(..) {
+        if may_read_approval(
+            scope,
+            acl,
+            row.identity_id,
+            row.current_resolver_identity_id,
+        )
+        .await?
+        {
+            kept.push(row);
+        }
+    }
+    *rows = kept;
+    Ok(())
+}
+
+/// Look up an approval the caller may see. A row in this org the caller has
+/// no relationship to answers exactly like a row in another org — 404 — so
+/// the id's existence is not confirmed to a stranger.
+pub(super) async fn get_readable_approval(
+    scope: &OrgScope,
+    acl: &OrgAcl,
+    id: Uuid,
+) -> Result<overslash_db::repos::approval::ApprovalRow> {
+    let row = scope
+        .get_approval(id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("approval not found".into()))?;
+    if !may_read_approval(
+        scope,
+        acl,
+        row.identity_id,
+        row.current_resolver_identity_id,
+    )
+    .await?
+    {
+        return Err(AppError::NotFound("approval not found".into()));
+    }
+    Ok(row)
 }
 
 /// Assemble `ApprovalResponse`s for a list of approvals, batching the
@@ -147,10 +214,7 @@ pub(super) async fn get_approval(
     scope: OrgScope,
     Path(id): Path<Uuid>,
 ) -> Result<Json<ApprovalResponse>> {
-    let row = scope
-        .get_approval(id)
-        .await?
-        .ok_or_else(|| AppError::NotFound("approval not found".into()))?;
+    let row = get_readable_approval(&scope, &acl, id).await?;
     Ok(Json(
         build_response(&scope, &state.registry, row, &acl).await?,
     ))
@@ -168,15 +232,14 @@ pub(super) async fn get_execution(
     scope: OrgScope,
     Path(id): Path<Uuid>,
 ) -> Result<Json<ExecutionSummary>> {
-    // Require the approval exists in this org (4xx-not-leaky).
-    let approval = scope
-        .get_approval(id)
-        .await?
-        .ok_or_else(|| AppError::NotFound("approval not found".into()))?;
+    // 404 unless the caller may see the approval at all — same answer as
+    // `GET /v1/approvals/{id}` and as a cross-tenant id.
+    let approval = get_readable_approval(&scope, &acl, id).await?;
 
     // 403 rather than 404: `GET /v1/approvals/{id}` answers 200 for this
-    // caller, so pretending the execution does not exist would be a lie that
-    // helps nobody debug.
+    // caller (the approval ladder is wider than the execution one), so
+    // pretending the execution does not exist would be a lie that helps
+    // nobody debug.
     if !crate::services::execution_access::may_read_execution(
         &scope,
         &acl,

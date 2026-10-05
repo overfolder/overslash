@@ -59,7 +59,7 @@ pub(crate) async fn require_owned_by_ceiling_or_admin(
 /// `is_org_admin` caller, everything, matching the admin "show all" listing.
 /// Reusing the write gate here made every org-level instance 404 on the
 /// dashboard detail page.
-async fn require_readable_by_caller(
+pub(crate) async fn require_readable_by_caller(
     scope: &OrgScope,
     row: &overslash_db::repos::service_instance::ServiceInstanceRow,
     auth_identity: Uuid,

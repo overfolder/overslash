@@ -214,8 +214,12 @@ async fn list_services(
 }
 
 /// List the groups that grant access to a single service instance.
+///
+/// An identity-bound caller must be able to reach the instance (owner, group
+/// grant, or org admin) — the by-id lookup alone is org-wide and would hand
+/// another user's private grants to anyone in the org.
 async fn list_service_groups(
-    _: AuthContext,
+    auth: AuthContext,
     scope: OrgScope,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Vec<ServiceGroupRef>>> {
@@ -223,6 +227,9 @@ async fn list_service_groups(
         .get_service_instance(id)
         .await?
         .ok_or_else(|| AppError::NotFound("service instance not found".into()))?;
+    if let Some(identity_id) = auth.identity_id {
+        platform_services::require_readable_by_caller(&scope, &instance, identity_id).await?;
+    }
     let grants = scope.list_groups_for_service(instance.id).await?;
     Ok(Json(grants.into_iter().map(Into::into).collect()))
 }
@@ -584,7 +591,13 @@ async fn list_service_actions(
     Path(name): Path<String>,
 ) -> Result<Json<Vec<super::templates::ActionSummary>>> {
     let instance = if let Ok(uuid) = name.parse::<Uuid>() {
-        scope.get_service_instance(uuid).await?
+        // The by-id lookup is org-wide; re-impose the reach the name branch
+        // gets from its ceiling-scoped resolver.
+        let row = scope.get_service_instance(uuid).await?;
+        if let (Some(row), Some(identity_id)) = (row.as_ref(), auth.identity_id) {
+            platform_services::require_readable_by_caller(&scope, row, identity_id).await?;
+        }
+        row
     } else {
         let ceiling = group_ceiling::resolve_ceiling_user_id_opt(&scope, auth.identity_id).await?;
         scope

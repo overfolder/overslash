@@ -156,6 +156,19 @@
 		($page.data as { user?: { is_org_admin?: boolean } })?.user?.is_org_admin === true
 	);
 
+	// Approvals are visible to org admins and to the identities involved —
+	// the requester's chain and the resolver's chain. A non-admin selecting a
+	// node outside their own tree sees none of its approvals, so the panel says
+	// why instead of looking like that node has nothing pending.
+	function inMyTree(id: string): boolean {
+		const byId = new Map(identities.map((i) => [i.id, i]));
+		for (let cur = byId.get(id); cur; cur = cur.parent_id ? byId.get(cur.parent_id) : undefined) {
+			if (cur.id === meIdentityId) return true;
+		}
+		return false;
+	}
+	const approvalsHidden = $derived(!isAdmin && selected !== null && !inMyTree(selected.id));
+
 	// The MCP endpoint to hand the operator, with this org's slug already in it.
 	// Rendering it live (rather than a `<your-org>` placeholder) is the point:
 	// enrolling through the org subdomain is what pins the new agent to this
@@ -935,6 +948,12 @@
 								</div>
 							{/each}
 						</div>
+					{:else if approvalsHidden}
+						<h3 class="section-title">Pending Approvals</h3>
+						<p class="muted approvals-hidden">
+							Approvals outside your own tree are visible only to org admins and to the people
+							involved in them.
+						</p>
 					{/if}
 
 					{@render rulesSection()}
@@ -1782,6 +1801,10 @@
 	}
 	.muted {
 		color: var(--color-text-muted);
+	}
+	.approvals-hidden {
+		margin: 0 0 16px;
+		font-size: 13px;
 	}
 
 	/* ── Modal (matches Figma New Agent modal) ── */
