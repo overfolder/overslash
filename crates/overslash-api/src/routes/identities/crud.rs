@@ -8,6 +8,11 @@ use super::*;
 /// downstream call can supply `parent_id` (e.g. `mcp setup` creating an
 /// agent under the calling user). The dashboard's `/auth/me*` endpoints
 /// require a session cookie and aren't usable from a Bearer client.
+///
+/// Alongside the ids it answers "who am I, on whose behalf" in readable
+/// terms: `user` is the human the caller acts for (itself for a user, the
+/// owner for an agent/sub-agent) with name and email, and `agent` is the
+/// caller itself when it is not a user.
 pub(super) async fn whoami(
     State(state): State<AppState>,
     ReqExt(ext): ReqExt,
@@ -21,13 +26,28 @@ pub(super) async fn whoami(
         .get_identity(identity_id)
         .await?
         .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
+    let is_user = ident.kind == "user";
+    let owner = match ident.owner_id {
+        Some(owner_id) if !is_user => scope.get_identity(owner_id).await?,
+        _ => None,
+    };
+    let user = if is_user {
+        Some(&ident)
+    } else {
+        owner.as_ref()
+    }
+    .map(|u| serde_json::json!({ "id": u.id, "name": u.name, "email": u.email }));
+    let agent = (!is_user).then(|| serde_json::json!({ "id": ident.id, "name": ident.name }));
     Ok(axum::Json(serde_json::json!({
         "org_id": auth.org_id,
         "identity_id": identity_id,
         "kind": ident.kind,
         "name": ident.name,
+        "email": ident.email,
         "parent_id": ident.parent_id,
         "owner_id": ident.owner_id,
+        "user": user,
+        "agent": agent,
     })))
 }
 

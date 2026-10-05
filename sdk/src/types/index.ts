@@ -77,4 +77,10 @@ export {
   topicForEvent,
 } from './events.js';
 
-export type { IdentityKind, ServiceSummary, WhoamiResponse } from './identity.js';
+export type {
+  IdentityKind,
+  ServiceSummary,
+  WhoamiAgent,
+  WhoamiResponse,
+  WhoamiUser,
+} from './identity.js';
