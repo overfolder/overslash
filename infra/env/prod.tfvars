@@ -139,11 +139,10 @@ oauth_refresh_alert_enabled  = false
 upstream_error_alert_enabled = false
 
 # `custom.googleapis.com/overslash/business/integrity_violations` — written by
-# the metrics exporter, not GMP, but the descriptor rule is the same. Check with
-#   gcloud monitoring metrics-descriptors list --project=<project> \
-#     --filter='metric.type = "custom.googleapis.com/overslash/business/integrity_violations"'
+# the metrics exporter, not GMP, but the descriptor rule is the same. gcloud has
+# no metrics-descriptors command; check via the REST API (see the runbook).
 # Runbook: docs/runbooks/data-integrity.md.
-integrity_alert_enabled = false
+integrity_alert_enabled = true
 
 read_oauth_credentials_from_env = false
 
