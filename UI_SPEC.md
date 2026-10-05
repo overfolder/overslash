@@ -683,6 +683,8 @@ A table/list of all users in the org, showing:
 
 Search and filtering via the Search Bar above the table.
 
+**Remove from org.** The member drawer carries a **Remove from org** action for admins, hidden on the viewer's own row and on pending invites (those are revoked from the invites list). It confirms in a destructive modal, then calls `DELETE /v1/identities/{id}`: the member's sessions in the org are revoked, their identity subtree is archived (agents archived, API keys revoked, pending approvals expired), the membership is dropped and the archived identity is detached so the same person can be invited back. The org's last admin cannot be removed; the server's refusal is shown in the modal.
+
 ### User detail (click-through)
 
 Clicking a user navigates to their agents view — this reuses the **Agents view** component, rendered in the context of the selected user. The org-admin sees exactly what that user would see (agent tree, detail panel, live updates), with read access to their agents, approvals, and activity.
@@ -1421,7 +1423,7 @@ A top-level page scoped to the human, not any one org — always reachable from 
 - Each row shows the org name, the role (`admin` / `member`), and a `personal` tag for the user's own personal org
 - Per-row actions:
   - **Current** (disabled) / **Switch** — same `/auth/switch-org` flow as the sidebar switcher
-  - **Leave** — `DELETE /v1/account/memberships/{org_id}`. Confirms before the request. Refused server-side for personal orgs and for the last admin of a non-personal org (dashboard surfaces the error verbatim).
+  - **Leave** — `DELETE /v1/account/memberships/{org_id}`. Confirms in a destructive modal. Runs the same removal as an admin's **Remove from org** (identity subtree archived, API keys and the org's sessions revoked, membership dropped). Leaving the org the session is scoped to lands the user on their personal org (the response carries a rescoped cookie and `redirect_to`). Refused server-side for personal orgs and for the last admin of a non-personal org (dashboard surfaces the error verbatim). The same action sits at the bottom of Org Settings → General as **Leave organization** (non-personal orgs only).
 
 There is no "breakglass" / "bootstrap" tag in this view. The org creator shows up the same as any other admin — a row with `admin`. Their Overslash-level login route is implicit in the fact that the row exists.
 

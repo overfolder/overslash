@@ -1,7 +1,8 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { session, type MembershipSummary, type MeIdentity } from '$lib/session';
-	import { switchOrg } from '$lib/api/account';
+	import { leaveOrg, switchOrg } from '$lib/api/account';
+	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
 	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
 	import SessionsCard from '$lib/components/account/SessionsCard.svelte';
 
@@ -14,7 +15,9 @@
 	let memberships: MembershipSummary[] = $state([]);
 	let loading = $state(true);
 	let error: string | null = $state(null);
-	let dropping: string | null = $state(null);
+	let leaving: MembershipSummary | null = $state(null);
+	let leaveBusy = $state(false);
+	let leaveError: string | null = $state(null);
 	let welcomeEmails = $state(true);
 	let webhookDigestEmails = $state(true);
 	let emailPrefsLoaded = $state(false);
@@ -88,18 +91,24 @@
 		}
 	}
 
-	async function dropMembership(orgId: string, label: string) {
-		if (!confirm(`Drop your membership in ${label}? You'll need to sign in via that org's IdP to come back.`))
-			return;
-		dropping = orgId;
-		error = null;
+	function askLeave(m: MembershipSummary) {
+		leaving = m;
+		leaveError = null;
+	}
+
+	async function confirmLeave() {
+		if (!leaving || !me) return;
+		const target = leaving;
+		leaveBusy = true;
+		leaveError = null;
 		try {
-			await session.delete(`/v1/account/memberships/${orgId}`);
-			memberships = memberships.filter((m) => m.org_id !== orgId);
+			await leaveOrg(target.org_id, target.org_id === me.org_id);
+			memberships = memberships.filter((m) => m.org_id !== target.org_id);
+			leaving = null;
 		} catch (e) {
-			error = e instanceof Error ? e.message : 'Failed to drop membership';
+			leaveError = e instanceof Error ? e.message : 'Failed to leave the organization';
 		} finally {
-			dropping = null;
+			leaveBusy = false;
 		}
 	}
 
@@ -197,10 +206,11 @@
 									<button
 										type="button"
 										class="danger"
-										disabled={dropping === m.org_id}
-										onclick={() => dropMembership(m.org_id, m.name)}
+										data-testid="leave-org-{m.slug}"
+										disabled={leaveBusy && leaving?.org_id === m.org_id}
+										onclick={() => askLeave(m)}
 									>
-										{dropping === m.org_id ? 'Dropping…' : 'Leave'}
+										Leave
 									</button>
 								{/if}
 							</div>
@@ -211,6 +221,18 @@
 		</div>
 	{/if}
 </section>
+
+<ConfirmModal
+	open={leaving !== null}
+	title="Leave {leaving?.name ?? 'organization'}?"
+	message="Your agents in this org are archived and their API keys revoked. You'll need a new invite (or that org's sign-in) to come back."
+	confirmLabel="Leave organization"
+	destructive
+	busy={leaveBusy}
+	error={leaveError}
+	onConfirm={confirmLeave}
+	onCancel={() => (leaving = null)}
+/>
 
 <style>
 	.page {
