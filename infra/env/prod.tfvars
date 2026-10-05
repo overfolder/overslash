@@ -144,16 +144,14 @@ read_oauth_credentials_from_env = false
 enable_async_execution = false
 
 # Client-IP resolution (infra/README.md "Client IP & trusted proxies").
-# Behind the GCLB, X-Forwarded-For reaches the container as
-# `[spoof…,] <client>, <lb-ip>, <google-egress>`: the LB appends the client and
-# its own address, then the hop into Cloud Run appends a Google address of no
-# published range (34.96.62.132 was recorded for every agent call while this
-# was 1). So two hops are trusted by position (socket peer + that egress) and
-# the LB IP by CIDR — a literal, because module.api_lb depends on
-# module.cloud_run (update it if the `lb_ip` output ever changes).
-# Positional trust is only sound because enable_api_lb also restricts the
-# service's ingress to the LB: a direct *.run.app caller would otherwise have
-# its own forged XFF entry believed.
+# Behind the GCLB the client comes from the LB-stamped
+# X-Overslash-Edge-Client-Ip header (wired from enable_api_lb in infra/main.tf,
+# together with the LB-only ingress that makes it unspoofable). XFF also
+# carries Google addresses of no published range — 34.96.62.132 at hops=1,
+# still 34.96.62.181 at hops=2 — so counting hops was a guess. The values
+# below are only the fallback for a request that arrives without the header.
+# The LB IP is a literal because module.api_lb depends on module.cloud_run
+# (update it if the `lb_ip` output ever changes).
 trusted_proxy_hops  = 2
 trusted_proxy_cidrs = "34.36.8.174/32"
 # Flip after `gcloud secrets versions add overslash-prod-trusted-proxy-secret`

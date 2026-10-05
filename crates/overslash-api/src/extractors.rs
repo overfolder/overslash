@@ -89,9 +89,9 @@ impl FromRequestParts<AppState> for CallerTransport {
 }
 
 /// The client's IP address, resolved against the configured trusted proxies
-/// (`Config::trusted_proxies`): the rightmost `X-Forwarded-For` entry this
-/// deployment has no reason to trust, or the socket peer when no proxy is
-/// configured. Never the leftmost header value, which the caller controls.
+/// (`Config::trusted_proxies`): the address a configured edge header names,
+/// else the rightmost `X-Forwarded-For` entry this deployment has no reason
+/// to trust, or the socket peer when no proxy is configured. Never the leftmost header value, which the caller controls.
 /// Every audit `ip_address` and per-IP throttle reads it.
 #[derive(Debug, Clone)]
 pub struct ClientIp(pub Option<String>);
@@ -127,6 +127,12 @@ impl ClientIp {
         let stamp = ProxyStamp {
             secret: headers.get(PROXY_SECRET_HEADER).map(|v| v.as_bytes()),
             client: headers.get(CLIENT_IP_HEADER).and_then(|v| v.to_str().ok()),
+            edge_client: state
+                .config
+                .trusted_proxies
+                .client_ip_header()
+                .and_then(|h| headers.get(h))
+                .and_then(|v| v.to_str().ok()),
         };
         ClientIp(
             state

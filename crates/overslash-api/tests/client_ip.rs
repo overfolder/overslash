@@ -193,3 +193,43 @@ async fn oauth_register_ignores_spoofed_xff_by_default() {
     .await;
     assert_eq!(ip.as_deref(), Some("127.0.0.1"));
 }
+
+#[tokio::test]
+async fn the_edge_header_names_the_client_whatever_xff_says() {
+    // Prod: the GCLB overwrites this header with the address it saw, and
+    // Google's own hops land in XFF wherever they land.
+    const EDGE: &str = "x-overslash-edge-client-ip";
+    let pool = common::test_pool().await;
+    let (addr, client) = start_api_with(pool.clone(), |c| {
+        c.trusted_proxies = TrustedProxies::parse(Some("2"), Some("34.36.8.174/32"), Some(SECRET))
+            .unwrap()
+            .with_client_ip_header(Some(EDGE))
+            .unwrap();
+    })
+    .await;
+    let base = format!("http://{addr}");
+    let resp = client
+        .post(format!("{base}/oauth/register"))
+        .header(
+            "x-forwarded-for",
+            "203.0.113.9, 82.213.253.53, 34.96.62.181, 34.36.8.174",
+        )
+        .header(EDGE, "82.213.253.53")
+        .json(&json!({
+            "client_name": "ip-probe",
+            "redirect_uris": ["http://localhost:9/cb"],
+            "token_endpoint_auth_method": "none",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let body: Value = resp.json().await.unwrap();
+    let ip: Option<String> =
+        sqlx::query_scalar("SELECT created_ip FROM oauth_mcp_clients WHERE client_id = $1")
+            .bind(body["client_id"].as_str().unwrap())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(ip.as_deref(), Some("82.213.253.53"));
+}

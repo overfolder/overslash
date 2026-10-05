@@ -134,9 +134,15 @@ resource "google_compute_backend_service" "api_backend" {
   load_balancing_scheme = "EXTERNAL_MANAGED"
 
   # Inject the client's ISO 3166-1 alpha-2 country code so the API can return
-  # EUR vs USD pricing without a separate GeoIP DB. GCLB overwrites any
-  # client-supplied header of the same name, so this cannot be spoofed.
-  custom_request_headers = ["X-Client-Geo-Country:{client_region}"]
+  # EUR vs USD pricing without a separate GeoIP DB, and the address the LB saw
+  # so the API needn't guess where in X-Forwarded-For Google's own hops landed
+  # (OVERSLASH_TRUSTED_CLIENT_IP_HEADER, set from infra/main.tf). GCLB
+  # overwrites any client-supplied header of the same name, so neither can be
+  # spoofed — as long as the service's ingress is LB-only.
+  custom_request_headers = [
+    "X-Client-Geo-Country:{client_region}",
+    "X-Overslash-Edge-Client-Ip:{client_ip_address}",
+  ]
 
   # No timeout_sec: serverless-NEG backends reject it. The SSE ceiling lives in
   # modules/cloud-run's request_timeout_seconds.
