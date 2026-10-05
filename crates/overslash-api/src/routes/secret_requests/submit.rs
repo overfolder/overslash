@@ -148,6 +148,9 @@ pub(super) async fn submit_provide(
             detail: serde_json::json!({
                 "id": &row.id,
                 "name": &stored.name,
+                // Same key the `secret_request.created` row uses, so one query
+                // finds both halves of a request; `name` stays for old readers.
+                "secret_name": &stored.name,
                 "version": stored.current_version,
                 "provisioned_by_user_id": provisioned_by_user_id,
                 "user_signed": provisioned_by_user_id.is_some(),
@@ -155,7 +158,10 @@ pub(super) async fn submit_provide(
                 "service_instance_id": row.service_instance_id,
                 "credential_key": row.credential_key.as_deref(),
             }),
-            description: None,
+            description: Some(&format!(
+                "Provided secret {} (v{})",
+                stored.name, stored.current_version
+            )),
             ip_address: ip.0.as_deref(),
         })
         .await;
