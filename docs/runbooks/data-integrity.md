@@ -140,9 +140,13 @@ the deploy branch (`overslash-dev-metrics-exporter-deploy` for dev).
 2. Confirm the descriptor exists:
 
    ```sh
-   gcloud monitoring metrics-descriptors list --project=<project> \
-     --filter='metric.type = "custom.googleapis.com/overslash/business/integrity_violations"'
+   curl -s -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+     -H "x-goog-user-project: overslash-dev" \
+     "https://monitoring.googleapis.com/v3/projects/<project>/metricDescriptors?filter=metric.type%3D%22custom.googleapis.com%2Foverslash%2Fbusiness%2Fintegrity_violations%22"
    ```
+
+   A non-empty `metricDescriptors` array means it exists; `{}` means not yet.
+   (`gcloud monitoring` has no `metrics-descriptors` command.)
 
    Cloud Monitoring rejects an alert policy on a custom metric that has never
    been written. That is why the alert is gated.
