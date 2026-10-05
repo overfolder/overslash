@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.17.0](https://github.com/overfolder/overslash/compare/v0.16.0...v0.17.0) (2026-10-05)
+
+
+### Features
+
+* **invites:** include the MCP connect commands in the invite email ([#721](https://github.com/overfolder/overslash/issues/721)) ([8ab0fc4](https://github.com/overfolder/overslash/commit/8ab0fc40ae775c410e79a3562638990990e05757))
+
+
+### Bug Fixes
+
+* **connections:** a service can only pin — and only uses — its owner's OAuth connection ([#723](https://github.com/overfolder/overslash/issues/723)) ([659d9ff](https://github.com/overfolder/overslash/commit/659d9ff2605d90a28e2a25c1b2bacb00014adb27))
+* **secrets:** per-user vaults — a binding can no longer reach another user's secret ([#722](https://github.com/overfolder/overslash/issues/722)) ([9565591](https://github.com/overfolder/overslash/commit/9565591e911d449a5a9b9046e195a7cd90c67335))
+
 ## [0.16.0](https://github.com/overfolder/overslash/compare/v0.15.0...v0.16.0) (2026-10-02)
 
 
