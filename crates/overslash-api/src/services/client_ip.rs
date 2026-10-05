@@ -348,6 +348,47 @@ mod tests {
         assert_eq!(resolve(&t, GFE, &[&xff], None), "198.51.100.66");
     }
 
+    // What prod's GCLB actually delivers: the LB appends `<client>, <lb-ip>`,
+    // then the hop into Cloud Run appends a Google egress address of no
+    // published range. With hops=1 that egress was recorded for every agent
+    // call; prod trusts it by position instead (hops=2, ingress LB-only).
+    const LB_EGRESS: &str = "34.96.62.132";
+
+    #[test]
+    fn behind_the_lb_with_its_egress_hop_takes_the_client() {
+        let t = tp("2", &format!("{LB}/32"), None);
+        let xff = format!("1.2.3.4, 203.0.113.9, {LB}, {LB_EGRESS}");
+        assert_eq!(resolve(&t, GFE, &[&xff], None), "203.0.113.9");
+        // Without the egress hop the LB address is still skipped by CIDR.
+        let xff = format!("203.0.113.9, {LB}");
+        assert_eq!(resolve(&t, GFE, &[&xff], None), "203.0.113.9");
+        // The regression: one positional hop records the egress.
+        let t1 = tp("1", &format!("{LB}/32"), None);
+        let xff = format!("203.0.113.9, {LB}, {LB_EGRESS}");
+        assert_eq!(resolve(&t1, GFE, &[&xff], None), LB_EGRESS);
+    }
+
+    #[test]
+    fn behind_the_lb_forging_its_shape_buys_nothing() {
+        let t = tp("2", &format!("{LB}/32"), None);
+        // The caller prepends a fake client and the LB's address; the LB
+        // appends the real source after them.
+        let xff = format!("1.2.3.4, {LB}, 198.51.100.66, {LB}, {LB_EGRESS}");
+        assert_eq!(resolve(&t, GFE, &[&xff], None), "198.51.100.66");
+    }
+
+    #[test]
+    fn behind_the_lb_a_vouched_vercel_hop_names_the_browser() {
+        let t = tp("2", &format!("{LB}/32"), Some(SECRET));
+        let xff = format!("203.0.113.66, 76.76.21.21, {LB}, {LB_EGRESS}");
+        let named = Some("128.140.96.98");
+        assert_eq!(
+            vouch(&t, GFE, &[&xff], Some(SECRET), named),
+            "128.140.96.98"
+        );
+        assert_eq!(vouch(&t, GFE, &[&xff], None, named), "76.76.21.21");
+    }
+
     #[test]
     fn cidr_only_reverse_proxy_on_loopback() {
         let t = tp("0", "127.0.0.1", None);

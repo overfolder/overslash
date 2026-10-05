@@ -167,18 +167,33 @@ What each path looks like at the container, and what gets recorded:
 
 | Path | `X-Forwarded-For` (peer = Google frontend) | Recorded |
 |---|---|---|
-| Agent → `api.dev.overslash.com` / `*.run.app` | `<spoof…>, <client>` | `<client>` (hop 1) |
-| Agent → `api.overslash.com` (GCLB) | `<spoof…>, <client>, 34.36.8.174` | `<client>` (LB by CIDR) |
-| Browser → `app.*` → Vercel rewrite → API | `<client>, <vercel-egress>[, <lb>]` | `<client>` with the secret, `<vercel-egress>` without |
+| Agent → `api.dev.overslash.com` / `*.run.app` (dev) | `<spoof…>, <client>` | `<client>` (hop 1) |
+| Agent → `api.overslash.com` (GCLB, prod) | `<spoof…>, <client>, 34.36.8.174, <google-egress>` | `<client>` (egress = hop 2, LB by CIDR) |
+| Browser → `app.*` → Vercel rewrite → API | `<client>, <vercel-egress>[, <lb>, <google-egress>]` | `<client>` with the secret, `<vercel-egress>` without |
 
-| Env | `trusted_proxy_hops` | `trusted_proxy_cidrs` |
-|---|---|---|
-| prod | `1` | `34.36.8.174/32,35.191.0.0/16,130.211.0.0/22` (LB address, then Google's LB proxy ranges) |
-| dev | `1` | `""` (no LB) |
+| Env | `trusted_proxy_hops` | `trusted_proxy_cidrs` | Cloud Run ingress |
+|---|---|---|---|
+| prod | `2` | `34.36.8.174/32` (the LB address) | LB only (`INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER`) |
+| dev | `1` | `""` (no LB) | all |
+
+**The LB's egress hop.** Behind the global external Application Load Balancer
+(serverless NEG), the LB appends `<client>, <lb-ip>`, and then the hop into Cloud
+Run appends one more Google address. That address comes from a range Google
+doesn't publish (34.96.62.132 in practice) and isn't one of the documented
+35.191.0.0/16 / 130.211.0.0/22 LB ranges, so it can't be trusted by CIDR. While
+prod ran with `hops = 1`, every agent and MCP call recorded it. Prod therefore
+trusts two hops by position. That is safe **only** because `enable_api_lb` also
+restricts the service's ingress to the LB (`infra/main.tf`). If `*.run.app`
+were reachable, Cloud Run would append a direct caller's real address in the
+trusted second slot, and the caller's forged entry to its left would be
+recorded. See D102 and the decision that amends it.
 
 The prod LB address is a literal because `module.api_lb` depends on
 `module.cloud_run`. If `tofu output` ever shows a different `lb_ip`, update
-`prod.tfvars`. Until then, every request through the LB records the LB's address.
+`prod.tfvars`. Nothing here is applied by CI. Run `make tofu-plan ENV=prod`
+before trusting that the live env matches these files:
+`OVERSLASH_TRUSTED_PROXIES` sat in `prod.tfvars` for a week without ever
+reaching Cloud Run.
 
 **The Vercel hop.** Vercel connects to the API from egress IPs it does not
 publish, so its address can't be trusted by range. And the `X-Forwarded-For`

@@ -215,6 +215,9 @@ module "cloud_run" {
 
   connection_return_url_hosts = var.connection_return_url_hosts
 
+  # Behind the GCLB, the LB is the only way in: trusted_proxy_hops counts its
+  # hops by position, so a direct *.run.app caller must not reach the service.
+  ingress                        = var.enable_api_lb ? "INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER" : "INGRESS_TRAFFIC_ALL"
   trusted_proxy_hops             = var.trusted_proxy_hops
   trusted_proxy_cidrs            = var.trusted_proxy_cidrs
   enable_trusted_proxy_secret    = var.enable_trusted_proxy_secret

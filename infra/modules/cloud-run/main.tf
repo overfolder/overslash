@@ -261,10 +261,16 @@ variable "email_reply_to" {
   description = "Optional Reply-To address. Empty leaves the provider's default (usually From)."
 }
 
+variable "ingress" {
+  type        = string
+  default     = "INGRESS_TRAFFIC_ALL"
+  description = "Cloud Run ingress. INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER behind the GCLB: client-IP trust counts the LB's hops by position, which only holds if nothing can reach the service around the LB."
+}
+
 variable "trusted_proxy_hops" {
   type        = number
   default     = 0
-  description = "OVERSLASH_TRUSTED_PROXY_HOPS: addresses, counting the socket peer, trusted by position when resolving the client IP. 1 on Cloud Run (the peer is Google's frontend, which appends the client)."
+  description = "OVERSLASH_TRUSTED_PROXY_HOPS: addresses, counting the socket peer, trusted by position when resolving the client IP. 1 on bare Cloud Run (the peer is Google's frontend, which appends the client); 2 behind the GCLB, which adds a Google egress hop."
 }
 
 variable "trusted_proxy_cidrs" {
@@ -537,7 +543,7 @@ resource "google_cloud_run_v2_service" "api" {
   name     = "${var.base_prefix}-api"
   location = var.region
   project  = var.project_id
-  ingress  = "INGRESS_TRAFFIC_ALL"
+  ingress  = var.ingress
 
   template {
     service_account = var.service_account_email
