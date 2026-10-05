@@ -93,7 +93,7 @@ pub fn load_config(host: String, port: u16) -> Config {
     if config.trusted_proxies.is_configured() {
         tracing::info!(
             policy = %config.trusted_proxies.summary(),
-            "client IP: X-Forwarded-For read right-to-left past the trusted proxies",
+            "client IP: edge header if configured, else X-Forwarded-For read right-to-left past the trusted proxies",
         );
     } else if config.deployment_env.is_prod() {
         // Safe (the socket peer is used) but almost certainly not intended:

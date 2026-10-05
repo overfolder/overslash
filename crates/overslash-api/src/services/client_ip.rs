@@ -8,7 +8,7 @@
 //! untrusted address — instead of the leftmost header value, which any caller
 //! can set to anything.
 //!
-//! Three knobs, parsed once at boot into [`TrustedProxies`]:
+//! Four knobs, parsed once at boot into [`TrustedProxies`]:
 //!
 //! - `OVERSLASH_TRUSTED_PROXY_HOPS` — how many addresses, counting the socket
 //!   peer, are trusted by position. For platforms whose frontend has no fixed
@@ -24,6 +24,13 @@
 //!   forwards the browser's `X-Forwarded-For` upstream and does not reliably
 //!   apply a middleware override of it, so that part of the list is the
 //!   caller's claim (measured on dev, see DECISIONS D102).
+//! - `OVERSLASH_TRUSTED_CLIENT_IP_HEADER` — a header the edge in front of us
+//!   *overwrites* with the address it saw (the GCLB's
+//!   `{client_ip_address}` custom header). When present it is that hop and
+//!   XFF is not walked at all: behind the GCLB, Google appends hops of its
+//!   own whose position and range aren't published, so counting them is a
+//!   guess. Sound only if nothing reaches us around that edge (prod's ingress
+//!   is LB-only); a missing or unparseable value falls back to the XFF walk.
 //!
 //! With none of them set, `X-Forwarded-For` is ignored and the socket peer is
 //! the client — the safe default for a process nobody told about its proxies.
@@ -31,6 +38,7 @@
 use std::fmt;
 use std::net::{IpAddr, SocketAddr};
 
+use axum::http::HeaderName;
 use overslash_env as env;
 use subtle::ConstantTimeEq;
 
@@ -70,6 +78,8 @@ pub const CLIENT_IP_HEADER: &str = "x-overslash-client-ip";
 pub struct ProxyStamp<'a> {
     pub secret: Option<&'a [u8]>,
     pub client: Option<&'a str>,
+    /// The value of [`TrustedProxies::client_ip_header`], if configured.
+    pub edge_client: Option<&'a str>,
 }
 
 /// Shortest `OVERSLASH_TRUSTED_PROXY_SECRET` accepted: 32 bytes, the length
@@ -82,6 +92,7 @@ pub struct TrustedProxies {
     hops: u8,
     cidrs: Vec<ipnet::IpNet>,
     secret: Option<ProxySecret>,
+    client_ip_header: Option<HeaderName>,
 }
 
 /// Held apart so `Debug` on the config can never print it.
@@ -94,12 +105,13 @@ impl fmt::Debug for TrustedProxies {
             .field("hops", &self.hops)
             .field("cidrs", &self.cidrs)
             .field("secret", &self.secret.as_ref().map(|_| "<redacted>"))
+            .field("client_ip_header", &self.client_ip_header)
             .finish()
     }
 }
 
 impl TrustedProxies {
-    /// Read the three variables. An unparseable value is an error, not a
+    /// Read the four variables. An unparseable value is an error, not a
     /// warning: a dropped CIDR silently moves every client behind that proxy
     /// into one rate-limit bucket, which is worse than not starting.
     pub fn from_env() -> Result<Self, String> {
@@ -107,7 +119,8 @@ impl TrustedProxies {
             env::optional("OVERSLASH_TRUSTED_PROXY_HOPS").as_deref(),
             env::optional("OVERSLASH_TRUSTED_PROXIES").as_deref(),
             env::optional("OVERSLASH_TRUSTED_PROXY_SECRET").as_deref(),
-        )
+        )?
+        .with_client_ip_header(env::optional("OVERSLASH_TRUSTED_CLIENT_IP_HEADER").as_deref())
     }
 
     /// [`Self::from_env`] with the raw values passed in.
@@ -153,18 +166,38 @@ impl TrustedProxies {
             hops,
             cidrs: nets,
             secret,
+            client_ip_header: None,
         })
+    }
+
+    /// Set `OVERSLASH_TRUSTED_CLIENT_IP_HEADER`. Blank leaves it unset.
+    pub fn with_client_ip_header(mut self, name: Option<&str>) -> Result<Self, String> {
+        self.client_ip_header = match name.map(str::trim).filter(|s| !s.is_empty()) {
+            None => None,
+            Some(raw) => Some(HeaderName::try_from(raw).map_err(|_| {
+                format!("OVERSLASH_TRUSTED_CLIENT_IP_HEADER: {raw:?} is not a header name")
+            })?),
+        };
+        Ok(self)
+    }
+
+    /// The header an edge proxy overwrites with the client it saw, if any.
+    pub fn client_ip_header(&self) -> Option<&HeaderName> {
+        self.client_ip_header.as_ref()
     }
 
     /// Whether anything is trusted at all. When not, XFF is never read.
     pub fn is_configured(&self) -> bool {
-        self.hops > 0 || !self.cidrs.is_empty() || self.secret.is_some()
+        self.hops > 0
+            || !self.cidrs.is_empty()
+            || self.secret.is_some()
+            || self.client_ip_header.is_some()
     }
 
     /// One-line description for the boot log. Never includes the secret.
     pub fn summary(&self) -> String {
         format!(
-            "hops={} cidrs=[{}] proxy_secret={}",
+            "hops={} cidrs=[{}] proxy_secret={} client_ip_header={}",
             self.hops,
             self.cidrs
                 .iter()
@@ -176,6 +209,9 @@ impl TrustedProxies {
             } else {
                 "unset"
             },
+            self.client_ip_header
+                .as_ref()
+                .map_or("unset", HeaderName::as_str),
         )
     }
 
@@ -193,7 +229,8 @@ impl TrustedProxies {
     /// The client address for one request.
     ///
     /// `peer` is the socket address, `xff` every `X-Forwarded-For` header
-    /// value in the order received, `stamp` what a secret-bearing proxy set.
+    /// value in the order received, `stamp` what a secret-bearing proxy (and
+    /// the edge, via [`Self::client_ip_header`]) set.
     pub fn resolve(
         &self,
         peer: Option<IpAddr>,
@@ -215,6 +252,13 @@ impl TrustedProxies {
                 _ => hop,
             }
         };
+        // The edge named the address it saw: that is the first hop we don't
+        // trust, wherever Google's own hops landed in XFF.
+        if self.client_ip_header.is_some()
+            && let Some(edge) = stamp.edge_client.and_then(|v| parse_entry(v.trim()))
+        {
+            return Some(client_at(edge));
+        }
         let mut last_trusted = match peer {
             Some(p) => {
                 let p = p.to_canonical();
@@ -290,13 +334,32 @@ mod tests {
         secret: Option<&str>,
         client: Option<&str>,
     ) -> String {
+        edge(t, peer, xff, None, secret, client)
+    }
+
+    fn edge(
+        t: &TrustedProxies,
+        peer: &str,
+        xff: &[&str],
+        edge_client: Option<&str>,
+        secret: Option<&str>,
+        client: Option<&str>,
+    ) -> String {
         let stamp = ProxyStamp {
             secret: secret.map(str::as_bytes),
             client,
+            edge_client,
         };
         t.resolve(Some(ip(peer)), xff, stamp)
             .map(|i| i.to_string())
             .unwrap_or_else(|| "none".into())
+    }
+
+    /// Prod: the GCLB overwrites this header with `{client_ip_address}`.
+    fn behind_lb(secret: Option<&str>) -> TrustedProxies {
+        tp("2", &format!("{LB}/32"), secret)
+            .with_client_ip_header(Some("X-Overslash-Edge-Client-Ip"))
+            .unwrap()
     }
 
     #[test]
@@ -346,6 +409,105 @@ mod tests {
         // LB's shape; Cloud Run appends the real source.
         let xff = format!("1.2.3.4, {LB}, 198.51.100.66");
         assert_eq!(resolve(&t, GFE, &[&xff], None), "198.51.100.66");
+    }
+
+    // What prod's GCLB actually delivers: the LB appends `<client>, <lb-ip>`,
+    // then the hop into Cloud Run appends a Google egress address of no
+    // published range. With hops=1 that egress was recorded for every agent
+    // call; prod trusts it by position instead (hops=2, ingress LB-only).
+    const LB_EGRESS: &str = "34.96.62.132";
+
+    #[test]
+    fn behind_the_lb_with_its_egress_hop_takes_the_client() {
+        let t = tp("2", &format!("{LB}/32"), None);
+        let xff = format!("1.2.3.4, 203.0.113.9, {LB}, {LB_EGRESS}");
+        assert_eq!(resolve(&t, GFE, &[&xff], None), "203.0.113.9");
+        // Without the egress hop the LB address is still skipped by CIDR.
+        let xff = format!("203.0.113.9, {LB}");
+        assert_eq!(resolve(&t, GFE, &[&xff], None), "203.0.113.9");
+        // The regression: one positional hop records the egress.
+        let t1 = tp("1", &format!("{LB}/32"), None);
+        let xff = format!("203.0.113.9, {LB}, {LB_EGRESS}");
+        assert_eq!(resolve(&t1, GFE, &[&xff], None), LB_EGRESS);
+    }
+
+    #[test]
+    fn behind_the_lb_forging_its_shape_buys_nothing() {
+        let t = tp("2", &format!("{LB}/32"), None);
+        // The caller prepends a fake client and the LB's address; the LB
+        // appends the real source after them.
+        let xff = format!("1.2.3.4, {LB}, 198.51.100.66, {LB}, {LB_EGRESS}");
+        assert_eq!(resolve(&t, GFE, &[&xff], None), "198.51.100.66");
+    }
+
+    #[test]
+    fn behind_the_lb_a_vouched_vercel_hop_names_the_browser() {
+        let t = tp("2", &format!("{LB}/32"), Some(SECRET));
+        let xff = format!("203.0.113.66, 76.76.21.21, {LB}, {LB_EGRESS}");
+        let named = Some("128.140.96.98");
+        assert_eq!(
+            vouch(&t, GFE, &[&xff], Some(SECRET), named),
+            "128.140.96.98"
+        );
+        assert_eq!(vouch(&t, GFE, &[&xff], None, named), "76.76.21.21");
+    }
+
+    // hops=2 still recorded a Google address (34.96.62.181) in prod: the
+    // chain's shape isn't what the test above assumed, and it isn't
+    // published. The LB-stamped header doesn't depend on it.
+    #[test]
+    fn the_edge_header_wins_over_any_xff_shape() {
+        let t = behind_lb(None);
+        let client = Some("82.213.253.53");
+        for xff in [
+            format!("203.0.113.9, 82.213.253.53, {LB}, 34.96.62.181"),
+            format!("203.0.113.9, 82.213.253.53, 34.96.62.181, {LB}"),
+            format!("203.0.113.9, 82.213.253.53, {LB}, 34.96.62.181, 34.96.62.132"),
+        ] {
+            assert_eq!(edge(&t, GFE, &[&xff], client, None, None), "82.213.253.53");
+        }
+        // Ports and mapped v6, as elsewhere.
+        assert_eq!(
+            edge(&t, GFE, &[], Some(" ::ffff:82.213.253.53 "), None, None),
+            "82.213.253.53"
+        );
+    }
+
+    #[test]
+    fn the_edge_header_is_the_vouching_proxys_hop() {
+        // Browser → Vercel rewrite → LB: the LB saw Vercel's egress, and
+        // the secret makes the browser Vercel named the client.
+        let t = behind_lb(Some(SECRET));
+        let xff = format!("203.0.113.66, 76.76.21.21, {LB}, 34.96.62.181");
+        let vercel = Some("76.76.21.21");
+        let named = Some("128.140.96.98");
+        assert_eq!(
+            edge(&t, GFE, &[&xff], vercel, Some(SECRET), named),
+            "128.140.96.98"
+        );
+        assert_eq!(edge(&t, GFE, &[&xff], vercel, None, named), "76.76.21.21");
+    }
+
+    #[test]
+    fn without_a_usable_edge_header_the_xff_walk_still_runs() {
+        let t = behind_lb(None);
+        let xff = format!("1.2.3.4, 203.0.113.9, {LB}, 34.96.62.132");
+        assert_eq!(edge(&t, GFE, &[&xff], None, None, None), "203.0.113.9");
+        assert_eq!(
+            edge(&t, GFE, &[&xff], Some("unknown"), None, None),
+            "203.0.113.9"
+        );
+    }
+
+    #[test]
+    fn the_edge_header_is_ignored_unless_configured() {
+        // A client sending the header to a deployment with no such edge
+        // (dev) names nothing.
+        let t = tp("1", "", None);
+        assert_eq!(
+            edge(&t, GFE, &["203.0.113.9"], Some("1.2.3.4"), None, None),
+            "203.0.113.9"
+        );
     }
 
     #[test]
@@ -475,6 +637,17 @@ mod tests {
         assert!(TrustedProxies::parse(Some("300"), None, None).is_err());
         assert!(TrustedProxies::parse(None, Some("10.0.0.0/8, nope"), None).is_err());
         assert!(TrustedProxies::parse(None, None, Some("REPLACE_ME")).is_err());
+        let none = TrustedProxies::default();
+        assert!(
+            none.clone()
+                .with_client_ip_header(Some("bad header"))
+                .is_err()
+        );
+        let blank = none.clone().with_client_ip_header(Some(" ")).unwrap();
+        assert!(!blank.is_configured());
+        let named = none.with_client_ip_header(Some("X-Edge-Ip")).unwrap();
+        assert!(named.is_configured());
+        assert_eq!(named.client_ip_header().unwrap(), "x-edge-ip");
         let ok = TrustedProxies::parse(Some(" 2 "), Some("10.0.0.0/8,, ::1"), None).unwrap();
         assert_eq!(ok.hops, 2);
         assert_eq!(ok.cidrs.len(), 2);

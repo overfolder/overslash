@@ -118,7 +118,7 @@ variable "vercel_preview_origin_regex" {
 }
 
 variable "trusted_proxy_hops" {
-  description = "Client-IP resolution: addresses, counting the socket peer, trusted by position (OVERSLASH_TRUSTED_PROXY_HOPS). 1 on Cloud Run. See infra/README.md \"Client IP & trusted proxies\"."
+  description = "Client-IP resolution: addresses, counting the socket peer, trusted by position (OVERSLASH_TRUSTED_PROXY_HOPS). 1 on bare Cloud Run, 2 behind the GCLB (whose ingress is then LB-only). See infra/README.md \"Client IP & trusted proxies\"."
   type        = number
   default     = 0
 }
