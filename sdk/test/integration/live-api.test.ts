@@ -73,8 +73,21 @@ describe('the credential and the types', () => {
     expect(me.identity_id).toBeTruthy();
     // The field set the SDK's mirror claims. A rename upstream fails here.
     expect(Object.keys(me).sort()).toEqual(
-      ['identity_id', 'kind', 'name', 'org_id', 'owner_id', 'parent_id'].sort(),
+      [
+        'agent',
+        'email',
+        'identity_id',
+        'kind',
+        'name',
+        'org_id',
+        'owner_id',
+        'parent_id',
+        'user',
+      ].sort(),
     );
+    // A user key: `user` is the caller itself and there is no `agent`.
+    expect(me.user?.id).toBe(me.identity_id);
+    expect(me.agent).toBeNull();
   });
 
   it('lists approvals under a chain scope rather than org-wide', async () => {
