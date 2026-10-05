@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "-- Invariant byoc_provider_mismatch (D122).\n-- A connection whose BYOC client is for a different OAuth provider.\n-- byoc_binding::usable_byoc_pin refuses it at refresh time.\nSELECT c.org_id AS \"org_id!\",\n       'connections' AS \"subject_table!\",\n       c.id AS \"subject_id!\",\n       'byoc_credential ' || b.id || ' is ' || b.provider_key\n           || ', connection is ' || c.provider_key AS \"detail!\"\nFROM connections c\nJOIN byoc_credentials b ON b.id = c.byoc_credential_id\nWHERE b.org_id = c.org_id\n  AND b.provider_key <> c.provider_key\nORDER BY c.org_id, c.id\n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "org_id!",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "connections",
+            "name": "org_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "subject_table!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "subject_id!",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "connections",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "detail!",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      null,
+      false,
+      null
+    ]
+  },
+  "hash": "24c54d2b2301dbf6d0d05a83dae5b0cbfcdf4a9760f410bb60ebf0456dc20136"
+}

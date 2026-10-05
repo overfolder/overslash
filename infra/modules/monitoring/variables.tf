@@ -65,6 +65,12 @@ variable "upstream_error_alert_enabled" {
   description = "Enable the upstream error rate alert. GMP rejects the alert policy if overslash_upstream_responses_total has never been emitted (no metric descriptor yet). Set true once at least one upstream response has been observed."
 }
 
+variable "integrity_alert_enabled" {
+  type        = bool
+  default     = false
+  description = "Enable the [P1] Data Integrity Violation alert on custom.googleapis.com/overslash/business/integrity_violations. Cloud Monitoring rejects the policy until the metrics exporter has written that metric once (no descriptor yet). Set true after the first exporter run carrying the integrity sweep."
+}
+
 variable "api_latency_alert_enabled" {
   type        = bool
   default     = false

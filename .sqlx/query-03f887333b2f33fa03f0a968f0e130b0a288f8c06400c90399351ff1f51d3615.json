@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "-- Invariant pin_on_org_instance (#723).\n-- An org-level instance (no owner) with a pinned connection. A connection is\n-- one person's grant; connection_binding::validate_connection_binding refuses\n-- to pin one to an instance every member can call.\nSELECT si.org_id AS \"org_id!\",\n       'service_instances' AS \"subject_table!\",\n       si.id AS \"subject_id!\",\n       'connection ' || si.connection_id AS \"detail!\"\nFROM service_instances si\nWHERE si.owner_identity_id IS NULL\n  AND si.connection_id IS NOT NULL\nORDER BY si.org_id, si.id\n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "org_id!",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "service_instances",
+            "name": "org_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "subject_table!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "subject_id!",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "service_instances",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "detail!",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      null,
+      false,
+      null
+    ]
+  },
+  "hash": "03f887333b2f33fa03f0a968f0e130b0a288f8c06400c90399351ff1f51d3615"
+}

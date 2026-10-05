@@ -138,6 +138,13 @@ api_latency_alert_enabled = false
 oauth_refresh_alert_enabled  = false
 upstream_error_alert_enabled = false
 
+# `custom.googleapis.com/overslash/business/integrity_violations` — written by
+# the metrics exporter, not GMP, but the descriptor rule is the same. Check with
+#   gcloud monitoring metrics-descriptors list --project=<project> \
+#     --filter='metric.type = "custom.googleapis.com/overslash/business/integrity_violations"'
+# Runbook: docs/runbooks/data-integrity.md.
+integrity_alert_enabled = false
+
 read_oauth_credentials_from_env = false
 
 # Async (non-blocking) action calls. Off until validated on dev.

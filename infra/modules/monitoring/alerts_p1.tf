@@ -393,3 +393,74 @@ resource "google_monitoring_alert_policy" "api_slow_requests" {
     mime_type = "text/markdown"
   }
 }
+
+# Stored-reference integrity (docs/runbooks/data-integrity.md). The metrics
+# exporter sweeps the database every 5 minutes for references the binding
+# policies (D122) would refuse — a user-level instance bound to a colleague's
+# vault, a connection pinned across users, an approval resolvable from another
+# org — and writes one `integrity_violations` point per invariant, zeros
+# included. Any non-zero point fires: there is no acceptable rate of a
+# cross-tenant reference, and each one is a row someone has to fix by hand.
+#
+# The absence condition covers the sweep itself failing: the exporter logs the
+# error and skips the series rather than losing every business metric, so a
+# broken invariant query shows up here instead of as silence.
+resource "google_monitoring_alert_policy" "data_integrity_violation" {
+  count = local.alerts_enabled && var.integrity_alert_enabled ? 1 : 0
+
+  project      = var.project_id
+  display_name = "[P1] ${var.base_prefix} Data Integrity Violation"
+  combiner     = "OR"
+
+  conditions {
+    display_name = "Integrity violations > 0"
+
+    condition_threshold {
+      filter          = "${local.business_filter} AND metric.type = \"custom.googleapis.com/overslash/business/integrity_violations\""
+      comparison      = "COMPARISON_GT"
+      threshold_value = 0
+      duration        = "0s"
+
+      aggregations {
+        alignment_period     = "300s"
+        per_series_aligner   = "ALIGN_MAX"
+        cross_series_reducer = "REDUCE_MAX"
+        group_by_fields      = ["metric.labels.invariant"]
+      }
+
+      trigger {
+        count = 1
+      }
+    }
+  }
+
+  conditions {
+    display_name = "Integrity sweep not reporting for 30m"
+
+    condition_absent {
+      filter   = "${local.business_filter} AND metric.type = \"custom.googleapis.com/overslash/business/integrity_violations\""
+      duration = "1800s"
+
+      aggregations {
+        alignment_period     = "300s"
+        per_series_aligner   = "ALIGN_MAX"
+        cross_series_reducer = "REDUCE_COUNT"
+      }
+
+      trigger {
+        count = 1
+      }
+    }
+  }
+
+  notification_channels = local.p1_channels
+
+  alert_strategy {
+    auto_close = "604800s"
+  }
+
+  documentation {
+    content   = "The database holds a stored reference that crosses a user or org boundary. The `invariant` label names the rule. Drill down with the exporter's `integrity violation` WARN logs (org, subject table and id) or by running `crates/overslash-db/src/integrity/<invariant>.sql`, then remediate per docs/runbooks/data-integrity.md. If the absence condition fired instead, the sweep itself failed: look for `Integrity sweep failed` in the metrics-exporter job logs."
+    mime_type = "text/markdown"
+  }
+}

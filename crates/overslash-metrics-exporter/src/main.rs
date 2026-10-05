@@ -2,7 +2,9 @@
 //!
 //! Wakes on a Cloud Scheduler tick, queries Postgres in parallel, and pushes
 //! the result to Google Cloud Monitoring as `custom.googleapis.com/overslash/business/*`
-//! gauges. Exits 0 on success, non-zero on failure (Cloud Run Job records
+//! gauges. The same tick runs the stored-reference integrity sweep
+//! (`overslash_db::integrity`, docs/runbooks/data-integrity.md) and emits one
+//! `integrity_violations` gauge per invariant. Exits 0 on success, non-zero on failure (Cloud Run Job records
 //! the failure for retry / alerting).
 //!
 //! Dry-run mode (`EXPORTER_DRY_RUN=1`) prints the payload as JSON and skips
@@ -17,7 +19,7 @@ use std::str::FromStr;
 
 use anyhow::{Context, Result};
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
-use tracing::info;
+use tracing::{error, info, warn};
 
 use crate::cloud_monitoring::{
     MonitoredResource, TimeSeries, business_resource, make_gauge, make_gauge_int, write_time_series,
@@ -44,7 +46,10 @@ async fn main() -> Result<()> {
     // it in at connect time when present; locally the URL itself can carry
     // user:pass and DATABASE_PASSWORD stays unset.
     let connect_opts =
-        build_connect_options(&database_url, overslash_env::optional("DATABASE_PASSWORD"))?;
+        build_connect_options(&database_url, overslash_env::optional("DATABASE_PASSWORD"))?
+            // A bad plan on a grown table must not hold the job to its
+            // 120s task timeout and lose every other metric with it.
+            .options([("statement_timeout", "30s")]);
     let db = PgPoolOptions::new()
         .max_connections(4)
         .acquire_timeout(std::time::Duration::from_secs(10))
@@ -53,7 +58,8 @@ async fn main() -> Result<()> {
         .context("failed to connect to Postgres")?;
 
     info!("Collecting business metrics");
-    let metrics = queries::collect_all(&db).await?;
+    let mut metrics = queries::collect_all(&db).await?;
+    metrics.integrity_violations = run_integrity_sweep(&db).await;
     log_collected(&metrics);
 
     let now = chrono::Utc::now().to_rfc3339();
@@ -93,6 +99,36 @@ fn init_tracing() {
     }
 }
 
+/// Run every stored-reference invariant and return `(label, count)` for each,
+/// zeros included. Each offending row is logged at WARN with its ids — the
+/// first drill-down step in the runbook. A failed sweep logs and returns
+/// nothing, so the business metrics still export.
+async fn run_integrity_sweep(db: &sqlx::PgPool) -> Vec<(&'static str, i64)> {
+    let results = match overslash_db::integrity::sweep(db).await {
+        Ok(r) => r,
+        Err(e) => {
+            error!(error = %e, "Integrity sweep failed");
+            return Vec::new();
+        }
+    };
+    results
+        .into_iter()
+        .map(|(inv, rows)| {
+            for v in &rows {
+                warn!(
+                    invariant = inv.as_str(),
+                    org_id = %v.org_id,
+                    subject_table = %v.subject_table,
+                    subject_id = %v.subject_id,
+                    detail = %v.detail,
+                    "integrity violation",
+                );
+            }
+            (inv.as_str(), rows.len() as i64)
+        })
+        .collect()
+}
+
 fn log_collected(m: &BusinessMetrics) {
     info!(
         users_total = m.users_total,
@@ -104,6 +140,7 @@ fn log_collected(m: &BusinessMetrics) {
         identity_kinds = m.identities_by_kind.len(),
         provider_count = m.connections_by_provider.len(),
         template_count = m.instances_by_template.len(),
+        integrity_violations = m.integrity_violations.iter().map(|(_, c)| c).sum::<i64>(),
         "Metrics collected",
     );
 }
@@ -241,6 +278,15 @@ fn build_time_series(
             resource,
         ));
     }
+    for (invariant, count) in &m.integrity_violations {
+        out.push(make_gauge_int(
+            &metric("integrity_violations"),
+            &[("invariant", invariant)],
+            *count,
+            now,
+            resource,
+        ));
+    }
 
     out
 }
@@ -289,6 +335,7 @@ mod tests {
             executions_24h_by_status: vec![("executed".into(), 10), ("failed".into(), 2)],
             audit_events_24h_by_action: vec![("approval.resolved".into(), 11)],
             webhook_failures_24h_by_event: vec![],
+            integrity_violations: vec![("pin_not_owner", 0), ("owner_cross_org", 2)],
         }
     }
 
@@ -310,8 +357,9 @@ mod tests {
         // + 1 api_keys + 1 secrets + 1 secret_versions
         // + 2 connections + 2 instances
         // + 1 approvals_pending + 1 oldest_seconds
-        // + 2 approvals_resolved + 2 executions + 1 audit + 0 webhook = 21
-        assert_eq!(series.len(), 21);
+        // + 2 approvals_resolved + 2 executions + 1 audit + 0 webhook
+        // + 2 integrity_violations = 23
+        assert_eq!(series.len(), 23);
         assert!(series.iter().all(|s| {
             s.metric
                 .metric_type
@@ -400,6 +448,28 @@ mod tests {
         assert_eq!(
             metric("orgs_total"),
             "custom.googleapis.com/overslash/business/orgs_total"
+        );
+    }
+
+    #[test]
+    fn build_time_series_emits_zero_integrity_counts() {
+        // A zero must still be a point: the alert's absence condition reads
+        // a missing series as "the sweep stopped", not as "all clear".
+        let r = business_resource("p", "us-central1");
+        let series = build_time_series(&fake_metrics(), "2026-04-29T00:00:00Z", &r);
+        let integrity: Vec<_> = series
+            .iter()
+            .filter(|s| s.metric.metric_type.ends_with("/integrity_violations"))
+            .map(|s| {
+                (
+                    s.metric.labels["invariant"].as_str(),
+                    s.points[0].value.int64_value.as_deref(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            integrity,
+            vec![("pin_not_owner", Some("0")), ("owner_cross_org", Some("2"))]
         );
     }
 
