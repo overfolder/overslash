@@ -27,6 +27,7 @@
 	import { absoluteTime } from '$lib/utils/time';
 	import { invalidateAllowedDomains } from '$lib/orgDomains';
 	import { goto } from '$app/navigation';
+	import { leaveOrg } from '$lib/api/account';
 	import {
 		DEFAULT_SETTINGS_SECTION,
 		LEGACY_ANCHORS,
@@ -213,6 +214,25 @@
 			confirmOpen = false;
 		} finally {
 			confirmBusy = false;
+		}
+	}
+
+	// Leave organization — always the org the session is scoped to, so a
+	// successful leave navigates away (personal org, or sign-in).
+	let leaveOpen = $state(false);
+	let leaveBusy = $state(false);
+	let leaveError = $state<string | null>(null);
+
+	async function confirmLeaveOrg() {
+		if (!org) return;
+		leaveBusy = true;
+		leaveError = null;
+		try {
+			await leaveOrg(org.id, true);
+		} catch (e) {
+			leaveError = e instanceof Error ? e.message : 'Failed to leave the organization';
+		} finally {
+			leaveBusy = false;
 		}
 	}
 
@@ -1025,6 +1045,26 @@
 				</div>
 			{/if}
 		</section>
+		{#if org && !isPersonalOrg}
+			<section class="card" data-testid="leave-org-card">
+				<h2>Leave organization</h2>
+				<p class="section-desc">
+					Remove yourself from {org.name}. Your agents here are archived and their API keys
+					revoked. The org's last admin can't leave — promote someone else first.
+				</p>
+				<button
+					type="button"
+					class="btn btn-danger"
+					data-testid="leave-org"
+					onclick={() => {
+						leaveError = null;
+						leaveOpen = true;
+					}}
+				>
+					Leave organization
+				</button>
+			</section>
+		{/if}
 		{/if}
 
 		{#if active === 'agent-defaults'}
@@ -2367,6 +2407,18 @@
 />
 
 <ConfirmModal
+	open={leaveOpen}
+	title="Leave {org?.name ?? 'organization'}?"
+	message="Your agents in this org are archived and their API keys revoked. You'll need a new invite (or that org's sign-in) to come back."
+	confirmLabel="Leave organization"
+	destructive
+	busy={leaveBusy}
+	error={leaveError}
+	onConfirm={confirmLeaveOrg}
+	onCancel={() => (leaveOpen = false)}
+/>
+
+<ConfirmModal
 	open={backfillConfirmOpen}
 	title="Grant self-setup permissions to existing agents?"
 	message={`This grants four permission rules — create services, author templates, start OAuth connections, request secrets — to every first-level agent in this org that lacks them${executionSettings?.agents_missing_self_setup !== undefined ? ` (${executionSettings.agents_missing_self_setup})` : ''}. Sub-agents are not touched, and nothing gains the sharing half of any of those. You can revoke per agent afterwards on the agent detail page; there is no bulk undo.`}
@@ -2734,6 +2786,14 @@
 	}
 	.btn-link.danger {
 		color: var(--color-danger, #b42318);
+	}
+	.btn-danger {
+		background: var(--color-surface);
+		border-color: var(--danger-500, #ef4444);
+		color: var(--danger-600, #dc2626);
+	}
+	.btn-danger:hover:not(:disabled) {
+		background: color-mix(in srgb, var(--danger-500, #ef4444) 10%, transparent);
 	}
 
 	.inline-form {

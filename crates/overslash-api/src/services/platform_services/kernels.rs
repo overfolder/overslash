@@ -56,10 +56,11 @@ pub(crate) async fn require_owned_by_ceiling_or_admin(
 /// *write* gate: besides the caller's and its ceiling user's own rows, it
 /// admits rows granted to one of the ceiling user's groups (how every
 /// org-level instance is shared — creating one requires a grant) and, for an
-/// `is_org_admin` caller, everything, matching the admin "show all" listing.
+/// org admin (`OrgAcl` level `Admin`: the flag or an admin-level `overslash`
+/// grant), everything, matching the admin "show all" listing.
 /// Reusing the write gate here made every org-level instance 404 on the
 /// dashboard detail page.
-async fn require_readable_by_caller(
+pub(crate) async fn require_readable_by_caller(
     scope: &OrgScope,
     row: &overslash_db::repos::service_instance::ServiceInstanceRow,
     auth_identity: Uuid,
@@ -68,15 +69,16 @@ async fn require_readable_by_caller(
         return Ok(());
     }
     let ceiling_user_id = group_ceiling::resolve_ceiling_user_id(scope, auth_identity).await?;
+    // "Org admin" is `OrgAcl`'s rule, not the `is_org_admin` flag alone — an
+    // admin-level `overslash` grant counts too, or an Admins-group admin
+    // reads a service's groups but 404s on the service itself.
     if row.owner_identity_id == Some(ceiling_user_id)
         || scope
             .get_visible_service_ids(ceiling_user_id)
             .await?
             .contains(&row.id)
-        || scope
-            .get_identity(auth_identity)
-            .await?
-            .is_some_and(|i| i.is_org_admin)
+        || crate::extractors::resolve_access_level(scope, auth_identity).await?
+            >= overslash_core::permissions::AccessLevel::Admin
     {
         return Ok(());
     }
@@ -132,8 +134,13 @@ pub async fn kernel_list_services(
     }
 
     // Bulk-load connections + templates so credentials_status is one pass.
-    let connection_ids: Vec<Uuid> = rows.iter().filter_map(|r| r.connection_id).collect();
-    let connections_by_id = scope.get_connections_by_ids(&connection_ids).await?;
+    // Only pins the call path would use (`usable_pins`), keyed by instance.
+    let pins_by_instance = usable_pins(
+        &scope,
+        rows.iter()
+            .filter_map(|r| r.connection_id.map(|c| (r.id, r.owner_identity_id, c))),
+    )
+    .await?;
 
     let mut templates: HashMap<(Option<Uuid>, String), ServiceDefinition> = HashMap::new();
     for row in &rows {
@@ -141,15 +148,7 @@ pub async fn kernel_list_services(
         if templates.contains_key(&key) {
             continue;
         }
-        if let Ok(tpl) = resolve_template_definition(
-            &ctx.db,
-            &ctx.registry,
-            row.org_id,
-            row.owner_identity_id,
-            &row.template_key,
-        )
-        .await
-        {
+        if let Ok(tpl) = instance_template(&ctx.db, &ctx.registry, row).await {
             templates.insert(key, tpl);
         }
     }
@@ -199,6 +198,31 @@ pub async fn kernel_list_services(
         }
     }
 
+    // The org-vault gate each row's calls are held to, and which of the
+    // secrets those gated bindings name still exist: a binding the read rule
+    // refuses, or one whose secret was deleted, classifies as unbound
+    // ("needs setup") — the same as the per-service detail.
+    let mut gates: HashMap<Uuid, crate::services::secret_paths::OrgVaultGate> = HashMap::new();
+    let mut bound = Vec::new();
+    for row in &rows {
+        let Some(tpl) = templates.get(&(row.owner_identity_id, row.template_key.clone())) else {
+            continue;
+        };
+        let Ok(gate) = instance_org_gate(&ctx.db, &ctx.registry, row, tpl).await else {
+            continue;
+        };
+        bound.extend(bound_paths(row, &|v: &str, slot: Option<&str>| {
+            crate::services::secret_paths::readable_slot_binding(
+                row.owner_identity_id,
+                v,
+                &gate,
+                slot,
+            )
+        }));
+        gates.insert(row.id, gate);
+    }
+    let live_secrets = live_secret_paths(&scope, bound).await;
+
     let summaries = rows
         .into_iter()
         .map(|row| {
@@ -213,35 +237,48 @@ pub async fn kernel_list_services(
                 let mode_has_oauth = tpl
                     .oauth_provider_for_mode(row.auth_mode.as_deref())
                     .is_some();
-                let scopes: ScopeKnowledge =
-                    if let Some(cid) = row.connection_id.filter(|_| mode_has_oauth) {
-                        match connections_by_id.get(&cid) {
-                            Some(c) => scope_knowledge(c.scopes.as_deref()),
-                            None => ScopeKnowledge::NoConnection,
-                        }
-                    } else if !row.use_default_connection {
-                        // Opted out of the default fallback and nothing pinned:
-                        // execution resolves no connection, so the badge is
-                        // NoConnection regardless of what the owner has for the
-                        // provider (a sibling instance may have populated the cache).
-                        ScopeKnowledge::NoConnection
-                    } else if let (Some(owner), Some(provider)) = (
+                let scopes: ScopeKnowledge = if row.connection_id.is_some() && mode_has_oauth {
+                    match pins_by_instance.get(&row.id) {
+                        Some(c) => scope_knowledge(c.scopes.as_deref()),
+                        None => ScopeKnowledge::NoConnection,
+                    }
+                } else if !row.use_default_connection {
+                    // Opted out of the default fallback and nothing pinned:
+                    // execution resolves no connection, so the badge is
+                    // NoConnection regardless of what the owner has for the
+                    // provider (a sibling instance may have populated the cache).
+                    ScopeKnowledge::NoConnection
+                } else if let (Some(owner), Some(provider)) = (
+                    row.owner_identity_id,
+                    tpl.oauth_provider_for_mode(row.auth_mode.as_deref()),
+                ) {
+                    match conn_by_owner_provider.get(&(owner, provider.to_string())) {
+                        Some(opt) => scope_knowledge(opt.as_deref()),
+                        None => ScopeKnowledge::NoConnection,
+                    }
+                } else {
+                    ScopeKnowledge::NoConnection
+                };
+                let Some(gate) = gates.get(&row.id) else {
+                    // No derivable gate: omit the badge, as the detail path does.
+                    return None;
+                };
+                let resolve = |v: &str, slot: Option<&str>| {
+                    crate::services::secret_paths::readable_slot_binding(
                         row.owner_identity_id,
-                        tpl.oauth_provider_for_mode(row.auth_mode.as_deref()),
-                    ) {
-                        match conn_by_owner_provider.get(&(owner, provider.to_string())) {
-                            Some(opt) => scope_knowledge(opt.as_deref()),
-                            None => ScopeKnowledge::NoConnection,
-                        }
-                    } else {
-                        ScopeKnowledge::NoConnection
-                    };
+                        v,
+                        gate,
+                        slot,
+                    )
+                };
+                let (credentials, secret_name) =
+                    live_bindings(&row, &resolve, |p| live_secrets.contains(p));
                 derive_credentials_status(
                     tpl,
                     row.auth_mode.as_deref(),
                     scopes,
-                    &row.credentials,
-                    row.secret_name.as_deref(),
+                    &credentials,
+                    secret_name.as_deref(),
                 )
             });
             // The bulk list already has the resolved template in hand from its
@@ -301,17 +338,8 @@ pub async fn kernel_get_service(
     }
     .ok_or_else(|| AppError::NotFound(format!("service '{}' not found", input.name)))?;
 
-    let credentials_status =
-        compute_credentials_status(&ctx.db, &ctx.registry, &scope, &row, row.owner_identity_id)
-            .await;
-    let tv = template_view(
-        &ctx.db,
-        &ctx.registry,
-        &row,
-        row.owner_identity_id,
-        &ctx.config.public_url,
-    )
-    .await;
+    let credentials_status = compute_credentials_status(&ctx.db, &ctx.registry, &scope, &row).await;
+    let tv = template_view(&ctx.db, &ctx.registry, &row, &ctx.config.public_url).await;
     // Bindings read relative to the caller's own vault (`row_to_detail`).
     let viewer = group_ceiling::resolve_ceiling_user_id(&scope, auth_identity)
         .await
@@ -355,17 +383,10 @@ pub async fn kernel_update_service(
         || input.auth_mode.is_some()
         || pins_connection
     {
-        let template_lookup_identity = existing.owner_identity_id.or(Some(auth_identity));
-        Some(
-            resolve_template_definition(
-                &ctx.db,
-                &ctx.registry,
-                ctx.org_id,
-                template_lookup_identity,
-                &existing.template_key,
-            )
-            .await?,
-        )
+        // The instance's own template — never the editor's: an admin with a
+        // same-key user template would otherwise validate an org-level
+        // service's bindings and config against the wrong definition.
+        Some(instance_template(&ctx.db, &ctx.registry, &existing).await?)
     } else {
         None
     };
@@ -552,14 +573,7 @@ pub async fn kernel_update_service(
     // The dashboard assigns this response straight onto the row it renders, so
     // an undecorated one hides the instance's own icon and Test button until a
     // reload — the moment a user most wants to press it.
-    let tv = template_view(
-        &ctx.db,
-        &ctx.registry,
-        &row,
-        row.owner_identity_id,
-        &ctx.config.public_url,
-    )
-    .await;
+    let tv = template_view(&ctx.db, &ctx.registry, &row, &ctx.config.public_url).await;
     let row_id = row.id;
     let row_owner = row.owner_identity_id;
     let row_credentials = row.credentials.0.clone();

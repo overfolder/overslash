@@ -40,6 +40,25 @@ pub async fn resolve_ceiling_user_id(
     ceiling_user_id_from_identity(&identity)
 }
 
+/// Is `identity` the user `user`, or one of `user`'s own agents? The
+/// ownership test every binding policy shares: a credential-bearing row
+/// (connection, BYOC client) may be referenced from something `user` owns
+/// only if it passes. One level only — an agent's row is "the same user"
+/// (D23 re-homed those), a colleague's never is.
+pub async fn identity_belongs_to_user(
+    scope: &OrgScope,
+    user: Uuid,
+    identity: Uuid,
+) -> Result<bool, crate::error::AppError> {
+    if identity == user {
+        return Ok(true);
+    }
+    Ok(scope
+        .get_identity(identity)
+        .await?
+        .is_some_and(|i| i.kind != "user" && i.owner_id == Some(user)))
+}
+
 /// Convenience wrapper: resolve the ceiling user for an optional identity.
 /// Returns `None` for org-level API keys (no identity), `Some(user_id)`
 /// otherwise.

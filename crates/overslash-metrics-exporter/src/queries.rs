@@ -47,6 +47,12 @@ pub struct BusinessMetrics {
     pub audit_events_24h_by_action: Vec<(String, i64)>,
     /// Webhook deliveries that exhausted retries in the last 24h, by event.
     pub webhook_failures_24h_by_event: Vec<(String, i64)>,
+    /// Stored references breaking an invariant, one row per
+    /// [`overslash_db::integrity::Invariant`] (zeros included). Not filled by
+    /// [`collect_all`]: `main` runs the sweep on its own so a failing
+    /// invariant query can't take the business metrics down with it. Empty
+    /// when the sweep failed, which the alert's absence condition catches.
+    pub integrity_violations: Vec<(&'static str, i64)>,
 }
 
 pub async fn collect_all(db: &PgPool) -> Result<BusinessMetrics> {
@@ -100,6 +106,7 @@ pub async fn collect_all(db: &PgPool) -> Result<BusinessMetrics> {
         executions_24h_by_status,
         audit_events_24h_by_action,
         webhook_failures_24h_by_event,
+        integrity_violations: Vec::new(),
     })
 }
 

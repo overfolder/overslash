@@ -42,7 +42,9 @@ test('admin can complete the GitHub Connect flow against the fake AS', async ({
 	await page.getByRole('button', { name: 'credentials' }).click();
 
 	// "Needs setup" is the pre-connect badge on the Credentials tab.
-	await expect(page.getByText('needs setup')).toBeVisible();
+	// Scoped to the tab's Status row: the page header carries the same badge.
+	const statusRow = page.locator('.row', { has: page.locator('.label', { hasText: 'Status' }) });
+	await expect(statusRow.getByText('needs setup')).toBeVisible();
 
 	// Clicking "Connect new" opens a popup at the fake AS. The fake auto-
 	// approves with a 307 to /v1/oauth/callback, which exchanges the code,

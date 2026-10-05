@@ -14,6 +14,12 @@
 //!   ever resolves its owner's vault and the org vault, whatever is stored. An
 //!   org-level instance resolves the stored path — the write rule vouched for
 //!   it.
+//! * **Org-vault gate** ([`OrgVaultGate`]): a user-level instance reaches the
+//!   org vault only when its request lands on the base the org/global tier of
+//!   its template declares, for that tier's org-source slots. An instance
+//!   `url` override, a user-tier template or a user layer moves the
+//!   destination, and org secrets do not follow it. Callers go through
+//!   [`readable_slot_binding`] and [`org_default_candidates`], which apply it.
 //! * **Mode A** ([`canonicalize_explicit_refs`]): a caller naming secrets
 //!   inline reaches only its own user's vault. Never the org vault: Mode A
 //!   dials any host, and org credentials reach a request only through a
@@ -30,6 +36,9 @@ use overslash_db::OrgScope;
 use uuid::Uuid;
 
 use crate::error::AppError;
+
+mod org_gate;
+pub use org_gate::OrgVaultGate;
 
 /// The read rule. `None` when a user-level instance's binding points outside
 /// its owner's vault (or is otherwise unusable) — the caller reports the slot
@@ -79,15 +88,39 @@ pub fn relative_to_instance(
     }
 }
 
-/// Where an org-source slot's `default_secret_name` is looked up, in order:
-/// a user-level instance prefers its owner's own copy, then the org-wide
-/// one; an org-level instance reads the org vault only.
-pub fn org_default_candidates(instance_owner: Option<Uuid>, default: &str) -> Vec<SecretPath> {
+/// The read rule plus the org-vault gate, for a binding stored on `slot`
+/// (`None` when the binding is not a template slot's, such as an MCP bearer
+/// or the legacy scalar on an instance-source slot). This is what call-time
+/// and status paths use; [`readable_instance_binding`] alone is the vault
+/// rule without the destination check.
+pub fn readable_slot_binding(
+    instance_owner: Option<Uuid>,
+    stored: &str,
+    gate: &OrgVaultGate,
+    slot: Option<&str>,
+) -> Option<SecretPath> {
+    let path = readable_instance_binding(instance_owner, stored)?;
+    (path.ns != SecretNamespace::Org || gate.admits(slot)).then_some(path)
+}
+
+/// Where an unbound org-source slot is looked up, in order: a user-level
+/// instance prefers its owner's own copy of `default` (its template's
+/// default name), then the org vault — under the gate's name for the slot,
+/// and only if the gate admits it. An org-level instance reads the org vault
+/// only.
+pub fn org_default_candidates(
+    instance_owner: Option<Uuid>,
+    slot: &str,
+    default: &str,
+    gate: &OrgVaultGate,
+) -> Vec<SecretPath> {
     let mut out = Vec::with_capacity(2);
     if let Some(owner) = instance_owner {
         out.push(SecretNamespace::User(owner).path(default));
     }
-    out.push(SecretNamespace::Org.path(default));
+    if let Some(org_name) = gate.org_default(slot, default) {
+        out.push(SecretNamespace::Org.path(org_name));
+    }
     out
 }
 

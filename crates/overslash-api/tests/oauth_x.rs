@@ -143,7 +143,7 @@ async fn test_oauth_x_callback_with_byoc() {
         .parse()
         .unwrap();
     let conn = overslash_db::scopes::OrgScope::new(org_id, pool.clone())
-        .get_connection(conn_id)
+        .get_connection_any_owner(conn_id)
         .await
         .unwrap()
         .unwrap();
@@ -216,7 +216,11 @@ async fn test_oauth_x_token_refresh() {
     assert_eq!(new_token, "mock_refreshed_access_token");
 
     // Verify DB was updated
-    let updated = scope.get_connection(conn.id).await.unwrap().unwrap();
+    let updated = scope
+        .get_connection_any_owner(conn.id)
+        .await
+        .unwrap()
+        .unwrap();
     assert!(updated.token_expires_at.unwrap() > time::OffsetDateTime::now_utc());
 }
 

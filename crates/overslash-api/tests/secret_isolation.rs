@@ -313,7 +313,9 @@ fn spellings(w: &World, actor: &Actor, target: &Vault, name: &str) -> Vec<(Strin
     }
 }
 
-/// One surface of the sweep per test, so nextest runs them in parallel.
+/// One surface of the sweep per test, so nextest runs them in parallel. Each
+/// test runs only its own surface's requests — every block in the actor loop
+/// is gated on it, or the four tests would each redo the others' work.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Surface {
     /// Inline (Mode A) secrets, plus each user's own service call.
@@ -358,9 +360,15 @@ async fn sweep_surface(surface: Surface) {
     let w = build().await;
 
     // A user-level `shortcut` service per non-admin actor's user, pointed at
-    // the echoing fake, bound to the owner's own token.
+    // the echoing fake, bound to the owner's own token. Only the surfaces that
+    // use it (the positive control, and rebinding) pay for creating it.
     let mut own_service: BTreeMap<Uuid, String> = BTreeMap::new();
-    for actor in w.actors.iter().filter(|a| a.label.ends_with("-agent")) {
+    let needs_own_service = matches!(surface, Surface::Inline | Surface::Rebind);
+    for actor in w
+        .actors
+        .iter()
+        .filter(|a| needs_own_service && a.label.ends_with("-agent"))
+    {
         let (status, body) = w
             .send(
                 w.client
@@ -476,7 +484,9 @@ async fn sweep_surface(surface: Surface) {
                     }
 
                     // Rebinding its own service to it.
-                        if let Some(id) = own_service.get(&actor.user) {
+                        if surface == Surface::Rebind
+                            && let Some(id) = own_service.get(&actor.user)
+                        {
                             let (status, body) = w
                                 .send(
                                     w.client
@@ -505,7 +515,9 @@ async fn sweep_surface(surface: Surface) {
                     // caller's *own* org vault — there is no way to spell another
                     // org's — so that combination is the same-org case, covered
                     // when the loop reaches it.
-                    if target.owner.is_none() && target.org != actor.org {
+                    if surface != Surface::SecretsApi
+                        || (target.owner.is_none() && target.org != actor.org)
+                    {
                         continue;
                     }
                     let selector = match target.owner {
@@ -573,7 +585,8 @@ async fn sweep_surface(surface: Surface) {
                 }
 
                 // A secret request aimed at the target's owner.
-                if let Some(u) = target.owner
+                if surface == Surface::SecretsApi
+                    && let Some(u) = target.owner
                     && !owns_target
                     && !actor.is_admin
                 {

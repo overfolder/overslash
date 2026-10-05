@@ -46,6 +46,31 @@ pub(super) fn template_action_scopes(def: &ServiceDefinition) -> Vec<String> {
     scopes.into_iter().collect()
 }
 
+/// The template a service instance is built from — the binding-policy read
+/// for the instance → template reference. The user tier is keyed on the
+/// instance's *owner*, never on whoever is calling: resolving as the caller
+/// would let anyone who can reach an instance (a group grant, an org-level
+/// service) shadow its template with a same-key user template of their own,
+/// and the instance's credential would then go to that template's hosts and
+/// actions. An org-level instance resolves org tier → global. Every path that
+/// holds an instance row resolves through here; the `binding_guard` test
+/// fails if one passes an instance's `template_key` to
+/// [`resolve_template_definition`] directly.
+pub async fn instance_template(
+    db: &sqlx::PgPool,
+    registry: &overslash_core::registry::ServiceRegistry,
+    instance: &ServiceInstanceRow,
+) -> Result<ServiceDefinition, AppError> {
+    resolve_template_definition(
+        db,
+        registry,
+        instance.org_id,
+        instance.owner_identity_id,
+        &instance.template_key,
+    )
+    .await
+}
+
 /// Resolve the [`ServiceDefinition`] for a template key through the
 /// layered-template fold (user/org/global tiers, derived layers folded over
 /// their base). Thin wrapper over the shared resolver.

@@ -91,7 +91,7 @@ async fn list_providers(
     // (e.g. org-level key) there can't be any user BYOC.
     let user_byoc_providers: HashSet<String> = if let Some(identity_id) = acl.identity_id {
         scope
-            .list_byoc_credentials()
+            .list_byoc_credentials_any_owner()
             .await?
             .into_iter()
             .filter(|r| r.identity_id == identity_id)

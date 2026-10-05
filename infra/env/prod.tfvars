@@ -138,20 +138,29 @@ api_latency_alert_enabled = false
 oauth_refresh_alert_enabled  = false
 upstream_error_alert_enabled = false
 
+# `custom.googleapis.com/overslash/business/integrity_violations` — written by
+# the metrics exporter, not GMP, but the descriptor rule is the same. Check with
+#   gcloud monitoring metrics-descriptors list --project=<project> \
+#     --filter='metric.type = "custom.googleapis.com/overslash/business/integrity_violations"'
+# Runbook: docs/runbooks/data-integrity.md.
+integrity_alert_enabled = false
+
 read_oauth_credentials_from_env = false
 
 # Async (non-blocking) action calls. Off until validated on dev.
 enable_async_execution = false
 
 # Client-IP resolution (infra/README.md "Client IP & trusted proxies").
-# Hop 1 is Cloud Run's frontend, which appends the address it saw. Behind the
-# GCLB that address is the LB's own, so the LB IP is trusted by CIDR — a
-# literal, because module.api_lb depends on module.cloud_run (update it if the
-# `lb_ip` output ever changes). 35.191.0.0/16 and 130.211.0.0/22 are Google's
-# LB proxy ranges, trusted in case the serverless-NEG path appends a frontend
-# address too. A direct *.run.app caller still resolves to its own address.
-trusted_proxy_hops  = 1
-trusted_proxy_cidrs = "34.36.8.174/32,35.191.0.0/16,130.211.0.0/22"
+# Behind the GCLB the client comes from the LB-stamped
+# X-Overslash-Edge-Client-Ip header (wired from enable_api_lb in infra/main.tf,
+# together with the LB-only ingress that makes it unspoofable). XFF also
+# carries Google addresses of no published range — 34.96.62.132 at hops=1,
+# still 34.96.62.181 at hops=2 — so counting hops was a guess. The values
+# below are only the fallback for a request that arrives without the header.
+# The LB IP is a literal because module.api_lb depends on module.cloud_run
+# (update it if the `lb_ip` output ever changes).
+trusted_proxy_hops  = 2
+trusted_proxy_cidrs = "34.36.8.174/32"
 # Flip after `gcloud secrets versions add overslash-prod-trusted-proxy-secret`
 # and setting the same value as OVERSLASH_TRUSTED_PROXY_SECRET in Vercel (Production).
 enable_trusted_proxy_secret = true

@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "-- Invariant template_cross_owner (D122 instance_template).\n-- An instance whose recorded template tier does not match the template row:\n-- a `user` template that is not the instance owner's, or an `org` template\n-- that has an owner. resolve_template_source only ever records the owner's\n-- own user template or an org template.\nSELECT si.org_id AS \"org_id!\",\n       'service_instances' AS \"subject_table!\",\n       si.id AS \"subject_id!\",\n       si.template_source || ' template ' || t.id || ' owned by '\n           || COALESCE(t.owner_identity_id::text, 'org')\n           || ' (instance owner ' || COALESCE(si.owner_identity_id::text, 'org') || ')' AS \"detail!\"\nFROM service_instances si\nJOIN service_templates t ON t.id = si.template_id\nWHERE t.org_id = si.org_id\n  AND (\n      (si.template_source = 'user'\n       AND t.owner_identity_id IS DISTINCT FROM si.owner_identity_id)\n      OR (si.template_source = 'org' AND t.owner_identity_id IS NOT NULL)\n  )\nORDER BY si.org_id, si.id\n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "org_id!",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "service_instances",
+            "name": "org_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "subject_table!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "subject_id!",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "service_instances",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "detail!",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      null,
+      false,
+      null
+    ]
+  },
+  "hash": "75d490c0a5ec225771d8960f211b119e2d62b1db7602b2fd74d4fedd5ee67d16"
+}

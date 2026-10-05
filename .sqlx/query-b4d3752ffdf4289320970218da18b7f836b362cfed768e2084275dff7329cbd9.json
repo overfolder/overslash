@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "-- Invariant byoc_cross_org (D122).\n-- A connection minted with a BYOC OAuth client that belongs to another org.\nSELECT c.org_id AS \"org_id!\",\n       'connections' AS \"subject_table!\",\n       c.id AS \"subject_id!\",\n       'byoc_credential ' || b.id || ' in org ' || b.org_id AS \"detail!\"\nFROM connections c\nJOIN byoc_credentials b ON b.id = c.byoc_credential_id\nWHERE b.org_id <> c.org_id\nORDER BY c.org_id, c.id\n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "org_id!",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "connections",
+            "name": "org_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "subject_table!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "subject_id!",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "connections",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "detail!",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      null,
+      false,
+      null
+    ]
+  },
+  "hash": "b4d3752ffdf4289320970218da18b7f836b362cfed768e2084275dff7329cbd9"
+}

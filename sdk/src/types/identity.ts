@@ -19,8 +19,25 @@ export interface WhoamiResponse {
   identity_id: string;
   kind: IdentityKind;
   name: string;
+  /** The caller's own email — only users carry one. */
+  email: string | null;
   parent_id: string | null;
   owner_id: string | null;
+  /** The human the caller acts for: itself for a user, the owner otherwise. */
+  user: WhoamiUser | null;
+  /** The caller itself when it is an agent or sub-agent; `null` for a user. */
+  agent: WhoamiAgent | null;
+}
+
+export interface WhoamiUser {
+  id: string;
+  name: string;
+  email: string | null;
+}
+
+export interface WhoamiAgent {
+  id: string;
+  name: string;
 }
 
 /** A service instance as listed by `GET /v1/services`. */

@@ -83,6 +83,16 @@ impl OrgScope {
         crate::repos::approval::list_pending_by_org(self.db(), self.org_id()).await
     }
 
+    /// List pending approvals `caller_id` is related to — self-or-ancestor of
+    /// the requester or of the current resolver. The non-admin default
+    /// listing; see `repos::approval::list_visible_pending`.
+    pub async fn list_visible_pending_approvals(
+        &self,
+        caller_id: Uuid,
+    ) -> Result<Vec<ApprovalRow>, sqlx::Error> {
+        crate::repos::approval::list_visible_pending(self.db(), self.org_id(), caller_id).await
+    }
+
     /// List approvals requested by `identity_id` (the "mine" inbox view).
     pub async fn list_mine_approvals(
         &self,

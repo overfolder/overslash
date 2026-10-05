@@ -86,7 +86,7 @@ pub(super) async fn list_connections(
             scope.list_my_connections().await?
         }
     } else if q.include_user_level && is_org_admin().await? {
-        scope.org().list_all_connections().await?
+        scope.org().list_all_connections_any_owner().await?
     } else {
         scope.list_my_connections().await?
     };
@@ -173,7 +173,7 @@ pub(super) async fn get_connection(
                 .map(|i| i.is_org_admin)
                 .unwrap_or(false);
             let conn = if is_admin {
-                org.get_connection(id).await?
+                org.get_connection_any_owner(id).await?
             } else {
                 None
             };
@@ -380,7 +380,7 @@ pub(super) async fn upgrade_connection_scopes(
 
     let org_scope = OrgScope::new(acl.org_id, state.db_pool(&ext));
     let existing = org_scope
-        .get_connection(id)
+        .get_connection_any_owner(id)
         .await?
         .ok_or_else(|| AppError::NotFound("connection not found".into()))?;
 

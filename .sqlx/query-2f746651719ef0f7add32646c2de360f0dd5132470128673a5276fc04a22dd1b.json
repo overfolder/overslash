@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "-- Invariant binding_foreign_user_vault (D119, D122).\n-- A user-level instance bound into a *colleague's* vault. The read rule\n-- (secret_paths::readable_instance_binding) refuses these at call time, so\n-- the instance silently runs unbound; migration 133 RAISE NOTICE'd the ones\n-- it found and left them in place.\nWITH bindings AS (\n    -- Every stored secret binding: the legacy `secret_name` plus each\n    -- `credentials` slot. Paths are `org/<name>` or `<user identity id>/<name>`.\n    SELECT si.id, si.org_id, si.owner_identity_id, b.slot, b.path\n    FROM service_instances si\n    CROSS JOIN LATERAL (\n        SELECT 'secret_name'::text AS slot, si.secret_name AS path\n        UNION ALL\n        SELECT 'credentials.' || c.key, c.value\n        FROM jsonb_each_text(\n            CASE WHEN jsonb_typeof(si.credentials) = 'object'\n                 THEN si.credentials ELSE '{}'::jsonb END\n        ) c\n    ) b\n    WHERE b.path IS NOT NULL AND b.path <> ''\n),\nqualified AS (\n    -- Bindings into a user vault, with the namespace parsed out. The CASE\n    -- keeps the cast from ever seeing a non-uuid prefix.\n    SELECT bindings.*,\n           CASE WHEN path ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/.'\n                THEN substring(path FROM 1 FOR 36)::uuid END AS ns\n    FROM bindings\n)\nSELECT q.org_id AS \"org_id!\",\n       'service_instances' AS \"subject_table!\",\n       q.id AS \"subject_id!\",\n       q.slot || ' = ' || q.path || ' (owner ' || q.owner_identity_id || ')' AS \"detail!\"\nFROM qualified q\nWHERE q.owner_identity_id IS NOT NULL\n  AND q.ns <> q.owner_identity_id\n  AND EXISTS (\n      SELECT 1 FROM identities i\n      WHERE i.id = q.ns AND i.org_id = q.org_id AND i.kind = 'user'\n  )\nORDER BY q.org_id, q.id, q.slot\n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "org_id!",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "service_instances",
+            "name": "org_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "subject_table!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "subject_id!",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "service_instances",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "detail!",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      null,
+      false,
+      null
+    ]
+  },
+  "hash": "2f746651719ef0f7add32646c2de360f0dd5132470128673a5276fc04a22dd1b"
+}

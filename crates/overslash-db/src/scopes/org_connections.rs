@@ -101,16 +101,23 @@ impl OrgScope {
         Ok(())
     }
 
-    /// Look up a connection by id, scoped to this org. Returns `None` if the
-    /// id belongs to another tenant.
-    pub async fn get_connection(&self, id: Uuid) -> Result<Option<ConnectionRow>, sqlx::Error> {
+    /// Look up a connection by id, scoped to this org — **any owner**. Returns
+    /// `None` if the id belongs to another tenant, but not if it belongs to
+    /// another user: a stored reference resolved through this would be
+    /// someone else's token. Call-time and binding paths go through
+    /// `connection_binding` instead; the `binding_guard` test fences callers.
+    pub async fn get_connection_any_owner(
+        &self,
+        id: Uuid,
+    ) -> Result<Option<ConnectionRow>, sqlx::Error> {
         connection::get_by_id(self.db(), self.org_id(), id).await
     }
 
-    /// List every connection in this org, across all identities. Powers the
+    /// List every connection in this org, across all identities (any owner;
+    /// fenced by the `binding_guard` test). Powers the
     /// dashboard's admin-only "show all users' connections" view. See
     /// [`connection::list_all_in_org`].
-    pub async fn list_all_connections(&self) -> Result<Vec<ConnectionRow>, sqlx::Error> {
+    pub async fn list_all_connections_any_owner(&self) -> Result<Vec<ConnectionRow>, sqlx::Error> {
         connection::list_all_in_org(self.db(), self.org_id()).await
     }
 
@@ -133,11 +140,13 @@ impl OrgScope {
         .await
     }
 
-    /// Batch fetch connections by ids, indexed by id. Returns only connections
-    /// that belong to this org — foreign ids are silently dropped. Used by
+    /// Batch fetch connections by ids, indexed by id — **any owner**. Returns
+    /// only connections that belong to this org — foreign ids are silently
+    /// dropped — but does not check who owns them; filter through
+    /// `connection_binding::usable_pins` before showing or using one. Used by
     /// the services list to avoid N+1 lookups while classifying credential
     /// health.
-    pub async fn get_connections_by_ids(
+    pub async fn get_connections_by_ids_any_owner(
         &self,
         ids: &[Uuid],
     ) -> Result<std::collections::HashMap<Uuid, ConnectionRow>, sqlx::Error> {
@@ -245,7 +254,7 @@ impl OrgScope {
     /// default on another user's connection. Returns `false` if the id belongs
     /// to another tenant.
     pub async fn set_connection_default(&self, id: Uuid) -> Result<bool, sqlx::Error> {
-        let Some(conn) = self.get_connection(id).await? else {
+        let Some(conn) = self.get_connection_any_owner(id).await? else {
             return Ok(false);
         };
         connection::set_default(self.db(), self.org_id(), conn.identity_id, id).await

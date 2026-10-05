@@ -61,10 +61,13 @@ pub async fn kernel_create_service(
         }
     };
 
-    // User-tier templates are scoped to the creator. When `on_behalf_of`
-    // redirects ownership, the lookup must use the owner's identity, not the
-    // caller agent's.
-    let template_lookup_identity = owner_identity_id.or(Some(auth_identity));
+    // An instance is built from its *owner's* template — the same tiers
+    // `instance_template` resolves at call time. User-tier templates are
+    // scoped to the owner, so when `on_behalf_of` redirects ownership the
+    // lookup uses the owner's identity, not the caller agent's; an org-level
+    // instance has no owner and resolves org tier → global, never the
+    // creating admin's own user tier (which nobody else's call would see).
+    let template_lookup_identity = owner_identity_id;
     let (template_source, template_id) = resolve_template_source(
         &ctx.db,
         &ctx.registry,
@@ -422,18 +425,24 @@ pub async fn kernel_create_service(
             .await;
     }
 
+    // A binding naming a secret that doesn't exist (yet) is not a credential.
+    // Should the gate not derive, classify the bindings as stored rather
+    // than drop the badge on a fresh service.
+    let (live_credentials, live_secret_name) =
+        resolved_bindings(&ctx.db, &ctx.registry, &scope, &row, &template_def)
+            .await
+            .unwrap_or_else(|| ((*row.credentials).clone(), row.secret_name.clone()));
     let credentials_status = derive_credentials_status(
         &template_def,
         row.auth_mode.as_deref(),
         // No connection bulk-fetch here; if pinned, look it up.
         ScopeKnowledge::NoConnection,
-        &row.credentials,
-        row.secret_name.as_deref(),
+        &live_credentials,
+        live_secret_name.as_deref(),
     );
     // If a connection was pinned at create time, refine via real scopes.
-    let credentials_status = if let Some(conn_id) = row.connection_id {
-        scope
-            .get_connection(conn_id)
+    let credentials_status = if row.connection_id.is_some() {
+        usable_pin(&scope, &row)
             .await
             .ok()
             .flatten()
@@ -442,8 +451,8 @@ pub async fn kernel_create_service(
                     &template_def,
                     row.auth_mode.as_deref(),
                     scope_knowledge(conn.scopes.as_deref()),
-                    &row.credentials,
-                    row.secret_name.as_deref(),
+                    &live_credentials,
+                    live_secret_name.as_deref(),
                 )
             })
             .or(credentials_status)

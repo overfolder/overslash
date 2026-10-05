@@ -335,6 +335,49 @@ pub(crate) async fn list_actionable_for_identity(
     .await
 }
 
+/// List the pending approvals `caller_id` has a relationship to: the caller
+/// is self-or-ancestor of the **requester** or of the **current resolver**.
+///
+/// This is the non-admin default for `GET /v1/approvals` with no `scope`, and
+/// the same set the SSE stream's approval audience reaches
+/// (`services/events/audience.rs::for_approval`). Unlike `actionable`, the
+/// caller's own requests are included — seeing is not resolving.
+pub(crate) async fn list_visible_pending(
+    pool: &PgPool,
+    org_id: Uuid,
+    caller_id: Uuid,
+) -> Result<Vec<ApprovalRow>, sqlx::Error> {
+    sqlx::query_as!(
+        ApprovalRow,
+        r#"WITH RECURSIVE descendants AS (
+            SELECT id FROM identities WHERE id = $2 AND org_id = $1
+            UNION ALL
+            SELECT i.id FROM identities i
+            INNER JOIN descendants d ON i.parent_id = d.id
+            WHERE i.org_id = $1
+        )
+        SELECT a.id as "id!", a.org_id as "org_id!", a.identity_id as "identity_id!",
+               a.current_resolver_identity_id as "current_resolver_identity_id!",
+               a.resolver_assigned_at as "resolver_assigned_at!",
+               a.action_summary as "action_summary!", a.action_detail,
+               a.disclosed_fields,
+               a.replay_payload,
+               a.permission_keys as "permission_keys!", a.status as "status!",
+               a.resolved_at, a.resolved_by, a.remember as "remember!",
+               a.token as "token!", a.expires_at as "expires_at!", a.created_at as "created_at!", a.tags as "tags!", a.execution_mode as "execution_mode!"
+        FROM approvals a
+        WHERE a.org_id = $1
+          AND a.status = 'pending'
+          AND (a.identity_id IN (SELECT id FROM descendants)
+               OR a.current_resolver_identity_id IN (SELECT id FROM descendants))
+        ORDER BY a.created_at DESC"#,
+        org_id,
+        caller_id,
+    )
+    .fetch_all(pool)
+    .await
+}
+
 /// List pending approvals whose **requester** is `root_id` itself or any
 /// descendant of it. Used by the cascade resolver after a remembered rule is
 /// committed at `root_id` — those approvals are the only ones the new rule

@@ -42,17 +42,19 @@ mod templates;
 mod types;
 mod verify;
 
-pub use connection_binding::pinned_connection_usable;
+pub(crate) use connection_binding::{check_pin, usable_pin, usable_pins};
+pub use connection_binding::{pinned_connection, pinned_connection_usable};
 pub use create::kernel_create_service;
 pub(crate) use events::{ServiceEvent, fire_service_event};
 pub(crate) use kernels::require_owned_by_ceiling_or_admin;
+pub(crate) use kernels::require_readable_by_caller;
 pub use kernels::{kernel_get_service, kernel_list_services, kernel_update_service};
 pub use rows::{row_to_detail, row_to_summary};
 pub use status::{
     ScopeCoverage, ScopeKnowledge, TemplateView, action_scope_coverage, compute_credentials_status,
     derive_credentials_status, template_view,
 };
-pub use templates::{resolve_template_definition, resolve_template_source};
+pub use templates::{instance_template, resolve_template_definition, resolve_template_source};
 pub use types::{
     ConnectBundle, CreateServiceGroupGrant, CreateServiceInput, CredentialsStatus, GetServiceInput,
     ServiceGroupRef, ServiceInstanceDetail, ServiceInstanceSummary, UpdateServiceInput,

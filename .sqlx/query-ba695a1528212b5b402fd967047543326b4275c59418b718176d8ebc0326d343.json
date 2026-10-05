@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "-- Invariant byoc_not_owner (D122).\n-- A connection using a same-org, same-provider BYOC client that does not\n-- belong to the connection's ceiling user (the user itself, or an agent's\n-- owner). Mirrors byoc_binding::usable_byoc_pin; an agent with no owner has\n-- no ceiling user, so nothing is usable for it.\nWITH pins AS (\n    SELECT c.id, c.org_id, b.id AS byoc_id, b.identity_id AS byoc_owner,\n           CASE WHEN ci.kind = 'user' THEN ci.id ELSE ci.owner_id END AS ceiling\n    FROM connections c\n    JOIN byoc_credentials b ON b.id = c.byoc_credential_id\n    JOIN identities ci ON ci.id = c.identity_id\n    WHERE b.org_id = c.org_id\n      AND b.provider_key = c.provider_key\n)\nSELECT p.org_id AS \"org_id!\",\n       'connections' AS \"subject_table!\",\n       p.id AS \"subject_id!\",\n       'byoc_credential ' || p.byoc_id || ' owned by ' || p.byoc_owner\n           || ' (ceiling user ' || COALESCE(p.ceiling::text, 'none') || ')' AS \"detail!\"\nFROM pins p\nWHERE p.ceiling IS NULL\n   OR (p.byoc_owner <> p.ceiling\n       AND NOT EXISTS (\n           SELECT 1 FROM identities a\n           WHERE a.id = p.byoc_owner\n             AND a.kind <> 'user'\n             AND a.owner_id = p.ceiling\n       ))\nORDER BY p.org_id, p.id\n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "org_id!",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "connections",
+            "name": "org_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "subject_table!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "subject_id!",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "connections",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "detail!",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      null,
+      false,
+      null
+    ]
+  },
+  "hash": "ba695a1528212b5b402fd967047543326b4275c59418b718176d8ebc0326d343"
+}

@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 overslash-env = { path = "../overslash-env" }
+overslash-db = { path = "../overslash-db" }
 anyhow = { workspace = true }
 chrono = { workspace = true }
 reqwest = { workspace = true }

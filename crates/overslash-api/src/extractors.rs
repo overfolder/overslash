@@ -89,9 +89,9 @@ impl FromRequestParts<AppState> for CallerTransport {
 }
 
 /// The client's IP address, resolved against the configured trusted proxies
-/// (`Config::trusted_proxies`): the rightmost `X-Forwarded-For` entry this
-/// deployment has no reason to trust, or the socket peer when no proxy is
-/// configured. Never the leftmost header value, which the caller controls.
+/// (`Config::trusted_proxies`): the address a configured edge header names,
+/// else the rightmost `X-Forwarded-For` entry this deployment has no reason
+/// to trust, or the socket peer when no proxy is configured. Never the leftmost header value, which the caller controls.
 /// Every audit `ip_address` and per-IP throttle reads it.
 #[derive(Debug, Clone)]
 pub struct ClientIp(pub Option<String>);
@@ -127,6 +127,12 @@ impl ClientIp {
         let stamp = ProxyStamp {
             secret: headers.get(PROXY_SECRET_HEADER).map(|v| v.as_bytes()),
             client: headers.get(CLIENT_IP_HEADER).and_then(|v| v.to_str().ok()),
+            edge_client: state
+                .config
+                .trusted_proxies
+                .client_ip_header()
+                .and_then(|h| headers.get(h))
+                .and_then(|v| v.to_str().ok()),
         };
         ClientIp(
             state
@@ -647,38 +653,11 @@ impl FromRequestParts<AppState> for OrgAcl {
             .identity_id
             .ok_or_else(|| AppError::Forbidden("identity-bound credential required".into()))?;
 
-        // Fast-path: Users with the org-admin flag get Admin without needing
-        // group lookup. Agents and non-admin users still go through the
-        // overslash service group-grant path below.
-        let scope_for_admin = OrgScope::new(auth.org_id, state.db_pool(&parts.extensions));
-        if let Some(ident) = scope_for_admin.get_identity(identity_id).await?
-            && ident.is_org_admin
-        {
-            return Ok(OrgAcl {
-                org_id: auth.org_id,
-                identity_id: Some(identity_id),
-                access_level: AccessLevel::Admin,
-            });
-        }
-
         // Construct an OrgScope inline (extractors are the official scope
         // construction site, per `scopes/mod.rs`) so the identity lookup
         // and the ceiling SQL are both bounded by the caller's org.
         let scope = OrgScope::new(auth.org_id, state.db_pool(&parts.extensions));
-
-        // Resolve the ceiling user (agents use their owner's groups)
-        let ceiling_user_id =
-            crate::services::group_ceiling::resolve_ceiling_user_id(&scope, identity_id).await?;
-        let ceiling = scope.get_ceiling_for_user(ceiling_user_id).await?;
-
-        // Find the highest access level for the overslash service
-        let access_level = ceiling
-            .grants
-            .iter()
-            .filter(|g| g.template_key == "overslash")
-            .filter_map(|g| AccessLevel::parse(&g.access_level))
-            .max()
-            .unwrap_or(AccessLevel::Read);
+        let access_level = resolve_access_level(&scope, identity_id).await?;
 
         Ok(OrgAcl {
             org_id: auth.org_id,
@@ -686,6 +665,38 @@ impl FromRequestParts<AppState> for OrgAcl {
             access_level,
         })
     }
+}
+
+/// The caller's org-wide ACL level — the one rule [`OrgAcl`] applies, exposed
+/// so a check that is not an extractor (a kernel, a visibility helper) cannot
+/// grow its own narrower idea of "org admin". `Admin` is the `is_org_admin`
+/// flag **or** an admin-level `overslash` grant on the caller's ceiling user
+/// (agents use their owner's); otherwise the highest `overslash` grant,
+/// defaulting to `Read`.
+pub(crate) async fn resolve_access_level(
+    scope: &OrgScope,
+    identity_id: Uuid,
+) -> Result<AccessLevel, AppError> {
+    // Fast-path: Users with the org-admin flag get Admin without needing
+    // group lookup. Agents and non-admin users still go through the
+    // overslash service group-grant path below.
+    if let Some(ident) = scope.get_identity(identity_id).await?
+        && ident.is_org_admin
+    {
+        return Ok(AccessLevel::Admin);
+    }
+    // Resolve the ceiling user (agents use their owner's groups)
+    let ceiling_user_id =
+        crate::services::group_ceiling::resolve_ceiling_user_id(scope, identity_id).await?;
+    let ceiling = scope.get_ceiling_for_user(ceiling_user_id).await?;
+    // Find the highest access level for the overslash service
+    Ok(ceiling
+        .grants
+        .iter()
+        .filter(|g| g.template_key == "overslash")
+        .filter_map(|g| AccessLevel::parse(&g.access_level))
+        .max()
+        .unwrap_or(AccessLevel::Read))
 }
 
 /// Requires at least write-level ACL access to the overslash platform.

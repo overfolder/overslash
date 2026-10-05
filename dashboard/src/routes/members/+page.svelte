@@ -4,6 +4,8 @@
 	import type { Identity, ApiKeySummary } from './types';
 	import { makeIdentityFormatter, providerLabel } from '$lib/identityDisplay';
 	import Avatar from '$lib/components/Avatar.svelte';
+	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
+	import { deleteIdentity } from '$lib/identityApi';
 	import SearchBar, {
 		emptySearch,
 		filterTerms,
@@ -37,6 +39,11 @@
 	let pendingRoleFor: string | null = $state(null);
 	let roleError: string | null = $state(null);
 
+	// Member pending removal from the org (drives the confirm modal).
+	let removing: Identity | null = $state(null);
+	let removeBusy = $state(false);
+	let removeError: string | null = $state(null);
+
 	function selectMember(id: string | null) {
 		selectedId = id;
 		roleError = null; // don't carry a stale error across members
@@ -65,6 +72,24 @@
 			roleError = asMessage(e);
 		} finally {
 			pendingRoleFor = null;
+		}
+	}
+
+	async function removeMember() {
+		if (!removing) return;
+		removeBusy = true;
+		removeError = null;
+		try {
+			// Archives the member's identity subtree (their agents, API keys)
+			// and drops the membership; the backend refuses the last admin.
+			await deleteIdentity(removing.id);
+			removing = null;
+			selectMember(null);
+			await invalidateAll();
+		} catch (e) {
+			removeError = asMessage(e);
+		} finally {
+			removeBusy = false;
 		}
 	}
 
@@ -402,9 +427,40 @@
 					<p class="role-error" role="alert">{roleError}</p>
 				{/if}
 			</section>
+			{#if selected.id !== data.viewerIdentityId && !selected.pending}
+				<section class="role-admin" data-testid="remove-member">
+					<h3>Remove from org</h3>
+					<p class="role-desc">
+						Revokes their access to this org: their agents are archived, API keys and sessions
+						revoked. They can be invited back later.
+					</p>
+					<button
+						class="btn btn-danger"
+						data-testid="remove-member-button"
+						onclick={() => {
+							removeError = null;
+							removing = selected;
+						}}
+					>
+						Remove from org
+					</button>
+				</section>
+			{/if}
 		{/if}
 	</aside>
 {/if}
+
+<ConfirmModal
+	open={removing !== null}
+	title="Remove {removing ? fmt.format(removing).primary : 'member'}?"
+	message="Their agents in this org are archived and their API keys and sessions revoked. Their connections and secrets stay with the archived identity. You can invite them back later."
+	confirmLabel="Remove from org"
+	destructive
+	busy={removeBusy}
+	error={removeError}
+	onConfirm={removeMember}
+	onCancel={() => (removing = null)}
+/>
 
 <style>
 	.page {

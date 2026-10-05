@@ -7,6 +7,8 @@
 // runtime benefit. Suppress the size lint instead.
 #![allow(clippy::result_large_err)]
 
+#[cfg(test)]
+mod binding_guard;
 pub mod config;
 pub mod cookies;
 pub mod error;

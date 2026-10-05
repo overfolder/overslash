@@ -2316,7 +2316,11 @@ async fn test_oauth_resolve_access_token_refreshes_when_expired() {
     assert_eq!(new_token, "mock_refreshed_access_token");
 
     // Verify the DB was updated with new tokens
-    let updated_conn = scope.get_connection(conn.id).await.unwrap().unwrap();
+    let updated_conn = scope
+        .get_connection_any_owner(conn.id)
+        .await
+        .unwrap()
+        .unwrap();
     let decrypted_new =
         overslash_core::crypto::decrypt(&enc_key, &updated_conn.encrypted_access_token).unwrap();
     assert_eq!(
@@ -2435,7 +2439,11 @@ async fn test_update_tokens_preserves_refresh_token_when_none() {
         .await
         .unwrap();
 
-    let reloaded = scope.get_connection(conn.id).await.unwrap().unwrap();
+    let reloaded = scope
+        .get_connection_any_owner(conn.id)
+        .await
+        .unwrap()
+        .unwrap();
     let refresh_still_there = reloaded
         .encrypted_refresh_token
         .expect("refresh_token must be preserved when update passes None");
@@ -2454,7 +2462,11 @@ async fn test_update_tokens_preserves_refresh_token_when_none() {
         )
         .await
         .unwrap();
-    let reloaded = scope.get_connection(conn.id).await.unwrap().unwrap();
+    let reloaded = scope
+        .get_connection_any_owner(conn.id)
+        .await
+        .unwrap()
+        .unwrap();
     let decrypted_refresh = overslash_core::crypto::decrypt(
         &enc_key,
         reloaded.encrypted_refresh_token.as_ref().unwrap(),
@@ -2617,7 +2629,7 @@ async fn test_oauth_callback_with_org_byoc_credential() {
         .parse()
         .unwrap();
     let conn = overslash_db::scopes::OrgScope::new(org_id, pool.clone())
-        .get_connection(conn_id)
+        .get_connection_any_owner(conn_id)
         .await
         .unwrap()
         .unwrap();
@@ -2681,7 +2693,7 @@ async fn test_oauth_callback_identity_byoc_takes_priority() {
         .parse()
         .unwrap();
     let conn = overslash_db::scopes::OrgScope::new(org_id, pool.clone())
-        .get_connection(conn_id)
+        .get_connection_any_owner(conn_id)
         .await
         .unwrap()
         .unwrap();
@@ -2746,7 +2758,7 @@ async fn test_oauth_callback_pinned_byoc_credential() {
         .parse()
         .unwrap();
     let conn = overslash_db::scopes::OrgScope::new(org_id, pool.clone())
-        .get_connection(conn_id)
+        .get_connection_any_owner(conn_id)
         .await
         .unwrap()
         .unwrap();

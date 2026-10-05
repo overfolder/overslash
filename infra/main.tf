@@ -215,6 +215,11 @@ module "cloud_run" {
 
   connection_return_url_hosts = var.connection_return_url_hosts
 
+  # Behind the GCLB, the LB is the only way in, so the client address it
+  # stamps (modules/api-lb custom_request_headers) can be believed: a direct
+  # *.run.app caller could otherwise send that header itself.
+  ingress                        = var.enable_api_lb ? "INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER" : "INGRESS_TRAFFIC_ALL"
+  trusted_client_ip_header       = var.enable_api_lb ? "x-overslash-edge-client-ip" : ""
   trusted_proxy_hops             = var.trusted_proxy_hops
   trusted_proxy_cidrs            = var.trusted_proxy_cidrs
   enable_trusted_proxy_secret    = var.enable_trusted_proxy_secret
@@ -272,6 +277,7 @@ module "monitoring" {
   oauth_refresh_alert_enabled  = var.oauth_refresh_alert_enabled
   upstream_error_alert_enabled = var.upstream_error_alert_enabled
   api_latency_alert_enabled    = var.api_latency_alert_enabled
+  integrity_alert_enabled      = var.integrity_alert_enabled
   api_domain                   = var.domain
   api_service_name             = module.cloud_run.service_name
   cloud_sql_instance_name      = module.cloud_sql.instance_name

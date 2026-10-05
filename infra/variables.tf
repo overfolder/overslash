@@ -118,7 +118,7 @@ variable "vercel_preview_origin_regex" {
 }
 
 variable "trusted_proxy_hops" {
-  description = "Client-IP resolution: addresses, counting the socket peer, trusted by position (OVERSLASH_TRUSTED_PROXY_HOPS). 1 on Cloud Run. See infra/README.md \"Client IP & trusted proxies\"."
+  description = "Client-IP resolution: addresses, counting the socket peer, trusted by position (OVERSLASH_TRUSTED_PROXY_HOPS). 1 on bare Cloud Run, 2 behind the GCLB (whose ingress is then LB-only). See infra/README.md \"Client IP & trusted proxies\"."
   type        = number
   default     = 0
 }
@@ -486,6 +486,12 @@ variable "oauth_refresh_alert_enabled" {
 
 variable "upstream_error_alert_enabled" {
   description = "Enable the upstream error rate P1 alert. Leave false until overslash_upstream_responses_total has been emitted at least once (GMP rejects the policy if the metric descriptor does not exist)."
+  type        = bool
+  default     = false
+}
+
+variable "integrity_alert_enabled" {
+  description = "Enable the [P1] Data Integrity Violation alert. Leave false until the metrics exporter has written custom.googleapis.com/overslash/business/integrity_violations at least once (Cloud Monitoring rejects the policy if the metric descriptor does not exist). See docs/runbooks/data-integrity.md."
   type        = bool
   default     = false
 }

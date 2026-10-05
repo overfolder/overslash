@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "-- Invariant approval_cross_org (#737).\n-- A pending approval whose requester or current resolver is an identity of\n-- another org. Pending rows only: they are the live queue, and the scan\n-- stays on idx_approvals_org_status as the table grows.\nSELECT a.org_id AS \"org_id!\",\n       'approvals' AS \"subject_table!\",\n       a.id AS \"subject_id!\",\n       'requester ' || r.id || ' in org ' || r.org_id\n           || ', resolver ' || v.id || ' in org ' || v.org_id AS \"detail!\"\nFROM approvals a\nJOIN identities r ON r.id = a.identity_id\nJOIN identities v ON v.id = a.current_resolver_identity_id\nWHERE a.status = 'pending'\n  AND (r.org_id <> a.org_id OR v.org_id <> a.org_id)\nORDER BY a.org_id, a.id\n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "org_id!",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "approvals",
+            "name": "org_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "subject_table!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "subject_id!",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "approvals",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "detail!",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      null,
+      false,
+      null
+    ]
+  },
+  "hash": "98a6c758f15b13f1c4c53773f310d505d3e67f0c55021ad3f2d0f0758db81bb1"
+}

@@ -327,7 +327,7 @@ pub async fn mint(
                 // deliberate credential replacement.
                 "force": req.force,
             }),
-            description: None,
+            description: Some(&format!("Requested secret {}", req.secret_name)),
             ip_address: req.ip_address,
         })
         .await;

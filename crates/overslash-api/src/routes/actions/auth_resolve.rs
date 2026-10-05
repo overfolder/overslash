@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use overslash_db::scopes::OrgScope;
 
-use crate::services::secret_paths::{org_default_candidates, readable_instance_binding};
+use crate::services::secret_paths::{OrgVaultGate, org_default_candidates, readable_slot_binding};
 use crate::{AppState, error::AppError};
 use overslash_core::types::{AuthHeader, InjectAs, SecretNamespace, SecretRef};
 
@@ -325,20 +325,29 @@ pub(crate) async fn resolve_replay_auth_header(
         None => None,
     };
 
-    // `resolve_template_definition` walks user tier → org tier → global
-    // registry, same as the live call path.
-    let template_key = instance
-        .as_ref()
-        .map(|i| i.template_key.as_str())
-        .unwrap_or(service_key);
-    let svc = crate::routes::templates::resolve_template_definition(
-        state,
-        ext,
-        scope.org_id(),
-        Some(identity_id),
-        template_key,
-    )
-    .await
+    // Same resolution as the live call path: an instance resolves its
+    // owner's template (`instance_template`), a bare service key the
+    // requester's tiers.
+    let svc = match &instance {
+        Some(inst) => {
+            crate::services::platform_services::instance_template(
+                state.db(ext),
+                &state.registry,
+                inst,
+            )
+            .await
+        }
+        None => {
+            crate::routes::templates::resolve_template_definition(
+                state,
+                ext,
+                scope.org_id(),
+                Some(identity_id),
+                service_key,
+            )
+            .await
+        }
+    }
     .map_err(|e| {
         AppError::Conflict(format!(
             "cannot replay: service '{service_key}' is no longer resolvable: {e}"
@@ -374,7 +383,7 @@ pub(crate) async fn resolve_instance_auth(
     scope: &OrgScope,
     // Owner identity (D22). Used for client-credential resolution, reauth
     // recovery, and the template auto-resolve fall-through. The explicit
-    // instance→connection binding below stays org-scoped (`scope.get_connection`).
+    // instance→connection binding below is checked by `pinned_connection_usable`.
     owner_identity_id: Uuid,
     instance: &overslash_db::repos::service_instance::ServiceInstanceRow,
     svc: &overslash_core::types::ServiceDefinition,
@@ -411,9 +420,9 @@ pub(crate) async fn resolve_instance_auth(
     // operator can see the real cause; mirror what resolve_service_auth
     // does for its access_token errors.
     if let Some(conn_id) = instance.connection_id.filter(|_| mode_has_oauth) {
-        // Explicit `match` (rather than `if let Ok(Some(...))`) so a DB
-        // error doesn't get silently treated as "no connection bound" and
-        // misrouted to a `needs_authentication` 401. Ok(None) — the
+        // A DB error propagates as Internal rather than being silently
+        // treated as "no connection bound" and misrouted to a
+        // `needs_authentication` 401. `None` — the
         // connection was deleted out from under the instance — *does*
         // fall through to the template-auto-resolve / API-key path, which
         // will pick up any newly-minted connection on the calling
@@ -421,44 +430,24 @@ pub(crate) async fn resolve_instance_auth(
         // returned by `needs_authentication_for_service`). So a
         // disconnected instance recovers on the next call after reauth
         // without us needing to touch the binding here.
-        let conn = match scope.get_connection(conn_id).await {
-            // The read rule for pinned connections: only the instance owner's
-            // own (or their agent's), for a provider this template
-            // authenticates with. A pin into anyone else's connection
-            // (written before the check existed) is treated as absent, never
-            // resolved into their token.
-            Ok(Some(c)) => {
-                let provider_ok = svc.auth.iter().any(|a| {
-                    matches!(a, overslash_core::types::ServiceAuth::OAuth { provider, .. }
-                        if *provider == c.provider_key)
-                });
-                if provider_ok
-                    && crate::services::platform_services::pinned_connection_usable(
-                        scope,
-                        instance.owner_identity_id,
-                        c.identity_id,
-                        &c.provider_key,
-                        None,
-                    )
-                    .await?
-                {
-                    Some(c)
-                } else {
-                    tracing::warn!(
-                        instance_id = %instance.id,
-                        connection_id = %c.id,
-                        "pinned connection is not the instance owner's (or wrong provider); ignoring"
-                    );
-                    None
-                }
-            }
-            Ok(None) => None,
-            Err(e) => {
-                return Err(AppError::Internal(format!(
-                    "lookup of instance-bound connection {conn_id} failed: {e}"
-                )));
-            }
-        };
+        //
+        // The read rule for pinned connections (`connection_binding`): only
+        // the instance owner's own (or their agent's), for a provider this
+        // template authenticates with. A pin into anyone else's connection
+        // (written before the check existed) is treated as absent, never
+        // resolved into their token.
+        let conn = crate::services::platform_services::pinned_connection(scope, instance, |p| {
+            svc.auth.iter().any(|a| {
+                matches!(a, overslash_core::types::ServiceAuth::OAuth { provider, .. }
+                    if provider == p)
+            })
+        })
+        .await
+        .map_err(|e| {
+            AppError::Internal(format!(
+                "lookup of instance-bound connection {conn_id} failed: {e}"
+            ))
+        })?;
         if let Some(conn) = conn {
             let enc_key = state
                 .config
@@ -569,6 +558,24 @@ pub(crate) async fn resolve_instance_auth(
     // URL actually dialled. Only consulted for the platform rung.
     let platform_base =
         crate::routes::actions::service_resolve::effective_base(Some(instance), svc);
+    // Which org-vault reads this request may make — computed on first need
+    // (it resolves the org tier of the template). See `OrgVaultGate`: a
+    // user-level instance whose destination its owner moved gets no org
+    // secret.
+    let org_gate = tokio::sync::OnceCell::<OrgVaultGate>::new();
+    let gate = || async {
+        org_gate
+            .get_or_try_init(|| {
+                OrgVaultGate::for_instance(
+                    state.db(ext),
+                    &state.registry,
+                    instance,
+                    platform_base.as_deref(),
+                    crate::routes::actions::service_resolve::effective_base,
+                )
+            })
+            .await
+    };
     for service_auth in &mode_auth {
         let overslash_core::types::ServiceAuth::Secret {
             scheme,
@@ -596,10 +603,15 @@ pub(crate) async fn resolve_instance_auth(
                 // error instead of being silently skipped.
                 //
                 // The read rule: a user-level instance only ever resolves its
-                // owner's vault (and the org vault). A binding into anyone
-                // else's — written before secrets were namespaced — is
-                // reported as unbound, never resolved.
-                match readable_instance_binding(instance.owner_identity_id, bound) {
+                // owner's vault (and the org vault, through the gate). A
+                // binding into anyone else's — written before secrets were
+                // namespaced — is reported as unbound, never resolved.
+                match readable_slot_binding(
+                    instance.owner_identity_id,
+                    bound,
+                    gate().await?,
+                    Some(&slot.key),
+                ) {
                     Some(path) => path.to_canonical(),
                     None => {
                         tracing::warn!(
@@ -633,12 +645,16 @@ pub(crate) async fn resolve_instance_auth(
                         // again) in `resolve_credential_values`.
                         //
                         // A user-level instance prefers its owner's own copy of
-                        // the default, then the org-wide one; an org-level
-                        // instance reads the org vault only.
+                        // the default, then the org-wide one (if the gate
+                        // admits it); an org-level instance reads the org
+                        // vault only.
+                        let gate = gate().await?;
                         let mut found = None;
                         for path in org_default_candidates(
                             instance.owner_identity_id,
+                            &slot.key,
                             &slot.default_secret_name,
+                            gate,
                         ) {
                             if scope.get_current_secret_value(&path).await?.is_some() {
                                 found = Some(path);
@@ -661,17 +677,47 @@ pub(crate) async fn resolve_instance_auth(
                         }
                         // Absent everywhere: bind the org path, where the
                         // platform rung (D39) and the send-time `secret not
-                        // found` error both look.
-                        found
-                            .unwrap_or_else(|| {
-                                SecretNamespace::Org.path(&*slot.default_secret_name)
+                        // found` error both look. When the gate refuses the
+                        // org vault, the org path is still right if the
+                        // request lands on a host the platform holds a key for
+                        // (the platform rung re-checks the host at send time);
+                        // otherwise bind the owner's own copy, so a missing
+                        // credential is reported there and the org vault is
+                        // never read.
+                        let platform_host = platform_base
+                            .as_deref()
+                            .and_then(|base| {
+                                state
+                                    .config
+                                    .platform_credential_for(&slot.default_secret_name, base)
                             })
-                            .to_canonical()
+                            .is_some();
+                        let fallback = match (
+                            gate.org_default(&slot.key, &slot.default_secret_name),
+                            instance.owner_identity_id,
+                        ) {
+                            (Some(org_name), _) => SecretNamespace::Org.path(org_name),
+                            (None, _) if platform_host => {
+                                SecretNamespace::Org.path(&*slot.default_secret_name)
+                            }
+                            (None, owner) => {
+                                SecretNamespace::from_owner(owner).path(&*slot.default_secret_name)
+                            }
+                        };
+                        found.unwrap_or(fallback).to_canonical()
                     }
                     overslash_core::types::SecretSource::Instance => {
                         match instance.secret_name.as_ref().filter(|_| single_slot) {
                             Some(n) => {
-                                match readable_instance_binding(instance.owner_identity_id, n) {
+                                // The legacy scalar is not an org-source
+                                // slot's binding, so the gate admits the org
+                                // vault only on an org-level instance.
+                                match readable_slot_binding(
+                                    instance.owner_identity_id,
+                                    n,
+                                    gate().await?,
+                                    None,
+                                ) {
                                     Some(path) => path.to_canonical(),
                                     None => {
                                         tracing::warn!(

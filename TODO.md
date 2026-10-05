@@ -55,6 +55,8 @@ Monitoring is deployed; paging and recovery procedures are not yet exercised.
 - [ ] **Master-key rotation runbook** — documented procedure to rotate the AES-256-GCM master key with zero downtime (dual-key read, re-encrypt loop, drop old key). Run the drill end-to-end on dev.
 - [ ] **Postgres PITR restore drill** — document and execute a full restore-to-new-instance against the dev DB; record RTO/RPO observed.
 - [ ] On-call runbook: how to roll back a Cloud Run revision, how to disable a webhook target, how to revoke a leaked API key, how to suspend an org.
+- [ ] **Flip `integrity_alert_enabled` on** in `infra/env/dev.tfvars` and then `prod.tfvars` once the exporter has written `integrity_violations`, then `make tofu-plan`/`tofu-apply` per env ([runbook](docs/runbooks/data-integrity.md#rollout-and-changes)). Triage whatever the first sweep reports — the migration-133 Reveni leftovers should show as `binding_foreign_user_vault`.
+- [ ] **Integrity sweep: pin ↔ template provider mismatch.** The one stored-reference rule the sweep cannot express in SQL — the template's OAuth provider lives in YAML / layered DB templates. Needs an API-side sweep through `template_resolve` emitting the same `invariant` label.
 
 ### 1.5 Legal / compliance
 

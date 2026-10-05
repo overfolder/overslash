@@ -679,16 +679,31 @@ async fn session_overrides_jwt_in_audit() {
     // the session user (not the target identity), and the detail JSON
     // should record `user_signed = true`.
     let row = sqlx::query(
-        "SELECT identity_id, detail \
+        "SELECT identity_id, detail, description \
          FROM audit_log \
-         WHERE action = 'secret_request.fulfilled' \
-         ORDER BY created_at DESC LIMIT 1",
+         WHERE action = 'secret_request.fulfilled' AND detail->>'id' = $1",
     )
+    .bind(req_id)
     .fetch_one(&q)
     .await
     .unwrap();
     let audit_identity: Option<Uuid> = row.get(0);
     let detail: serde_json::Value = row.get(1);
+    let description: Option<String> = row.get(2);
+    // The audit table shows the description, not the detail — a row that
+    // does not name its secret there reads as "some secret was provided".
+    assert_eq!(description.as_deref(), Some("Provided secret k_audit (v1)"));
+    assert_eq!(detail["secret_name"], "k_audit");
+
+    let created: Option<String> = sqlx::query_scalar(
+        "SELECT description FROM audit_log \
+         WHERE action = 'secret_request.created' AND detail->>'id' = $1",
+    )
+    .bind(req_id)
+    .fetch_one(&q)
+    .await
+    .unwrap();
+    assert_eq!(created.as_deref(), Some("Requested secret k_audit"));
     assert_eq!(audit_identity, Some(provisioner));
     assert_ne!(
         audit_identity,

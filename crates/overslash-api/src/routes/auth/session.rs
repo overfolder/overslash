@@ -239,46 +239,18 @@ pub(super) async fn switch_org(
         .await?
         .ok_or_else(|| AppError::NotFound("org not found".into()))?;
 
-    // Resolve the target identity — there is at most one user-kind identity
-    // per (org_id, user_id) (enforced by the partial UNIQUE in migration 040).
-    let target_identity =
-        overslash_db::repos::identity::find_by_org_and_user(state.db(&ext), req.org_id, user_id)
-            .await?
-            .ok_or_else(|| {
-                AppError::Internal(
-                    "membership exists but no user identity in target org (invariant violation)"
-                        .into(),
-                )
-            })?;
-    let target_identity_id = target_identity.id;
-
-    // Prefer the target identity's email so the new JWT reflects how the
-    // target org sees this human; fall back to the current identity's email
-    // for users who had no email on the target side.
-    let claim_email = target_identity
-        .email
-        .clone()
-        .or(current_ident.email.clone())
-        .unwrap_or_default();
-
-    // Same session, re-pointed at the target org — not a new sign-in.
-    let new_token = user_sessions::rescope(
+    let (cookie, redirect_to) = rescope_session_to(
         &state,
         &ext,
         &headers,
-        user_sessions::Subject {
-            identity_id: target_identity_id,
-            org_id: req.org_id,
-            user_id: Some(user_id),
-            email: claim_email,
-        },
+        user_id,
+        &target_org,
+        current_ident.email.clone(),
     )
     .await?;
 
-    let redirect_to = build_org_redirect(&state, &target_org);
-
     let mut resp_headers = HeaderMap::new();
-    resp_headers.insert(header::SET_COOKIE, session_cookie(&state, &new_token)?);
+    resp_headers.insert(header::SET_COOKIE, cookie);
     Ok((
         resp_headers,
         axum::Json(json!({
@@ -288,6 +260,61 @@ pub(super) async fn switch_org(
             "role": target_membership.role,
             "redirect_to": redirect_to,
         })),
+    ))
+}
+
+/// Re-point the caller's session at `target_org` (where `user_id` must hold
+/// a membership) and return the new session cookie plus the URL the
+/// dashboard should hard-reload to. Shared by switch-org and by leaving the
+/// org the session is currently scoped to.
+async fn rescope_session_to(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    headers: &HeaderMap,
+    user_id: Uuid,
+    target_org: &org::OrgRow,
+    fallback_email: Option<String>,
+) -> Result<(header::HeaderValue, String), AppError> {
+    // Resolve the target identity — there is at most one user-kind identity
+    // per (org_id, user_id) (enforced by the partial UNIQUE in migration 040).
+    let target_identity =
+        overslash_db::repos::identity::find_by_org_and_user(state.db(ext), target_org.id, user_id)
+            .await?
+            .ok_or_else(|| {
+                AppError::Internal(
+                    "membership exists but no user identity in target org (invariant violation)"
+                        .into(),
+                )
+            })?;
+
+    // Prefer the target identity's email so the new JWT reflects how the
+    // target org sees this human; fall back to the current identity's email
+    // for users who had no email on the target side.
+    let claim_email = target_identity
+        .email
+        .clone()
+        .or(fallback_email)
+        .unwrap_or_default();
+
+    // Same session, re-pointed at the target org — not a new sign-in. (When
+    // the current session row is already revoked, `rescope` starts a fresh
+    // one instead.)
+    let new_token = user_sessions::rescope(
+        state,
+        ext,
+        headers,
+        user_sessions::Subject {
+            identity_id: target_identity.id,
+            org_id: target_org.id,
+            user_id: Some(user_id),
+            email: claim_email,
+        },
+    )
+    .await?;
+
+    Ok((
+        session_cookie(state, &new_token)?,
+        build_org_redirect(state, target_org),
     ))
 }
 
@@ -304,25 +331,32 @@ pub(super) async fn list_account_memberships(
     Ok(axum::Json(json!({ "memberships": summaries })))
 }
 
-/// DELETE /v1/account/memberships/{org_id} — drop the caller's own
-/// membership. Refuses to drop a personal-org membership (that'd orphan
-/// the account) or the last admin of a non-personal org.
+/// DELETE /v1/account/memberships/{org_id} — leave an org. Refuses to drop
+/// a personal-org membership (that'd orphan the account) or the last admin
+/// of a non-personal org.
 ///
-/// The "last admin" check and the delete run in a single transaction. A
-/// naive two-step lock (caller's row, then all admin rows) can deadlock
-/// when two admins drop concurrently — each acquires their own row lock
-/// first, then blocks waiting for the other's. We avoid that by issuing
-/// a single `SELECT ... FOR UPDATE ORDER BY user_id`, which locks every
-/// admin row of the org in a deterministic order. Both concurrent txs
-/// contend for the same ordered lock set; the second waits for the
-/// first to commit and then reads the post-delete world.
+/// Leaving is the self-service twin of an admin removing the member
+/// (`DELETE /v1/identities/{id}`) and runs the very same removal: the
+/// caller's sessions in the org are revoked, their identity subtree is
+/// archived (revoking API keys, expiring approvals), the membership row is
+/// dropped and the archived identity is detached so a later re-invite gets a
+/// clean slot. Merely deleting the membership row would leave a live
+/// identity — still an admin, still holding working keys — behind.
+///
+/// When the caller is leaving the org their session is scoped to, the
+/// session is re-pointed at their personal org and the response carries the
+/// new cookie plus `redirect_to`; without a personal org to land on, leaving
+/// the current org signs them out.
 pub(super) async fn drop_account_membership(
     State(state): State<AppState>,
     ReqExt(ext): ReqExt,
     session: crate::extractors::SessionAuth,
+    headers: HeaderMap,
     ip: crate::extractors::ClientIp,
     Path(org_id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
+    use overslash_db::repos::identity::RemoveUserOutcome;
+
     let user_id = resolve_session_user_id(&state, &ext, &session).await?;
 
     let org_row = org::get_by_id(state.db(&ext), org_id)
@@ -335,68 +369,52 @@ pub(super) async fn drop_account_membership(
         ));
     }
 
-    let mut tx = state.db(&ext).begin().await?;
-
-    // Lock every admin row of the org in user_id order. This includes the
-    // caller's row if (and only if) they are an admin — which is the only
-    // case where we care about the count guard. Deterministic order across
-    // concurrent txs rules out deadlock; both serialize on the same lock
-    // set instead of each grabbing a different row first.
-    #[allow(clippy::disallowed_methods)]
-    let admin_user_ids: Vec<Uuid> = sqlx::query_scalar(
-        "SELECT user_id FROM user_org_memberships
-         WHERE org_id = $1 AND role = 'admin'
-         ORDER BY user_id FOR UPDATE",
-    )
-    .bind(org_id)
-    .fetch_all(&mut *tx)
-    .await?;
-
-    let caller_is_admin = admin_user_ids.contains(&user_id);
-
-    // Separately lock the caller's row so a NOT-FOUND ("already left")
-    // check and the subsequent DELETE can proceed even when the caller
-    // is a regular member (not in admin_user_ids).
-    #[allow(clippy::disallowed_methods)]
-    let existing_role: Option<String> = sqlx::query_scalar(
-        "SELECT role FROM user_org_memberships
-         WHERE user_id = $1 AND org_id = $2 FOR UPDATE",
-    )
-    .bind(user_id)
-    .bind(org_id)
-    .fetch_optional(&mut *tx)
-    .await?;
-    existing_role.ok_or_else(|| AppError::NotFound("no such membership".into()))?;
-
-    if caller_is_admin {
-        let admin_count = admin_user_ids.len();
-        if admin_count <= 1 {
-            return Err(AppError::BadRequest(
-                "cannot drop the last admin of a non-personal org".into(),
-            ));
-        }
+    // A membership without its user identity is an invariant violation, but
+    // either half missing reads as "already left" to the caller.
+    if membership::find(state.db(&ext), user_id, org_id)
+        .await?
+        .is_none()
+    {
+        return Err(AppError::NotFound("no such membership".into()));
     }
+    let identity =
+        overslash_db::repos::identity::find_by_org_and_user(state.db(&ext), org_id, user_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound("no such membership".into()))?;
 
-    #[allow(clippy::disallowed_methods)]
-    sqlx::query("DELETE FROM user_org_memberships WHERE user_id = $1 AND org_id = $2")
-        .bind(user_id)
-        .bind(org_id)
-        .execute(&mut *tx)
-        .await?;
+    // The removal locks every admin row of the org in user_id order before
+    // the last-admin guard, so two admins leaving concurrently serialise
+    // instead of deadlocking or both getting out.
+    let scope = OrgScope::new(org_id, state.db_pool(&ext));
+    let (archived_count, was_admin, revoked_sessions) =
+        match scope.remove_user_from_org(identity.id).await? {
+            RemoveUserOutcome::Removed {
+                archived_count,
+                was_admin,
+                revoked_sessions,
+                ..
+            } => (archived_count, was_admin, revoked_sessions),
+            RemoveUserOutcome::LastAdmin => {
+                return Err(AppError::BadRequest(
+                    "cannot drop the last admin of a non-personal org".into(),
+                ));
+            }
+            RemoveUserOutcome::NotFound | RemoveUserOutcome::NotApplicable => {
+                return Err(AppError::NotFound("no such membership".into()));
+            }
+        };
+    user_sessions::forget_identities(&state, &ext, org_id, &[identity.id]).await;
 
-    tx.commit().await?;
-
-    // Audit the departure after the commit — the membership drop is the
+    // Audit the departure after the commit — the removal is the
     // authoritative side-effect, and a failing audit insert shouldn't
     // resurrect it. `was_original_creator` flags founder departures (a
     // notable state change worth pulling out of the broader membership
     // event stream).
     let was_original_creator = org_row.creator_user_id == Some(user_id);
-    let scope = OrgScope::new(org_id, state.db_pool(&ext));
     let _ = scope
         .log_audit(AuditEntry {
             org_id,
-            identity_id: Some(session.identity_id),
+            identity_id: Some(identity.id),
             action: "membership.removed",
             resource_type: Some("membership"),
             // The user who left — so audit filtering by resource_id surfaces
@@ -404,8 +422,11 @@ pub(super) async fn drop_account_membership(
             resource_id: Some(user_id),
             detail: json!({
                 "user_id": user_id,
+                "identity_id": identity.id,
                 "was_original_creator": was_original_creator,
-                "was_admin": caller_is_admin,
+                "was_admin": was_admin,
+                "archived_count": archived_count,
+                "revoked_sessions": revoked_sessions,
             }),
             description: Some(if was_original_creator {
                 "Original creator left the org"
@@ -416,7 +437,54 @@ pub(super) async fn drop_account_membership(
         })
         .await;
 
-    Ok(axum::Json(json!({ "status": "dropped", "org_id": org_id })))
+    let mut resp_headers = HeaderMap::new();
+    let mut body = json!({ "status": "dropped", "org_id": org_id });
+
+    // The removal just revoked the session this request rode in on if it was
+    // scoped to the org being left. Land the caller on their personal org
+    // rather than signing them out everywhere. Best effort: the leave has
+    // already committed, so a failure here (e.g. a personal org missing the
+    // user's identity) must not turn it into an error — the caller is
+    // signed out instead, the same as having no personal org.
+    if session.org_id == org_id {
+        match land_on_personal_org(&state, &ext, &headers, user_id, identity.email.clone()).await {
+            Ok(Some((cookie, redirect_to))) => {
+                resp_headers.insert(header::SET_COOKIE, cookie);
+                body["redirect_to"] = json!(redirect_to);
+            }
+            Ok(None) => {}
+            Err(e) => tracing::error!(
+                %user_id, %org_id, error = %e,
+                "left the current org but could not rescope the session to the personal org; \
+                 signing out instead"
+            ),
+        }
+    }
+
+    Ok((resp_headers, axum::Json(body)))
+}
+
+/// Re-point the caller's session at their personal org, if they have one.
+/// `Ok(None)` when there is no personal org to land on.
+async fn land_on_personal_org(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    headers: &HeaderMap,
+    user_id: Uuid,
+    fallback_email: Option<String>,
+) -> Result<Option<(header::HeaderValue, String)>, AppError> {
+    let Some(personal_org_id) = user_repo::get_by_id(state.db(ext), user_id)
+        .await?
+        .and_then(|u| u.personal_org_id)
+    else {
+        return Ok(None);
+    };
+    let Some(personal) = org::get_by_id(state.db(ext), personal_org_id).await? else {
+        return Ok(None);
+    };
+    rescope_session_to(state, ext, headers, user_id, &personal, fallback_email)
+        .await
+        .map(Some)
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Default)]

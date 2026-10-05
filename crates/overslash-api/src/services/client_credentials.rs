@@ -7,6 +7,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::error::AppError;
+use crate::services::byoc_binding;
 
 /// The well-known secret / env-var names for a provider's OAuth app credentials.
 /// Returns `(client_id_name, client_secret_name)`.
@@ -50,22 +51,35 @@ pub async fn resolve(
     let scope = OrgScope::new(org_id, pool.clone());
 
     // 1. Explicit pin — the caller asked for this specific BYOC credential.
-    //    If it's gone, error rather than silently switching to a different one.
+    //    If it's gone, or isn't one this identity may run on (another user's
+    //    app, or another provider's — see `byoc_binding`), error rather than
+    //    silently switching to a different one.
     if let Some(byoc_id) = pinned_byoc_id {
-        let row = scope.get_byoc_credential(byoc_id).await?.ok_or_else(|| {
+        let row = match identity_id {
+            Some(identity) => {
+                byoc_binding::usable_byoc_pin(&scope, identity, provider_key, byoc_id).await?
+            }
+            None => None,
+        }
+        .ok_or_else(|| {
             AppError::BadRequest(format!(
-                "pinned BYOC credential '{byoc_id}' not found — \
-                     it may have been deleted. Create a new connection."
+                "pinned BYOC credential '{byoc_id}' not found for provider '{provider_key}' — \
+                     it may have been deleted, or it is not one of your own. Create a new \
+                     connection."
             ))
         })?;
         return decrypt_byoc(&row, enc_key);
     }
 
     // 1a. Connection's stored BYOC — a soft preference. If the row still
-    //     exists, use it; if it's been deleted, fall through to the cascade
-    //     so the next refresh recovers instead of breaking the connection.
-    if let Some(byoc_id) = connection.and_then(|c| c.byoc_credential_id)
-        && let Some(row) = scope.get_byoc_credential(byoc_id).await?
+    //     exists and is still the connection owner's own app for this
+    //     provider, use it; otherwise fall through to the cascade so the next
+    //     refresh recovers instead of breaking the connection — and a pin
+    //     written before the ownership rule never reaches a colleague's app.
+    if let Some(conn) = connection
+        && let Some(byoc_id) = conn.byoc_credential_id
+        && let Some(row) =
+            byoc_binding::usable_byoc_pin(&scope, conn.identity_id, provider_key, byoc_id).await?
     {
         return decrypt_byoc(&row, enc_key);
     }
@@ -215,11 +229,14 @@ pub async fn describe_source(
     identity_id: Option<Uuid>,
     connection_byoc_id: Option<Uuid>,
 ) -> Result<CredentialSource, AppError> {
-    // Tier 1a: connection's stored BYOC pin. The FK auto-nulls the column
-    // when the BYOC row is deleted, so an `Option::None` lookup here would
-    // be a cross-org filter mismatch; either way we just fall through.
+    // Tier 1a: connection's stored BYOC pin, under the same ownership rule
+    // `resolve()` applies — a pin that fails it is skipped there, so it is
+    // skipped here.
     if let Some(byoc_id) = connection_byoc_id
-        && scope.get_byoc_credential(byoc_id).await?.is_some()
+        && let Some(owner) = identity_id
+        && byoc_binding::usable_byoc_pin(scope, owner, provider_key, byoc_id)
+            .await?
+            .is_some()
     {
         return Ok(CredentialSource::Byoc);
     }

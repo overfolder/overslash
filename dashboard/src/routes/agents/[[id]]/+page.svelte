@@ -56,6 +56,11 @@
 	interface AgentDetailState {
 		agentId: string;
 		rules: PermissionRule[];
+		// The API answered 404 on this node's rules: the viewer is neither an
+		// org admin nor on the node's own chain. Approvals are gated by the
+		// same relationship (plus the resolver's chain), so the panel explains
+		// both sections instead of showing them as empty.
+		outsideMyTree: boolean;
 		approvals: ApprovalResponse[];
 		loading: boolean;
 		error: string | null;
@@ -78,6 +83,7 @@
 		return {
 			agentId,
 			rules: [],
+			outsideMyTree: false,
 			approvals: [],
 			loading: false,
 			error: null,
@@ -155,6 +161,11 @@
 	const isAdmin = $derived(
 		($page.data as { user?: { is_org_admin?: boolean } })?.user?.is_org_admin === true
 	);
+
+	// Asked of the server, not derived here: `is_org_admin` is not the only way
+	// to be an org admin (an admin-level `overslash` grant is another), so a
+	// client-side guess would hide rules from admins the API happily serves.
+	const outsideMyTree = $derived(detail?.outsideMyTree === true);
 
 	// The MCP endpoint to hand the operator, with this org's slug already in it.
 	// Rendering it live (rather than a `<your-org>` placeholder) is the point:
@@ -278,7 +289,12 @@
 		detail.disconnectError = null;
 		try {
 			const [rules, apr, mcpResp] = await Promise.all([
-				listPermissions(id),
+				// 404 means the node is outside the caller's tree — a visibility
+				// answer, not a panel error.
+				listPermissions(id).catch((e) => {
+					if (e instanceof ApiError && e.status === 404) return null;
+					throw e;
+				}),
 				listApprovals(id),
 				session
 					.get<{ connection: McpConnection | null }>(
@@ -288,7 +304,8 @@
 					.catch((e) => ({ ok: false as const, error: e }))
 			]);
 			if (detail?.agentId !== id) return;
-			detail.rules = rules;
+			detail.rules = rules ?? [];
+			detail.outsideMyTree = rules === null;
 			detail.approvals = apr;
 			if (mcpResp.ok) {
 				detail.mcp = mcpResp.connection;
@@ -777,7 +794,12 @@
 				     too, so the only thing needed to surface them here is rendering. -->
 				{#snippet rulesSection()}
 					<h3 class="section-title">Permission Rules</h3>
-					{#if !detail || (detail.loading && detail.rules.length === 0)}
+					{#if outsideMyTree}
+						<p class="muted" style="font-size:0.85rem;">
+							Permission rules outside your own tree are visible only to org admins and to the
+							identities above them.
+						</p>
+					{:else if !detail || (detail.loading && detail.rules.length === 0)}
 						<p class="muted" style="font-size:0.85rem;">Loading rules…</p>
 					{:else if detail.rules.length === 0}
 						<p class="muted" style="font-size:0.85rem;">No rules.</p>
@@ -935,6 +957,12 @@
 								</div>
 							{/each}
 						</div>
+					{:else if outsideMyTree}
+						<h3 class="section-title">Pending Approvals</h3>
+						<p class="muted approvals-hidden">
+							Approvals outside your own tree are visible only to org admins and to the people
+							involved in them.
+						</p>
 					{/if}
 
 					{@render rulesSection()}
@@ -1782,6 +1810,10 @@
 	}
 	.muted {
 		color: var(--color-text-muted);
+	}
+	.approvals-hidden {
+		margin: 0 0 16px;
+		font-size: 13px;
 	}
 
 	/* ── Modal (matches Figma New Agent modal) ── */

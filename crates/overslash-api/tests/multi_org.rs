@@ -368,6 +368,21 @@ async fn list_and_drop_memberships_round_trip() {
     membership::create(&pool, user_id, org_b, membership::ROLE_ADMIN)
         .await
         .unwrap();
+    // Every membership has a matching user identity — leaving archives it.
+    let ident_b = identity::create_with_email(
+        &pool,
+        org_b,
+        "Alice",
+        "user",
+        None,
+        Some("alice@multiorg.test"),
+        json!({}),
+    )
+    .await
+    .unwrap();
+    identity::set_user_id(&pool, org_b, ident_b.id, Some(user_id))
+        .await
+        .unwrap();
 
     let cookie = mint_session_cookie_with_user(org_id, identity_id, Some(user_id));
 
