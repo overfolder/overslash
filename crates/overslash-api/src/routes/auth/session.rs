@@ -442,31 +442,49 @@ pub(super) async fn drop_account_membership(
 
     // The removal just revoked the session this request rode in on if it was
     // scoped to the org being left. Land the caller on their personal org
-    // rather than signing them out everywhere.
+    // rather than signing them out everywhere. Best effort: the leave has
+    // already committed, so a failure here (e.g. a personal org missing the
+    // user's identity) must not turn it into an error — the caller is
+    // signed out instead, the same as having no personal org.
     if session.org_id == org_id {
-        let personal = match user_repo::get_by_id(state.db(&ext), user_id)
-            .await?
-            .and_then(|u| u.personal_org_id)
-        {
-            Some(pid) => org::get_by_id(state.db(&ext), pid).await?,
-            None => None,
-        };
-        if let Some(personal) = personal {
-            let (cookie, redirect_to) = rescope_session_to(
-                &state,
-                &ext,
-                &headers,
-                user_id,
-                &personal,
-                identity.email.clone(),
-            )
-            .await?;
-            resp_headers.insert(header::SET_COOKIE, cookie);
-            body["redirect_to"] = json!(redirect_to);
+        match land_on_personal_org(&state, &ext, &headers, user_id, identity.email.clone()).await {
+            Ok(Some((cookie, redirect_to))) => {
+                resp_headers.insert(header::SET_COOKIE, cookie);
+                body["redirect_to"] = json!(redirect_to);
+            }
+            Ok(None) => {}
+            Err(e) => tracing::error!(
+                %user_id, %org_id, error = %e,
+                "left the current org but could not rescope the session to the personal org; \
+                 signing out instead"
+            ),
         }
     }
 
     Ok((resp_headers, axum::Json(body)))
+}
+
+/// Re-point the caller's session at their personal org, if they have one.
+/// `Ok(None)` when there is no personal org to land on.
+async fn land_on_personal_org(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    headers: &HeaderMap,
+    user_id: Uuid,
+    fallback_email: Option<String>,
+) -> Result<Option<(header::HeaderValue, String)>, AppError> {
+    let Some(personal_org_id) = user_repo::get_by_id(state.db(ext), user_id)
+        .await?
+        .and_then(|u| u.personal_org_id)
+    else {
+        return Ok(None);
+    };
+    let Some(personal) = org::get_by_id(state.db(ext), personal_org_id).await? else {
+        return Ok(None);
+    };
+    rescope_session_to(state, ext, headers, user_id, &personal, fallback_email)
+        .await
+        .map(Some)
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Default)]

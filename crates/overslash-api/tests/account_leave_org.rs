@@ -312,3 +312,34 @@ async fn leaving_twice_is_not_found() {
         StatusCode::NOT_FOUND
     );
 }
+
+#[tokio::test]
+async fn leaving_succeeds_when_the_personal_org_cannot_be_landed_on() {
+    // personal_org_id points at an org with no identity for this user — an
+    // invariant violation, but the leave has already committed by the time
+    // the rescope runs, so it must still answer 200 (signed out), not 500.
+    let pool = common::test_pool().await;
+    let (addr, client) = common::start_api(pool.clone()).await;
+    let base = format!("http://{addr}");
+
+    let user_id = new_user(&pool, "leaver").await;
+    let personal = fresh_org(&pool, true).await;
+    user_repo::set_personal_org(&pool, user_id, personal)
+        .await
+        .unwrap();
+    let (org_id, ident) = org_with_leaver(&pool, user_id).await;
+    let jti = session_row(&pool, org_id, ident, user_id).await;
+    let token = session_token(org_id, ident, user_id, Some(jti));
+
+    let resp = leave(&base, &client, &token, org_id).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(new_session_token(&resp).is_none());
+    let body: Value = resp.json().await.unwrap();
+    assert!(body.get("redirect_to").is_none());
+    assert!(
+        membership::find(&pool, user_id, org_id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
