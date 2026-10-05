@@ -261,10 +261,22 @@ variable "email_reply_to" {
   description = "Optional Reply-To address. Empty leaves the provider's default (usually From)."
 }
 
+variable "ingress" {
+  type        = string
+  default     = "INGRESS_TRAFFIC_ALL"
+  description = "Cloud Run ingress. INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER behind the GCLB: client-IP trust counts the LB's hops by position, which only holds if nothing can reach the service around the LB."
+}
+
 variable "trusted_proxy_hops" {
   type        = number
   default     = 0
-  description = "OVERSLASH_TRUSTED_PROXY_HOPS: addresses, counting the socket peer, trusted by position when resolving the client IP. 1 on Cloud Run (the peer is Google's frontend, which appends the client)."
+  description = "OVERSLASH_TRUSTED_PROXY_HOPS: addresses, counting the socket peer, trusted by position when resolving the client IP. 1 on bare Cloud Run (the peer is Google's frontend, which appends the client); 2 behind the GCLB, which adds a Google egress hop."
+}
+
+variable "trusted_client_ip_header" {
+  type        = string
+  default     = ""
+  description = "OVERSLASH_TRUSTED_CLIENT_IP_HEADER: a header the edge overwrites with the client address it saw (the GCLB's {client_ip_address}). Empty = none. Sound only with ingress restricted to that edge."
 }
 
 variable "trusted_proxy_cidrs" {
@@ -461,6 +473,7 @@ locals {
     { for k, v in var.template_vars : "OVERSLASH_TEMPLATE_VAR_${k}" => v if v != "" },
     var.trusted_proxy_hops > 0 ? { OVERSLASH_TRUSTED_PROXY_HOPS = tostring(var.trusted_proxy_hops) } : {},
     var.trusted_proxy_cidrs != "" ? { OVERSLASH_TRUSTED_PROXIES = var.trusted_proxy_cidrs } : {},
+    var.trusted_client_ip_header != "" ? { OVERSLASH_TRUSTED_CLIENT_IP_HEADER = var.trusted_client_ip_header } : {},
   )
 
   env_secrets = merge(
@@ -537,7 +550,7 @@ resource "google_cloud_run_v2_service" "api" {
   name     = "${var.base_prefix}-api"
   location = var.region
   project  = var.project_id
-  ingress  = "INGRESS_TRAFFIC_ALL"
+  ingress  = var.ingress
 
   template {
     service_account = var.service_account_email

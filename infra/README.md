@@ -167,18 +167,36 @@ What each path looks like at the container, and what gets recorded:
 
 | Path | `X-Forwarded-For` (peer = Google frontend) | Recorded |
 |---|---|---|
-| Agent → `api.dev.overslash.com` / `*.run.app` | `<spoof…>, <client>` | `<client>` (hop 1) |
-| Agent → `api.overslash.com` (GCLB) | `<spoof…>, <client>, 34.36.8.174` | `<client>` (LB by CIDR) |
-| Browser → `app.*` → Vercel rewrite → API | `<client>, <vercel-egress>[, <lb>]` | `<client>` with the secret, `<vercel-egress>` without |
+| Agent → `api.dev.overslash.com` / `*.run.app` (dev) | `<spoof…>, <client>` | `<client>` (hop 1) |
+| Agent → `api.overslash.com` (GCLB, prod) | `<spoof…>, <client>, 34.36.8.174` plus Google hops of unknown position | `<client>`, from the LB-stamped `X-Overslash-Edge-Client-Ip` |
+| Browser → `app.*` → Vercel rewrite → API | `<client>, <vercel-egress>[, <lb>, <google-egress>]` | `<client>` with the secret, `<vercel-egress>` without |
 
-| Env | `trusted_proxy_hops` | `trusted_proxy_cidrs` |
-|---|---|---|
-| prod | `1` | `34.36.8.174/32,35.191.0.0/16,130.211.0.0/22` (LB address, then Google's LB proxy ranges) |
-| dev | `1` | `""` (no LB) |
+| Env | `trusted_proxy_hops` | `trusted_proxy_cidrs` | Cloud Run ingress |
+|---|---|---|---|
+| prod | `2` (fallback only) | `34.36.8.174/32` (the LB address) | LB only (`INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER`) |
+| dev | `1` | `""` (no LB) | all |
+
+**The edge header.** Behind the global external Application Load Balancer
+(serverless NEG), XFF also carries Google addresses from ranges Google doesn't
+publish (not the documented 35.191.0.0/16 / 130.211.0.0/22). Prod recorded
+34.96.62.132 for every agent and MCP call at `hops = 1`, and still 34.96.62.181
+at `hops = 2`, so neither CIDRs nor counting hops find the client. Instead the
+LB's backend stamps `X-Overslash-Edge-Client-Ip: {client_ip_address}`
+(`modules/api-lb`), overwriting any value the client sent, and the API reads it
+via `OVERSLASH_TRUSTED_CLIENT_IP_HEADER`. A Vercel-vouched request still names
+the browser: the header gives Vercel's egress, and the secret swaps in the
+address Vercel saw. `hops`/CIDRs remain only as the fallback for a request
+without the header. All of this is safe **only** because `enable_api_lb` also
+restricts the service's ingress to the LB (`infra/main.tf` derives both). If
+`*.run.app` were reachable, a direct caller could send the header itself. See
+D102 and the decision that amends it.
 
 The prod LB address is a literal because `module.api_lb` depends on
 `module.cloud_run`. If `tofu output` ever shows a different `lb_ip`, update
-`prod.tfvars`. Until then, every request through the LB records the LB's address.
+`prod.tfvars`. Nothing here is applied by CI. Run `make tofu-plan ENV=prod`
+before trusting that the live env matches these files:
+`OVERSLASH_TRUSTED_PROXIES` sat in `prod.tfvars` for a week without ever
+reaching Cloud Run.
 
 **The Vercel hop.** Vercel connects to the API from egress IPs it does not
 publish, so its address can't be trusted by range. And the `X-Forwarded-For`
