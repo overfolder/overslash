@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "-- Invariant approval_resolver_outside_chain (#737, approval bubbling).\n-- A pending same-org approval whose current resolver is neither the\n-- requester nor one of its ancestors (parent_id chain). Approvals start at\n-- the gap level and only bubble upward (repos::approval::update_resolver), and\n-- may_read_approval lets the resolver's ancestors read the request — so a\n-- resolver outside the chain hands someone else's payload to a stranger.\nWITH RECURSIVE pending AS (\n    SELECT a.id, a.org_id, a.identity_id, a.current_resolver_identity_id AS resolver\n    FROM approvals a\n    JOIN identities r ON r.id = a.identity_id\n    JOIN identities v ON v.id = a.current_resolver_identity_id\n    WHERE a.status = 'pending'\n      AND r.org_id = a.org_id\n      AND v.org_id = a.org_id\n      AND a.current_resolver_identity_id <> a.identity_id\n),\nchain AS (\n    SELECT p.id AS approval_id, i.parent_id AS ancestor, 1 AS depth\n    FROM pending p JOIN identities i ON i.id = p.identity_id\n    WHERE i.parent_id IS NOT NULL\n    UNION ALL\n    SELECT c.approval_id, i.parent_id, c.depth + 1\n    FROM chain c JOIN identities i ON i.id = c.ancestor\n    WHERE i.parent_id IS NOT NULL AND c.depth < 50\n)\nSELECT p.org_id AS \"org_id!\",\n       'approvals' AS \"subject_table!\",\n       p.id AS \"subject_id!\",\n       'requester ' || p.identity_id || ', resolver ' || p.resolver AS \"detail!\"\nFROM pending p\nWHERE NOT EXISTS (\n    SELECT 1 FROM chain c WHERE c.approval_id = p.id AND c.ancestor = p.resolver\n)\nORDER BY p.org_id, p.id\n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "org_id!",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "approvals",
+            "name": "org_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "subject_table!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "subject_id!",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "approvals",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "detail!",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      null,
+      false,
+      null
+    ]
+  },
+  "hash": "caa91dc866bed3e50bb15dd1939e1a7658c7fb589ceedcda1e56cd030900e56a"
+}

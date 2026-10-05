@@ -1,4 +1,5 @@
 pub mod bi;
+pub mod integrity;
 pub mod repos;
 pub mod scopes;
 

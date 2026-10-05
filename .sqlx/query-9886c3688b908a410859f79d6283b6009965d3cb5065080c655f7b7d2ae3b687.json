@@ -1,0 +1,42 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "-- Invariant owner_cross_org.\n-- A row owned by, or chained to, an identity of another org. The identity\n-- foreign keys are single-column, so the database itself does not stop it;\n-- every scope filters on org_id, so such a row is invisible to its owner\n-- and reachable from the wrong tenant. `subject_table` names the reference.\nSELECT x.org_id AS \"org_id!\",\n       x.subject_table AS \"subject_table!\",\n       x.subject_id AS \"subject_id!\",\n       x.detail AS \"detail!\"\nFROM (\n    SELECT si.org_id, 'service_instances' AS subject_table, si.id AS subject_id,\n           'owner_identity_id ' || i.id || ' in org ' || i.org_id AS detail\n    FROM service_instances si JOIN identities i ON i.id = si.owner_identity_id\n    WHERE i.org_id <> si.org_id\n    UNION ALL\n    SELECT c.org_id, 'connections', c.id,\n           'identity_id ' || i.id || ' in org ' || i.org_id\n    FROM connections c JOIN identities i ON i.id = c.identity_id\n    WHERE i.org_id <> c.org_id\n    UNION ALL\n    SELECT b.org_id, 'byoc_credentials', b.id,\n           'identity_id ' || i.id || ' in org ' || i.org_id\n    FROM byoc_credentials b JOIN identities i ON i.id = b.identity_id\n    WHERE i.org_id <> b.org_id\n    UNION ALL\n    SELECT s.org_id, 'secrets', s.id,\n           'owner_identity_id ' || i.id || ' in org ' || i.org_id\n    FROM secrets s JOIN identities i ON i.id = s.owner_identity_id\n    WHERE i.org_id <> s.org_id\n    UNION ALL\n    SELECT t.org_id, 'service_templates', t.id,\n           'owner_identity_id ' || i.id || ' in org ' || i.org_id\n    FROM service_templates t JOIN identities i ON i.id = t.owner_identity_id\n    WHERE i.org_id <> t.org_id\n    UNION ALL\n    SELECT r.org_id, 'permission_rules', r.id,\n           'identity_id ' || i.id || ' in org ' || i.org_id\n    FROM permission_rules r JOIN identities i ON i.id = r.identity_id\n    WHERE i.org_id <> r.org_id\n    UNION ALL\n    -- The chain approvals bubble along and permissions inherit through.\n    SELECT c.org_id, 'identities', c.id,\n           'parent_id/owner_id ' || p.id || ' in org ' || p.org_id\n    FROM identities c JOIN identities p ON p.id = c.parent_id OR p.id = c.owner_id\n    WHERE p.org_id <> c.org_id\n) x\nORDER BY x.org_id, x.subject_table, x.subject_id\n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "org_id!",
+        "type_info": "Uuid",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "subject_table!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "subject_id!",
+        "type_info": "Uuid",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "detail!",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "9886c3688b908a410859f79d6283b6009965d3cb5065080c655f7b7d2ae3b687"
+}

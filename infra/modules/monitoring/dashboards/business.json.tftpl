@@ -207,6 +207,25 @@
             }
           }
         }
+      },
+      { "xPos": 0, "yPos": 34, "width": 12, "height": 2, "widget": { "title": "Data Integrity", "text": { "content": "Stored references that cross a user or org boundary, by invariant. Anything above zero is a row to fix — see docs/runbooks/data-integrity.md.", "format": "MARKDOWN" } } },
+      {
+        "xPos": 0, "yPos": 36, "width": 12, "height": 6,
+        "widget": {
+          "title": "Integrity Violations by Invariant",
+          "xyChart": {
+            "dataSets": [{
+              "timeSeriesQuery": {
+                "timeSeriesFilter": {
+                  "filter": "${business_filter} AND metric.type = \"custom.googleapis.com/overslash/business/integrity_violations\"",
+                  "aggregation": { "alignmentPeriod": "300s", "perSeriesAligner": "ALIGN_MAX", "crossSeriesReducer": "REDUCE_MAX", "groupByFields": ["metric.labels.invariant"] }
+                }
+              },
+              "plotType": "STACKED_BAR"
+            }],
+            "yAxis": { "scale": "LINEAR" }
+          }
+        }
       }
     ]
   }

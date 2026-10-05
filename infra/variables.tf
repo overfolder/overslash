@@ -490,6 +490,12 @@ variable "upstream_error_alert_enabled" {
   default     = false
 }
 
+variable "integrity_alert_enabled" {
+  description = "Enable the [P1] Data Integrity Violation alert. Leave false until the metrics exporter has written custom.googleapis.com/overslash/business/integrity_violations at least once (Cloud Monitoring rejects the policy if the metric descriptor does not exist). See docs/runbooks/data-integrity.md."
+  type        = bool
+  default     = false
+}
+
 variable "api_latency_alert_enabled" {
   description = "Enable the [P1] API Slow Requests alert. Leave false until a release carrying the *bucketed* overslash_http_request_duration_seconds histogram is deployed and scraped — before that the metric is a summary with no _bucket series, and GMP rejects the policy."
   type        = bool

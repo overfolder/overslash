@@ -277,6 +277,7 @@ module "monitoring" {
   oauth_refresh_alert_enabled  = var.oauth_refresh_alert_enabled
   upstream_error_alert_enabled = var.upstream_error_alert_enabled
   api_latency_alert_enabled    = var.api_latency_alert_enabled
+  integrity_alert_enabled      = var.integrity_alert_enabled
   api_domain                   = var.domain
   api_service_name             = module.cloud_run.service_name
   cloud_sql_instance_name      = module.cloud_sql.instance_name

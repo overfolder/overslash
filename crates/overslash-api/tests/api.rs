@@ -94,6 +94,7 @@ mod instance_admin;
 mod instance_credentials_envelope;
 mod instance_visibility_consistency;
 mod integration;
+mod integrity_invariants;
 mod invite_adoption;
 mod key_rotation;
 mod langfuse;
