@@ -232,10 +232,10 @@ async fn list_service_groups(
     Ok(Json(grants.into_iter().map(Into::into).collect()))
 }
 
-/// Reach for the by-id instance reads: an `OrgAcl` admin — the `is_org_admin`
-/// flag *or* an admin-level `overslash` grant, the same admin the approval
-/// gate honours — or whatever [`platform_services::require_readable_by_caller`]
-/// allows (owner, ceiling owner, group grant). 404 otherwise.
+/// Reach for the by-id instance reads: whatever
+/// [`platform_services::require_readable_by_caller`] allows — the rule
+/// `GET /v1/services/{uuid}` uses too. The `OrgAcl` check up front only saves
+/// an admin the ceiling walk; it is the same admin that function honours.
 async fn require_instance_readable(
     scope: &OrgScope,
     acl: &OrgAcl,

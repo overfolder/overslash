@@ -345,6 +345,7 @@ async fn an_admin_by_grant_reads_every_gated_route() {
     for path in [
         format!("/v1/approvals/{}", p.approval_id),
         format!("/v1/permissions?identity_id={}", p.agent_id),
+        format!("/v1/services/{svc_id}"),
         format!("/v1/services/{svc_id}/groups"),
         format!("/v1/services/{svc_id}/actions"),
     ] {
