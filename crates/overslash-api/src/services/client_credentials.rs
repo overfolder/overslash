@@ -1,4 +1,5 @@
 use overslash_core::crypto;
+use overslash_core::types::SecretNamespace::Org;
 use overslash_db::OrgScope;
 use overslash_db::repos::{byoc_credential, connection::ConnectionRow};
 use serde::Serialize;
@@ -138,10 +139,13 @@ pub(crate) async fn resolve_org_oauth_secrets(
 ) -> Result<Option<ClientCredentials>, AppError> {
     let (id_name, secret_name) = oauth_secret_names(provider_key);
 
-    let Some(id_version) = scope.get_current_secret_value(&id_name).await? else {
+    let Some(id_version) = scope.get_current_secret_value(&Org.path(&*id_name)).await? else {
         return Ok(None);
     };
-    let Some(secret_version) = scope.get_current_secret_value(&secret_name).await? else {
+    let Some(secret_version) = scope
+        .get_current_secret_value(&Org.path(&*secret_name))
+        .await?
+    else {
         return Ok(None);
     };
 
@@ -232,8 +236,8 @@ pub async fn describe_source(
     }
 
     let (id_name, secret_name) = oauth_secret_names(provider_key);
-    let id_present = scope.get_secret_by_name(&id_name).await?.is_some();
-    let secret_present = scope.get_secret_by_name(&secret_name).await?.is_some();
+    let id_present = scope.get_secret(&Org.path(&*id_name)).await?.is_some();
+    let secret_present = scope.get_secret(&Org.path(&*secret_name)).await?.is_some();
     if id_present && secret_present {
         return Ok(CredentialSource::OrgSecret);
     }

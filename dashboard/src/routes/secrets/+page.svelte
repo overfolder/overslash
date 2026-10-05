@@ -3,7 +3,7 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/stores';
 	import { ApiError, session } from '$lib/session';
-	import { listSecrets } from '$lib/api/secrets';
+	import { listSecrets, vaultOf } from '$lib/api/secrets';
 	import {
 		listByocCredentials,
 		deleteByocCredential,
@@ -30,6 +30,7 @@
 	import { formatTime } from '$lib/utils/time';
 
 	const currentUserId = $derived(($page as any).data?.user?.identity_id as string | undefined);
+	const isAdmin = $derived(($page as any).data?.user?.is_org_admin === true);
 	// Owner labels use the email; the layout supplies the org's allowed domains
 	// so a single one can be stripped off. See `$lib/identityDisplay`.
 	const allowedDomains = $derived((($page as any).data?.allowedDomains ?? []) as string[]);
@@ -54,7 +55,15 @@
 	const providerByKey = $derived(new Map(providers.map((p) => [p.key, p])));
 
 	function ownerName(s: SecretSummary): string {
-		return s.owner_identity_id ? (identityById.get(s.owner_identity_id)?.name ?? '') : '';
+		return s.owner_identity_id ? (identityById.get(s.owner_identity_id)?.name ?? '') : 'org';
+	}
+
+	// Names are unique per vault, not per org: the detail link carries the
+	// vault so an admin's view of two same-named secrets opens the right one.
+	function detailHref(s: SecretSummary): string {
+		const v = vaultOf(s);
+		const q = v.scope === 'org' ? '?scope=org' : v.owner ? `?owner=${v.owner}` : '';
+		return `/secrets/${encodeURIComponent(s.name)}${q}`;
 	}
 
 	const searchKeys = $derived<SearchKey[]>([
@@ -215,11 +224,8 @@
 					</tr>
 				</thead>
 				<tbody>
-					{#each filtered as s (s.name)}
-						<tr
-							class="row"
-							onclick={() => goto(`/secrets/${encodeURIComponent(s.name)}`)}
-						>
+					{#each filtered as s (s.path ?? `${s.owner_identity_id ?? 'org'}/${s.name}`)}
+						<tr class="row" onclick={() => goto(detailHref(s))}>
 							<td><span class="mono name">{s.name}</span></td>
 							<td>
 								<OwnerCell
@@ -328,6 +334,7 @@
 
 {#if creating}
 	<NewSecretModal
+		{isAdmin}
 		onClose={() => (creating = false)}
 		onCreated={() => {
 			creating = false;

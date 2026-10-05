@@ -298,7 +298,8 @@ where
 
     client
         .put(format!("{base}/v1/secrets/stub_token"))
-        .header(auth(&admin_key).0, auth(&admin_key).1)
+        // The agent's own user vault — the only one its service reads.
+        .header(auth(&agent_key).0, auth(&agent_key).1)
         .json(&json!({ "value": "stub-token" }))
         .send()
         .await
@@ -610,9 +611,26 @@ async fn deleting_the_secret_after_mint_fails_the_push_closed() {
 
     // The credential is re-resolved at redemption rather than persisted, so
     // revoking it invalidates outstanding capabilities with no sweep.
+    // It lives in the agent's user vault; an admin names that vault.
+    let rows: Vec<Value> = fx
+        .client
+        .get(format!("{}/v1/secrets", fx.base))
+        .header(auth(&fx.admin_key).0, auth(&fx.admin_key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let owner = rows
+        .iter()
+        .find(|r| r["name"] == "stub_token")
+        .and_then(|r| r["owner_identity_id"].as_str())
+        .expect("stub_token in a user vault")
+        .to_string();
     let del = fx
         .client
-        .delete(format!("{}/v1/secrets/stub_token", fx.base))
+        .delete(format!("{}/v1/secrets/stub_token?owner={owner}", fx.base))
         .header(auth(&fx.admin_key).0, auth(&fx.admin_key).1)
         .send()
         .await

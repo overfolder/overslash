@@ -152,7 +152,7 @@ async fn list_services(
                 &state.config.public_url,
             )
             .await;
-            let mut summary = platform_services::row_to_summary(row, groups);
+            let mut summary = platform_services::row_to_summary(row, groups, None);
             summary.credentials_status = credentials_status;
             summary.icon_url = tv.icon_url;
             summary.test_action = tv.test_action;
@@ -268,7 +268,7 @@ async fn get_service(
             &state.config.public_url,
         )
         .await;
-        let mut detail = platform_services::row_to_detail(row);
+        let mut detail = platform_services::row_to_detail(row, None);
         detail.credentials_status = credentials_status;
         detail.icon_url = tv.icon_url;
         detail.test_action = tv.test_action;
@@ -427,7 +427,11 @@ async fn update_service_status(
         &state.config.public_url,
     )
     .await;
-    let mut detail = platform_services::row_to_detail(row);
+    let mut detail = platform_services::row_to_detail(
+        row,
+        crate::services::group_ceiling::resolve_ceiling_user_id_opt(&scope, acl.identity_id)
+            .await?,
+    );
     detail.icon_url = tv.icon_url;
     detail.test_action = tv.test_action;
 

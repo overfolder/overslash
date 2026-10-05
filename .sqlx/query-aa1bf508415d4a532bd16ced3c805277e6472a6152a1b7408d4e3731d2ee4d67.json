@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE secrets SET deleted_at = now() WHERE org_id = $1 AND owner_identity_id IS NOT DISTINCT FROM $3 AND name = $2 AND deleted_at IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "aa1bf508415d4a532bd16ced3c805277e6472a6152a1b7408d4e3731d2ee4d67"
+}

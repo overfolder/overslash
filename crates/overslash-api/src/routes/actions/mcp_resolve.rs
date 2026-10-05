@@ -76,7 +76,25 @@ pub(crate) async fn resolve_instance_connection(
     let user_scope = UserScope::new(scope.org_id(), owner_identity_id, scope.db().clone());
     let connection = if let Some(inst) = instance {
         if let Some(conn_id) = inst.connection_id {
-            scope.get_connection(conn_id).await?
+            // Only the instance owner's own connection, for this provider —
+            // the same read rule as the HTTP resolver. Anything else is
+            // treated as no connection: never resolved into another user's
+            // token (which this path would send to `instance.url`).
+            match scope.get_connection(conn_id).await? {
+                Some(c)
+                    if crate::services::platform_services::pinned_connection_usable(
+                        scope,
+                        inst.owner_identity_id,
+                        c.identity_id,
+                        &c.provider_key,
+                        Some(provider),
+                    )
+                    .await? =>
+                {
+                    Some(c)
+                }
+                _ => None,
+            }
         } else if inst.use_default_connection {
             user_scope.find_my_connection_by_provider(provider).await?
         } else {
@@ -147,8 +165,22 @@ pub(crate) async fn resolve_effective_mcp(
         McpAuth::Bearer {
             secret_name: tpl_sn,
         } => {
-            let sn = match instance.secret_name.as_deref().or(tpl_sn.as_deref()) {
-                Some(s) => s.to_string(),
+            // The instance's binding is a secret path under the read rule; a
+            // template default is a bare name, read in the instance's own
+            // namespace (owner's vault, or the org vault for an org service).
+            let path = match (instance.secret_name.as_deref(), tpl_sn.as_deref()) {
+                (Some(bound), _) => crate::services::secret_paths::readable_instance_binding(
+                    instance.owner_identity_id,
+                    bound,
+                ),
+                (None, Some(default)) => Some(
+                    overslash_core::types::SecretNamespace::from_owner(instance.owner_identity_id)
+                        .path(default),
+                ),
+                (None, None) => None,
+            };
+            let sn = match path {
+                Some(p) => p.to_canonical(),
                 None => {
                     return Err(mcp_missing_config_error(
                         scope,

@@ -288,8 +288,10 @@ pub async fn open_upstream(
     scope: &OrgScope,
     service_key: Option<&str>,
     request: &ActionRequest,
+    requester: Uuid,
 ) -> Result<reqwest::Response, AppError> {
-    let Resolved { url, headers } = resolve_for_replay(state, scope, service_key, request).await?;
+    let Resolved { url, headers } =
+        resolve_for_replay(state, scope, service_key, request, requester).await?;
 
     // The deployment default, not a D56-resolved budget: a token redemption
     // has no caller-supplied `timeout_ms` and no action key to read the
@@ -334,12 +336,14 @@ pub async fn resolve_for_replay(
     scope: &OrgScope,
     service_key: Option<&str>,
     request: &ActionRequest,
+    requester: Uuid,
 ) -> Result<Resolved, AppError> {
     let secret_values = crate::services::action_caller::resolve_credential_values(
         state,
         scope,
         service_key,
         request,
+        requester,
     )
     .await?;
     let (url, headers) =

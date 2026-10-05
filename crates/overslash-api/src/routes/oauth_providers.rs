@@ -15,6 +15,7 @@ use axum::{
 };
 use serde::Serialize;
 
+use overslash_core::types::SecretNamespace::Org;
 use overslash_db::OrgScope;
 use overslash_db::repos::oauth_provider;
 
@@ -105,9 +106,12 @@ async fn list_providers(
         let (id_name, secret_name) = oauth_secret_names(&p.key);
 
         // Org credential = both halves of the pair are present in the org vault.
-        let has_org_credential = scope.get_current_secret_value(&id_name).await?.is_some()
+        let has_org_credential = scope
+            .get_current_secret_value(&Org.path(&*id_name))
+            .await?
+            .is_some()
             && scope
-                .get_current_secret_value(&secret_name)
+                .get_current_secret_value(&Org.path(&*secret_name))
                 .await?
                 .is_some();
 

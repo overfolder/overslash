@@ -243,9 +243,9 @@ async fn agent_can_rotate_secret_it_created_on_behalf_of_owner_user() {
         resp.text().await
     );
 
-    // Second PUT *without* on_behalf_of — slot owner = user, resolved
-    // owner = agent → strict match fails → 404. This is the explicit-
-    // intent contract: shared rotation requires re-declaring `on_behalf_of`.
+    // Third PUT *without* on_behalf_of — an agent's vault is its owner
+    // user's, so this is the same secret's v3, not a separate agent-owned
+    // slot. `on_behalf_of` only changes `created_by` attribution.
     let resp = client
         .put(format!("{base}/v1/secrets/shared-rotation"))
         .header("Authorization", format!("Bearer {agent_key}"))
@@ -253,11 +253,9 @@ async fn agent_can_rotate_secret_it_created_on_behalf_of_owner_user() {
         .send()
         .await
         .unwrap();
-    assert_eq!(
-        resp.status(),
-        404,
-        "agent must NOT silently hijack a user-owned slot without on_behalf_of",
-    );
+    assert_eq!(resp.status(), 200);
+    let v: Value = resp.json().await.unwrap();
+    assert_eq!(v["version"], 3, "same vault, same secret: {v}");
 }
 
 #[tokio::test]

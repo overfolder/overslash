@@ -218,8 +218,15 @@ where
     }
 
     for (name, value) in secrets {
+        // The gateway key is the org-source default, read from the org vault;
+        // every other secret is the admin's own (the org instance's creator).
+        let vault = if *name == "overfwd_gateway_key" {
+            "?scope=org"
+        } else {
+            ""
+        };
         let resp = client
-            .put(format!("{base}/v1/secrets/{name}"))
+            .put(format!("{base}/v1/secrets/{name}{vault}"))
             .header("Authorization", format!("Bearer {admin_key}"))
             .json(&json!({ "value": value }))
             .send()
@@ -886,8 +893,21 @@ async fn email_credentials_map_binds_every_slot_with_custom_names() {
         .parse::<uuid::Uuid>()
         .unwrap();
     let scope = overslash_db::scopes::OrgScope::new(org_id, pool2);
+    // Bindings are stored as secret paths (the response shows them relative
+    // to the reader's vault); the creating admin's vault holds this one.
+    let stored = scope
+        .get_service_instance(instance["id"].as_str().unwrap().parse().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    let gateway_path =
+        match overslash_core::types::SecretPath::parse(&stored.credentials.0["gateway"]) {
+            overslash_core::types::ParsedBinding::Qualified(p) => p,
+            other => panic!("gateway binding must be a qualified path: {other:?}"),
+        };
+    assert_eq!(gateway_path.name, "my_own_gateway_token");
     let used_by = scope
-        .list_services_using_secret("my_own_gateway_token")
+        .list_services_using_secret(&gateway_path)
         .await
         .unwrap();
     assert!(

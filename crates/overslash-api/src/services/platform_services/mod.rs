@@ -29,6 +29,7 @@ use super::platform_caller::PlatformCallContext;
 use crate::error::AppError;
 use crate::routes::util::fmt_time;
 
+mod connection_binding;
 mod create;
 mod events;
 mod group_grants;
@@ -41,6 +42,7 @@ mod templates;
 mod types;
 mod verify;
 
+pub use connection_binding::pinned_connection_usable;
 pub use create::kernel_create_service;
 pub(crate) use events::{ServiceEvent, fire_service_event};
 pub(crate) use kernels::require_owned_by_ceiling_or_admin;

@@ -7,15 +7,18 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { ApiError } from '$lib/session';
-	import { revealSecretVersion } from '$lib/api/secrets';
+	import { revealSecretVersion, type SecretVault } from '$lib/api/secrets';
 	import type { SecretVersionView } from '$lib/types';
 
 	let {
 		secretName,
+		vault,
 		version,
 		onClose
 	}: {
 		secretName: string;
+		/** Which vault the secret lives in (`?owner=` / `?scope=org`). */
+		vault?: SecretVault;
 		version: SecretVersionView;
 		onClose: () => void;
 	} = $props();
@@ -27,7 +30,7 @@
 
 	onMount(async () => {
 		try {
-			const r = await revealSecretVersion(secretName, version.version);
+			const r = await revealSecretVersion(secretName, version.version, vault);
 			value = r.value;
 		} catch (e) {
 			error = e instanceof ApiError ? `Reveal failed (${e.status})` : 'Reveal failed';

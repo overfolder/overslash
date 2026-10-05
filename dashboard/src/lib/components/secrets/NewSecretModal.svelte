@@ -1,18 +1,22 @@
 <!--
-  Create a new secret. v1 of the slot — name + value. Owner is always the
-  caller (`created_by` set server-side); the dashboard does not yet expose
-  the `on_behalf_of` knob to flip ownership to a child agent.
+  Create a new secret — name + value — in the caller's own vault. Names are
+  unique per vault, so a colleague's same-named secret is untouched. Org
+  admins can instead store it in the org-wide vault, which only org-level
+  services and templates' org defaults read.
 -->
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { ApiError } from '$lib/session';
-	import { putSecret } from '$lib/api/secrets';
+	import { putSecret, type SecretVault } from '$lib/api/secrets';
 
 	let {
 		onClose,
-		onCreated
+		onCreated,
+		isAdmin = false
 	}: {
 		onClose: () => void;
+		/** Offer the org-wide vault. */
+		isAdmin?: boolean;
 		/** Called with the secret's name after a successful PUT — caller
 		 *  decides whether to navigate to detail or stay on the list. */
 		onCreated: (name: string) => void;
@@ -23,6 +27,7 @@
 	let show = $state(false);
 	let saving = $state(false);
 	let error = $state<string | null>(null);
+	let orgWide = $state(false);
 
 	const nameOk = $derived(/^[a-zA-Z][a-zA-Z0-9_]*$/.test(name.trim()));
 
@@ -31,9 +36,10 @@
 		saving = true;
 		error = null;
 		try {
-			await putSecret(name.trim(), value);
+			const vault: SecretVault | undefined = orgWide ? { scope: 'org' } : undefined;
+			await putSecret(name.trim(), value, undefined, vault);
 			onCreated(name.trim());
-			goto(`/secrets/${encodeURIComponent(name.trim())}`);
+			goto(`/secrets/${encodeURIComponent(name.trim())}${orgWide ? '?scope=org' : ''}`);
 		} catch (e) {
 			error = e instanceof ApiError ? `Save failed (${e.status})` : 'Save failed';
 		} finally {
@@ -87,6 +93,18 @@
 				</div>
 				<span class="hint">Encrypted at rest with AES-256-GCM.</span>
 			</div>
+			{#if isAdmin}
+				<label class="check">
+					<input type="checkbox" bind:checked={orgWide} />
+					<span>
+						Org-wide
+						<span class="hint">
+							Store in the org vault instead of yours. Only org-level services and
+							templates' org defaults read it.
+						</span>
+					</span>
+				</label>
+			{/if}
 			{#if error}
 				<div class="error">{error}</div>
 			{/if}
@@ -108,6 +126,16 @@
 </div>
 
 <style>
+	.check {
+		display: flex;
+		gap: 8px;
+		align-items: flex-start;
+		font-size: 0.85rem;
+		cursor: pointer;
+	}
+	.check .hint {
+		display: block;
+	}
 	.back {
 		position: fixed;
 		inset: 0;

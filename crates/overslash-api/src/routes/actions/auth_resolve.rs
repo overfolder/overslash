@@ -7,8 +7,9 @@ use uuid::Uuid;
 
 use overslash_db::scopes::OrgScope;
 
+use crate::services::secret_paths::{org_default_candidates, readable_instance_binding};
 use crate::{AppState, error::AppError};
-use overslash_core::types::{AuthHeader, InjectAs, SecretRef};
+use overslash_core::types::{AuthHeader, InjectAs, SecretNamespace, SecretRef};
 
 use super::auth::{MissingCredentials, ResolvedAuth};
 use super::auth_envelopes::{oauth_error_to_app_error, oauth_error_to_app_error_or_continue};
@@ -421,7 +422,36 @@ pub(crate) async fn resolve_instance_auth(
         // disconnected instance recovers on the next call after reauth
         // without us needing to touch the binding here.
         let conn = match scope.get_connection(conn_id).await {
-            Ok(Some(c)) => Some(c),
+            // The read rule for pinned connections: only the instance owner's
+            // own (or their agent's), for a provider this template
+            // authenticates with. A pin into anyone else's connection
+            // (written before the check existed) is treated as absent, never
+            // resolved into their token.
+            Ok(Some(c)) => {
+                let provider_ok = svc.auth.iter().any(|a| {
+                    matches!(a, overslash_core::types::ServiceAuth::OAuth { provider, .. }
+                        if *provider == c.provider_key)
+                });
+                if provider_ok
+                    && crate::services::platform_services::pinned_connection_usable(
+                        scope,
+                        instance.owner_identity_id,
+                        c.identity_id,
+                        &c.provider_key,
+                        None,
+                    )
+                    .await?
+                {
+                    Some(c)
+                } else {
+                    tracing::warn!(
+                        instance_id = %instance.id,
+                        connection_id = %c.id,
+                        "pinned connection is not the instance owner's (or wrong provider); ignoring"
+                    );
+                    None
+                }
+            }
             Ok(None) => None,
             Err(e) => {
                 return Err(AppError::Internal(format!(
@@ -522,8 +552,10 @@ pub(crate) async fn resolve_instance_auth(
     //   2. else the legacy scalar `secret_name` (instance-source, and only for
     //      a scheme that reads a single slot — with several the alias would be
     //      ambiguous, which is what `reconcile_credentials` refuses to store),
-    //   3. else the slot's fixed `default_secret_name` from the org vault
-    //      (org-source slots only — a shared org-wide default).
+    //   3. else the slot's fixed `default_secret_name` (org-source slots only
+    //      — a shared default: the owner's own copy, else the org vault's).
+    // Bindings are secret paths (`SecretPath`); the read rule keeps a
+    // user-level instance inside its owner's vault and the org vault.
     // That is what lets one overfwd instance carry both the per-mailbox
     // `X-Mailbox-Auth: Basic base64(user:pass)` — itself joined from two
     // separate secrets — and its own gateway `Authorization: Bearer …` on the
@@ -562,7 +594,24 @@ pub(crate) async fn resolve_instance_auth(
                 // `optional` slot makes it required: the user asked for this
                 // credential, so a missing secret surfaces as a send-time
                 // error instead of being silently skipped.
-                bound.clone()
+                //
+                // The read rule: a user-level instance only ever resolves its
+                // owner's vault (and the org vault). A binding into anyone
+                // else's — written before secrets were namespaced — is
+                // reported as unbound, never resolved.
+                match readable_instance_binding(instance.owner_identity_id, bound) {
+                    Some(path) => path.to_canonical(),
+                    None => {
+                        tracing::warn!(
+                            instance_id = %instance.id,
+                            slot = %slot.key,
+                            "credential bound outside the service owner's vault; ignoring"
+                        );
+                        missing.add_slot(&slot.key);
+                        scheme_unresolved = true;
+                        break;
+                    }
+                }
             } else {
                 match slot.source {
                     overslash_core::types::SecretSource::Org => {
@@ -582,11 +631,22 @@ pub(crate) async fn resolve_instance_auth(
                         // the header" or "the platform will supply it at send
                         // time"; the value itself is resolved (and host-checked
                         // again) in `resolve_credential_values`.
+                        //
+                        // A user-level instance prefers its owner's own copy of
+                        // the default, then the org-wide one; an org-level
+                        // instance reads the org vault only.
+                        let mut found = None;
+                        for path in org_default_candidates(
+                            instance.owner_identity_id,
+                            &slot.default_secret_name,
+                        ) {
+                            if scope.get_current_secret_value(&path).await?.is_some() {
+                                found = Some(path);
+                                break;
+                            }
+                        }
                         if slot.optional
-                            && scope
-                                .get_current_secret_value(&slot.default_secret_name)
-                                .await?
-                                .is_none()
+                            && found.is_none()
                             && platform_base
                                 .as_deref()
                                 .and_then(|base| {
@@ -599,11 +659,32 @@ pub(crate) async fn resolve_instance_auth(
                             scheme_unresolved = true;
                             break;
                         }
-                        slot.default_secret_name.clone()
+                        // Absent everywhere: bind the org path, where the
+                        // platform rung (D39) and the send-time `secret not
+                        // found` error both look.
+                        found
+                            .unwrap_or_else(|| {
+                                SecretNamespace::Org.path(&*slot.default_secret_name)
+                            })
+                            .to_canonical()
                     }
                     overslash_core::types::SecretSource::Instance => {
                         match instance.secret_name.as_ref().filter(|_| single_slot) {
-                            Some(n) => n.clone(),
+                            Some(n) => {
+                                match readable_instance_binding(instance.owner_identity_id, n) {
+                                    Some(path) => path.to_canonical(),
+                                    None => {
+                                        tracing::warn!(
+                                            instance_id = %instance.id,
+                                            slot = %slot.key,
+                                            "credential bound outside the service owner's vault; ignoring"
+                                        );
+                                        missing.add_slot(&slot.key);
+                                        scheme_unresolved = true;
+                                        break;
+                                    }
+                                }
+                            }
                             // The template requires a per-instance credential but
                             // the instance has none bound. Record it so we DON'T
                             // return the org-source keys alone — a partial

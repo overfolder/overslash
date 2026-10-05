@@ -28,7 +28,7 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use crate::AppState;
-use crate::routes::auth::build_org_redirect;
+use crate::routes::auth::{build_org_redirect, org_mcp_url};
 
 /// Send the invite notification for a pre-created member identity.
 ///
@@ -59,6 +59,22 @@ pub async fn send(
     );
     params.insert("role".into(), Value::String(role.to_string()));
     params.insert("accept_url".into(), Value::String(accept_url));
+    // Same two commands as the dashboard's "Connect an agent" tip
+    // (ConnectAgentTip.svelte), so a new member can wire up their agent
+    // straight from the email.
+    let mcp_url = org_mcp_url(state, org);
+    params.insert(
+        "claude_mcp_command".into(),
+        Value::String(format!(
+            "claude mcp add --transport http --scope user overslash {mcp_url}"
+        )),
+    );
+    params.insert(
+        "generic_mcp_command".into(),
+        Value::String(format!(
+            "npx -y mcp-add --name overslash --type http --url {mcp_url}"
+        )),
+    );
 
     let html = render(ORG_INVITE_TEMPLATE_HTML, &params);
     let subject = render(ORG_INVITE_TEMPLATE_SUBJECT, &params);

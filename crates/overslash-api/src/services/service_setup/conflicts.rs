@@ -4,14 +4,21 @@
 //! vault name already spoken for, and what should the caller be told?" — that
 //! the mint paths ask and nothing else does.
 //!
-//! The distinction the whole module turns on: reusing a secret *name* is a
-//! feature. Binding two service instances to one credential is ordinary, and
-//! `credentials: {slot: name}` is how it is done. What is never deliberate is
-//! minting a link that **writes** to a name somebody already filled, because
-//! the person who opens it is shown a name, not a history. So the check sits
-//! on the write path and leaves the bind path alone.
+//! The distinction the whole module turns on: reusing a secret *name* within
+//! your own vault is a feature. Binding two service instances to one
+//! credential is ordinary, and `credentials: {slot: name}` is how it is done.
+//! What is never deliberate is minting a link that **writes** to a name
+//! somebody already filled, because the person who opens it is shown a name,
+//! not a history. So the check sits on the write path and leaves the bind
+//! path alone.
+//!
+//! Every check runs inside the one vault the link fills ([`fill_namespace`]).
+//! Another user's same-named secret is neither a conflict nor something this
+//! module may mention — it is not reachable from here at all.
 
+use overslash_core::types::SecretNamespace;
 use overslash_db::scopes::OrgScope;
+use uuid::Uuid;
 
 use crate::error::{AppError, SecretNameConflict};
 
@@ -31,6 +38,7 @@ use crate::error::{AppError, SecretNameConflict};
 /// path at all.
 pub async fn conflicting_secret_names(
     scope: &OrgScope,
+    ns: SecretNamespace,
     candidates: &[(Option<String>, String)],
 ) -> Result<Vec<SecretNameConflict>, AppError> {
     let mut out = Vec::new();
@@ -40,7 +48,7 @@ pub async fn conflicting_secret_names(
         // the name is free from the operator's point of view, and the upsert
         // resurrects the row rather than colliding with it. The old versions
         // stay behind it either way.
-        if let Some(existing) = scope.get_secret_by_name(secret_name).await? {
+        if let Some(existing) = scope.get_secret(&ns.path(&**secret_name)).await? {
             out.push(SecretNameConflict {
                 credential_key: credential_key.clone(),
                 secret_name: secret_name.clone(),
@@ -49,6 +57,29 @@ pub async fn conflicting_secret_names(
         }
     }
     Ok(out)
+}
+
+/// The vault a setup / secret-request link fills. A link bound to a user-level
+/// service fills the service owner's vault — the only one that service reads.
+/// Every other link (a bare request, or setup on an org-level service, which
+/// only an admin can mint) fills `target_identity`'s own user vault.
+///
+/// Mint, the conflict pre-flights, and fulfilment all call this, so the vault
+/// that was checked is the vault that gets written.
+pub async fn fill_namespace(
+    scope: &OrgScope,
+    target_identity: Uuid,
+    service_instance_id: Option<Uuid>,
+) -> Result<SecretNamespace, AppError> {
+    if let Some(instance_id) = service_instance_id
+        && let Some(instance) = scope.get_service_instance(instance_id).await?
+        && let Some(owner) = instance.owner_identity_id
+    {
+        return Ok(SecretNamespace::User(owner));
+    }
+    Ok(SecretNamespace::User(
+        crate::services::group_ceiling::resolve_ceiling_user_id(scope, target_identity).await?,
+    ))
 }
 
 /// The 409 for a set of conflicts, with a `hint` written for `create_service`.

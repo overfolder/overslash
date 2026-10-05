@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT EXISTS (\n             SELECT 1\n             FROM group_grants gg\n             JOIN effective_identity_groups ig ON ig.group_id = gg.group_id\n             JOIN identities i ON i.id = ig.identity_id\n             JOIN groups g ON g.id = gg.group_id\n             JOIN service_instances si ON si.id = gg.service_instance_id\n             -- Only a pin the instance owner actually owns grants anything —\n             -- theirs, or one of their own agents' (the same rule as\n             -- `connection_binding`): a pin into someone else's connection\n             -- must not widen access.\n             JOIN connections c ON c.id = si.connection_id\n             JOIN identities ci ON ci.id = c.identity_id\n                               AND (ci.id = si.owner_identity_id\n                                    OR (ci.kind <> 'user' AND ci.owner_id = si.owner_identity_id))\n             WHERE ig.identity_id = $1\n               AND i.org_id = $2\n               AND g.org_id = $2\n               AND si.org_id = $2\n               AND si.connection_id = $3\n         ) AS \"has_access!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "has_access!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "14d1884b4eb133145ec8db890eae298eac5312a5323ed33beb61815d35802ca0"
+}

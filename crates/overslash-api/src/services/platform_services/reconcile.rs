@@ -142,6 +142,50 @@ pub(super) fn reconcile_credentials(
     Ok((map, secret_name))
 }
 
+/// Apply the namespace write rule to reconciled bindings
+/// ([`crate::services::secret_paths::BindingWriter`]).
+///
+/// Each value is compared against what the instance stores for that slot
+/// today: an unchanged binding is kept verbatim — it may point at another
+/// admin's vault on a shared org service — while a changed one is resolved
+/// (bare name, `org/x`, `<user>/x`) and must land in a vault the writer may
+/// bind. Returns the map and mirrored scalar, both holding canonical paths.
+pub(super) async fn canonicalize_bindings(
+    scope: &OrgScope,
+    writer: &crate::services::secret_paths::BindingWriter,
+    template: &ServiceDefinition,
+    (map, scalar): (CredentialsMap, Option<String>),
+    stored_map: &CredentialsMap,
+    stored_scalar: Option<&str>,
+) -> Result<(CredentialsMap, Option<String>), AppError> {
+    let slots = template.all_slots();
+    let instance_slots = instance_slot_keys(template);
+    let mut out = CredentialsMap::new();
+    for (key, value) in map {
+        let org_source = slots
+            .iter()
+            .any(|s| s.key == key && s.source == SecretSource::Org);
+        // The legacy scalar is the same binding as the sole instance slot.
+        let stored = stored_map.get(&key).map(String::as_str).or_else(|| {
+            matches!(instance_slots.as_slice(), [sole] if *sole == key)
+                .then_some(stored_scalar)
+                .flatten()
+        });
+        let canonical = writer
+            .canonicalize(scope, &value, stored, org_source)
+            .await?;
+        out.insert(key, canonical);
+    }
+    // Dual-written scalar: the mirror of the sole instance slot, else (MCP
+    // bearer) a binding of its own.
+    let scalar = match (instance_slots.as_slice(), scalar) {
+        ([sole], _) => out.get(sole).cloned(),
+        (_, Some(s)) => Some(writer.canonicalize(scope, &s, stored_scalar, false).await?),
+        (_, None) => None,
+    };
+    Ok((out, scalar))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -383,7 +383,11 @@ async fn switching_mode_regates_and_keeps_the_other_credential() {
     .await
     .unwrap();
     assert_eq!(
-        creds["token"], "my_vault_token",
+        creds["token"],
+        format!(
+            "{}/my_vault_token",
+            created["owner_identity_id"].as_str().unwrap()
+        ),
         "switching away destroyed the credential it was leaving: {creds}"
     );
 }

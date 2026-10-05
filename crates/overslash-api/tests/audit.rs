@@ -1440,7 +1440,7 @@ async fn test_audit_secret_deleted() {
     let (pool, fx) = common::test_pool_bootstrapped().await;
     let (addr, client) = start_api(pool).await;
     let base = format!("http://{addr}");
-    let (_user, _ident_id, key) = bootstrap_agent_on_fixtures(&base, &client, &fx).await;
+    let (user, _ident_id, key) = bootstrap_agent_on_fixtures(&base, &client, &fx).await;
     let admin_key = fx.org_key.clone();
 
     client
@@ -1452,7 +1452,8 @@ async fn test_audit_secret_deleted() {
         .unwrap();
 
     client
-        .delete(format!("{base}/v1/secrets/to_delete"))
+        // The agent wrote into its user's vault; the admin names it.
+        .delete(format!("{base}/v1/secrets/to_delete?owner={user}"))
         .header(auth(&admin_key).0, auth(&admin_key).1)
         .send()
         .await

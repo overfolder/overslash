@@ -423,7 +423,8 @@ async fn setup_with_pool(
     // Create secret to trigger permission gating
     client
         .put(format!("{base}/v1/secrets/test_token"))
-        .header("Authorization", format!("Bearer {org_api_key}"))
+        // The agent's own user vault — inline secrets resolve only there.
+        .header("Authorization", format!("Bearer {agent_api_key}"))
         .json(&json!({"value": "secret123"}))
         .send()
         .await

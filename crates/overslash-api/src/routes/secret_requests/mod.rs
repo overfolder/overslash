@@ -38,6 +38,7 @@ use crate::{
     services::session::extract_session,
 };
 use overslash_core::crypto;
+use overslash_core::permissions::AccessLevel;
 
 mod submit;
 
@@ -124,6 +125,7 @@ async fn create_secret_request(
     if req.secret_name.trim().is_empty() {
         return Err(AppError::BadRequest("secret_name is required".into()));
     }
+    crate::services::secret_paths::validate_new_secret_name(req.secret_name.trim())?;
 
     let caller_identity = acl
         .identity_id
@@ -133,10 +135,22 @@ async fn create_secret_request(
     // Verify the target identity belongs to the same org so a caller cannot
     // mint a request scoped to another tenant.
     let scope = OrgScope::new(acl.org_id, state.db_pool(&ext));
-    let _target = scope
+    let target = scope
         .get_identity(target_identity)
         .await?
         .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
+    // A request fills the target's vault, so it may only target the caller's
+    // own user (itself or a sibling under the same owner) — anything else
+    // would let a member mint a link that overwrites a colleague's secret.
+    // Admins may target anyone.
+    if acl.access_level < AccessLevel::Admin {
+        let caller_user =
+            crate::services::group_ceiling::resolve_ceiling_user_id(&scope, caller_identity)
+                .await?;
+        if crate::services::group_ceiling::ceiling_user_id_from_identity(&target)? != caller_user {
+            return Err(AppError::NotFound("identity not found".into()));
+        }
+    }
 
     // Resolve the service binding, if any, before anything is written. This
     // is the only place the `(service_id, credential_key)` pair is checked —
@@ -173,8 +187,10 @@ async fn create_secret_request(
     // on collision when `force` is false, so this is only ever non-empty on
     // the deliberate path.
     let warning = if req.force {
+        let ns = service_setup::fill_namespace(&scope, target_identity, req.service_id).await?;
         service_setup::conflicting_secret_names(
             &scope,
+            ns,
             &[(None, req.secret_name.trim().to_string())],
         )
         .await?
@@ -336,8 +352,13 @@ async fn provide_metadata(
             email: s.email,
         });
 
+    // Only the vault this request fills — another vault's same-named secret
+    // is not being overwritten, and must not be disclosed by this page.
+    let target = request_namespace(scope, &row)
+        .await?
+        .path(&*row.secret_name);
     let overwrites_version = scope
-        .get_secret_by_name(&row.secret_name)
+        .get_secret(&target)
         .await?
         .map(|existing| existing.current_version);
 
@@ -546,6 +567,14 @@ fn humanize(key: &str) -> String {
 /// Validate the JWT, look up the row, and check expiry / fulfillment / token
 /// hash. Returns the row on success. All failures map to neutral, stable
 /// codes — never echo internal detail to the public client.
+/// The vault a secret request fills — see [`service_setup::fill_namespace`].
+pub(super) async fn request_namespace(
+    scope: &OrgScope,
+    row: &overslash_db::repos::secret_request::SecretRequestRow,
+) -> Result<overslash_core::types::SecretNamespace> {
+    service_setup::fill_namespace(scope, row.identity_id, row.service_instance_id).await
+}
+
 async fn load_and_validate(
     state: &AppState,
     ext: &axum::http::Extensions,

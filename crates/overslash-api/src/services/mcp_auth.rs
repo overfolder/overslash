@@ -1,5 +1,5 @@
 //! Resolve `McpAuth` into the HTTP headers Overslash sends to the external
-//! MCP server. Secret lookup goes through the same org vault that
+//! MCP server. Secret lookup goes through the same namespaced vault that
 //! HTTP-runtime auth uses (`scope.get_current_secret_value` + AES-GCM).
 //!
 //! v1 supports only `None` and `Bearer`. Future `Header` / `Headers` /
@@ -8,7 +8,7 @@
 //! new variants as they're added.
 
 use overslash_core::crypto;
-use overslash_core::types::McpAuth;
+use overslash_core::types::{McpAuth, ParsedBinding, SecretPath};
 use overslash_db::scopes::OrgScope;
 use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 
@@ -49,11 +49,18 @@ pub async fn resolve_headers(
     Ok(headers)
 }
 
+/// `name` is the secret path `resolve_effective_mcp` qualified under the
+/// instance read rule; anything unqualified here is an internal bug.
 async fn fetch_secret(state: &AppState, scope: &OrgScope, name: &str) -> Result<String, AppError> {
+    let ParsedBinding::Qualified(path) = SecretPath::parse(name) else {
+        return Err(AppError::Internal(format!(
+            "mcp bearer secret `{name}` was not qualified before invocation"
+        )));
+    };
     let version = scope
-        .get_current_secret_value(name)
+        .get_current_secret_value(&path)
         .await?
-        .ok_or_else(|| AppError::BadRequest(format!("secret `{name}` not found")))?;
+        .ok_or_else(|| AppError::BadRequest(format!("secret `{}` not found", path.name)))?;
     let key = state.config.keyring()?;
     let decrypted = crypto::decrypt(&key, &version.encrypted_value)?;
     String::from_utf8(decrypted)

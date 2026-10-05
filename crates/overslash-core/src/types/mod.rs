@@ -6,6 +6,7 @@ pub mod identity;
 pub mod org;
 pub mod permission;
 pub mod secret;
+pub mod secret_path;
 pub mod service;
 pub mod service_instance;
 
@@ -17,5 +18,6 @@ pub use identity::*;
 pub use org::*;
 pub use permission::*;
 pub use secret::*;
+pub use secret_path::*;
 pub use service::*;
 pub use service_instance::*;
