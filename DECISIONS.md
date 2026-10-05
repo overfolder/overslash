@@ -1385,7 +1385,7 @@ This amends D32 (map values are paths, not names in "the org vault") and D85 (re
 **Rationale**: The twin of D119 for connections. Create checked a pin's owner; update did not, and the resolvers loaded the pin org-wide — so a member could re-pin their own service onto a colleague's connection and act as that account, and on an MCP-OAuth instance (whose `url` the same update sets) receive the colleague's bearer token at a host of their choosing. Connection ids are not secret (they appear on group-shared instances), so the check has to be on ownership, at write and at read; the read-side rule also neutralises any pin written before the fix. Cross-org was already closed (every lookup filters `org_id`).
 
 
-## D-NEXT: Every stored reference to an owned resource has one binding policy, and owner-blind getters are named and fenced
+## D122: Every stored reference to an owned resource has one binding policy, and owner-blind getters are named and fenced
 
 **Date**: 2026-10
 **Decision**: Each kind of reference that one owned resource stores to another has exactly one **binding-policy module**, and it owns both the write check and the read check. Every create, update, import, setup-link, callback, replay and view path goes through it:

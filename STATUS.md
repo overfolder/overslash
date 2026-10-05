@@ -87,7 +87,7 @@
 - 2026-04-10 review corrections applied — doc-level (PR #96) and dashboard-level (PR #99)
 - Build/quality — zero-warning vite builds enforced (PR #125); Inter + Roboto Mono self-hosted via `@fontsource-variable` (PR #129)
 - **Per-user secret vaults** (D119, migration 133) — names are unique per vault (each user's, plus the org's), not per org. Service bindings store secret paths (`org/<name>` / `<user id>/<name>`; input also takes `<handle>/<name>` and bare names). Create/update may only bind the writer's own vault (or, for admins, the org vault); unchanged bindings are kept. A user-level service never resolves another user's vault. Inline (Mode A) secrets reach only the caller's own vault. `/v1/secrets*` take `?owner=` / `?scope=org` (admin-only for other vaults). The dashboard shows `<handle>/<name>` labels, and admins get an Org-wide toggle on New Secret.
-- **Binding policies** (D-NEXT, follow-up to D119/D120) — one policy module per stored reference (secret path, connection pin, BYOC pin, instance template) owns its write and read checks. Changes:
+- **Binding policies** (D122, follow-up to D119/D120) — one policy module per stored reference (secret path, connection pin, BYOC pin, instance template) owns its write and read checks. Changes:
   - An instance resolves its owner's template, never the caller's.
   - A user-level instance reads the org vault only when it lands on the org/global template's own endpoint. The dashboard endpoint field warns when a custom URL drops an org secret.
   - A BYOC pin must be the connection owner's app for the same provider, at create, import and every refresh.
