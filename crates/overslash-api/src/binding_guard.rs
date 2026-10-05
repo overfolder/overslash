@@ -240,9 +240,13 @@ fn instance_templates_resolve_through_instance_template() {
             if !line.contains("resolve_template_definition(") || line.contains("fn ") {
                 continue;
             }
-            // The call's arguments: up to the closing paren, a few lines on.
-            let call: String = lines[i..lines.len().min(i + 8)].join("\n");
-            let call = &call[..call.find(')').map_or(call.len(), |j| j + 1)];
+            // The call's arguments: through the paren that closes the call,
+            // balancing nested ones (`state.db(&ext)` is a typical argument).
+            let rest: String = lines[i..lines.len().min(i + 12)].join("\n");
+            let call = call_args(
+                &rest["resolve_template_definition".len()
+                    + rest.find("resolve_template_definition").unwrap()..],
+            );
             // `input.template_key` is a create request naming a template, not
             // an instance's reference to one.
             if call.contains(".template_key") && !call.contains("input.template_key") {
@@ -255,6 +259,34 @@ fn instance_templates_resolve_through_instance_template() {
         "resolve an instance's template with `platform_services::instance_template`:\n{}",
         offenders.join("\n")
     );
+}
+
+/// The text of a call's argument list, `s` starting at its opening paren,
+/// through the matching close (or the end of `s` if it never closes).
+fn call_args(s: &str) -> &str {
+    let mut depth = 0usize;
+    for (i, c) in s.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return &s[..=i];
+                }
+            }
+            _ => {}
+        }
+    }
+    s
+}
+
+#[test]
+fn call_args_balances_nested_parens() {
+    assert_eq!(
+        call_args("(state.db(&ext), &row.template_key) + x"),
+        "(state.db(&ext), &row.template_key)"
+    );
+    assert_eq!(call_args("(a, (b), c"), "(a, (b), c");
 }
 
 /// A new org-wide getter on `OrgScope` that returns credential-bearing rows
