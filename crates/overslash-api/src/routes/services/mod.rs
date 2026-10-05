@@ -219,7 +219,7 @@ async fn list_services(
 /// grant, or org admin) — the by-id lookup alone is org-wide and would hand
 /// another user's private grants to anyone in the org.
 async fn list_service_groups(
-    auth: AuthContext,
+    acl: OrgAcl,
     scope: OrgScope,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Vec<ServiceGroupRef>>> {
@@ -227,11 +227,27 @@ async fn list_service_groups(
         .get_service_instance(id)
         .await?
         .ok_or_else(|| AppError::NotFound("service instance not found".into()))?;
-    if let Some(identity_id) = auth.identity_id {
-        platform_services::require_readable_by_caller(&scope, &instance, identity_id).await?;
-    }
+    require_instance_readable(&scope, &acl, &instance).await?;
     let grants = scope.list_groups_for_service(instance.id).await?;
     Ok(Json(grants.into_iter().map(Into::into).collect()))
+}
+
+/// Reach for the by-id instance reads: an `OrgAcl` admin — the `is_org_admin`
+/// flag *or* an admin-level `overslash` grant, the same admin the approval
+/// gate honours — or whatever [`platform_services::require_readable_by_caller`]
+/// allows (owner, ceiling owner, group grant). 404 otherwise.
+async fn require_instance_readable(
+    scope: &OrgScope,
+    acl: &OrgAcl,
+    instance: &overslash_db::repos::service_instance::ServiceInstanceRow,
+) -> Result<()> {
+    if acl.access_level >= overslash_core::permissions::AccessLevel::Admin {
+        return Ok(());
+    }
+    let identity_id = acl
+        .identity_id
+        .ok_or_else(|| AppError::NotFound("service instance not found".into()))?;
+    platform_services::require_readable_by_caller(scope, instance, identity_id).await
 }
 
 async fn get_service(
@@ -586,7 +602,7 @@ async fn cleanup_orphaned_connection(
 async fn list_service_actions(
     State(state): State<AppState>,
     ReqExt(ext): ReqExt,
-    auth: AuthContext,
+    auth: OrgAcl,
     scope: OrgScope,
     Path(name): Path<String>,
 ) -> Result<Json<Vec<super::templates::ActionSummary>>> {
@@ -594,8 +610,8 @@ async fn list_service_actions(
         // The by-id lookup is org-wide; re-impose the reach the name branch
         // gets from its ceiling-scoped resolver.
         let row = scope.get_service_instance(uuid).await?;
-        if let (Some(row), Some(identity_id)) = (row.as_ref(), auth.identity_id) {
-            platform_services::require_readable_by_caller(&scope, row, identity_id).await?;
+        if let Some(row) = row.as_ref() {
+            require_instance_readable(&scope, &auth, row).await?;
         }
         row
     } else {

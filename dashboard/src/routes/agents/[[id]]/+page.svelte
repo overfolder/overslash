@@ -56,6 +56,11 @@
 	interface AgentDetailState {
 		agentId: string;
 		rules: PermissionRule[];
+		// The API answered 404 on this node's rules: the viewer is neither an
+		// org admin nor on the node's own chain. Approvals are gated by the
+		// same relationship (plus the resolver's chain), so the panel explains
+		// both sections instead of showing them as empty.
+		outsideMyTree: boolean;
 		approvals: ApprovalResponse[];
 		loading: boolean;
 		error: string | null;
@@ -78,6 +83,7 @@
 		return {
 			agentId,
 			rules: [],
+			outsideMyTree: false,
 			approvals: [],
 			loading: false,
 			error: null,
@@ -156,19 +162,10 @@
 		($page.data as { user?: { is_org_admin?: boolean } })?.user?.is_org_admin === true
 	);
 
-	// Approvals and permission rules are visible to org admins and to the
-	// identities involved — for rules the node's own chain, for approvals the
-	// requester's and the resolver's. A non-admin selecting a node outside
-	// their own tree sees neither, so the panel says why instead of looking
-	// like that node has nothing pending and no rules.
-	function inMyTree(id: string): boolean {
-		const byId = new Map(identities.map((i) => [i.id, i]));
-		for (let cur = byId.get(id); cur; cur = cur.parent_id ? byId.get(cur.parent_id) : undefined) {
-			if (cur.id === meIdentityId) return true;
-		}
-		return false;
-	}
-	const outsideMyTree = $derived(!isAdmin && selected !== null && !inMyTree(selected.id));
+	// Asked of the server, not derived here: `is_org_admin` is not the only way
+	// to be an org admin (an admin-level `overslash` grant is another), so a
+	// client-side guess would hide rules from admins the API happily serves.
+	const outsideMyTree = $derived(detail?.outsideMyTree === true);
 
 	// The MCP endpoint to hand the operator, with this org's slug already in it.
 	// Rendering it live (rather than a `<your-org>` placeholder) is the point:
@@ -292,9 +289,12 @@
 		detail.disconnectError = null;
 		try {
 			const [rules, apr, mcpResp] = await Promise.all([
-				// The API answers 404 for a node outside the caller's tree; skip
-				// the call rather than surface that as a panel error.
-				!isAdmin && !inMyTree(id) ? Promise.resolve([]) : listPermissions(id),
+				// 404 means the node is outside the caller's tree — a visibility
+				// answer, not a panel error.
+				listPermissions(id).catch((e) => {
+					if (e instanceof ApiError && e.status === 404) return null;
+					throw e;
+				}),
 				listApprovals(id),
 				session
 					.get<{ connection: McpConnection | null }>(
@@ -304,7 +304,8 @@
 					.catch((e) => ({ ok: false as const, error: e }))
 			]);
 			if (detail?.agentId !== id) return;
-			detail.rules = rules;
+			detail.rules = rules ?? [];
+			detail.outsideMyTree = rules === null;
 			detail.approvals = apr;
 			if (mcpResp.ok) {
 				detail.mcp = mcpResp.connection;

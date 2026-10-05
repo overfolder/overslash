@@ -82,6 +82,45 @@ impl Org {
     }
 }
 
+impl Org {
+    /// A user who is an org admin only through an admin-level `overslash`
+    /// grant — `is_org_admin` stays false. The dev `admin` profile is this
+    /// shape, and every gate here must treat it as the admin it is.
+    async fn group_admin(&self) -> String {
+        let (id, key) = self.identity("user", None).await;
+        let (_, svc) = {
+            let (status, body) = self.get("/v1/services/overslash", &self.admin_key).await;
+            (status, serde_json::from_str::<Value>(&body).unwrap())
+        };
+        let svc_id = svc["id"].as_str().unwrap().to_string();
+        let (_, group) = self
+            .post(
+                "/v1/groups",
+                &self.admin_key,
+                json!({"name": format!("admins-{}", Uuid::new_v4())}),
+            )
+            .await;
+        let gid = group["id"].as_str().unwrap().to_string();
+        let (status, body) = self
+            .post(
+                &format!("/v1/groups/{gid}/grants"),
+                &self.admin_key,
+                json!({"service_instance_id": svc_id, "access_level": "admin"}),
+            )
+            .await;
+        assert!(status < 300, "grant: {body}");
+        let (status, body) = self
+            .post(
+                &format!("/v1/groups/{gid}/members"),
+                &self.admin_key,
+                json!({"identity_id": id}),
+            )
+            .await;
+        assert!(status < 300, "member: {body}");
+        key
+    }
+}
+
 async fn org(with_registry: bool) -> Org {
     let pool = common::test_pool().await;
     let (base, client) = if with_registry {
@@ -282,4 +321,36 @@ async fn a_stranger_never_reads_another_users_service_instance() {
         assert_eq!(status, 404, "stranger {path} must 404: {body}");
         assert!(!body.contains(&canary));
     }
+}
+
+/// An admin by `overslash` grant (not by the `is_org_admin` flag) reads every
+/// gated route — the shape of the dev `admin` profile the E2E suite signs in
+/// as, which a flag-only check silently locked out.
+#[tokio::test]
+async fn an_admin_by_grant_reads_every_gated_route() {
+    let o = org(true).await;
+    let p = pending_approval(&o).await;
+    let group_admin = o.group_admin().await;
+    let (_, owner_key) = o.identity("user", None).await;
+    let (status, svc) = o
+        .post(
+            "/v1/services",
+            &owner_key,
+            json!({"template_key": "x", "name": format!("x_{}", Uuid::new_v4().simple()), "user_level": true, "status": "active"}),
+        )
+        .await;
+    assert!(status < 300, "service create failed ({status}): {svc}");
+    let svc_id = svc["id"].as_str().unwrap();
+
+    for path in [
+        format!("/v1/approvals/{}", p.approval_id),
+        format!("/v1/permissions?identity_id={}", p.agent_id),
+        format!("/v1/services/{svc_id}/groups"),
+        format!("/v1/services/{svc_id}/actions"),
+    ] {
+        let (status, body) = o.get(&path, &group_admin).await;
+        assert_eq!(status, 200, "group admin {path}: {body}");
+    }
+    let (_, body) = o.get("/v1/approvals", &group_admin).await;
+    assert!(body.contains(&p.approval_id), "{body}");
 }
