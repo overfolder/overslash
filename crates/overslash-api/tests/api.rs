@@ -152,6 +152,7 @@ mod rate_limits;
 mod request_secret_kernel;
 mod response_filter;
 mod response_too_large_hint;
+mod same_org_read_isolation;
 mod scope_extract;
 mod search;
 mod secret_isolation;

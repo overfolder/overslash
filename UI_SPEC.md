@@ -393,7 +393,7 @@ At the bottom of the sidebar (org-admins only): **Settings** (gear icon) — ope
 
 **Profile is NOT a nav item.** The logged-in user's avatar and name appear in the top bar (desktop) or top-right (mobile). Clicking opens the User Profile view, which is also the only place to sign out.
 
-**Notifications bell** sits in the top bar (right side). Badge count shows unresolved items older than 1 minute. Clicking opens the **Notifications Dropdown** (see Design System) — pending approvals and secret requests grouped by agent. Items auto-dismiss when resolved. There is no separate notifications page. Notifications also appear inline as badges on each agent node in the Agents view tree.
+**Notifications bell** sits in the top bar (right side). Badge count shows unresolved items older than 1 minute. Clicking opens the **Notifications Dropdown** (see Design System) — pending approvals and secret requests grouped by agent. Items auto-dismiss when resolved. There is no separate notifications page. Notifications also appear inline as badges on each agent node in the Agents view tree. For a non-admin, both count only approvals they are involved in (their own tree requested it, or it is routed to their tree); org admins see the whole org. Selecting a node outside the viewer's own tree shows a note in place of its pending approvals and its permission rules instead of empty sections; only org admins and the node's own chain read its rules.
 
 **Live indicator**: a small dot next to the notification bell shows the SSE/WebSocket connection status — green when connected, yellow when reconnecting, hidden when using polling fallback.
 

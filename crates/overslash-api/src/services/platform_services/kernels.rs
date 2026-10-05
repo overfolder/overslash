@@ -56,10 +56,11 @@ pub(crate) async fn require_owned_by_ceiling_or_admin(
 /// *write* gate: besides the caller's and its ceiling user's own rows, it
 /// admits rows granted to one of the ceiling user's groups (how every
 /// org-level instance is shared — creating one requires a grant) and, for an
-/// `is_org_admin` caller, everything, matching the admin "show all" listing.
+/// org admin (`OrgAcl` level `Admin`: the flag or an admin-level `overslash`
+/// grant), everything, matching the admin "show all" listing.
 /// Reusing the write gate here made every org-level instance 404 on the
 /// dashboard detail page.
-async fn require_readable_by_caller(
+pub(crate) async fn require_readable_by_caller(
     scope: &OrgScope,
     row: &overslash_db::repos::service_instance::ServiceInstanceRow,
     auth_identity: Uuid,
@@ -68,15 +69,16 @@ async fn require_readable_by_caller(
         return Ok(());
     }
     let ceiling_user_id = group_ceiling::resolve_ceiling_user_id(scope, auth_identity).await?;
+    // "Org admin" is `OrgAcl`'s rule, not the `is_org_admin` flag alone — an
+    // admin-level `overslash` grant counts too, or an Admins-group admin
+    // reads a service's groups but 404s on the service itself.
     if row.owner_identity_id == Some(ceiling_user_id)
         || scope
             .get_visible_service_ids(ceiling_user_id)
             .await?
             .contains(&row.id)
-        || scope
-            .get_identity(auth_identity)
-            .await?
-            .is_some_and(|i| i.is_org_admin)
+        || crate::extractors::resolve_access_level(scope, auth_identity).await?
+            >= overslash_core::permissions::AccessLevel::Admin
     {
         return Ok(());
     }

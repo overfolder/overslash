@@ -45,7 +45,7 @@ export const load: PageLoad = async ({ params, url, parent }) => {
 		const message =
 			e instanceof ApiError
 				? e.status === 404
-					? 'This approval does not exist or has been deleted.'
+					? "This approval doesn't exist, or you don't have access to it."
 					: `Failed to load approval (${e.status}).`
 				: 'Network error loading approval.';
 		return { approval: null as ApprovalResponse | null, error: message };

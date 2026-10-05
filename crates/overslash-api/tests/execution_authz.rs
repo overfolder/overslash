@@ -24,6 +24,11 @@ struct Fixture {
     requester_key: String,
     /// Same org, non-admin, Read level, no ancestry to the requester.
     stranger_key: String,
+    /// The requester's owning user (`test-user`), dropped to Read level. It
+    /// may see the approval — its own subtree asked for it — but the
+    /// execution ladder wants `Write` before it honours ancestry, so the
+    /// body stays hidden from it.
+    owner_key: String,
     admin_key: String,
     approval_id: String,
 }
@@ -140,11 +145,53 @@ async fn fixture_triggered_by(pool: sqlx::PgPool, requester_triggers: bool) -> F
         .unwrap_or_else(|| panic!("mint stranger key: {key}"))
         .to_string();
 
+    let owner_id = client
+        .get(format!("{base}/v1/identities"))
+        .header(common::auth(&admin_key).0, common::auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap()
+        .json::<Vec<Value>>()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|i| i["name"] == "test-user")
+        .expect("bootstrap creates test-user")["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let key: Value = client
+        .post(format!("{base}/v1/api-keys"))
+        .header(common::auth(&admin_key).0, common::auth(&admin_key).1)
+        .json(&json!({"org_id": org_id, "identity_id": owner_id, "name": "owner-key"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let owner_key = key["key"]
+        .as_str()
+        .unwrap_or_else(|| panic!("mint owner key: {key}"))
+        .to_string();
+
+    // Drop the owner to Read: out of Everyone, no `overslash` grant is left
+    // and `OrgAcl` falls back to Read. Done after the call ran, so the
+    // agent's ceiling (which is this user's) still let it through.
+    let everyone = common::everyone_group_id(&base, &client, &admin_key).await;
+    client
+        .delete(format!("{base}/v1/groups/{everyone}/members/{owner_id}"))
+        .header(common::auth(&admin_key).0, common::auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap();
+
     Fixture {
         base,
         client,
         requester_key,
         stranger_key,
+        owner_key,
         admin_key,
         approval_id,
     }
@@ -173,13 +220,18 @@ async fn a_same_org_stranger_cannot_read_the_result_body() {
     assert_eq!(status, 200);
     assert!(body["result"].is_object() || body["result"].is_string());
 
-    // 403 rather than 404: the caller can already see the approval itself, so
-    // pretending the execution does not exist would be a lie.
+    // 404: a stranger cannot see the approval at all, so the execution
+    // under it does not exist as far as they can tell.
     let (status, _) = get(&f, &path, &f.stranger_key).await;
     assert_eq!(
-        status, 403,
+        status, 404,
         "a same-org identity outside the chain must not read the body"
     );
+
+    // 403 for the Read-level owner: it can see the approval, so pretending
+    // the execution does not exist would be a lie — but it may not read it.
+    let (status, _) = get(&f, &path, &f.owner_key).await;
+    assert_eq!(status, 403, "a Read-level ancestor must not read the body");
 
     let (status, body) = get(&f, &path, &f.admin_key).await;
     assert_eq!(status, 200, "org admins keep full visibility");
@@ -196,15 +248,18 @@ async fn the_embedded_summary_is_redacted_on_the_detail_and_list() {
     let (status, body) = get(
         &f,
         &format!("/v1/approvals/{}", f.approval_id),
-        &f.stranger_key,
+        &f.owner_key,
     )
     .await;
-    assert_eq!(status, 200, "the approval itself stays visible");
+    assert_eq!(
+        status, 200,
+        "the approval itself stays visible to its owner"
+    );
     let exec = &body["execution"];
     assert!(!exec.is_null(), "the execution should still be listed");
     assert!(
         exec["result"].is_null(),
-        "the body must be hidden from a stranger: {exec}"
+        "the body must be hidden from a Read-level ancestor: {exec}"
     );
     assert_eq!(
         exec["result_redacted"], true,
@@ -212,7 +267,7 @@ async fn the_embedded_summary_is_redacted_on_the_detail_and_list() {
     );
 
     // Same on the list path — a separate code path, and equally leaky before.
-    let (status, body) = get(&f, "/v1/approvals?scope=assigned", &f.stranger_key).await;
+    let (status, body) = get(&f, "/v1/approvals?scope=mine&status=allowed", &f.owner_key).await;
     assert_eq!(status, 200);
     if let Some(rows) = body.as_array() {
         for row in rows {

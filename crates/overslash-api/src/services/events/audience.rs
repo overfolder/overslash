@@ -8,10 +8,10 @@
 //! change who could see what happened today.
 //!
 //! The rules mirror the corresponding read endpoints. An event must never
-//! reach an identity that could not have fetched the same object over REST —
-//! and, because `GET /v1/approvals` currently has no ACL gate of its own, the
-//! stream is deliberately *narrower* than that endpoint rather than matching
-//! its org-wide behaviour.
+//! reach an identity that could not have fetched the same object over REST.
+//! For approvals the two now match exactly: `GET /v1/approvals` answers the
+//! same requester-chain ∪ resolver-chain (plus admins) this module freezes —
+//! see [`crate::services::approval_access`].
 
 use uuid::Uuid;
 

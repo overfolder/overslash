@@ -559,7 +559,7 @@ If Chief instead bubbles up → resolver = User. If Researcher had called `servi
 - **`?scope=mine`** — approvals the **caller has requested** (`identity_id = caller`). Useful for an agent polling "what am I waiting on?" or for a user to see things they themselves submitted via the dashboard.
 - **`?scope=assigned`** — approvals where **the caller is the current resolver right now** (`current_resolver_identity_id = caller`). This is the strict "inbox" view: only approvals that are sitting on this exact identity, not on a descendant. Excludes anything the caller requested themselves (the self-resolve ban — see "Trust Model and Approval Resolution" below — would block resolution anyway).
 - **`?scope=actionable`** — approvals the caller **could act on**: the caller is the current resolver, **or** any descendant of the caller is the current resolver. An ancestor can always step in for a descendant, so this surfaces everything in the caller's subtree. Also excludes self-requested approvals.
-- **No `scope`** — legacy org-wide listing of all pending approvals. Preserved for back-compat with admin tooling.
+- **No `scope`** — every pending approval the caller may see: the whole org for an org admin; otherwise approvals whose requester or current resolver is the caller or one of its descendants. The same relationship gates `GET /v1/approvals/{id}` (404 for an unrelated caller) and `?identity_id=` (unrelated rows are dropped), and it is the audience approval events reach on the event stream.
 
 `mine`, `assigned`, and `actionable` all require an identity-bound credential (the caller has to be a real identity to ask "is this mine?").
 

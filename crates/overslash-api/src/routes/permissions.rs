@@ -17,7 +17,7 @@ use super::util::fmt_time;
 use crate::{
     AppState,
     error::{AppError, Result},
-    extractors::{AdminAcl, AuthContext, ClientIp, OrgAcl, ReqExt},
+    extractors::{AdminAcl, ClientIp, OrgAcl, ReqExt},
     services::principals::resolve_service_principals,
 };
 
@@ -145,26 +145,34 @@ struct ListPermissionsQuery {
 
 async fn list_permissions(
     State(state): State<AppState>,
-    auth: AuthContext,
+    acl: OrgAcl,
     scope: OrgScope,
     Query(q): Query<ListPermissionsQuery>,
 ) -> Result<Json<Vec<PermissionResponse>>> {
-    // ?identity_id= is the identity-hierarchy detail panel filter: any
-    // authenticated org member may list permission rules attached to a
-    // specific identity in their own org. Cross-tenant ids are blocked at
-    // the scope boundary (returns None).
+    // ?identity_id= is the identity-hierarchy detail panel filter. A rule set
+    // says what an identity may do unattended — whose mailbox, which repos —
+    // so it is read by the same relationship that gates approvals: an org
+    // admin, or the target itself or one of its ancestors. Anyone else gets
+    // the cross-tenant answer, 404.
     //
-    // Without a query param the legacy MVP behaviour applies: list rules
-    // for the calling identity.
+    // Without a query param, list rules for the calling identity.
+    let caller = acl
+        .identity_id
+        .ok_or_else(|| AppError::BadRequest("no identity on this key".into()))?;
     let identity_id = if let Some(target) = q.identity_id {
         scope
             .get_identity(target)
             .await?
             .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
+        let related = acl.access_level >= overslash_core::permissions::AccessLevel::Admin
+            || crate::services::permission_chain::is_self_or_ancestor(&scope, caller, target)
+                .await?;
+        if !related {
+            return Err(AppError::NotFound("identity not found".into()));
+        }
         target
     } else {
-        auth.identity_id
-            .ok_or_else(|| AppError::BadRequest("no identity on this key".into()))?
+        caller
     };
     let rows = scope
         .list_permission_rules_for_identity(identity_id)
