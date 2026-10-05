@@ -88,8 +88,10 @@ pub(crate) use auth::{resolve_mcp_oauth_bearer, resolve_replay_auth_header};
 
 // Effective-MCP resolution shared with the instance-scoped resync route.
 pub(crate) use mcp_resolve::{
-    ResolvedMcp, overlay_instance_discovered_tools, resolve_effective_mcp,
+    ResolvedMcp, mcp_base, overlay_instance_discovered_tools, resolve_effective_mcp,
 };
+// Where a call lands — shared with the org-vault gate's status view.
+pub(crate) use service_resolve::effective_base;
 
 /// Cap on the number of instance names we surface in `ServiceResolution`
 /// error payloads. Agents only need a handful to disambiguate; the full

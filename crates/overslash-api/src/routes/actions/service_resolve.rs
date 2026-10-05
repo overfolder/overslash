@@ -130,12 +130,10 @@ pub(super) async fn resolve_service_for_call(
     // Instance exists — resolve its template; propagate errors rather than
     // falling back to the global registry, which could match on the wrong key.
     if let Some(inst) = instance {
-        let svc = crate::routes::templates::resolve_template_definition(
-            state,
-            ext,
-            auth.org_id,
-            auth.identity_id,
-            &inst.template_key,
+        let svc = crate::services::platform_services::instance_template(
+            state.db(ext),
+            &state.registry,
+            &inst,
         )
         .await?;
         return Ok((inst, svc));
@@ -223,7 +221,7 @@ pub(super) async fn resolve_service_for_call(
 /// land *before* deciding whether the platform gateway credential (D39) may be
 /// injected — the two derivations drifting apart would mean injecting a
 /// credential meant for one host onto a request bound for another.
-pub(super) fn effective_base(
+pub(crate) fn effective_base(
     instance: Option<&overslash_db::repos::service_instance::ServiceInstanceRow>,
     svc: &overslash_core::types::ServiceDefinition,
 ) -> Option<String> {

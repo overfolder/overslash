@@ -75,26 +75,13 @@ pub(crate) async fn resolve_instance_connection(
 ) -> Result<Option<ConnectionRow>, AppError> {
     let user_scope = UserScope::new(scope.org_id(), owner_identity_id, scope.db().clone());
     let connection = if let Some(inst) = instance {
-        if let Some(conn_id) = inst.connection_id {
+        if inst.connection_id.is_some() {
             // Only the instance owner's own connection, for this provider —
             // the same read rule as the HTTP resolver. Anything else is
             // treated as no connection: never resolved into another user's
             // token (which this path would send to `instance.url`).
-            match scope.get_connection(conn_id).await? {
-                Some(c)
-                    if crate::services::platform_services::pinned_connection_usable(
-                        scope,
-                        inst.owner_identity_id,
-                        c.identity_id,
-                        &c.provider_key,
-                        Some(provider),
-                    )
-                    .await? =>
-                {
-                    Some(c)
-                }
-                _ => None,
-            }
+            crate::services::platform_services::pinned_connection(scope, inst, |p| p == provider)
+                .await?
         } else if inst.use_default_connection {
             user_scope.find_my_connection_by_provider(provider).await?
         } else {
@@ -104,6 +91,20 @@ pub(crate) async fn resolve_instance_connection(
         user_scope.find_my_connection_by_provider(provider).await?
     };
     Ok(connection)
+}
+
+/// Where an MCP call lands: `instance.url ?? layer_url ?? mcp.url`, as
+/// [`resolve_effective_mcp`] derives it — expressed over a definition so
+/// the org-vault gate can apply the same derivation to the org tier.
+pub(crate) fn mcp_base(
+    instance: Option<&ServiceInstanceRow>,
+    def: &ServiceDefinition,
+) -> Option<String> {
+    instance
+        .and_then(|i| i.url.clone())
+        .or_else(|| def.instance_defaults.as_ref().and_then(|d| d.url.clone()))
+        .or_else(|| def.mcp.as_ref().and_then(|m| m.url.clone()))
+        .map(|u| u.trim_end_matches('/').to_string())
 }
 
 /// Resolve the effective URL + auth for an MCP call against `instance`.
@@ -168,11 +169,27 @@ pub(crate) async fn resolve_effective_mcp(
             // The instance's binding is a secret path under the read rule; a
             // template default is a bare name, read in the instance's own
             // namespace (owner's vault, or the org vault for an org service).
+            //
+            // An org-vault binding rides only to the URL the org/global tier
+            // of the template points at (`OrgVaultGate`) — never to one the
+            // owner of a user-level instance chose.
             let path = match (instance.secret_name.as_deref(), tpl_sn.as_deref()) {
-                (Some(bound), _) => crate::services::secret_paths::readable_instance_binding(
-                    instance.owner_identity_id,
-                    bound,
-                ),
+                (Some(bound), _) => {
+                    let gate = crate::services::secret_paths::OrgVaultGate::for_instance(
+                        state.db(ext),
+                        &state.registry,
+                        instance,
+                        Some(url.trim_end_matches('/')),
+                        mcp_base,
+                    )
+                    .await?;
+                    crate::services::secret_paths::readable_slot_binding(
+                        instance.owner_identity_id,
+                        bound,
+                        &gate,
+                        None,
+                    )
+                }
                 (None, Some(default)) => Some(
                     overslash_core::types::SecretNamespace::from_owner(instance.owner_identity_id)
                         .path(default),

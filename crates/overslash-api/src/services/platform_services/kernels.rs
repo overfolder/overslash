@@ -132,8 +132,13 @@ pub async fn kernel_list_services(
     }
 
     // Bulk-load connections + templates so credentials_status is one pass.
-    let connection_ids: Vec<Uuid> = rows.iter().filter_map(|r| r.connection_id).collect();
-    let connections_by_id = scope.get_connections_by_ids(&connection_ids).await?;
+    // Only pins the call path would use (`usable_pins`), keyed by instance.
+    let pins_by_instance = usable_pins(
+        &scope,
+        rows.iter()
+            .filter_map(|r| r.connection_id.map(|c| (r.id, r.owner_identity_id, c))),
+    )
+    .await?;
 
     let mut templates: HashMap<(Option<Uuid>, String), ServiceDefinition> = HashMap::new();
     for row in &rows {
@@ -141,15 +146,7 @@ pub async fn kernel_list_services(
         if templates.contains_key(&key) {
             continue;
         }
-        if let Ok(tpl) = resolve_template_definition(
-            &ctx.db,
-            &ctx.registry,
-            row.org_id,
-            row.owner_identity_id,
-            &row.template_key,
-        )
-        .await
-        {
+        if let Ok(tpl) = instance_template(&ctx.db, &ctx.registry, row).await {
             templates.insert(key, tpl);
         }
     }
@@ -213,29 +210,28 @@ pub async fn kernel_list_services(
                 let mode_has_oauth = tpl
                     .oauth_provider_for_mode(row.auth_mode.as_deref())
                     .is_some();
-                let scopes: ScopeKnowledge =
-                    if let Some(cid) = row.connection_id.filter(|_| mode_has_oauth) {
-                        match connections_by_id.get(&cid) {
-                            Some(c) => scope_knowledge(c.scopes.as_deref()),
-                            None => ScopeKnowledge::NoConnection,
-                        }
-                    } else if !row.use_default_connection {
-                        // Opted out of the default fallback and nothing pinned:
-                        // execution resolves no connection, so the badge is
-                        // NoConnection regardless of what the owner has for the
-                        // provider (a sibling instance may have populated the cache).
-                        ScopeKnowledge::NoConnection
-                    } else if let (Some(owner), Some(provider)) = (
-                        row.owner_identity_id,
-                        tpl.oauth_provider_for_mode(row.auth_mode.as_deref()),
-                    ) {
-                        match conn_by_owner_provider.get(&(owner, provider.to_string())) {
-                            Some(opt) => scope_knowledge(opt.as_deref()),
-                            None => ScopeKnowledge::NoConnection,
-                        }
-                    } else {
-                        ScopeKnowledge::NoConnection
-                    };
+                let scopes: ScopeKnowledge = if row.connection_id.is_some() && mode_has_oauth {
+                    match pins_by_instance.get(&row.id) {
+                        Some(c) => scope_knowledge(c.scopes.as_deref()),
+                        None => ScopeKnowledge::NoConnection,
+                    }
+                } else if !row.use_default_connection {
+                    // Opted out of the default fallback and nothing pinned:
+                    // execution resolves no connection, so the badge is
+                    // NoConnection regardless of what the owner has for the
+                    // provider (a sibling instance may have populated the cache).
+                    ScopeKnowledge::NoConnection
+                } else if let (Some(owner), Some(provider)) = (
+                    row.owner_identity_id,
+                    tpl.oauth_provider_for_mode(row.auth_mode.as_deref()),
+                ) {
+                    match conn_by_owner_provider.get(&(owner, provider.to_string())) {
+                        Some(opt) => scope_knowledge(opt.as_deref()),
+                        None => ScopeKnowledge::NoConnection,
+                    }
+                } else {
+                    ScopeKnowledge::NoConnection
+                };
                 derive_credentials_status(
                     tpl,
                     row.auth_mode.as_deref(),
@@ -301,17 +297,8 @@ pub async fn kernel_get_service(
     }
     .ok_or_else(|| AppError::NotFound(format!("service '{}' not found", input.name)))?;
 
-    let credentials_status =
-        compute_credentials_status(&ctx.db, &ctx.registry, &scope, &row, row.owner_identity_id)
-            .await;
-    let tv = template_view(
-        &ctx.db,
-        &ctx.registry,
-        &row,
-        row.owner_identity_id,
-        &ctx.config.public_url,
-    )
-    .await;
+    let credentials_status = compute_credentials_status(&ctx.db, &ctx.registry, &scope, &row).await;
+    let tv = template_view(&ctx.db, &ctx.registry, &row, &ctx.config.public_url).await;
     // Bindings read relative to the caller's own vault (`row_to_detail`).
     let viewer = group_ceiling::resolve_ceiling_user_id(&scope, auth_identity)
         .await
@@ -355,17 +342,10 @@ pub async fn kernel_update_service(
         || input.auth_mode.is_some()
         || pins_connection
     {
-        let template_lookup_identity = existing.owner_identity_id.or(Some(auth_identity));
-        Some(
-            resolve_template_definition(
-                &ctx.db,
-                &ctx.registry,
-                ctx.org_id,
-                template_lookup_identity,
-                &existing.template_key,
-            )
-            .await?,
-        )
+        // The instance's own template — never the editor's: an admin with a
+        // same-key user template would otherwise validate an org-level
+        // service's bindings and config against the wrong definition.
+        Some(instance_template(&ctx.db, &ctx.registry, &existing).await?)
     } else {
         None
     };
@@ -552,14 +532,7 @@ pub async fn kernel_update_service(
     // The dashboard assigns this response straight onto the row it renders, so
     // an undecorated one hides the instance's own icon and Test button until a
     // reload — the moment a user most wants to press it.
-    let tv = template_view(
-        &ctx.db,
-        &ctx.registry,
-        &row,
-        row.owner_identity_id,
-        &ctx.config.public_url,
-    )
-    .await;
+    let tv = template_view(&ctx.db, &ctx.registry, &row, &ctx.config.public_url).await;
     let row_id = row.id;
     let row_owner = row.owner_identity_id;
     let row_credentials = row.credentials.0.clone();

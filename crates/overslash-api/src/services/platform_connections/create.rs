@@ -200,7 +200,7 @@ pub(crate) async fn kernel_create_connection_for_identity(
             // must not lend its account email to a URL this caller receives.
             // (The callback refuses a foreign upgrade target anyway.)
             Some(conn_id) => OrgScope::new(ctx.org_id, ctx.db.clone())
-                .get_connection(conn_id)
+                .get_connection_any_owner(conn_id)
                 .await?
                 .filter(|c| c.identity_id == identity_id)
                 .and_then(|c| c.account_email),

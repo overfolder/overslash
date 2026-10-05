@@ -1385,6 +1385,29 @@ This amends D32 (map values are paths, not names in "the org vault") and D85 (re
 **Rationale**: The twin of D119 for connections. Create checked a pin's owner; update did not, and the resolvers loaded the pin org-wide — so a member could re-pin their own service onto a colleague's connection and act as that account, and on an MCP-OAuth instance (whose `url` the same update sets) receive the colleague's bearer token at a host of their choosing. Connection ids are not secret (they appear on group-shared instances), so the check has to be on ownership, at write and at read; the read-side rule also neutralises any pin written before the fix. Cross-org was already closed (every lookup filters `org_id`).
 
 
+## D-NEXT: Every stored reference to an owned resource has one binding policy, and owner-blind getters are named and fenced
+
+**Date**: 2026-10
+**Decision**: Each kind of reference that one owned resource stores to another has exactly one **binding-policy module**, and it owns both the write check and the read check. Every create, update, import, setup-link, callback, replay and view path goes through it:
+
+| Reference | Policy | Write | Read |
+|---|---|---|---|
+| Secret path (`credentials`, `secret_name`, MCP bearer) | `services::secret_paths` | `BindingWriter` (D119) | `readable_slot_binding` = vault rule + `OrgVaultGate` |
+| Pinned `connection_id` | `platform_services::connection_binding` | `validate_connection_binding`, `check_pin` (callback, import) | `pinned_connection` (calls), `usable_pins` (views) |
+| Pinned BYOC client (`byoc_credential_id`) | `services::byoc_binding` | tier 1 of `client_credentials::resolve` (create, import, MCP, upgrade) | `usable_byoc_pin` (tier 1a, every exchange/refresh) |
+| Instance → template | `platform_services::instance_template` | instance create resolves the owner's tiers | every path holding an instance row |
+
+Three rules are new:
+- **An instance's template is its owner's.** The template is resolved in the instance owner's tiers, or org → global for an org-level instance, and never in the caller's. That covers the call path, approval replay, and update validation. Creating an org-level instance no longer finds the creating admin's own user tier.
+- **The org vault follows only the org's endpoint.** A user-level instance reads the org vault only when its request lands on the base the org/global tier of its template declares (`effective_base` for HTTP, the MCP URL for MCP). It then reads only that tier's org-source slots, under that tier's `default_secret_name`. An instance `url` override, a user-tier template or a user layer moves the destination, and the org secret stays behind: the slot falls back to the owner's own copy, or reports missing. The exception is a host the platform holds a key for (D39), which still binds the org path, because the platform rung re-checks the host at send time. Org-level instances are unaffected.
+- **A BYOC pin must be the connection owner's own app, for the same provider.** This means the same user, or one of that user's own agents. It is checked when a pin enters and at every use. A failing stored pin falls through the cascade, and a failing explicit pin is a 400. Admins are not exempt.
+
+The org-wide getters are renamed for what they do: `get_connection_any_owner`, `get_connections_by_ids_any_owner`, `list_all_connections_any_owner`, `get_byoc_credential_any_owner` and `list_byoc_credentials_any_owner`. The `binding_guard` test (`crates/overslash-api/src/binding_guard.rs`) fails when one of them, `get_current_secret_value`, `get_secret_value_at_version` or the bare vault rule is called from a file outside its allowlist; each allowlist entry carries a reason. It also fails when an instance's `template_key` is resolved without `instance_template`, and when a new `OrgScope` getter returns connection or BYOC rows without saying `_any_owner`. Views read pins through `usable_pins`, so a foreign pin shows as "not connected", which matches what the call path does, and never shows a colleague's `account_email`.
+
+This amends D115 (an endpoint override no longer carries org-vault credentials), D119's read rule (the org vault is gated by destination) and D120 (pins written by the callback and by import get the same owner-or-own-agent and provider check).
+
+**Rationale**: D119 and D120 were the same bug twice. A reference on A's resource pointed at B's resource because one write path checked ownership and another didn't, the call-time read trusted the stored value, and the DB API made the org-wide lookup the easy one. An audit after them found three more cases of the same class: the template shadow, the org-vault exfiltration through `url` (or through a user template naming `overfwd_gateway_key` as its default), and an unchecked BYOC pin. Fixing each by hand leaves the next one to be found by luck. Putting both halves of the rule in one module per reference makes a new path pick the policy up by construction. Naming the owner-blind getters makes misuse visible in review, and the guard turns "remember to check" into a failing test. Gating the org vault by destination rather than refusing it outright keeps the shipped case working: a personal `email` instance on the org's overfwd still gets the gateway key.
+
 ## D121: Behind the GCLB, the client IP comes from a header the LB stamps, and the API is reachable only through the LB
 
 **Date**: 2026-10

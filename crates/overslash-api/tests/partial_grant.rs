@@ -233,7 +233,11 @@ async fn refresh_self_heals_recorded_scopes() {
     .unwrap();
 
     let scope = overslash_db::scopes::OrgScope::new(fx.org_id, pool.clone());
-    let conn = scope.get_connection(conn_id).await.unwrap().unwrap();
+    let conn = scope
+        .get_connection_any_owner(conn_id)
+        .await
+        .unwrap()
+        .unwrap();
     assert!(conn.scopes.is_none(), "precondition: scopes start NULL");
 
     let http = reqwest::Client::new();
@@ -250,7 +254,11 @@ async fn refresh_self_heals_recorded_scopes() {
     assert_eq!(token, "mock_refreshed_access_token");
 
     // The NULL grant is now the set the refresh declared.
-    let healed = scope.get_connection(conn_id).await.unwrap().unwrap();
+    let healed = scope
+        .get_connection_any_owner(conn_id)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(
         healed.scopes.as_deref(),
         Some(&[METADATA.to_string()][..]),

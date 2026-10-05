@@ -112,6 +112,18 @@ pub async fn kernel_import_connection(
         .await?
         .ok_or_else(|| AppError::NotFound(format!("provider '{}' not found", input.provider)))?;
 
+    // The connection-pin rule, before anything is written: every instance
+    // to pin must be the importing user's own, for this provider. The DB-side
+    // gate (`pin_within_tx`) re-checks ownership inside the transaction.
+    check_import_pins(
+        &ctx,
+        &scope,
+        identity_id,
+        &input.provider,
+        &input.pin_service_ids,
+    )
+    .await?;
+
     let enc_key = ctx.config.keyring()?;
 
     // Imported connections must pin a BYOC client: Overslash self-refreshes the
@@ -377,6 +389,39 @@ pub async fn kernel_import_connection(
 /// Map the atomic-pin failure onto the API error surface. A `Bind` error is the
 /// caller's fault (unknown / foreign-owned / org-level instance id) → 400 with
 /// the coarse code; a DB error propagates as-is.
+async fn check_import_pins(
+    ctx: &PlatformCallContext,
+    scope: &OrgScope,
+    identity_id: Uuid,
+    provider: &str,
+    pin_service_ids: &[Uuid],
+) -> Result<(), AppError> {
+    for &sid in pin_service_ids {
+        // A missing id is reported by the transactional bind, with its code.
+        let Some(instance) = scope.get_service_instance(sid).await? else {
+            continue;
+        };
+        if let Err(code) = crate::services::platform_services::check_pin(
+            scope,
+            &ctx.db,
+            &ctx.registry,
+            &instance,
+            identity_id,
+            provider,
+        )
+        .await?
+        {
+            return Err(pin_error_to_app_error(
+                overslash_db::scopes::CreateAndPinError::Bind {
+                    service_instance_id: sid,
+                    code,
+                },
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn pin_error_to_app_error(e: overslash_db::scopes::CreateAndPinError) -> AppError {
     use overslash_db::scopes::CreateAndPinError;
     match e {

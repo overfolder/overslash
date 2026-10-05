@@ -282,6 +282,15 @@
 	// An API from before credential slots sends no `secrets` — fall back to the
 	// legacy single scalar field in that case.
 	const schemeKeyed = $derived(usesSecret && secretSlots.length > 0);
+	// Org-vault defaults a personal service would send — which stay behind if
+	// the endpoint is moved (see ServiceEndpointField).
+	const orgSecrets = $derived(
+		userLevel
+			? secretSlots
+					.filter((s) => s.source === 'org' && s.default_secret_name)
+					.map((s) => s.default_secret_name as string)
+			: []
+	);
 	// An HTTP `oauth` scheme, or an MCP-runtime `auth.kind: oauth` provider
 	// (D24) normalized to the same {provider, scopes} shape so the connect
 	// surface below is shared. MCP OAuth declares no template-level scopes.
@@ -1361,6 +1370,7 @@
 					defaultUrl={endpoint.defaultUrl}
 					{inheritedUrl}
 					required={urlRequired}
+					{orgSecrets}
 				/>
 			{/if}
 
@@ -1410,6 +1420,7 @@
 							mcp={isMcp}
 							defaultUrl={endpoint.defaultUrl}
 							{inheritedUrl}
+							{orgSecrets}
 						/>
 					{/if}
 					{#if configSplit.more.length > 0}

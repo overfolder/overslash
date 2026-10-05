@@ -306,12 +306,10 @@ async fn bind_setup_slot(
     // try again." over a link whose retry answers `410 already_fulfilled`.
     // `None` means "not known", which the page and the event both render as
     // silence rather than as completion.
-    let remaining_slots = match crate::services::platform_services::resolve_template_definition(
+    let remaining_slots = match crate::services::platform_services::instance_template(
         state.db(ext),
         &state.registry,
-        row.org_id,
-        instance.owner_identity_id,
-        &instance.template_key,
+        &instance,
     )
     .await
     {

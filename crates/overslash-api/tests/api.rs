@@ -39,6 +39,7 @@ mod auth_magic_link;
 mod auto_call_on_approve;
 mod bi_views;
 mod billing;
+mod binding_policy;
 mod byoc_self_service;
 mod call_results;
 mod call_timeouts;

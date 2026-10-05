@@ -53,9 +53,11 @@ impl OrgScope {
         .await
     }
 
-    /// Look up a BYOC credential by id, scoped to this org. Returns `None`
-    /// if the row belongs to another tenant.
-    pub async fn get_byoc_credential(
+    /// Look up a BYOC credential by id, scoped to this org — **any owner**.
+    /// Returns `None` if the row belongs to another tenant, but not if it
+    /// belongs to another user. A stored pin goes through `byoc_binding`
+    /// instead; the `binding_guard` test fences callers.
+    pub async fn get_byoc_credential_any_owner(
         &self,
         id: Uuid,
     ) -> Result<Option<ByocCredentialRow>, sqlx::Error> {
@@ -63,8 +65,11 @@ impl OrgScope {
         Ok(row.filter(|r| r.org_id == self.org_id()))
     }
 
-    /// List BYOC credentials in this org.
-    pub async fn list_byoc_credentials(&self) -> Result<Vec<ByocCredentialRow>, sqlx::Error> {
+    /// List BYOC credentials in this org — **any owner**; callers filter to
+    /// the caller's own unless admin (fenced by the `binding_guard` test).
+    pub async fn list_byoc_credentials_any_owner(
+        &self,
+    ) -> Result<Vec<ByocCredentialRow>, sqlx::Error> {
         crate::repos::byoc_credential::list_by_org(self.db(), self.org_id()).await
     }
 

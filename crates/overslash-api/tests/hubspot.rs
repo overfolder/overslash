@@ -505,7 +505,7 @@ async fn test_hubspot_callback_records_requested_scopes_when_token_omits_scope()
         .parse()
         .unwrap();
     let conn = overslash_db::scopes::OrgScope::new(org_id, pool.clone())
-        .get_connection(conn_id)
+        .get_connection_any_owner(conn_id)
         .await
         .unwrap()
         .unwrap();

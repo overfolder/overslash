@@ -67,14 +67,8 @@ pub(super) async fn test_service(
     // and a caller who happens to own a same-key template of their own would
     // shadow the instance's real one. Every other instance-view path passes
     // `owner_identity_id` for the same reason.
-    let def = platform_services::resolve_template_definition(
-        state.db(&ext),
-        &state.registry,
-        acl.org_id,
-        instance.owner_identity_id,
-        &instance.template_key,
-    )
-    .await?;
+    let def =
+        platform_services::instance_template(state.db(&ext), &state.registry, &instance).await?;
 
     let verdict = probe::run(
         state.clone(),
@@ -179,14 +173,8 @@ pub(super) async fn activate_service(
     }
 
     // Resolved as the instance's *owner* for the reason `test_service` states.
-    let def = platform_services::resolve_template_definition(
-        state.db(&ext),
-        &state.registry,
-        acl.org_id,
-        instance.owner_identity_id,
-        &instance.template_key,
-    )
-    .await?;
+    let def =
+        platform_services::instance_template(state.db(&ext), &state.registry, &instance).await?;
 
     let verdict = probe::run(
         state.clone(),

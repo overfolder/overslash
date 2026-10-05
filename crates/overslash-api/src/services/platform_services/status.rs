@@ -13,29 +13,41 @@ pub async fn compute_credentials_status(
     registry: &overslash_core::registry::ServiceRegistry,
     scope: &OrgScope,
     row: &ServiceInstanceRow,
-    template_owner: Option<Uuid>,
 ) -> Option<CredentialsStatus> {
-    let template =
-        resolve_template_definition(db, registry, row.org_id, template_owner, &row.template_key)
-            .await
-            .ok()?;
+    let template = instance_template(db, registry, row).await.ok()?;
     let conn_scopes = resolve_effective_scopes(db, scope, &template, row).await;
     let scopes = match &conn_scopes {
         None => ScopeKnowledge::NoConnection,
         Some(opt) => scope_knowledge(opt.as_deref()),
     };
     // A binding the read rule refuses (a user-level instance pointing into
-    // another user's vault) counts as unbound, exactly as it resolves.
-    let readable = |v: &str| {
-        crate::services::secret_paths::readable_instance_binding(row.owner_identity_id, v).is_some()
+    // another user's vault, or into the org vault from a destination its
+    // owner moved) counts as unbound, exactly as it resolves.
+    let base_of = if template.runtime == overslash_core::types::Runtime::Mcp {
+        crate::routes::actions::mcp_base
+    } else {
+        crate::routes::actions::effective_base
+    };
+    let gate = crate::services::secret_paths::OrgVaultGate::for_instance(
+        db,
+        registry,
+        row,
+        base_of(Some(row), &template).as_deref(),
+        base_of,
+    )
+    .await
+    .ok()?;
+    let readable = |v: &str, slot: Option<&str>| {
+        crate::services::secret_paths::readable_slot_binding(row.owner_identity_id, v, &gate, slot)
+            .is_some()
     };
     let credentials: CredentialsMap = row
         .credentials
         .iter()
-        .filter(|(_, v)| readable(v))
+        .filter(|(k, v)| readable(v, Some(k)))
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
-    let secret_name = row.secret_name.as_deref().filter(|v| readable(v));
+    let secret_name = row.secret_name.as_deref().filter(|v| readable(v, None));
     derive_credentials_status(
         &template,
         row.auth_mode.as_deref(),
@@ -67,13 +79,9 @@ pub async fn template_view(
     db: &sqlx::PgPool,
     registry: &overslash_core::registry::ServiceRegistry,
     row: &ServiceInstanceRow,
-    template_owner: Option<Uuid>,
     public_url: &str,
 ) -> TemplateView {
-    let Ok(template) =
-        resolve_template_definition(db, registry, row.org_id, template_owner, &row.template_key)
-            .await
-    else {
+    let Ok(template) = instance_template(db, registry, row).await else {
         return TemplateView {
             icon_url: None,
             test_action: None,
@@ -118,9 +126,8 @@ pub(crate) async fn resolve_effective_scopes(
     // OAuth at all. `derive_credentials_status` would then fall through its
     // `!has_oauth` guard and return `None`, dropping the badge entirely
     // instead of reporting on the token the instance actually uses.
-    if let Some(conn_id) = row.connection_id.filter(|_| mode_has_oauth) {
-        return scope
-            .get_connection(conn_id)
+    if row.connection_id.is_some() && mode_has_oauth {
+        return usable_pin(scope, row)
             .await
             .ok()
             .flatten()

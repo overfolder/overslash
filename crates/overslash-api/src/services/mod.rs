@@ -5,6 +5,7 @@ pub mod async_executor;
 pub mod audit_capture;
 pub mod billing_email;
 pub mod billing_tier;
+pub mod byoc_binding;
 pub mod call_result;
 pub mod call_timeout;
 pub mod client_credentials;
