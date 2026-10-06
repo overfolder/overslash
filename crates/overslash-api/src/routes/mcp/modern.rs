@@ -544,7 +544,15 @@ pub(super) async fn continue_elicitation(
     let db = state.db_pool(ext);
     // A no-op when the row is no longer `pending` (a duplicate retry, or the
     // sweeper got there first); the read below reports whatever it settled as.
-    complete_elicitation_and_retire(state, ext, &db, &claims.elicit_id, answer).await;
+    complete_elicitation_and_retire(
+        state,
+        ext,
+        &db,
+        &claims.elicit_id,
+        answer,
+        bearer.client_ip.as_deref(),
+    )
+    .await;
     let outcome =
         mcp_session::await_completion_with_timeout(state, ext, &claims.elicit_id, SETTLE_TIMEOUT)
             .await;
