@@ -13,6 +13,7 @@ use crate::common;
 
 use std::time::Duration;
 
+use overslash_api::services::loopback::Loopback;
 use overslash_api::services::{jwt, mcp_session};
 use overslash_db::repos as db;
 use serde_json::{Value, json};
@@ -38,11 +39,16 @@ struct McpFixture {
     client_id: String,
     /// MCP-aud JWT for the agent, carrying mcp_client_id so /mcp recognises it.
     agent_mcp_token: String,
+    /// The running API's loopback, shared with `build_state_for_session` so
+    /// the helper's resolve + call carry a token that API accepts.
+    loopback: Loopback,
 }
 
 async fn bootstrap_mcp(declare_elicitation: bool) -> McpFixture {
     let pool = common::test_pool().await;
-    let (api_addr, client) = common::start_api(pool.clone()).await;
+    let loopback = Loopback::default();
+    let lb = loopback.clone();
+    let (api_addr, client) = common::start_api_with(pool.clone(), |c| c.loopback = lb).await;
     let base = format!("http://{api_addr}");
     let (org_id, agent_id, _agent_key, org_admin_key) =
         common::bootstrap_org_identity(&base, &client).await;
@@ -139,6 +145,7 @@ async fn bootstrap_mcp(declare_elicitation: bool) -> McpFixture {
         org_admin_key,
         client_id,
         agent_mcp_token,
+        loopback,
     }
 }
 
@@ -636,6 +643,7 @@ async fn complete_from_elicitation_accept_allow_resolves_and_calls() {
             "action": "accept",
             "content": { "decision": "allow" }
         }),
+        None,
     )
     .await
     .expect("complete_from_elicitation succeeds");
@@ -651,6 +659,54 @@ async fn complete_from_elicitation_accept_allow_resolves_and_calls() {
         final_response["execution"]["status"], "executed",
         "final_response: {final_response}"
     );
+}
+
+/// The resolve and the replayed call are loopbacks from this process; their
+/// audit rows must name whoever answered the dialog, not this process (in
+/// prod: Cloud Run's own egress, 34.96.x).
+#[tokio::test]
+async fn complete_from_elicitation_audits_the_answering_client() {
+    let fx = bootstrap_mcp(true).await;
+    let (approval_id, _) = gated_echo_approval(&fx).await;
+    let elicit_id = format!("elicit_{}", Uuid::new_v4());
+    db::mcp_elicitation::insert(
+        &fx.pool,
+        &elicit_id,
+        Uuid::new_v4(),
+        fx.agent_id,
+        approval_id,
+    )
+    .await
+    .unwrap();
+
+    let state = build_state_for_session(&fx).await;
+    mcp_session::complete_from_elicitation(
+        &state,
+        &axum::http::Extensions::new(),
+        &elicit_id,
+        &json!({ "action": "accept", "content": { "decision": "allow" } }),
+        Some("203.0.113.7"),
+    )
+    .await
+    .expect("complete_from_elicitation succeeds");
+
+    let rows: Vec<Value> = fx
+        .client
+        .get(format!("{}/v1/audit?limit=100", fx.base))
+        .header("Authorization", format!("Bearer {}", fx.org_admin_key))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    for action in ["approval.resolved", "action.executed"] {
+        let row = rows
+            .iter()
+            .find(|r| r["action"] == action)
+            .unwrap_or_else(|| panic!("no {action} row: {rows:?}"));
+        assert_eq!(row["ip_address"], "203.0.113.7", "{action}: {row}");
+    }
 }
 
 /// A real gated call (raw HTTP against a local echo server) that the agent
@@ -741,6 +797,7 @@ async fn choose_allow_remember(
         &axum::http::Extensions::new(),
         &elicit_id,
         &json!({ "action": "accept", "content": { "decision": "allow_remember" } }),
+        None,
     )
     .await
     .expect("decision dialog answer");
@@ -862,6 +919,7 @@ async fn remember_dialog_saves_the_picked_tier_with_its_ttl() {
             "action": "accept",
             "content": { "scope": serde_json::to_string(&broader).unwrap(), "ttl": "1h" }
         }),
+        None,
     )
     .await
     .expect("remember dialog answer");
@@ -911,6 +969,7 @@ async fn remember_dialog_without_scope_saves_the_exact_keys() {
         &axum::http::Extensions::new(),
         &next,
         &json!({ "action": "accept", "content": {} }),
+        None,
     )
     .await
     .expect("remember dialog answer");
@@ -939,6 +998,7 @@ async fn declining_the_remember_dialog_leaves_the_approval_pending() {
         &axum::http::Extensions::new(),
         &next,
         &json!({ "action": "decline" }),
+        None,
     )
     .await
     .unwrap();
@@ -987,6 +1047,7 @@ async fn remember_dialog_refuses_a_forged_scope() {
         &axum::http::Extensions::new(),
         &next,
         &json!({ "action": "accept", "content": { "scope": r#"["http:ANY:evil.example/**"]"# } }),
+        None,
     )
     .await
     .unwrap();
@@ -1283,6 +1344,7 @@ async fn complete_from_elicitation_decline_resolves_approval_as_denied() {
         &axum::http::Extensions::new(),
         &elicit_id,
         &json!({ "action": "decline" }),
+        None,
     )
     .await
     .unwrap();
@@ -1365,6 +1427,7 @@ async fn complete_from_elicitation_cancel_leaves_approval_pending() {
         &axum::http::Extensions::new(),
         &elicit_id,
         &json!({ "action": "cancel" }),
+        None,
     )
     .await
     .unwrap();
@@ -1435,6 +1498,7 @@ async fn complete_from_elicitation_client_error_answer_falls_back() {
             "action": "cancel",
             "content": { "code": -32601, "message": "Method not found" }
         }),
+        None,
     )
     .await
     .unwrap();
@@ -1550,6 +1614,7 @@ async fn a_failed_completion_still_retires_the_row() {
         &fx.pool,
         &elicit_id,
         &json!({ "action": "accept", "content": { "decision": "allow" } }),
+        None,
     )
     .await;
 
@@ -1953,6 +2018,7 @@ fn build_config_shape() -> overslash_api::config::Config {
 async fn build_state_for_session(fx: &McpFixture) -> overslash_api::AppState {
     let config = overslash_api::config::Config {
         public_url: fx.base.clone(),
+        loopback: fx.loopback.clone(),
         ..build_config_shape()
     };
 

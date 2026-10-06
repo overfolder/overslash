@@ -202,11 +202,16 @@ pub const REMEMBER_ID_PREFIX: &str = "elicit_remember_";
 ///   { action: "accept"|"decline"|"cancel", content?: { decision } }
 /// or, for the follow-up dialog (`REMEMBER_ID_PREFIX`):
 ///   { action, content?: { scope, ttl } }
+///
+/// `client_ip` is the address of whoever answered; both loopbacks carry it
+/// (`services::loopback`) so the resolve and the replayed call are audited
+/// against that client, not against this process.
 pub async fn complete_from_elicitation(
     state: &AppState,
     ext: &axum::http::Extensions,
     elicit_id: &str,
     elicit_response: &Value,
+    client_ip: Option<&str>,
 ) -> anyhow::Result<()> {
     // Atomically claim. If we don't claim, another replica is handling it.
     let row = match repo::claim(state.db(ext), elicit_id).await? {
@@ -379,14 +384,13 @@ pub async fn complete_from_elicitation(
 
     // ── Resolve. Send the user-session JWT as a cookie so the WriteAcl
     // path treats this as a dashboard-resolver call.
-    let resolve_url = format!(
-        "{}/v1/approvals/{}/resolve",
-        state.config.public_url.trim_end_matches('/'),
-        row.approval_id,
+    let loopback = &state.config.loopback;
+    let resolve_url = loopback.url(
+        &state.config.public_url,
+        &format!("/v1/approvals/{}/resolve", row.approval_id),
     );
-    let resolve_resp = state
-        .http_client
-        .post(&resolve_url)
+    let resolve_resp = loopback
+        .stamp(state.http_client.post(&resolve_url), client_ip)
         .header(
             "Cookie",
             format!(
@@ -419,14 +423,12 @@ pub async fn complete_from_elicitation(
         return Ok(());
     }
 
-    let call_url = format!(
-        "{}/v1/approvals/{}/call",
-        state.config.public_url.trim_end_matches('/'),
-        row.approval_id,
+    let call_url = loopback.url(
+        &state.config.public_url,
+        &format!("/v1/approvals/{}/call", row.approval_id),
     );
-    let call_resp = state
-        .http_client
-        .post(&call_url)
+    let call_resp = loopback
+        .stamp(state.http_client.post(&call_url), client_ip)
         .bearer_auth(&agent_mcp)
         .json(&json!({}))
         .send()

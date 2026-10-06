@@ -118,6 +118,10 @@ struct JsonRpcRequest {
 /// of it is the unexpected kind — a JWT mint, a loopback transport error, or
 /// the terminal write itself failing — so this retires the row on its behalf.
 ///
+/// `client_ip` is the address of whoever answered the dialog; the resolve and
+/// call loopbacks carry it (`services::loopback`), so their audit rows name
+/// that client rather than this process.
+///
 /// Retiring can race a resolve that already landed, leaving the model reading
 /// `pending_approval` for an approval that is really `allowed`. That is the
 /// benign race `elicitation::elicit_result_event` documents: the model's
@@ -129,11 +133,12 @@ pub async fn complete_elicitation_and_retire(
     db: &sqlx::PgPool,
     elicit_id: &str,
     result: &Value,
+    client_ip: Option<&str>,
 ) {
     // Bound the work: two loopback HTTP calls (resolve + call) shouldn't take
     // more than a minute even under load. Without this an unresponsive
     // upstream could pin a tokio task slot indefinitely.
-    let work = mcp_session::complete_from_elicitation(state, ext, elicit_id, result);
+    let work = mcp_session::complete_from_elicitation(state, ext, elicit_id, result, client_ip);
     match tokio::time::timeout(Duration::from_secs(60), work).await {
         Ok(Ok(())) => {}
         Ok(Err(e)) => {
@@ -229,7 +234,10 @@ async fn post_mcp(
             )
             .ok()
         });
-    let bearer = token.map(|token| Bearer { token, client_ip });
+    let bearer = token.map(|token| Bearer {
+        token,
+        client_ip: client_ip.clone(),
+    });
 
     // Per Streamable HTTP, clients echo the `Mcp-Session-Id` they received
     // on `initialize` in subsequent requests. We trust this header over the
@@ -295,7 +303,7 @@ async fn post_mcp(
     //
     // Legacy-only by construction: a 2026-07-28 client never sends a bare
     // response, because that era has no server-to-client requests to answer.
-    respond_to_elicitation(&state, &ext, &auth, &body).await
+    respond_to_elicitation(&state, &ext, &auth, client_ip, &body).await
 }
 
 /// Serve one request on an `initialize`-era (`2025-06-18`) connection.
@@ -351,6 +359,7 @@ async fn respond_to_elicitation(
     state: &AppState,
     ext: &axum::http::Extensions,
     auth: &AuthContext,
+    client_ip: Option<String>,
     body: &str,
 ) -> Response {
     if let Ok(resp) = serde_json::from_str::<Value>(body)
@@ -391,7 +400,15 @@ async fn respond_to_elicitation(
         let db = state.db_pool(ext);
         let id_owned = id.to_string();
         tokio::spawn(async move {
-            complete_elicitation_and_retire(&st, &ext_c, &db, &id_owned, &result).await;
+            complete_elicitation_and_retire(
+                &st,
+                &ext_c,
+                &db,
+                &id_owned,
+                &result,
+                client_ip.as_deref(),
+            )
+            .await;
         });
         return (StatusCode::ACCEPTED, "").into_response();
     }
