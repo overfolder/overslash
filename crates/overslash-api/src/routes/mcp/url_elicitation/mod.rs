@@ -175,7 +175,7 @@ pub(super) struct Ctx {
     pub(super) state: AppState,
     pub(super) ext: axum::http::Extensions,
     pub(super) auth: AuthContext,
-    pub(super) bearer: String,
+    pub(super) bearer: Bearer,
     pub(super) tool_name: String,
     pub(super) args: Value,
 }

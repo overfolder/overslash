@@ -169,18 +169,15 @@ What each path looks like at the container, and what gets recorded:
 |---|---|---|
 | Agent → `api.dev.overslash.com` / `*.run.app` (dev) | `<spoof…>, <client>` | `<client>` (hop 1) |
 | Agent → `api.overslash.com` (GCLB, prod) | `<spoof…>, <client>, 34.36.8.174` plus Google hops of unknown position | `<client>`, from the LB-stamped `X-Overslash-Edge-Client-Ip` |
-| Browser → `app.*` → Vercel rewrite → API | `<client>, <vercel-egress>[, <lb>, <google-egress>]` | `<client>` with the secret, `<vercel-egress>` without |
+| Browser → `app.*` → Vercel rewrite → API | `<client>, <vercel-egress>[, <lb>, …]` | `<client>` with the secret, `<vercel-egress>` without |
+| `POST /mcp` → its own `/v1/actions/call` (loopback) | none (dials `127.0.0.1:<port>`) | the `/mcp` caller, carried in `x-overslash-loopback-client-ip` with a per-process token (`services::loopback`) |
 
 | Env | `trusted_proxy_hops` | `trusted_proxy_cidrs` | Cloud Run ingress |
 |---|---|---|---|
 | prod | `2` (fallback only) | `34.36.8.174/32` (the LB address) | LB only (`INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER`) |
 | dev | `1` | `""` (no LB) | all |
 
-**The edge header.** Behind the global external Application Load Balancer
-(serverless NEG), XFF also carries Google addresses from ranges Google doesn't
-publish (not the documented 35.191.0.0/16 / 130.211.0.0/22). Prod recorded
-34.96.62.132 for every agent and MCP call at `hops = 1`, and still 34.96.62.181
-at `hops = 2`, so neither CIDRs nor counting hops find the client. Instead the
+**The edge header.** Rather than count or trust Google's hops in XFF, the
 LB's backend stamps `X-Overslash-Edge-Client-Ip: {client_ip_address}`
 (`modules/api-lb`), overwriting any value the client sent, and the API reads it
 via `OVERSLASH_TRUSTED_CLIENT_IP_HEADER`. A Vercel-vouched request still names
@@ -189,7 +186,16 @@ address Vercel saw. `hops`/CIDRs remain only as the fallback for a request
 without the header. All of this is safe **only** because `enable_api_lb` also
 restricts the service's ingress to the LB (`infra/main.tf` derives both). If
 `*.run.app` were reachable, a direct caller could send the header itself. See
-D102 and the decision that amends it.
+D102 and the decisions that amend it.
+
+**The MCP loopback.** The 34.96.x addresses prod recorded on agent rows were
+not LB hops at all: they were Cloud Run's own outbound address. `POST /mcp`
+runs each tool call as a second request to `/v1/actions/call`, and that
+request used to go out through `PUBLIC_URL` (Vercel → LB → Cloud Run), so
+every MCP-originated `action.executed` / `approval.created` row named this
+service as its client — correctly, for that hop. The loopback now dials the
+process directly and carries the address `/mcp` resolved, vouched for by a
+random per-process token. Direct REST calls were never affected.
 
 The prod LB address is a literal because `module.api_lb` depends on
 `module.cloud_run`. If `tofu output` ever shows a different `lb_ip`, update

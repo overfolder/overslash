@@ -715,6 +715,7 @@ where
         deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
         trusted_proxies: Default::default(),
+        loopback: Default::default(),
     };
     customize(&mut config);
 
@@ -953,6 +954,7 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
         trusted_proxies: Default::default(),
+        loopback: Default::default(),
     };
 
     let state = overslash_api::AppState {
@@ -1154,6 +1156,7 @@ where
         deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
         trusted_proxies: Default::default(),
+        loopback: Default::default(),
     };
     customize(&mut config);
 
@@ -1863,6 +1866,7 @@ where
         deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
         trusted_proxies: Default::default(),
+        loopback: Default::default(),
     };
     customize(&mut config);
 
@@ -2054,6 +2058,7 @@ pub async fn start_api_for_search(pool: PgPool) -> (String, Client) {
         deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
         trusted_proxies: Default::default(),
+        loopback: Default::default(),
     };
 
     let state = overslash_api::AppState {
@@ -2218,6 +2223,7 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
         trusted_proxies: Default::default(),
+        loopback: Default::default(),
     };
 
     let state = overslash_api::AppState {
@@ -2567,6 +2573,7 @@ pub async fn make_app_state(pool: PgPool) -> overslash_api::AppState {
         deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
         trusted_proxies: Default::default(),
+        loopback: Default::default(),
     };
     // Hand out a 1ms TTL so each test can flip the DB column and immediately
     // observe the new state without waiting on cache expiry. Tests that want

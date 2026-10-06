@@ -356,6 +356,9 @@ pub struct Config {
     /// the default trusts nothing, so the socket peer is the client. See
     /// [`crate::services::client_ip`].
     pub trusted_proxies: crate::services::client_ip::TrustedProxies,
+    /// Where `POST /mcp` re-issues tool calls, and the per-process token
+    /// that carries its caller's address across (`services::loopback`).
+    pub loopback: crate::services::loopback::Loopback,
 }
 
 /// A credential the *platform* holds on every org's behalf, for a service the
@@ -916,6 +919,7 @@ pub(crate) mod tests {
             deployment_env: DeploymentEnv::Local,
             connection_return_url_allowed_hosts: Vec::new(),
             trusted_proxies: Default::default(),
+            loopback: Default::default(),
         }
     }
 }

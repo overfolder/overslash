@@ -1942,6 +1942,7 @@ fn build_config_shape() -> overslash_api::config::Config {
         deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
         trusted_proxies: Default::default(),
+        loopback: Default::default(),
     }
 }
 
