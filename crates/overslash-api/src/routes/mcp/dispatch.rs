@@ -42,7 +42,7 @@ pub(super) fn normalize_stringified_params(args: &mut Value) {
 
 pub(super) async fn dispatch_search(
     state: &AppState,
-    bearer: &str,
+    bearer: &Bearer,
     args: &Value,
 ) -> Result<ForwardOutcome, String> {
     // Empty query is supported: it triggers browse mode in the REST handler,
@@ -77,7 +77,7 @@ pub(super) async fn dispatch_search(
 /// annotated `readOnlyHint: true`.
 pub(super) async fn dispatch_read(
     state: &AppState,
-    bearer: &str,
+    bearer: &Bearer,
     args: &Value,
 ) -> Result<ForwardOutcome, String> {
     if args.get("approval_id").is_some() {
@@ -237,7 +237,7 @@ fn verbose_flag(args: &Value) -> bool {
 
 pub(super) async fn dispatch_call(
     state: &AppState,
-    bearer: &str,
+    bearer: &Bearer,
     args: &Value,
 ) -> Result<ForwardOutcome, String> {
     // Resume-mode: caller is triggering the replay of a previously-approved
@@ -297,7 +297,7 @@ pub(super) async fn dispatch_call(
 
 async fn dispatch_overslash_platform(
     state: &AppState,
-    bearer: &str,
+    bearer: &Bearer,
     action: &str,
     args: &Value,
     require_risk: Option<&str>,
@@ -399,7 +399,7 @@ async fn dispatch_overslash_platform(
 /// MCP wrapper over the agent inbox. Fetches the two listings that
 /// [`inbox::build_events`] classifies — see that module for what the event
 /// types mean and why `result_unread` is the reason any of this exists.
-async fn dispatch_get_events(state: &AppState, bearer: &str) -> Result<ForwardOutcome, String> {
+async fn dispatch_get_events(state: &AppState, bearer: &Bearer) -> Result<ForwardOutcome, String> {
     // Two listings, merged. A typed error from either short-circuits — a
     // partial inbox would read as "nothing else needs you", which is exactly
     // the wrong thing to tell an agent that is about to stop polling.
@@ -441,7 +441,7 @@ async fn dispatch_get_events(state: &AppState, bearer: &str) -> Result<ForwardOu
 /// permission anchor declared on the action).
 async fn forward_overslash_action(
     state: &AppState,
-    bearer: &str,
+    bearer: &Bearer,
     action: &str,
     params: Option<&Value>,
     require_risk: Option<&str>,
@@ -473,7 +473,7 @@ async fn forward_overslash_action(
 
 pub(super) async fn dispatch_auth(
     state: &AppState,
-    bearer: &str,
+    bearer: &Bearer,
     args: &Value,
 ) -> Result<ForwardOutcome, String> {
     let action = args
@@ -517,7 +517,7 @@ pub(super) async fn dispatch_auth(
 /// decides whether the caller↔requester relationship matches the tool.
 pub(super) async fn dispatch_approve(
     state: &AppState,
-    bearer: &str,
+    bearer: &Bearer,
     args: &Value,
 ) -> Result<ForwardOutcome, String> {
     let approval_id = args

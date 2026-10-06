@@ -83,6 +83,10 @@ pub fn load_config(host: String, port: u16) -> Config {
     }
     config.host = host;
     config.port = port;
+    // MCP tool calls loop back to this process directly, not out through
+    // PUBLIC_URL and whatever proxies front it (services::loopback).
+    config.loopback =
+        overslash_api::services::loopback::Loopback::on_local_port(&config.host, config.port);
     // If PUBLIC_URL wasn't set explicitly, re-derive it from the final
     // host/port — otherwise CLI overrides like `--port 7676` would still
     // advertise the env-default URL (e.g. http://localhost:3000) in the

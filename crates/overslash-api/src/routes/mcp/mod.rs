@@ -23,7 +23,8 @@
 //! loopback reqwest so we get the same rate-limiting, audit, and ACL
 //! plumbing the REST callers go through. Forwarded bearer tokens carry the
 //! caller's credential (either the same `aud=mcp` JWT presented on `/mcp`,
-//! or an `osk_` agent key).
+//! or an `osk_` agent key), and the client address `/mcp` resolved
+//! ([`Bearer`], `services::loopback`).
 //!
 //! `GET /mcp` returns a 405 for v1 — the protocol allows servers to opt out
 //! of server-initiated streams, and none of our tools require them yet.
@@ -52,7 +53,7 @@ use uuid::Uuid;
 
 use crate::{
     AppState,
-    extractors::{AuthContext, ReqExt},
+    extractors::{AuthContext, ClientIp, ReqExt},
     middleware::subdomain::RequestOrgContext,
     routes::oauth_as as oauth_as_routes,
     services::{inbox, jwt, mcp_session, oauth_as, session},
@@ -194,6 +195,7 @@ async fn post_mcp(
     ReqExt(ext): ReqExt,
     ctx: Option<Extension<RequestOrgContext>>,
     auth: Result<AuthContext, crate::error::AppError>,
+    ClientIp(client_ip): ClientIp,
     headers: HeaderMap,
     body: String,
 ) -> Response {
@@ -206,7 +208,7 @@ async fn post_mcp(
     // Prefer the explicit Bearer header. When the caller authenticated via
     // a session cookie (no Authorization header), mint a short-lived MCP
     // JWT on the fly so the loopback REST calls carry a valid Bearer.
-    let bearer: Option<String> = headers
+    let token: Option<String> = headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
@@ -227,6 +229,7 @@ async fn post_mcp(
             )
             .ok()
         });
+    let bearer = token.map(|token| Bearer { token, client_ip });
 
     // Per Streamable HTTP, clients echo the `Mcp-Session-Id` they received
     // on `initialize` in subsequent requests. We trust this header over the
@@ -267,7 +270,7 @@ async fn post_mcp(
                     &ext,
                     &auth,
                     req,
-                    bearer.as_deref(),
+                    bearer.as_ref(),
                     req_session_id,
                     accepts_sse,
                 )
@@ -280,7 +283,7 @@ async fn post_mcp(
             &ext,
             &auth,
             &req,
-            bearer.as_deref(),
+            bearer.as_ref(),
             accepts_sse,
             &modern,
         )
@@ -301,7 +304,7 @@ async fn legacy_request(
     ext: &axum::http::Extensions,
     auth: &AuthContext,
     req: JsonRpcRequest,
-    bearer: Option<&str>,
+    bearer: Option<&Bearer>,
     req_session_id: Option<Uuid>,
     accepts_sse: bool,
 ) -> Response {
@@ -471,24 +474,37 @@ impl ForwardOutcome {
     }
 }
 
+/// The credential `POST /mcp` forwards with, and the client address it
+/// resolved for the caller — carried onto the loopback so the REST side
+/// audits and throttles the real client, not this process.
+#[derive(Clone, Debug)]
+pub(super) struct Bearer {
+    pub(super) token: String,
+    pub(super) client_ip: Option<String>,
+}
+
 async fn forward(
     state: &AppState,
-    bearer: &str,
+    bearer: &Bearer,
     method: Method,
     path: &str,
     body: Option<Value>,
 ) -> Result<ForwardOutcome, String> {
-    let url = format!("{}{}", state.config.public_url.trim_end_matches('/'), path);
+    let url = state.config.loopback.url(&state.config.public_url, path);
     // Stamp the surface. This request is about to look exactly like a direct
     // REST call — same URL, same bearer — and the handler on the other end has
     // no other way to tell that an MCP client is waiting on the far side. Read
     // back by `extractors::CallerTransport`; see its doc comment for why an
     // advisory header is the right weight for what depends on it.
-    let mut req = state
+    let req = state
         .http_client
         .request(method, &url)
         .header(crate::extractors::TRANSPORT_HEADER, "mcp")
-        .bearer_auth(bearer);
+        .bearer_auth(&bearer.token);
+    let mut req = state
+        .config
+        .loopback
+        .stamp(req, bearer.client_ip.as_deref());
     if let Some(b) = body {
         req = req.json(&b);
     }

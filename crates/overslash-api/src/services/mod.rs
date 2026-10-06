@@ -33,6 +33,7 @@ pub mod invite_adoption;
 pub mod invite_email;
 pub mod jwt;
 pub mod key_rotation;
+pub mod loopback;
 pub mod magic_link_email;
 pub mod mcp_auth;
 pub mod mcp_caller;

@@ -411,10 +411,9 @@ mod tests {
         assert_eq!(resolve(&t, GFE, &[&xff], None), "198.51.100.66");
     }
 
-    // What prod's GCLB actually delivers: the LB appends `<client>, <lb-ip>`,
-    // then the hop into Cloud Run appends a Google egress address of no
-    // published range. With hops=1 that egress was recorded for every agent
-    // call; prod trusts it by position instead (hops=2, ingress LB-only).
+    // A Google address appended after the LB, as D121 once believed prod's
+    // chain carried (the 34.96.x it recorded turned out to be the MCP
+    // loopback's own egress). Positional trust must still handle the shape.
     const LB_EGRESS: &str = "34.96.62.132";
 
     #[test]
@@ -452,9 +451,8 @@ mod tests {
         assert_eq!(vouch(&t, GFE, &[&xff], None, named), "76.76.21.21");
     }
 
-    // hops=2 still recorded a Google address (34.96.62.181) in prod: the
-    // chain's shape isn't what the test above assumed, and it isn't
-    // published. The LB-stamped header doesn't depend on it.
+    // The chain's shape behind the LB isn't published; the LB-stamped header
+    // doesn't depend on it.
     #[test]
     fn the_edge_header_wins_over_any_xff_shape() {
         let t = behind_lb(None);

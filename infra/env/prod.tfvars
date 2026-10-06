@@ -152,10 +152,10 @@ enable_async_execution = false
 # Client-IP resolution (infra/README.md "Client IP & trusted proxies").
 # Behind the GCLB the client comes from the LB-stamped
 # X-Overslash-Edge-Client-Ip header (wired from enable_api_lb in infra/main.tf,
-# together with the LB-only ingress that makes it unspoofable). XFF also
-# carries Google addresses of no published range — 34.96.62.132 at hops=1,
-# still 34.96.62.181 at hops=2 — so counting hops was a guess. The values
+# together with the LB-only ingress that makes it unspoofable). The values
 # below are only the fallback for a request that arrives without the header.
+# (The 34.96.x addresses once recorded on agent rows were Cloud Run's own
+# egress on the MCP loopback, not LB hops — see the README.)
 # The LB IP is a literal because module.api_lb depends on module.cloud_run
 # (update it if the `lb_ip` output ever changes).
 trusted_proxy_hops  = 2
