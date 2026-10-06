@@ -139,11 +139,10 @@ oauth_refresh_alert_enabled  = false
 upstream_error_alert_enabled = false
 
 # `custom.googleapis.com/overslash/business/integrity_violations` — written by
-# the metrics exporter, not GMP, but the descriptor rule is the same. Check with
-#   gcloud monitoring metrics-descriptors list --project=<project> \
-#     --filter='metric.type = "custom.googleapis.com/overslash/business/integrity_violations"'
+# the metrics exporter, not GMP, but the descriptor rule is the same. gcloud has
+# no metrics-descriptors command; check via the REST API (see the runbook).
 # Runbook: docs/runbooks/data-integrity.md.
-integrity_alert_enabled = false
+integrity_alert_enabled = true
 
 read_oauth_credentials_from_env = false
 
@@ -153,10 +152,10 @@ enable_async_execution = false
 # Client-IP resolution (infra/README.md "Client IP & trusted proxies").
 # Behind the GCLB the client comes from the LB-stamped
 # X-Overslash-Edge-Client-Ip header (wired from enable_api_lb in infra/main.tf,
-# together with the LB-only ingress that makes it unspoofable). XFF also
-# carries Google addresses of no published range — 34.96.62.132 at hops=1,
-# still 34.96.62.181 at hops=2 — so counting hops was a guess. The values
+# together with the LB-only ingress that makes it unspoofable). The values
 # below are only the fallback for a request that arrives without the header.
+# (The 34.96.x addresses once recorded on agent rows were Cloud Run's own
+# egress on the MCP loopback, not LB hops — see the README.)
 # The LB IP is a literal because module.api_lb depends on module.cloud_run
 # (update it if the `lb_ip` output ever changes).
 trusted_proxy_hops  = 2

@@ -1195,6 +1195,13 @@ async fn mcp_call_audit_contains_tool_arguments_and_is_error_success() {
     assert_eq!(executed["detail"]["tool"], "echo");
     assert_eq!(executed["detail"]["arguments"]["x"], "observable");
     assert_eq!(executed["detail"]["is_error"], false);
+    let tags: Vec<&str> = executed["tags"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(tags.contains(&"transport:mcp"), "{tags:?}");
 }
 
 /// Tool-level isError must flip `is_error: true` on the audit row too.

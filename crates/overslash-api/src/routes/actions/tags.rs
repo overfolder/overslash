@@ -295,6 +295,50 @@ mod tests {
         assert!(tags.contains(&"connection:analytics@acme.com".to_string()));
     }
 
+    /// The `transport:` tag names the dispatch fork that runs, whichever
+    /// surface (REST or `POST /mcp`) the caller came in on.
+    #[test]
+    fn transport_names_the_dispatch_fork() {
+        use crate::routes::actions::dto::{McpTarget, PlatformTarget};
+        let mcp = || McpTarget {
+            url: "https://mcp.example.com/mcp".into(),
+            auth: overslash_core::types::service::McpAuth::None,
+            auth_header: None,
+            tool: "echo".into(),
+            arguments: serde_json::Value::Null,
+        };
+        let platform = || PlatformTarget {
+            action_key: "list_services".into(),
+            params: Default::default(),
+        };
+        let http = meta(Some(action_scope()), BindingFacts::default());
+        assert_eq!(Transport::of(&http, false), Transport::Http);
+        assert_eq!(Transport::of(&http, true), Transport::Stream);
+
+        let mut m = meta(Some(action_scope()), BindingFacts::default());
+        m.platform_target = Some(platform());
+        assert_eq!(Transport::of(&m, false), Transport::Platform);
+        // A fork with no streaming path ignores the flag.
+        assert_eq!(Transport::of(&m, true), Transport::Platform);
+
+        m.mcp_target = Some(mcp());
+        assert_eq!(Transport::of(&m, true), Transport::Mcp);
+
+        for (t, want) in [
+            (Transport::Http, "transport:http"),
+            (Transport::Stream, "transport:stream"),
+            (Transport::Mcp, "transport:mcp"),
+            (Transport::Platform, "transport:platform"),
+        ] {
+            let tags = call_tags(&http, None, Risk::Read, t, "https://x.example.com/");
+            let got: Vec<_> = tags
+                .iter()
+                .filter(|g| g.starts_with("transport:"))
+                .collect();
+            assert_eq!(got, [want], "{t:?}");
+        }
+    }
+
     #[test]
     fn platform_shape_emits_no_host() {
         let tags = call_tags(

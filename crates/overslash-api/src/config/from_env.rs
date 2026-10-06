@@ -200,6 +200,8 @@ impl Config {
             // every client behind that proxy into one rate-limit bucket.
             trusted_proxies: crate::services::client_ip::TrustedProxies::from_env()
                 .unwrap_or_else(|e| panic!("{e}")),
+            // Pointed at the bind address by the CLI once host/port are final.
+            loopback: Default::default(),
         }
     }
 

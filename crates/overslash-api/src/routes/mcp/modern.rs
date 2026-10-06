@@ -219,7 +219,7 @@ pub(super) async fn dispatch(
     ext: &axum::http::Extensions,
     auth: &AuthContext,
     req: &JsonRpcRequest,
-    bearer: Option<&str>,
+    bearer: Option<&Bearer>,
     accepts_sse: bool,
     modern: &ModernRequest,
 ) -> Response {
@@ -448,7 +448,7 @@ pub(super) async fn continue_elicitation(
     state: &AppState,
     ext: &axum::http::Extensions,
     auth: &AuthContext,
-    bearer: &str,
+    bearer: &Bearer,
     tool_name: &str,
     args: &Value,
     request_state: &str,
@@ -501,7 +501,7 @@ pub(super) async fn continue_elicitation(
             state: state.clone(),
             ext: ext.clone(),
             auth: auth.clone(),
-            bearer: bearer.to_string(),
+            bearer: bearer.clone(),
             tool_name: tool_name.to_string(),
             args: args.clone(),
         };
@@ -544,7 +544,15 @@ pub(super) async fn continue_elicitation(
     let db = state.db_pool(ext);
     // A no-op when the row is no longer `pending` (a duplicate retry, or the
     // sweeper got there first); the read below reports whatever it settled as.
-    complete_elicitation_and_retire(state, ext, &db, &claims.elicit_id, answer).await;
+    complete_elicitation_and_retire(
+        state,
+        ext,
+        &db,
+        &claims.elicit_id,
+        answer,
+        bearer.client_ip.as_deref(),
+    )
+    .await;
     let outcome =
         mcp_session::await_completion_with_timeout(state, ext, &claims.elicit_id, SETTLE_TIMEOUT)
             .await;
@@ -588,7 +596,7 @@ async fn answer_stale(
     state: &AppState,
     ext: &axum::http::Extensions,
     auth: &AuthContext,
-    bearer: &str,
+    bearer: &Bearer,
     tool_name: &str,
     args: &Value,
     claims: jwt::McpRequestStateClaims,
@@ -604,7 +612,7 @@ async fn answer_stale(
             state: state.clone(),
             ext: ext.clone(),
             auth: auth.clone(),
-            bearer: bearer.to_string(),
+            bearer: bearer.clone(),
             tool_name: tool_name.to_string(),
             args: args.clone(),
         };

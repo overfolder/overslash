@@ -23,7 +23,8 @@
 //! loopback reqwest so we get the same rate-limiting, audit, and ACL
 //! plumbing the REST callers go through. Forwarded bearer tokens carry the
 //! caller's credential (either the same `aud=mcp` JWT presented on `/mcp`,
-//! or an `osk_` agent key).
+//! or an `osk_` agent key), and the client address `/mcp` resolved
+//! ([`Bearer`], `services::loopback`).
 //!
 //! `GET /mcp` returns a 405 for v1 — the protocol allows servers to opt out
 //! of server-initiated streams, and none of our tools require them yet.
@@ -52,7 +53,7 @@ use uuid::Uuid;
 
 use crate::{
     AppState,
-    extractors::{AuthContext, ReqExt},
+    extractors::{AuthContext, ClientIp, ReqExt},
     middleware::subdomain::RequestOrgContext,
     routes::oauth_as as oauth_as_routes,
     services::{inbox, jwt, mcp_session, oauth_as, session},
@@ -117,6 +118,10 @@ struct JsonRpcRequest {
 /// of it is the unexpected kind — a JWT mint, a loopback transport error, or
 /// the terminal write itself failing — so this retires the row on its behalf.
 ///
+/// `client_ip` is the address of whoever answered the dialog; the resolve and
+/// call loopbacks carry it (`services::loopback`), so their audit rows name
+/// that client rather than this process.
+///
 /// Retiring can race a resolve that already landed, leaving the model reading
 /// `pending_approval` for an approval that is really `allowed`. That is the
 /// benign race `elicitation::elicit_result_event` documents: the model's
@@ -128,11 +133,12 @@ pub async fn complete_elicitation_and_retire(
     db: &sqlx::PgPool,
     elicit_id: &str,
     result: &Value,
+    client_ip: Option<&str>,
 ) {
     // Bound the work: two loopback HTTP calls (resolve + call) shouldn't take
     // more than a minute even under load. Without this an unresponsive
     // upstream could pin a tokio task slot indefinitely.
-    let work = mcp_session::complete_from_elicitation(state, ext, elicit_id, result);
+    let work = mcp_session::complete_from_elicitation(state, ext, elicit_id, result, client_ip);
     match tokio::time::timeout(Duration::from_secs(60), work).await {
         Ok(Ok(())) => {}
         Ok(Err(e)) => {
@@ -194,6 +200,7 @@ async fn post_mcp(
     ReqExt(ext): ReqExt,
     ctx: Option<Extension<RequestOrgContext>>,
     auth: Result<AuthContext, crate::error::AppError>,
+    ClientIp(client_ip): ClientIp,
     headers: HeaderMap,
     body: String,
 ) -> Response {
@@ -206,7 +213,7 @@ async fn post_mcp(
     // Prefer the explicit Bearer header. When the caller authenticated via
     // a session cookie (no Authorization header), mint a short-lived MCP
     // JWT on the fly so the loopback REST calls carry a valid Bearer.
-    let bearer: Option<String> = headers
+    let token: Option<String> = headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
@@ -227,6 +234,10 @@ async fn post_mcp(
             )
             .ok()
         });
+    let bearer = token.map(|token| Bearer {
+        token,
+        client_ip: client_ip.clone(),
+    });
 
     // Per Streamable HTTP, clients echo the `Mcp-Session-Id` they received
     // on `initialize` in subsequent requests. We trust this header over the
@@ -267,7 +278,7 @@ async fn post_mcp(
                     &ext,
                     &auth,
                     req,
-                    bearer.as_deref(),
+                    bearer.as_ref(),
                     req_session_id,
                     accepts_sse,
                 )
@@ -280,7 +291,7 @@ async fn post_mcp(
             &ext,
             &auth,
             &req,
-            bearer.as_deref(),
+            bearer.as_ref(),
             accepts_sse,
             &modern,
         )
@@ -292,7 +303,7 @@ async fn post_mcp(
     //
     // Legacy-only by construction: a 2026-07-28 client never sends a bare
     // response, because that era has no server-to-client requests to answer.
-    respond_to_elicitation(&state, &ext, &auth, &body).await
+    respond_to_elicitation(&state, &ext, &auth, client_ip, &body).await
 }
 
 /// Serve one request on an `initialize`-era (`2025-06-18`) connection.
@@ -301,7 +312,7 @@ async fn legacy_request(
     ext: &axum::http::Extensions,
     auth: &AuthContext,
     req: JsonRpcRequest,
-    bearer: Option<&str>,
+    bearer: Option<&Bearer>,
     req_session_id: Option<Uuid>,
     accepts_sse: bool,
 ) -> Response {
@@ -348,6 +359,7 @@ async fn respond_to_elicitation(
     state: &AppState,
     ext: &axum::http::Extensions,
     auth: &AuthContext,
+    client_ip: Option<String>,
     body: &str,
 ) -> Response {
     if let Ok(resp) = serde_json::from_str::<Value>(body)
@@ -388,7 +400,15 @@ async fn respond_to_elicitation(
         let db = state.db_pool(ext);
         let id_owned = id.to_string();
         tokio::spawn(async move {
-            complete_elicitation_and_retire(&st, &ext_c, &db, &id_owned, &result).await;
+            complete_elicitation_and_retire(
+                &st,
+                &ext_c,
+                &db,
+                &id_owned,
+                &result,
+                client_ip.as_deref(),
+            )
+            .await;
         });
         return (StatusCode::ACCEPTED, "").into_response();
     }
@@ -471,24 +491,37 @@ impl ForwardOutcome {
     }
 }
 
+/// The credential `POST /mcp` forwards with, and the client address it
+/// resolved for the caller — carried onto the loopback so the REST side
+/// audits and throttles the real client, not this process.
+#[derive(Clone, Debug)]
+pub(super) struct Bearer {
+    pub(super) token: String,
+    pub(super) client_ip: Option<String>,
+}
+
 async fn forward(
     state: &AppState,
-    bearer: &str,
+    bearer: &Bearer,
     method: Method,
     path: &str,
     body: Option<Value>,
 ) -> Result<ForwardOutcome, String> {
-    let url = format!("{}{}", state.config.public_url.trim_end_matches('/'), path);
+    let url = state.config.loopback.url(&state.config.public_url, path);
     // Stamp the surface. This request is about to look exactly like a direct
     // REST call — same URL, same bearer — and the handler on the other end has
     // no other way to tell that an MCP client is waiting on the far side. Read
     // back by `extractors::CallerTransport`; see its doc comment for why an
     // advisory header is the right weight for what depends on it.
-    let mut req = state
+    let req = state
         .http_client
         .request(method, &url)
         .header(crate::extractors::TRANSPORT_HEADER, "mcp")
-        .bearer_auth(bearer);
+        .bearer_auth(&bearer.token);
+    let mut req = state
+        .config
+        .loopback
+        .stamp(req, bearer.client_ip.as_deref());
     if let Some(b) = body {
         req = req.json(&b);
     }

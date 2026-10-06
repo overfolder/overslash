@@ -88,10 +88,12 @@ impl FromRequestParts<AppState> for CallerTransport {
     }
 }
 
-/// The client's IP address, resolved against the configured trusted proxies
-/// (`Config::trusted_proxies`): the address a configured edge header names,
-/// else the rightmost `X-Forwarded-For` entry this deployment has no reason
-/// to trust, or the socket peer when no proxy is configured. Never the leftmost header value, which the caller controls.
+/// The client's IP address. On `POST /mcp`'s own loopback, the client that
+/// request resolved (`services::loopback`). Otherwise resolved against the
+/// configured trusted proxies (`Config::trusted_proxies`): the address a
+/// configured edge header names, else the rightmost `X-Forwarded-For` entry
+/// this deployment has no reason to trust, or the socket peer when no proxy
+/// is configured. Never the leftmost header value, which the caller controls.
 /// Every audit `ip_address` and per-IP throttle reads it.
 #[derive(Debug, Clone)]
 pub struct ClientIp(pub Option<String>);
@@ -115,6 +117,10 @@ impl ClientIp {
         extensions: &axum::http::Extensions,
         state: &AppState,
     ) -> Self {
+        // `POST /mcp`'s own loopback: the client is the one it resolved.
+        if let Some(client) = state.config.loopback.vouched_client(headers) {
+            return ClientIp(client);
+        }
         let peer = extensions
             .get::<axum::extract::ConnectInfo<SocketAddr>>()
             .map(|c| c.0.ip());

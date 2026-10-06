@@ -402,6 +402,7 @@ async fn test_resolve_user_budget_falls_back_to_org_default() {
         deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
         trusted_proxies: Default::default(),
+        loopback: Default::default(),
     };
     let resolved = cache
         .resolve_user_budget(&pool, &config, org_id, user_id)
@@ -683,6 +684,7 @@ async fn test_resolve_user_budget_per_user_override_wins() {
         deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
         trusted_proxies: Default::default(),
+        loopback: Default::default(),
     };
     let resolved = cache
         .resolve_user_budget(&pool, &config, org_id, user_id)
@@ -1096,6 +1098,7 @@ async fn test_cache_invalidation_user_budget() {
         deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
         trusted_proxies: Default::default(),
+        loopback: Default::default(),
     };
 
     // Prime the cache
@@ -1292,6 +1295,7 @@ async fn test_cache_invalidation_org_flushes_all() {
         deployment_env: Default::default(),
         connection_return_url_allowed_hosts: Vec::new(),
         trusted_proxies: Default::default(),
+        loopback: Default::default(),
     };
 
     let r1 = cache
