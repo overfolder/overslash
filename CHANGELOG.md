@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.18.1](https://github.com/overfolder/overslash/compare/v0.18.0...v0.18.1) (2026-10-06)
+
+
+### Bug Fixes
+
+* **mcp:** carry the answering client's IP on elicitation resolve + call ([#744](https://github.com/overfolder/overslash/issues/744)) ([a515af0](https://github.com/overfolder/overslash/commit/a515af0baa7fc3e0e511dace43c4314c3d73cfd2))
+* **mcp:** loop back to the local process and carry the caller's IP ([#742](https://github.com/overfolder/overslash/issues/742)) ([74b2053](https://github.com/overfolder/overslash/commit/74b20536ea5543f60db732a733e678afaba85abf))
+
 ## [0.18.0](https://github.com/overfolder/overslash/compare/v0.17.0...v0.18.0) (2026-10-05)
 
 
