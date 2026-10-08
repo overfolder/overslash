@@ -173,3 +173,6 @@ enable_trusted_proxy_secret = true
 # "Audit logging") before this line reaches a prod apply.
 audit_log_retention_days = 400
 audit_log_bucket_locked  = true
+
+enable_google_directory_sync = true
+
