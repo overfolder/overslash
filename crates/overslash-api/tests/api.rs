@@ -111,6 +111,7 @@ mod mcp_filter;
 mod mcp_inbox;
 mod mcp_modern_protocol;
 mod mcp_oauth;
+mod mcp_oauth_reauth_new;
 mod mcp_replay;
 mod mcp_require_risk;
 mod mcp_roster;

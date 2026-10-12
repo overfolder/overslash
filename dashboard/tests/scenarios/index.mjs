@@ -24,7 +24,7 @@ export {
 	deleteOrg
 } from './auth.mjs';
 export { purgeMail, seedMailbox, listMailboxMessages } from './mail.mjs';
-export { enrollMcpClient } from './mcp-enroll.mjs';
+export { enrollMcpClient, pendingMcpConsent } from './mcp-enroll.mjs';
 export { api } from './api.mjs';
 export {
 	seedAgent,

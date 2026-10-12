@@ -39,18 +39,19 @@ function pkce() {
 }
 
 /**
- * Register an MCP client and enroll a fresh agent against it.
+ * Register an MCP client and stop at the consent redirect: DCR, then
+ * authorize. Returns the pending `request_id` the consent page renders
+ * against — use it directly to screenshot `/oauth/consent`, or finish it.
+ *
+ * Registering a `clientName` the session's user already enrolled makes the
+ * consent page take its "reauth" branch (the matcher joins on
+ * client_name + software_id).
  *
  * @param {import('./auth.mjs').Session} session
- * @param {{
- *   clientName: string,
- *   agentName: string,
- *   parentId?: string,
- *   inheritPermissions?: boolean,
- * }} opts
- * @returns {Promise<{ clientId: string, agent: any }>}
+ * @param {{ clientName: string }} opts
+ * @returns {Promise<{ clientId: string, requestId: string }>}
  */
-export async function enrollMcpClient(session, opts) {
+export async function pendingMcpConsent(session, opts) {
 	const redirectUri = 'http://127.0.0.1:1/callback';
 
 	// 1. DCR. `token_endpoint_auth_method: none` is the public-client shape
@@ -91,6 +92,23 @@ export async function enrollMcpClient(session, opts) {
 	if (!requestId) {
 		throw new Error(`authorize redirected to ${location} with no request_id`);
 	}
+	return { clientId, requestId };
+}
+
+/**
+ * Register an MCP client and enroll a fresh agent against it.
+ *
+ * @param {import('./auth.mjs').Session} session
+ * @param {{
+ *   clientName: string,
+ *   agentName: string,
+ *   parentId?: string,
+ *   inheritPermissions?: boolean,
+ * }} opts
+ * @returns {Promise<{ clientId: string, agent: any }>}
+ */
+export async function enrollMcpClient(session, opts) {
+	const { clientId, requestId } = await pendingMcpConsent(session, opts);
 
 	// 3. The decision the consent page posts. `new` always mints a fresh agent,
 	//    which is what a screenshot wants — `reauth` would rebind an existing
