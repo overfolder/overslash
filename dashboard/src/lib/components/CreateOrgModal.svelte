@@ -1,6 +1,6 @@
 <script lang="ts">
-	import { ApiError, session } from '$lib/session';
-	import { slugify, makeDebouncedSlugChecker, type SlugCheck } from '$lib/utils/slug';
+	import { ApiError, session } from '#lib/session.ts';
+	import { slugify, makeDebouncedSlugChecker, type SlugCheck } from '#lib/utils/slug.ts';
 
 	let {
 		open,

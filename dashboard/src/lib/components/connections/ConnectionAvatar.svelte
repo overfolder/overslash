@@ -11,7 +11,7 @@
 	a circular ring would let the tile's corners poke through it.
 -->
 <script lang="ts">
-	import Avatar from '$lib/components/Avatar.svelte';
+	import Avatar from '#lib/components/Avatar.svelte';
 	import ProviderTile from './ProviderTile.svelte';
 
 	let {

@@ -13,7 +13,7 @@
 // sends the stored canonical value back untouched when the user didn't edit
 // the field — so an unchanged binding to another admin's secret is kept.
 
-import { formatIdentity, type IdentityLike } from '$lib/identityDisplay';
+import { formatIdentity, type IdentityLike } from '#lib/identityDisplay.ts';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 

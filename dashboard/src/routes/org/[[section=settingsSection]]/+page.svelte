@@ -1,9 +1,9 @@
 <script lang="ts">
-	import { page } from '$app/stores';
-	import OrgSettings from '$lib/components/settings/OrgSettings.svelte';
-	import type { OrgPageData } from '$lib/components/settings/org-settings-load';
+	import { page } from '$app/state';
+	import OrgSettings from '#lib/components/settings/OrgSettings.svelte';
+	import type { OrgPageData } from '#lib/components/settings/org-settings-load.ts';
 
 	let { data }: { data: OrgPageData } = $props();
 </script>
 
-<OrgSettings {data} section={$page.params.section ?? 'general'} />
+<OrgSettings {data} section={page.params.section ?? 'general'} />

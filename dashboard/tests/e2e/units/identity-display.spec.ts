@@ -4,9 +4,6 @@
 // to the email. The interesting cases all come from how the backend fills
 // `identity.name`, so they are pinned here rather than left to a screenshot to
 // notice.
-//
-// Imported by relative path: `$lib` is a SvelteKit alias that Playwright's
-// transform does not resolve.
 import { test, expect } from '@playwright/test';
 import {
 	formatIdentity,

@@ -1,7 +1,7 @@
 <script module lang="ts">
 	import { defineMeta } from '@storybook/addon-svelte-csf';
 	import ApprovalRow from './ApprovalRow.svelte';
-	import type { ApprovalResponse } from '$lib/session';
+	import type { ApprovalResponse } from '#lib/session.ts';
 
 	// A realistic pending row: what the gateway returns for an agent that hit a
 	// write action it has no rule for.

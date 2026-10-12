@@ -1,8 +1,8 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
-	import { getVersion, buildLabel, buildTitle } from '$lib/api/version';
-	import type { BuildInfo } from '$lib/types';
+	import { getVersion, buildLabel, buildTitle } from '#lib/api/version.ts';
+	import type { BuildInfo } from '#lib/types.ts';
 
 	let { data } = $props();
 

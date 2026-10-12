@@ -1,6 +1,6 @@
 <script lang="ts">
-	import ApprovalDetail from '$lib/components/ApprovalDetail.svelte';
-	import type { ApprovalResponse } from '$lib/session';
+	import ApprovalDetail from '#lib/components/ApprovalDetail.svelte';
+	import type { ApprovalResponse } from '#lib/session.ts';
 	import { goto } from '$app/navigation';
 
 	let {

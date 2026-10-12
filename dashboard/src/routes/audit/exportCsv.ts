@@ -1,4 +1,4 @@
-import { identityUnits } from '$lib/identityPath';
+import { identityUnits } from '#lib/identityPath.ts';
 import type { AuditEntry } from './types';
 
 // Names are the ones *recorded on the row* (D59), falling back to the live

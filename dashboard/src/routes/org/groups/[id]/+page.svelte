@@ -1,8 +1,8 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { page } from '$app/stores';
+	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
-	import { ApiError } from '$lib/session';
+	import { ApiError } from '#lib/session.ts';
 	import {
 		groupsApi,
 		directoryGroupsApi,
@@ -15,14 +15,14 @@
 		type Identity,
 		type MemberOrigin,
 		type ServiceInstanceSummary
-	} from '$lib/api/groups';
-	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
-	import IdentityPickerModal from '$lib/components/groups/IdentityPickerModal.svelte';
-	import PillPicker from '$lib/components/PillPicker.svelte';
-	import { makeIdentityFormatter, shortEmail } from '$lib/identityDisplay';
-	import AutoApproveSelect from '$lib/components/AutoApproveSelect.svelte';
+	} from '#lib/api/groups.ts';
+	import ConfirmModal from '#lib/components/ConfirmModal.svelte';
+	import IdentityPickerModal from '#lib/components/groups/IdentityPickerModal.svelte';
+	import PillPicker from '#lib/components/PillPicker.svelte';
+	import { makeIdentityFormatter, shortEmail } from '#lib/identityDisplay.ts';
+	import AutoApproveSelect from '#lib/components/AutoApproveSelect.svelte';
 
-	const groupId = $derived($page.params.id as string);
+	const groupId = $derived(page.params.id as string);
 
 	let group = $state<Group | null>(null);
 	let grants = $state<GroupGrant[]>([]);
@@ -66,8 +66,8 @@
 	const orgServices = $derived(services.filter((s) => !s.owner_identity_id));
 	const identityById = $derived(new Map(identities.map((i) => [i.id, i])));
 
-	const currentUserId = $derived(($page as any).data?.user?.identity_id as string | undefined);
-	const allowedDomains = $derived((($page as any).data?.allowedDomains ?? []) as string[]);
+	const currentUserId = $derived((page as any).data?.user?.identity_id as string | undefined);
+	const allowedDomains = $derived(((page as any).data?.allowedDomains ?? []) as string[]);
 	const fmt = $derived(makeIdentityFormatter(allowedDomains));
 	const isSelfGroup = $derived(group?.system_kind === 'self');
 	const isAdminsGroup = $derived(group?.system_kind === 'admins');

@@ -1,8 +1,8 @@
 <script lang="ts">
-	import { session, ApiError } from '$lib/session';
-	import RequestIdentityBox from '$lib/components/RequestIdentityBox.svelte';
-	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
-	import GroupSearch from '$lib/components/GroupSearch.svelte';
+	import { session, ApiError } from '#lib/session.ts';
+	import RequestIdentityBox from '#lib/components/RequestIdentityBox.svelte';
+	import ToggleSwitch from '#lib/components/ToggleSwitch.svelte';
+	import GroupSearch from '#lib/components/GroupSearch.svelte';
 	import type { ConsentContext } from './+page';
 
 	let { data } = $props();

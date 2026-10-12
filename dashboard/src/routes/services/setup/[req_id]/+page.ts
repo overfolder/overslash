@@ -1,7 +1,7 @@
 import type { PageLoad } from './$types';
-import type { TestActionRef } from '$lib/types';
-import { loadPublicRequest } from '$lib/public-request';
-import type { ProvideMetadata, PublicRequestLoad } from '$lib/public-request';
+import type { TestActionRef } from '#lib/types.ts';
+import { loadPublicRequest } from '#lib/public-request.ts';
+import type { ProvideMetadata, PublicRequestLoad } from '#lib/public-request.ts';
 
 export const ssr = false;
 export const prerender = false;

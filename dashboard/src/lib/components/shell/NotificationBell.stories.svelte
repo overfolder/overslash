@@ -1,6 +1,6 @@
 <script module lang="ts">
 	import { defineMeta } from '@storybook/addon-svelte-csf';
-	import { notificationsStore } from '$lib/stores/shell';
+	import { notificationsStore } from '#lib/stores/shell.ts';
 	import NotificationBell from './NotificationBell.svelte';
 
 	// The bell reads the global `notificationsStore` singleton. `beforeEach` sets

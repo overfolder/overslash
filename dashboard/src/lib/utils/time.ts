@@ -1,5 +1,5 @@
 import { get } from 'svelte/store';
-import { timeFormat } from '$lib/stores/shell';
+import { timeFormat } from '#lib/stores/shell.ts';
 
 export function relativeTime(iso: string): string {
 	const t = Date.parse(iso);

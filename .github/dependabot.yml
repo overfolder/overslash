@@ -29,13 +29,6 @@ updates:
       # TypeScript 7 (the native port) breaks the dashboard build — stay on 6.x.
       - dependency-name: "typescript"
         versions: ["7.x"]
-      # SvelteKit 3 is a breaking migration (config moves into vite.config.ts,
-      # $app/stores and $lib removed); the adapter majors require it. Tracked
-      # in #752 — drop these once that lands.
-      - dependency-name: "@sveltejs/kit"
-        update-types: ["version-update:semver-major"]
-      - dependency-name: "@sveltejs/adapter-*"
-        update-types: ["version-update:semver-major"]
 
   # npm (SDK) — @overslash/sdk. Dev-only dependency tree (vitest, tsup, vite),
   # but it still ships a published package, so keep it on the same cadence as

@@ -1,9 +1,9 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { page } from '$app/stores';
-	import { ApiError, session } from '$lib/session';
-	import { slugify, makeDebouncedSlugChecker, type SlugCheck } from '$lib/utils/slug';
-	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
+	import { page } from '$app/state';
+	import { ApiError, session } from '#lib/session.ts';
+	import { slugify, makeDebouncedSlugChecker, type SlugCheck } from '#lib/utils/slug.ts';
+	import ToggleSwitch from '#lib/components/ToggleSwitch.svelte';
 
 	type GeoResponse = { currency: string; base_price: number };
 
@@ -36,9 +36,9 @@
 	// Instance admins can skip Stripe and create a `free_unlimited` org
 	// directly (POST /v1/orgs/free-unlimited). On by default for them; the
 	// Create-Org modal's "toggle off" bounce lands here with `?paid=1`.
-	const isInstanceAdmin = $derived($page.data.user?.is_instance_admin === true);
+	const isInstanceAdmin = $derived(page.data.user?.is_instance_admin === true);
 	// Read at init (not in onMount) so the first render already matches.
-	let freeUnlimited = $state($page.url.searchParams.get('paid') !== '1');
+	let freeUnlimited = $state(page.url.searchParams.get('paid') !== '1');
 	const createFree = $derived(isInstanceAdmin && freeUnlimited);
 
 	let slugCheck = $state<SlugCheck>({ kind: 'idle' });
@@ -50,8 +50,8 @@
 	onMount(async () => {
 		// Prefill from query params when the user lands here from the
 		// instance-admin Create-Org modal with the toggle off.
-		const qsName = $page.url.searchParams.get('name');
-		const qsSlug = $page.url.searchParams.get('slug');
+		const qsName = page.url.searchParams.get('name');
+		const qsSlug = page.url.searchParams.get('slug');
 		if (qsName) orgName = qsName;
 		if (qsSlug) {
 			orgSlug = qsSlug;

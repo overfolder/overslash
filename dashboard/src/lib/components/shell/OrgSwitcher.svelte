@@ -1,6 +1,6 @@
 <script lang="ts">
-	import { ApiError, session, type MembershipSummary } from '$lib/session';
-	import { switchOrg } from '$lib/api/account';
+	import { ApiError, session, type MembershipSummary } from '#lib/session.ts';
+	import { switchOrg } from '#lib/api/account.ts';
 
 	function errorCode(e: unknown): string {
 		if (e instanceof ApiError) {

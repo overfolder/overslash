@@ -5,7 +5,7 @@
  * Source of truth: `crates/overslash-api/src/routes/account_invitations.rs`
  * and `crates/overslash-api/src/routes/auth/session.rs` (switch-org).
  */
-import { session } from '$lib/session';
+import { session } from '#lib/session.ts';
 
 /** One pending invitation from an org the caller is not yet a member of. */
 export interface PendingInvitation {

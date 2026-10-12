@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { isPlaintextEndpoint } from '$lib/utils/endpoint';
+	import { isPlaintextEndpoint } from '#lib/utils/endpoint.ts';
 
 	let { url }: { url: string | null | undefined } = $props();
 </script>

@@ -1,6 +1,6 @@
 <script module lang="ts">
 	import { defineMeta } from '@storybook/addon-svelte-csf';
-	import type { Identity } from '$lib/types';
+	import type { Identity } from '#lib/types.ts';
 	import OwnerCell from './OwnerCell.svelte';
 
 	function ident(partial: Partial<Identity> & Pick<Identity, 'id' | 'name' | 'kind'>): Identity {

@@ -18,8 +18,8 @@
 	import { yaml as yamlLang } from '@codemirror/lang-yaml';
 	import { oneDark } from '@codemirror/theme-one-dark';
 	import { parse as parseYaml } from 'yaml';
-	import { listTemplateVars, validateTemplate } from '$lib/api/services';
-	import type { TemplateVar, ValidationResult } from '$lib/types';
+	import { listTemplateVars, validateTemplate } from '#lib/api/services.ts';
+	import type { TemplateVar, ValidationResult } from '#lib/types.ts';
 
 	let {
 		yamlValue = '',

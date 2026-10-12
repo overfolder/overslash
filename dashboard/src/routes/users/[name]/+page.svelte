@@ -1,7 +1,7 @@
 <script lang="ts">
-	import type { Identity } from '$lib/types';
-	import { formatIdentity, providerLabel } from '$lib/identityDisplay';
-	import Avatar from '$lib/components/Avatar.svelte';
+	import type { Identity } from '#lib/types.ts';
+	import { formatIdentity, providerLabel } from '#lib/identityDisplay.ts';
+	import Avatar from '#lib/components/Avatar.svelte';
 
 	let {
 		data
@@ -16,7 +16,7 @@
 
 	const ident = $derived(data.identity);
 	// This route stays name-keyed (SPIFFE path segments carry names, and
-	// $lib/identityPath builds /users/<name> from them), but the page itself
+	// #lib/identityPath builds /users/<name> from them), but the page itself
 	// labels the user by email like every other surface — otherwise an audit-log
 	// link reading `ada` lands on a page headed `Ada Lovelace`.
 	const display = $derived(ident ? formatIdentity(ident, data.allowedDomains) : null);

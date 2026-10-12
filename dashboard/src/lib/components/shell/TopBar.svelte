@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { page } from '$app/stores';
+	import { page } from '$app/state';
 	import { pageTitleFromPath } from './nav-items';
 	import NotificationBell from './NotificationBell.svelte';
 	import ThemeToggle from './ThemeToggle.svelte';
@@ -15,7 +15,7 @@
 		onMenu?: () => void;
 	} = $props();
 
-	const title = $derived(pageTitleFromPath($page.url.pathname));
+	const title = $derived(pageTitleFromPath(page.url.pathname));
 </script>
 
 <header class="topbar">

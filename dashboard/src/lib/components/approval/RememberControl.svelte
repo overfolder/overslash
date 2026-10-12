@@ -10,8 +10,8 @@
 	// approval carries the same risk) — the selected option is marked the same
 	// way ExpiryControl marks its own.
 
-	import type { SuggestedTier } from '$lib/session';
-	import { splitKeys } from '$lib/approvals/format';
+	import type { SuggestedTier } from '#lib/session.ts';
+	import { splitKeys } from '#lib/approvals/format.ts';
 
 	let {
 		tiers,

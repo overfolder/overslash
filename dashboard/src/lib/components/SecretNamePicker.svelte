@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { SecretSummary } from '$lib/types';
+	import type { SecretSummary } from '#lib/types.ts';
 
 	let {
 		value = $bindable<string>(''),

@@ -1,6 +1,6 @@
-import type { MeIdentity } from '$lib/session';
-import type { OAuthProviderInfo } from '$lib/types';
-import { listOAuthProviders } from '$lib/api/services';
+import type { MeIdentity } from '#lib/session.ts';
+import type { OAuthProviderInfo } from '#lib/types.ts';
+import { listOAuthProviders } from '#lib/api/services.ts';
 
 export const load = async ({ parent }) => {
 	const layoutData = (await parent()) as { user: MeIdentity | null };

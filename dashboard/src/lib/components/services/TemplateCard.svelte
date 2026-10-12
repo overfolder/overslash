@@ -1,6 +1,6 @@
 <script lang="ts">
-	import type { TemplateSummary } from '$lib/types';
-	import ServiceIcon from '$lib/components/ServiceIcon.svelte';
+	import type { TemplateSummary } from '#lib/types.ts';
+	import ServiceIcon from '#lib/components/ServiceIcon.svelte';
 	import StatusBadge from './StatusBadge.svelte';
 
 	let {

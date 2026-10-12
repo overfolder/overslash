@@ -82,7 +82,7 @@ export function identityUnits(
  *
  *  This is the seam that keeps this module free of identity/email knowledge:
  *  the audit row passes a resolver that labels `user` units by email (see
- *  `$lib/identityDisplay`); with no resolver the path's own names are used. */
+ *  `#lib/identityDisplay`); with no resolver the path's own names are used. */
 export type UnitLabel = (id: string | null, name: string, kind: string) => string;
 
 /** Human-readable chain (`alice / henry / researcher`) for a hover title —

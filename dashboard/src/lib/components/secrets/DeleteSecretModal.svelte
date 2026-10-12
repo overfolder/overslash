@@ -3,9 +3,9 @@
   the user can't accidentally rotate a secret that's still in use.
 -->
 <script lang="ts">
-	import { ApiError } from '$lib/session';
-	import { deleteSecret, type SecretVault } from '$lib/api/secrets';
-	import type { SecretUsedByView } from '$lib/types';
+	import { ApiError } from '#lib/session.ts';
+	import { deleteSecret, type SecretVault } from '#lib/api/secrets.ts';
+	import type { SecretUsedByView } from '#lib/types.ts';
 
 	let {
 		secretName,

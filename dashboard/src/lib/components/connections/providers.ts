@@ -7,7 +7,7 @@
  * round-trip and don't change per-tenant.
  */
 
-import type { OAuthProviderInfo } from '$lib/types';
+import type { OAuthProviderInfo } from '#lib/types.ts';
 
 export interface ProviderBrand {
 	/** Single glyph shown in the brand tile. */

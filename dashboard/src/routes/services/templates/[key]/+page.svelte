@@ -1,14 +1,14 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
-	import { ApiError } from '$lib/session';
-	import { updateTemplate, deleteTemplate } from '$lib/api/services';
-	import type { TemplateDetail } from '$lib/types';
-	import ServiceIcon from '$lib/components/ServiceIcon.svelte';
-	import StatusBadge from '$lib/components/services/StatusBadge.svelte';
-	import ConfirmDialog from '$lib/components/services/ConfirmDialog.svelte';
+	import { ApiError } from '#lib/session.ts';
+	import { updateTemplate, deleteTemplate } from '#lib/api/services.ts';
+	import type { TemplateDetail } from '#lib/types.ts';
+	import ServiceIcon from '#lib/components/ServiceIcon.svelte';
+	import StatusBadge from '#lib/components/services/StatusBadge.svelte';
+	import ConfirmDialog from '#lib/components/services/ConfirmDialog.svelte';
 
 	// Lazy-loaded: keeps CodeMirror + yaml out of the main bundle.
-	const loadYamlEditor = () => import('$lib/components/templates/TemplateEditorYaml.svelte');
+	const loadYamlEditor = () => import('#lib/components/templates/TemplateEditorYaml.svelte');
 
 	let { data } = $props();
 

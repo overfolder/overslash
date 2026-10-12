@@ -5,7 +5,7 @@
  * admin.google.com before connecting by signing in with Google.
  * See crates/overslash-api/src/routes/google_directory.rs.
  */
-import { session } from '$lib/session';
+import { session } from '#lib/session.ts';
 
 export interface GoogleDirectorySyncStats {
 	groups: number;

@@ -1,6 +1,6 @@
 <script lang="ts">
-	import type { Identity } from '$lib/api/groups';
-	import { makeIdentityFormatter } from '$lib/identityDisplay';
+	import type { Identity } from '#lib/api/groups.ts';
+	import { makeIdentityFormatter } from '#lib/identityDisplay.ts';
 
 	let {
 		open,

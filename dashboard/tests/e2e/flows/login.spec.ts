@@ -9,7 +9,7 @@ test.describe('dev login', () => {
 		await page.goto('/agents');
 		// /agents renders the identity hierarchy tree. The signed-in user is
 		// the immutable root node, labelled by email rather than the IdP
-		// display name (see $lib/identityDisplay). The header user-menu link
+		// display name (see #lib/identityDisplay). The header user-menu link
 		// renders the same address, so scope to the tree to avoid a
 		// strict-mode multiple-match violation. The dev org sets no allowed
 		// domain, so nothing is stripped and the full address shows.

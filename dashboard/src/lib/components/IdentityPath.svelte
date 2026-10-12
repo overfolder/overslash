@@ -11,7 +11,7 @@
 	// log no longer uses this component — its rows have only a leaf identity
 	// (id + display name) and link directly to /agents/<id>.
 
-	import { parseIdentityPath } from '$lib/identityPath';
+	import { parseIdentityPath } from '#lib/identityPath.ts';
 
 	let {
 		path,

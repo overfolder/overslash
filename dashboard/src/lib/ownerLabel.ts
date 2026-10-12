@@ -2,12 +2,12 @@
 //
 // Service instance names are unique per owner, not per org, so an org admin
 // who flips "Show all users' services" sees three identical `gcal` rows. The
-// disambiguator is the owner, and — per `$lib/identityDisplay` — the owner's
+// disambiguator is the owner, and — per `#lib/identityDisplay` — the owner's
 // real handle is their email, not the IdP `name` claim. This module turns an
 // `owner_identity_id` into that label once, so the services list, the service
 // detail header, the API Explorer picker and the connections list all agree.
 
-import { formatIdentity, type IdentityLike } from '$lib/identityDisplay';
+import { formatIdentity, type IdentityLike } from '#lib/identityDisplay.ts';
 
 /** Who owns a row, relative to the viewer.
  *  - `org`: no owner identity — an org-level resource everyone shares.

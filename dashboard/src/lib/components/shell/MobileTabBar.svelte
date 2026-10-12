@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { page } from '$app/stores';
+	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import {
 		ADMIN_NAV_ITEMS,
@@ -36,7 +36,7 @@
 	// light up Settings AND Groups whenever you're on /org/groups. Pick the
 	// single longest-matching href for the whole nav and compare exactly.
 	const allItems = $derived([...PRIMARY_TABS, ...MORE_ITEMS]);
-	const activeHref = $derived(pickActiveHref($page.url.pathname, allItems));
+	const activeHref = $derived(pickActiveHref(page.url.pathname, allItems));
 	// "More" is active when the active route is one of the secondary items.
 	const moreActive = $derived(MORE_ITEMS.some((it) => it.href === activeHref));
 
@@ -53,7 +53,7 @@
 
 	// Close the sheet on route change (any tap inside it triggers nav).
 	$effect(() => {
-		void $page.url.pathname;
+		void page.url.pathname;
 		moreOpen = false;
 	});
 </script>

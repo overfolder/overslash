@@ -4,9 +4,6 @@
 // The contract: nothing the instance needs is ever hidden (required with no
 // default from the template or an org layer), a promoted field is always up
 // front, and everything else — a field that already has a default — waits.
-//
-// Imported by relative path: `$lib` is a SvelteKit alias that Playwright's
-// transform does not resolve.
 import { test, expect } from '@playwright/test';
 import {
 	endpointIsMain,

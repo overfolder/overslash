@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { browser } from '$app/environment';
-	import { page } from '$app/stores';
+	import { browser } from '$app/env';
+	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import {
 		listIdentities,
@@ -13,29 +13,29 @@
 		deletePermission,
 		updatePermissionExpiry,
 		type CreateIdentityRequest
-	} from '$lib/identityApi';
+	} from '#lib/identityApi.ts';
 	import type {
 		ExecutionSettings,
 		Identity,
 		McpConnection,
 		PermissionRule
-	} from '$lib/types';
-	import { session, ApiError, type ApprovalResponse } from '$lib/session';
-	import { makeIdentityFormatter, providerLabel } from '$lib/identityDisplay';
-	import Avatar from '$lib/components/Avatar.svelte';
-	import AgentAvatar from '$lib/components/AgentAvatar.svelte';
-	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
-	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
-	import ApprovalRow from '$lib/components/approval/ApprovalRow.svelte';
-	import ExpiryControl from '$lib/components/approval/ExpiryControl.svelte';
-	import ConnectAgentTip from '$lib/components/ConnectAgentTip.svelte';
-	import { collapse, motionDuration } from '$lib/utils/motion';
+	} from '#lib/types.ts';
+	import { session, ApiError, type ApprovalResponse } from '#lib/session.ts';
+	import { makeIdentityFormatter, providerLabel } from '#lib/identityDisplay.ts';
+	import Avatar from '#lib/components/Avatar.svelte';
+	import AgentAvatar from '#lib/components/AgentAvatar.svelte';
+	import ConfirmModal from '#lib/components/ConfirmModal.svelte';
+	import ToggleSwitch from '#lib/components/ToggleSwitch.svelte';
+	import ApprovalRow from '#lib/components/approval/ApprovalRow.svelte';
+	import ExpiryControl from '#lib/components/approval/ExpiryControl.svelte';
+	import ConnectAgentTip from '#lib/components/ConnectAgentTip.svelte';
+	import { collapse, motionDuration } from '#lib/utils/motion.ts';
 	import { flip } from 'svelte/animate';
-	import { ttlRemaining } from '$lib/utils/time';
-	import { ownMcpUrlFor } from '$lib/env';
+	import { ttlRemaining } from '#lib/utils/time.ts';
+	import { ownMcpUrlFor } from '#lib/env.ts';
 
 	// User identities are labelled by email, not by the IdP display name — see
-	// `$lib/identityDisplay`. The org's allowed sign-in domains come from the
+	// `#lib/identityDisplay`. The org's allowed sign-in domains come from the
 	// root layout load and decide whether the domain is stripped off.
 	let { data }: { data: { allowedDomains: string[] } } = $props();
 	const fmt = $derived(makeIdentityFormatter(data.allowedDomains));
@@ -155,11 +155,11 @@
 		return m;
 	});
 
-	const meIdentityId = $derived(($page.data as { user?: { identity_id?: string } })?.user?.identity_id ?? null);
-	const meOrgId = $derived(($page.data as { user?: { org_id?: string } })?.user?.org_id ?? null);
+	const meIdentityId = $derived((page.data as { user?: { identity_id?: string } })?.user?.identity_id ?? null);
+	const meOrgId = $derived((page.data as { user?: { org_id?: string } })?.user?.org_id ?? null);
 
 	const isAdmin = $derived(
-		($page.data as { user?: { is_org_admin?: boolean } })?.user?.is_org_admin === true
+		(page.data as { user?: { is_org_admin?: boolean } })?.user?.is_org_admin === true
 	);
 
 	// Asked of the server, not derived here: `is_org_admin` is not the only way
@@ -179,7 +179,7 @@
 	// and a personal org does carry a slug, so guessing wrong produces a
 	// command that 404s with nothing in the UI to say why.
 	const mcpUrl = $derived.by(() => {
-		const user = ($page.data as {
+		const user = (page.data as {
 			user?: {
 				org_id?: string;
 				org_slug?: string | null;
@@ -205,7 +205,7 @@
 	// `?user=<id>` (admin-only) scopes the forest to one user's subtree. Set when
 	// an admin drills in from the Users list. Ignored for non-admins or an
 	// unknown id — the page then shows the full org forest as before.
-	const userFilter = $derived($page.url.searchParams.get('user'));
+	const userFilter = $derived(page.url.searchParams.get('user'));
 	const scopedUser = $derived(
 		userFilter && isAdmin
 			? identities.find((i) => i.id === userFilter && i.kind === 'user') ?? null
@@ -223,9 +223,9 @@
 	);
 
 	function clearUserFilter() {
-		const url = new URL($page.url);
+		const url = new URL(page.url.href);
 		url.searchParams.delete('user');
-		void goto(`${url.pathname}${url.search}`, { keepFocus: true, noScroll: true });
+		void goto(`${url.pathname}${url.search}`, { reset: false });
 	}
 
 	function kindLabel(kind: string): string {
@@ -506,11 +506,11 @@
 		// Mirror the current selection into the URL as `/agents/<id>` (or
 		// `/agents` when nothing is selected). Preserve query/hash.
 		const target = id ? `/agents/${id}` : '/agents';
-		const search = $page.url.search;
-		const hash = $page.url.hash;
+		const search = page.url.search;
+		const hash = page.url.hash;
 		const next = `${target}${search}${hash}`;
-		if (next === `${$page.url.pathname}${search}${hash}`) return;
-		void goto(next, { replaceState: true, noScroll: true, keepFocus: true });
+		if (next === `${page.url.pathname}${search}${hash}`) return;
+		void goto(next, { replace: true, reset: false });
 	}
 
 	async function onApprovalResolved(updated: ApprovalResponse) {
@@ -537,7 +537,7 @@
 	// either a UUID or undefined. Drives the selection from the URL, both on
 	// initial load (deep-link) and on browser back/forward. Selection → URL
 	// is handled by `selectIdentity` via `writeSelectionToUrl`.
-	const paramId = $derived($page.params.id ?? null);
+	const paramId = $derived(page.params.id ?? null);
 	$effect(() => {
 		const target = paramId;
 		// Wait for the first identities load before validating — otherwise
@@ -562,10 +562,9 @@
 			// `/agents` (preserving query/hash).
 			selectedId = null;
 			detail = null;
-			void goto(`/agents${$page.url.search}${$page.url.hash}`, {
-				replaceState: true,
-				noScroll: true,
-				keepFocus: true
+			void goto(`/agents${page.url.search}${page.url.hash}`, {
+				replace: true,
+				reset: false
 			});
 		}
 	});

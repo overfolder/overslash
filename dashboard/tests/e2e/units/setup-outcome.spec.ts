@@ -10,9 +10,6 @@
 //
 // The *ordering* is the contract, so most of these tests are about which case
 // outranks which rather than about any one case in isolation.
-//
-// Imported by relative path: `$lib` is a SvelteKit alias that Playwright's
-// transform does not resolve.
 import { test, expect } from '@playwright/test';
 import { credentialLabel, failureKind, setupOutcome } from '../../../src/lib/setup-outcome';
 import type { ServiceStatus } from '../../../src/lib/types';

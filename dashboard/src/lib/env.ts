@@ -35,7 +35,7 @@ export function environmentFromHost(hostname: string): AppEnv {
 	return { name, isProd: false };
 }
 
-/** Browser-only convenience — callers must guard with `browser` from `$app/environment`. */
+/** Browser-only convenience — callers must guard with `browser` from `$app/env`. */
 export function currentEnvironment(): AppEnv {
 	return environmentFromHost(window.location.hostname);
 }

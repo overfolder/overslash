@@ -1,11 +1,11 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
-	import { page } from '$app/stores';
-	import { ApiError } from '$lib/session';
-	import { importTemplate } from '$lib/api/services';
-	import type { ImportSource } from '$lib/types';
+	import { page } from '$app/state';
+	import { ApiError } from '#lib/session.ts';
+	import { importTemplate } from '#lib/api/services.ts';
+	import type { ImportSource } from '#lib/types.ts';
 
-	const isAdmin = $derived(($page as any).data?.user?.is_org_admin === true);
+	const isAdmin = $derived((page as any).data?.user?.is_org_admin === true);
 
 	// svelte-ignore state_referenced_locally
 	let userLevel = $state(!isAdmin);

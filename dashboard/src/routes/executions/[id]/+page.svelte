@@ -1,13 +1,13 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { page } from '$app/stores';
-	import { ApiError } from '$lib/session';
-	import type { ExecutionDetail } from '$lib/session';
-	import { getExecution, cancelExecution } from '$lib/api/executions';
-	import { onEvent, EXECUTION_EVENT_TYPES } from '$lib/stores/events.svelte';
-	import { formatTime } from '$lib/utils/time';
+	import { page } from '$app/state';
+	import { ApiError } from '#lib/session.ts';
+	import type { ExecutionDetail } from '#lib/session.ts';
+	import { getExecution, cancelExecution } from '#lib/api/executions.ts';
+	import { onEvent, EXECUTION_EVENT_TYPES } from '#lib/stores/events.svelte.ts';
+	import { formatTime } from '#lib/utils/time.ts';
 
-	const id = $derived($page.params.id ?? '');
+	const id = $derived(page.params.id ?? '');
 
 	let detail = $state<ExecutionDetail | null>(null);
 	let loading = $state(true);

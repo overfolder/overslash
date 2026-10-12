@@ -4,8 +4,8 @@
   rotating again.
 -->
 <script lang="ts">
-	import { ApiError } from '$lib/session';
-	import { restoreSecretVersion, type SecretVault } from '$lib/api/secrets';
+	import { ApiError } from '#lib/session.ts';
+	import { restoreSecretVersion, type SecretVault } from '#lib/api/secrets.ts';
 
 	let {
 		secretName,

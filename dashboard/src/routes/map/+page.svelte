@@ -1,20 +1,20 @@
 <script lang="ts">
 	import { onDestroy, onMount } from 'svelte';
-	import { page } from '$app/stores';
-	import '$lib/styles/livemap.css';
-	import { onEvent, SERVICE_EVENT_TYPES } from '$lib/stores/events.svelte';
-	import { listIdentities } from '$lib/identityApi';
-	import { listServices } from '$lib/api/services';
-	import { getVersion } from '$lib/api/version';
-	import LiveMap from '$lib/components/map/LiveMap.svelte';
-	import type { Identity, ServiceInstanceSummary } from '$lib/types';
+	import { page } from '$app/state';
+	import '#lib/styles/livemap.css';
+	import { onEvent, SERVICE_EVENT_TYPES } from '#lib/stores/events.svelte.ts';
+	import { listIdentities } from '#lib/identityApi.ts';
+	import { listServices } from '#lib/api/services.ts';
+	import { getVersion } from '#lib/api/version.ts';
+	import LiveMap from '#lib/components/map/LiveMap.svelte';
+	import type { Identity, ServiceInstanceSummary } from '#lib/types.ts';
 
 	// Supplied by the root layout load, same as the services list reads them:
-	// the map's service tooltips name an owner through `$lib/ownerLabel`, which
+	// the map's service tooltips name an owner through `#lib/ownerLabel`, which
 	// wants the viewer's own id and the org's sign-in domains to say "Yours"
 	// and to strip `@acme.com` off everyone else's.
-	const currentUserId = $derived(($page as any).data?.user?.identity_id as string | undefined);
-	const allowedDomains = $derived((($page as any).data?.allowedDomains ?? []) as string[]);
+	const currentUserId = $derived((page as any).data?.user?.identity_id as string | undefined);
+	const allowedDomains = $derived(((page as any).data?.allowedDomains ?? []) as string[]);
 
 	let identities = $state<Identity[]>([]);
 	let services = $state<ServiceInstanceSummary[]>([]);

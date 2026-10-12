@@ -2,16 +2,16 @@
 	import { defineMeta } from '@storybook/addon-svelte-csf';
 	import NavItem from './NavItem.svelte';
 
-	// NavItem reads `$page.url.pathname` (from `$app/stores`) to decide the active
-	// state, unless `activeHref` is passed. @storybook/sveltekit mocks `$app/stores`;
-	// `parameters.sveltekit_experimental.stores.page.url` sets the mocked path.
+	// NavItem reads `page.url.pathname` (from `$app/state`) to decide the active
+	// state, unless `activeHref` is passed. @storybook/sveltekit mocks `$app/state`;
+	// `parameters.sveltekit_experimental.state.page.url` sets the mocked URL.
 	const { Story } = defineMeta({
 		title: 'Shell/NavItem',
 		component: NavItem,
 		tags: ['autodocs'],
 		parameters: {
 			layout: 'padded',
-			sveltekit_experimental: { stores: { page: { url: '/agents' } } }
+			sveltekit_experimental: { state: { page: { url: new URL('/agents', 'http://localhost') } } }
 		},
 		argTypes: { collapsed: { control: 'boolean' } },
 		args: { href: '/agents', label: 'Agents', icon: 'bot', collapsed: false }
