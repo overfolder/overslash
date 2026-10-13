@@ -146,7 +146,7 @@ async fn import_injects_token_verbatim() {
     assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.unwrap();
     assert_eq!(body["status"], "called");
-    let echo: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
+    let echo = common::last_received(mock_addr).await;
     assert_eq!(
         echo["headers"]["authorization"], "Bearer vault-access-token-1",
         "imported token must be injected verbatim"

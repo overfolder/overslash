@@ -30,6 +30,7 @@ const OAUTH_TOKEN: &str = "gcal-secret-token-456";
 
 struct PendingOauthApproval {
     base: String,
+    mock_addr: std::net::SocketAddr,
     client: reqwest::Client,
     pool: sqlx::PgPool,
     org_id: Uuid,
@@ -126,6 +127,7 @@ async fn setup_pending_oauth_approval() -> PendingOauthApproval {
 
     PendingOauthApproval {
         base,
+        mock_addr,
         client,
         pool,
         org_id,
@@ -261,12 +263,9 @@ async fn replay_re_resolves_fresh_oauth_token() {
 
     // The stored payload carried no credential — the Authorization header
     // the mock saw must come from replay-time re-resolution.
-    let echo: Value = serde_json::from_str(
-        executed["execution"]["result"]["body"]
-            .as_str()
-            .expect("replay result body"),
-    )
-    .unwrap();
+    // Read from the fake's log: the result's echo is scrubbed of injected
+    // credentials, so it could not tell this token from any other.
+    let echo = common::last_received(t.mock_addr).await;
     assert_eq!(
         echo["headers"]["authorization"].as_str(),
         Some(&*format!("Bearer {OAUTH_TOKEN}")),

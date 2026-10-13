@@ -146,7 +146,7 @@ async fn test_google_keep_mock() {
     assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.unwrap();
     assert_eq!(body["status"], "called");
-    let echo: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
+    let echo = common::last_received(mock_addr).await;
     let uri = echo["uri"].as_str().unwrap();
     assert!(
         uri.contains("/v1/notes"),

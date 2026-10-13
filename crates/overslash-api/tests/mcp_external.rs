@@ -411,6 +411,91 @@ async fn mcp_bearer_auth_forwards_secret() {
     assert_eq!(stub.last_auth().as_deref(), Some("Bearer SEKRET"));
 }
 
+/// A tool error that quotes the bearer back (`"invalid token <it>"`) must not
+/// hand it to the calling agent or to the org's captured audit body.
+#[tokio::test]
+async fn mcp_tool_error_echoing_the_bearer_is_redacted() {
+    const BEARER: &str = "stub-bearer-SEKRET-9f3a";
+    let (pool, fx) = common::test_pool_bootstrapped().await;
+    let (addr, stub) = start_stub().await;
+    stub.force_error(vec![json!({
+        "type": "text",
+        "text": format!("invalid token {BEARER}"),
+    })]);
+    let stub_url = format!("http://{addr}/mcp");
+
+    let (base, client) = common::start_api(pool).await;
+    let base = format!("http://{base}");
+    let (_user, agent_ident, agent_key) =
+        common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
+    let org_key = fx.org_key.clone();
+
+    setup_template_and_grants(SetupCtx {
+        base: &base,
+        client: &client,
+        admin_key: &org_key,
+        agent_key: &agent_key,
+        agent_ident,
+        key: "stub_mcp_echo_bearer",
+        url: &stub_url,
+        auth_bearer_secret: Some(("stub_echo_token", BEARER)),
+    })
+    .await;
+    let resp = client
+        .patch(format!("{base}/v1/orgs/{}/audit-settings", fx.org_id))
+        .header(auth(&fx.admin_key).0, auth(&fx.admin_key).1)
+        .json(&json!({"response_body_mode": "errors_only"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let body: Value = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(auth(&agent_key).0, auth(&agent_key).1)
+        .json(&json!({
+            "service": "stub_mcp_echo_bearer",
+            "action": "echo",
+            "params": { "x": "boom" }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(body["is_error"], true, "{body}");
+    // The upstream really was sent the bearer…
+    assert_eq!(stub.last_auth(), Some(format!("Bearer {BEARER}")));
+    // …and nothing it said about it comes back out.
+    assert!(
+        !body.to_string().contains(BEARER),
+        "agent saw the bearer: {body}"
+    );
+    let envelope: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
+    assert_eq!(envelope["content"][0]["text"], "invalid token [REDACTED]");
+
+    let rows: Vec<Value> = client
+        .get(format!("{base}/v1/audit?action=action.executed"))
+        .header(auth(&fx.admin_key).0, auth(&fx.admin_key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let row = rows
+        .iter()
+        .find(|r| r["detail"]["tool"] == "echo")
+        .unwrap_or_else(|| panic!("no MCP audit row: {rows:?}"));
+    let captured = row["detail"]["response"]["body"].as_str().unwrap();
+    assert!(captured.contains("invalid token [REDACTED]"), "{captured}");
+    assert!(
+        !row.to_string().contains(BEARER),
+        "audit kept the bearer: {row}"
+    );
+}
+
 #[tokio::test]
 async fn mcp_is_error_surfaces_in_envelope_not_http() {
     let (pool, fx) = common::test_pool_bootstrapped().await;

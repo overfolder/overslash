@@ -103,7 +103,23 @@ impl World {
         let resp = req.send().await.unwrap();
         (resp.status().as_u16(), resp.text().await.unwrap())
     }
+
+    /// [`Self::send`] for an action call: the text also carries what the
+    /// upstream received under `marker`, since the response itself is
+    /// credential-scrubbed. Actors call concurrently, so each dials its own
+    /// path ([`actor_path`]) and passes it here.
+    async fn call(&self, marker: &str, req: reqwest::RequestBuilder) -> (u16, String) {
+        common::call_seen_upstream(self.mock, marker, req).await
+    }
 }
+
+/// A per-actor path on the fake, so concurrent actors' upstream requests can
+/// be told apart in its shared log.
+fn actor_path(actor: &Actor) -> String {
+    format!("/as-{}", actor.label.replace(':', "-"))
+}
+
+impl World {}
 
 async fn post_json(client: &Client, url: String, key: &str, body: Value) -> Value {
     client
@@ -376,7 +392,7 @@ async fn sweep_surface(surface: Surface) {
                     .header(auth(&actor.key).0, auth(&actor.key).1)
                     .json(&json!({"template_key": "shortcut", "name": "shortcut",
                                   "status": "active",
-                                  "url": format!("http://{}", w.mock),
+                                  "url": format!("http://{}{}", w.mock, actor_path(actor)),
                                   "credentials": {"token": "shortcut_api_token"}})),
             )
             .await;
@@ -403,7 +419,8 @@ async fn sweep_surface(surface: Surface) {
                 && surface == Surface::Inline
             {
                 let (status, body) = w
-                    .send(
+                    .call(
+                        &actor_path(actor),
                         w.client
                             .post(format!("{}/v1/actions/call", w.base))
                             .header(auth(&actor.key).0, auth(&actor.key).1)
@@ -442,13 +459,14 @@ async fn sweep_surface(surface: Surface) {
                         if surface == Surface::Inline {
                         // Inline (Mode A) — only the caller's own vault, ever.
                             let (status, body) = w
-                                .send(
+                                .call(
+                                    &actor_path(actor),
                                     w.client
                                         .post(format!("{}/v1/actions/call", w.base))
                                         .header(auth(&actor.key).0, auth(&actor.key).1)
                                         .json(&json!({
                                             "service": "http", "method": "GET",
-                                            "url": format!("http://{}/echo", w.mock),
+                                            "url": format!("http://{}{}/echo", w.mock, actor_path(actor)),
                                             "secrets": [{"name": spelled, "inject_as": "header",
                                                          "header_name": "X-Leak"}]
                                         })),
@@ -643,7 +661,8 @@ async fn a_shared_org_service_crosses_users_but_never_orgs() {
 
     for actor in w.actors.iter().filter(|a| a.label.ends_with("-agent")) {
         let (status, body) = w
-            .send(
+            .call(
+                "",
                 w.client
                     .post(format!("{}/v1/actions/call", w.base))
                     .header(auth(&actor.key).0, auth(&actor.key).1)

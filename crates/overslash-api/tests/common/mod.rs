@@ -1292,6 +1292,68 @@ pub async fn start_mock() -> SocketAddr {
     addr
 }
 
+/// Send `req` (an action call) and return its status and text, followed by
+/// the requests [`start_mock`] received while it ran whose URI contains
+/// `marker` (`""` for all of them).
+///
+/// The response alone can no longer show which credential was injected: the
+/// gateway scrubs injected values out of what it returns (`credential_scrub`),
+/// so a `contains(canary)` on it would pass a positive check never and a
+/// negative one always. Appending the fake's own log keeps both meaningful.
+///
+/// The log is read from a snapshot index rather than cleared, so concurrent
+/// callers never wipe each other's entries; callers that do run concurrently
+/// must dial distinct paths and pass them as `marker`, or they would see each
+/// other's requests.
+pub async fn call_seen_upstream(
+    mock: SocketAddr,
+    marker: &str,
+    req: reqwest::RequestBuilder,
+) -> (u16, String) {
+    let before = received_requests(mock).await.len();
+    let resp = req.send().await.unwrap();
+    let status = resp.status().as_u16();
+    let text = resp.text().await.unwrap();
+    let seen: Vec<serde_json::Value> = received_requests(mock)
+        .await
+        .into_iter()
+        .skip(before)
+        .filter(|r| r["uri"].as_str().is_some_and(|u| u.contains(marker)))
+        .collect();
+    (
+        status,
+        format!(
+            "{text}\n-- upstream received: {}",
+            serde_json::Value::from(seen)
+        ),
+    )
+}
+
+async fn received_requests(mock: SocketAddr) -> Vec<serde_json::Value> {
+    let log: serde_json::Value = Client::new()
+        .get(format!("http://{mock}/__received_requests"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    log["requests"].as_array().cloned().unwrap_or_default()
+}
+
+/// The most recent request [`start_mock`]'s echo route received, as the fake
+/// logged it: `{method, uri, headers, body}`.
+///
+/// Read this — not the echo in the call result — to assert *which* credential
+/// was sent: the gateway scrubs injected credentials out of every buffered
+/// response (`credential_scrub`), so the echo reads `Bearer [REDACTED]`.
+pub async fn last_received(mock: SocketAddr) -> serde_json::Value {
+    received_requests(mock)
+        .await
+        .pop()
+        .expect("the fake received no requests")
+}
+
 /// The owner user ("test-user") that [`bootstrap_org_identity`] creates and
 /// parents the returned agent under. OAuth connections resolve at the owner
 /// identity (DECISIONS.md D22), so tests that exercise the auto-resolve path

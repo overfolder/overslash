@@ -263,15 +263,12 @@ impl Org {
     /// Call it through the action shape (the instance `url`, i.e. the fake,
     /// which echoes the request headers back).
     async fn call(&self) -> (u16, String) {
-        let r = self
+        let req = self
             .client
             .post(format!("{}/v1/actions/call", self.base))
             .header(auth(&self.julia.agent_key).0, auth(&self.julia.agent_key).1)
-            .json(&json!({"service": "calendar", "action": "list_calendars", "params": {}}))
-            .send()
-            .await
-            .unwrap();
-        (r.status().as_u16(), r.text().await.unwrap())
+            .json(&json!({"service": "calendar", "action": "list_calendars", "params": {}}));
+        common::call_seen_upstream(self.mock, "", req).await
     }
 }
 

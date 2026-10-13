@@ -185,6 +185,7 @@ mod templates;
 mod templates_import;
 mod trial;
 mod uploads;
+mod upstream_credential_echo;
 mod upstream_metrics;
 mod user_sessions;
 mod version;

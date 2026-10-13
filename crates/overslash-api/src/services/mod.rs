@@ -12,6 +12,7 @@ pub mod call_timeout;
 pub mod client_credentials;
 pub mod client_ip;
 pub mod compact_response;
+pub mod credential_scrub;
 pub mod credential_template;
 pub mod deferred_download;
 pub mod directory_sync;

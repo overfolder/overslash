@@ -108,7 +108,7 @@ async fn test_google_calendar_three_modes() {
     assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.unwrap();
     assert_eq!(body["status"], "called");
-    let echo: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
+    let echo = common::last_received(mock_addr).await;
     assert_eq!(
         echo["headers"]["authorization"], "Bearer manual-token-xyz",
         "http pseudo-service: secret should be injected as Authorization header"
@@ -176,7 +176,7 @@ async fn test_google_calendar_three_modes() {
     let body: Value = resp.json().await.unwrap();
     assert_eq!(body["status"], "called");
 
-    let echo: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
+    let echo = common::last_received(mock_addr).await;
     let uri = echo["uri"].as_str().unwrap();
     assert!(
         uri.contains("/calendar/v3/calendars/primary/events"),
