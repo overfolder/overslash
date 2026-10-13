@@ -102,7 +102,7 @@ pub(super) async fn server_instructions(
 
 /// Static half of `overslash_search`'s description. The caller's connected
 /// service types are appended at request time — see `roster`.
-const SEARCH_DESCRIPTION: &str = "Discover Overslash service instances and actions available to the caller. Each result's `service` field is the instance name to pass directly as `overslash_call.service` (e.g. `gmail_work`, `whatsapp_angel`) — never the `template` key. Templates with multiple connected instances fan out into one row per instance. Pass `include_catalog: true` to also surface un-connected templates; those rows are marked `setup_required: true` and have no `service` field — set them up first by calling `create_service` on the `overslash` service (params: `template_key` + `name`), then call the name you chose. A new instance usually still needs a credential, and `create_service` mints the handshake for it: the response carries `connect.auth_url` for an OAuth template and `setup.setup_url` for one that takes an API key. Hand whichever arrives to your user verbatim — you never see the credential itself. The row's `auth.setup` names that one call. Do not send the user to a dashboard to do it. Pass `exclude` to drop specific services from the response (e.g. when retrying after one already failed). An empty `query` lists every callable instance without actions (browse mode). A row with `paginated: true` returns one page at a time — its result will carry a `_pagination.next` naming the call for the page after it, so you never have to fetch a whole collection to read the start of one.";
+const SEARCH_DESCRIPTION: &str = "Discover Overslash service instances and actions available to the caller. Each result is one action of one service; its `instances` array lists the caller's callable instances of that service, and an entry's `service` is the instance name to pass directly as `overslash_call.service` (e.g. `gmail_work`, `whatsapp_angel`) — never the row's `template` key. With several instances, pick one by its `account_email` / `secret_name`. Pass `include_catalog: true` to also surface un-connected templates; each is a single row marked `setup_required: true` with an empty `instances` array, showing its best-matching action and naming other matches in `more_actions` — set them up first by calling `create_service` on the `overslash` service (params: `template_key` + `name`), then call the name you chose. A new instance usually still needs a credential, and `create_service` mints the handshake for it: the response carries `connect.auth_url` for an OAuth template and `setup.setup_url` for one that takes an API key. Hand whichever arrives to your user verbatim — you never see the credential itself. The row's `auth.setup` names that one call. Do not send the user to a dashboard to do it. Pass `exclude` to drop specific services from the response (e.g. when retrying after one already failed). An empty `query` lists every connected service with its instances, without actions (browse mode). A row with `paginated: true` returns one page at a time — its result will carry a `_pagination.next` naming the call for the page after it, so you never have to fetch a whole collection to read the start of one.";
 
 pub(super) async fn tools_list_response(
     state: &AppState,
@@ -183,12 +183,12 @@ pub(super) async fn tools_list_result(
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "Free-text query. Pass an empty string to list every callable instance (no actions)."
+                        "description": "Free-text query. Pass an empty string to list every connected service and its instances (no actions)."
                     },
                     "include_catalog": {
                         "type": "boolean",
                         "default": false,
-                        "description": "When true, also surface un-connected templates as `setup_required: true` rows. Default returns only configured instances the caller can call right now."
+                        "description": "When true, also surface un-connected templates as `setup_required: true` rows (one per template, empty `instances`). Default returns only services with a configured instance the caller can call right now."
                     },
                     "exclude": {
                         "type": "string",
@@ -206,13 +206,13 @@ pub(super) async fn tools_list_result(
         json!({
             "name": "overslash_read",
             "title": "Read via Overslash",
-            "description": "Call a read-class Overslash action on a configured service instance. The `service` argument must be an *instance name* (e.g. `gmail_work`), discoverable via overslash_search — not a template key like `gmail`. The server rejects this call if the resolved action's risk is not `read`. Use overslash_call for write/delete actions or to resume a pending approval. If a result carries `_pagination`, the action returned one page of a larger collection: `_pagination.next.params` is the *difference* between the call you just made and the one that fetches the next page, so merge it into the params you sent rather than replacing them. `has_more: false` means you already have the whole collection.",
+            "description": "Call a read-class Overslash action on a configured service instance. The `service` argument must be an *instance name* (e.g. `gmail_work`), discoverable as `instances[].service` in an overslash_search result — not a template key like `gmail`. The server rejects this call if the resolved action's risk is not `read`. Use overslash_call for write/delete actions or to resume a pending approval. If a result carries `_pagination`, the action returned one page of a larger collection: `_pagination.next.params` is the *difference* between the call you just made and the one that fetches the next page, so merge it into the params you sent rather than replacing them. `has_more: false` means you already have the whole collection.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "service": {
                         "type": "string",
-                        "description": "Instance name (e.g. `gmail_work`). Pass the `service` field from an overslash_search result, not the `template` key."
+                        "description": "Instance name (e.g. `gmail_work`). Pass an `instances[].service` value from an overslash_search result, not the `template` key."
                     },
                     "action":  { "type": "string" },
                     "params":  {},
@@ -253,13 +253,13 @@ pub(super) async fn tools_list_result(
         json!({
             "name": "overslash_call",
             "title": "Call an Overslash action",
-            "description": "Call any Overslash action (read, write, or delete) on a configured service instance, or resume a pending approval. The `service` argument must be an *instance name* (e.g. `gmail_work`), discoverable via overslash_search — not a template key like `gmail`. May return pending_approval if the user must approve — once approved, call this tool again with `approval_id` (and no service/action/params) to trigger the stored request and receive the result. A pending approval expires 15 minutes after the user allows it. The `pending_approval` envelope's `auto_call_on_approve` field tells you whether the gateway will auto-replay the call once approved (`true` — the result lands on the execution record via webhook/audit, no follow-up call needed) or whether the agent is in deferred-execution mode and you must replay explicitly (`false`). Prefer overslash_read for read-only actions so clients can skip the confirmation prompt. If a result carries `_pagination`, the action returned one page of a larger collection: `_pagination.next.params` is the *difference* between the call you just made and the one that fetches the next page, so merge it into the params you sent rather than replacing them. `has_more: false` means you already have the whole collection.",
+            "description": "Call any Overslash action (read, write, or delete) on a configured service instance, or resume a pending approval. The `service` argument must be an *instance name* (e.g. `gmail_work`), discoverable as `instances[].service` in an overslash_search result — not a template key like `gmail`. May return pending_approval if the user must approve — once approved, call this tool again with `approval_id` (and no service/action/params) to trigger the stored request and receive the result. A pending approval expires 15 minutes after the user allows it. The `pending_approval` envelope's `auto_call_on_approve` field tells you whether the gateway will auto-replay the call once approved (`true` — the result lands on the execution record via webhook/audit, no follow-up call needed) or whether the agent is in deferred-execution mode and you must replay explicitly (`false`). Prefer overslash_read for read-only actions so clients can skip the confirmation prompt. If a result carries `_pagination`, the action returned one page of a larger collection: `_pagination.next.params` is the *difference* between the call you just made and the one that fetches the next page, so merge it into the params you sent rather than replacing them. `has_more: false` means you already have the whole collection.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "service": {
                         "type": "string",
-                        "description": "Instance name (e.g. `gmail_work`). Pass the `service` field from an overslash_search result, not the `template` key."
+                        "description": "Instance name (e.g. `gmail_work`). Pass an `instances[].service` value from an overslash_search result, not the `template` key."
                     },
                     "action":      { "type": "string" },
                     "params":      {},

@@ -7,22 +7,28 @@
 //!   2. **Embedding cosine similarity** via pgvector top-K, when available
 //!      (`state.embeddings_available`). Gracefully skipped when the env
 //!      flag is off or the extension isn't installed.
-//!   3. **Post-rank bonuses**: a connected-instance bonus (floats up actions
-//!      the caller can run right now) and a small read-safer bonus.
+//!   3. **Post-rank bonuses**: a service-name bonus (the query names the
+//!      service itself), a connected-instance bonus (floats up actions the
+//!      caller can run right now) and a small read-safer bonus.
+//!
+//! Rows are one per (template, action), each listing the caller's callable
+//! `instances`; an un-connected catalog template collapses to one row.
 //!
 //! Candidate visibility matches the other routes: identity-bound keys
 //! apply group-ceiling filtering the same way `list_services` does; org-
 //! level keys bypass. See `routes/services.rs::list_services` for the
 //! underlying scope machinery reused here.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use axum::{Json, Router, extract::Query, extract::State, routing::get};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use overslash_core::search::{Candidate, MIN_SCORE, apply_post_bonuses, keyword_fuzzy_score};
-use overslash_core::types::{DeclaredRisk, ServiceDefinition};
+use overslash_core::search::{
+    Candidate, MIN_SCORE, apply_post_bonuses, keyword_fuzzy_score, service_name_bonus,
+};
+use overslash_core::types::{DeclaredRisk, ServiceAction, ServiceDefinition};
 use overslash_db::repos::{org as org_repo, service_action_embedding, service_template};
 use overslash_db::scopes::{OrgScope, UserScope};
 
@@ -60,6 +66,10 @@ const MAX_LIMIT: usize = 100;
 /// re-rank in the endpoint (and filter by visibility the SQL couldn't
 /// enforce cleanly, e.g. hidden global templates).
 const EMBEDDING_CANDIDATES: i64 = 50;
+/// How many runner-up action keys a collapsed catalog row lists in
+/// `more_actions`. Enough to show the shape of what setup unlocks; the
+/// caller re-searches after setup for the full contract.
+const MORE_ACTIONS: usize = 3;
 
 pub fn router() -> Router<AppState> {
     Router::new().route("/v1/search", get(search))
@@ -94,27 +104,17 @@ struct SearchResponse {
 
 #[derive(Serialize)]
 struct SearchResult {
-    /// Instance name — the value to pass directly as `overslash_call.service`.
-    /// Absent for catalog rows (`setup_required: true`), where no instance
-    /// is configured for the caller.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    service: Option<String>,
-    /// Template key. Always present, for traceability and to let agents
-    /// recognise that two rows (e.g. `gmail_work` and `gmail_personal`) come
-    /// from the same template.
+    /// Template key. Always present. Not callable — pass an
+    /// `instances[].service` to `overslash_call`, never this.
     template: String,
     service_display_name: String,
-    /// OAuth account identifier sourced from `connections.account_email`
-    /// (e.g. `alice@gmail.com`). Hoisted to the top level since each row is
-    /// already a single instance. Absent for secret-based rows and for OAuth
-    /// connections whose userinfo lookup didn't return an email.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    account_email: Option<String>,
-    /// Variable name of the secret backing a secret-based instance — the label
-    /// only, never the value. Hoisted to the top level since each row is a
-    /// single instance. Absent for OAuth rows.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    secret_name: Option<String>,
+    /// The caller's configured instances of this template, sorted by name.
+    /// Always present: one entry per callable instance, empty on a
+    /// `setup_required` catalog row. One row per (template, action) rather
+    /// than one per (instance, action), so a caller with five Gmail accounts
+    /// gets each action once instead of five identical copies crowding the
+    /// `limit` window.
+    instances: Vec<InstanceRef>,
     /// Action fields and `score` are absent in browse mode (empty query),
     /// where each result represents a service-level entry.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -133,18 +133,13 @@ struct SearchResult {
     /// service, action `create_service`) before this row becomes callable.
     #[serde(skip_serializing_if = "Option::is_none")]
     setup_required: Option<bool>,
-    /// Per-action OAuth scope coverage for a connected instance:
-    /// `needs_reconnect` when the bound connection's granted scopes don't cover
-    /// this action (calling it will 403 with `missing_scopes`), `unknown` when
-    /// the connection's scopes weren't recorded, `covered` otherwise. Only
-    /// present on action rows of OAuth services whose action declares scopes —
-    /// lets an agent reconnect at discovery time instead of after a failed call.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    scope_coverage: Option<ScopeCoverage>,
-    /// The missing-scope delta when `scope_coverage == needs_reconnect`. Empty
-    /// (and omitted) otherwise.
+    /// Catalog rows only: other matching actions of this template, best
+    /// first, at most [`MORE_ACTIONS`]. An un-connected template collapses to
+    /// a single row (its best action), so this is how the caller sees what
+    /// else setting it up would unlock without paying for N copies of the
+    /// same `auth.setup` chain.
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    missing_scopes: Vec<String>,
+    more_actions: Vec<String>,
     /// The action's caller-supplied parameter contract — what may be passed
     /// in `overslash_call.params`. Present on action rows, empty (and
     /// omitted) in browse mode, where the row is service-level.
@@ -180,6 +175,65 @@ struct SearchResult {
     /// relaxation at all.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     additional_properties: bool,
+}
+
+/// One callable instance on a [`SearchResult`]. Carries everything that
+/// differs between instances of the same template; everything they share
+/// (action, description, params) lives once on the row.
+#[derive(Serialize)]
+struct InstanceRef {
+    /// Instance name — the value to pass directly as `overslash_call.service`.
+    service: String,
+    /// OAuth account identifier sourced from `connections.account_email`
+    /// (e.g. `alice@gmail.com`), or the template's identity config value for
+    /// a secret-based instance. Absent when neither is known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    account_email: Option<String>,
+    /// Variable name of the secret backing a secret-based instance — the label
+    /// only, never the value. Absent for OAuth instances.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    secret_name: Option<String>,
+    /// Per-action OAuth scope coverage for this instance's connection:
+    /// `needs_reconnect` when the granted scopes don't cover the row's action
+    /// (calling it will 403 with `missing_scopes`), `unknown` when the
+    /// connection's scopes weren't recorded, `covered` otherwise. Only present
+    /// on action rows whose action declares scopes — lets an agent reconnect
+    /// at discovery time instead of after a failed call.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    scope_coverage: Option<ScopeCoverage>,
+    /// The missing-scope delta when `scope_coverage == needs_reconnect`. Empty
+    /// (and omitted) otherwise.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    missing_scopes: Vec<String>,
+}
+
+impl InstanceRef {
+    /// Browse-mode entry: coverage is per-action, so nothing to annotate.
+    fn service_level(inst: &InstanceRow) -> Self {
+        InstanceRef {
+            service: inst.name.clone(),
+            account_email: inst.account_email.clone(),
+            secret_name: inst.secret_name.clone(),
+            scope_coverage: None,
+            missing_scopes: Vec::new(),
+        }
+    }
+
+    /// Action-row entry. Coverage only for actions that declare scopes
+    /// (OAuth-secured); unscoped/secret-based actions leave it absent.
+    fn for_action(inst: &InstanceRow, action: &ServiceAction) -> Self {
+        let (scope_coverage, missing_scopes) = if action.required_scopes.is_empty() {
+            (None, Vec::new())
+        } else {
+            let (c, m) = action_scope_coverage(action, inst.scopes.knowledge());
+            (Some(c), m)
+        };
+        InstanceRef {
+            scope_coverage,
+            missing_scopes,
+            ..Self::service_level(inst)
+        }
+    }
 }
 
 /// Per-instance data carried from `collect_visible_templates` into the
@@ -297,73 +351,44 @@ async fn search(
 
     if q.is_empty() {
         overslash_metrics::search::record_query("browse", "ok");
-        // Browse mode: list every visible service with no actions, fanned
-        // out one row per instance so each row is directly callable. The
-        // catalog is bounded (~dozens of templates × a few instances each),
-        // so we deliberately skip the limit clamp — truncating "show me
-        // everything available" defeats the use case.
+        // Browse mode: one service-level row per visible template, listing
+        // its instances. The catalog is bounded (~dozens of templates), so we
+        // deliberately skip the limit clamp — truncating "show me everything
+        // available" defeats the use case.
         let mut results: Vec<SearchResult> = Vec::new();
         for t in &visible_templates {
-            let connected_instances = instances_by_template
+            let instances: Vec<InstanceRef> = instances_by_template
                 .get(&t.def.key)
-                .cloned()
+                .map(|v| v.iter().map(InstanceRef::service_level).collect())
                 .unwrap_or_default();
-            if connected_instances.is_empty() {
-                // Un-connected catalog row — only emitted under
-                // include_catalog=true (the visible_templates filter
-                // already enforced that).
-                if !params.include_catalog {
-                    continue;
-                }
-                results.push(SearchResult {
-                    service: None,
-                    template: t.def.key.clone(),
-                    service_display_name: t.def.display_name.clone(),
-                    account_email: None,
-                    secret_name: None,
-                    action: None,
-                    description: None,
-                    risk: None,
-                    tier: t.tier.into(),
-                    auth: build_auth_status(&t.def, false, awaiting_setup.contains(&t.def.key)),
-                    score: None,
-                    setup_required: Some(true),
-                    scope_coverage: None,
-                    missing_scopes: Vec::new(),
-                    params: Vec::new(),
-                    paginated: false,
-                    additional_properties: false,
-                });
-            } else {
-                for inst in connected_instances {
-                    results.push(SearchResult {
-                        service: Some(inst.name),
-                        template: t.def.key.clone(),
-                        service_display_name: t.def.display_name.clone(),
-                        account_email: inst.account_email,
-                        secret_name: inst.secret_name,
-                        action: None,
-                        description: None,
-                        risk: None,
-                        tier: t.tier.into(),
-                        auth: build_auth_status(&t.def, true, false),
-                        score: None,
-                        setup_required: None,
-                        // Browse rows are service-level (no action) — coverage is
-                        // per-action, so nothing to annotate here.
-                        scope_coverage: None,
-                        missing_scopes: Vec::new(),
-                        // Likewise: the parameter contract is per-action.
-                        params: Vec::new(),
-                        paginated: false,
-                        additional_properties: false,
-                    });
-                }
-            }
+            let connected = !instances.is_empty();
+            // An un-connected row only reaches here under include_catalog=true
+            // (the visible_templates filter already enforced that).
+            results.push(SearchResult {
+                template: t.def.key.clone(),
+                service_display_name: t.def.display_name.clone(),
+                instances,
+                action: None,
+                description: None,
+                risk: None,
+                tier: t.tier.into(),
+                auth: build_auth_status(
+                    &t.def,
+                    connected,
+                    !connected && awaiting_setup.contains(&t.def.key),
+                ),
+                score: None,
+                setup_required: (!connected).then_some(true),
+                more_actions: Vec::new(),
+                // The parameter contract is per-action; browse rows are not.
+                params: Vec::new(),
+                paginated: false,
+                additional_properties: false,
+            });
         }
         // Connected-first, then alphabetical by display name, then by
-        // instance `service` to keep fan-out rows of the same template in a
-        // stable order. Mirrors the CONNECTED_BONUS intent in scored mode.
+        // template key so an org template shadowing a global one sorts
+        // stably. Mirrors the CONNECTED_BONUS intent in scored mode.
         results.sort_by(|a, b| {
             b.auth
                 .connected
@@ -373,7 +398,8 @@ async fn search(
                         .to_lowercase()
                         .cmp(&b.service_display_name.to_lowercase())
                 })
-                .then_with(|| a.service.cmp(&b.service))
+                .then_with(|| a.template.cmp(&b.template))
+                .then_with(|| a.tier.cmp(&b.tier))
         });
         return Ok(Json(SearchResponse {
             query: q.to_string(),
@@ -423,112 +449,105 @@ async fn search(
         }
     }
 
-    // --- Score every (template, action) candidate, then fan-out per instance ---
+    // --- Score every (template, action) candidate: one row each ---
     let mut scored: Vec<SearchResult> = Vec::new();
     for t in &visible_templates {
-        let connected_instances = instances_by_template
+        let connected_instances: &[InstanceRow] = instances_by_template
             .get(&t.def.key)
-            .cloned()
+            .map(Vec::as_slice)
             .unwrap_or_default();
         let connected = !connected_instances.is_empty();
         let auth_status = build_auth_status(&t.def, connected, awaiting_setup.contains(&t.def.key));
-
-        for (action_key, action) in t.def.actions.iter() {
-            let cand = Candidate {
-                service: &t.def,
-                action_key,
-                action,
-            };
-            let kw = keyword_fuzzy_score(q, &cand);
+        // Per-template, so computed once rather than per action.
+        let name_bonus = service_name_bonus(q, &t.def);
+        let score_of = |def: &ServiceDefinition, action_key: &str, action: &ServiceAction| {
+            let kw = keyword_fuzzy_score(
+                q,
+                &Candidate {
+                    service: def,
+                    action_key,
+                    action,
+                },
+            );
             let emb = emb_scores
-                .get(&(t.tier.to_string(), t.def.key.clone(), action_key.clone()))
+                .get(&(
+                    t.tier.to_string(),
+                    t.def.key.clone(),
+                    action_key.to_string(),
+                ))
                 .copied()
                 .unwrap_or(0.0);
-
             // When the embedder didn't contribute (disabled / unavailable /
             // query out of domain), blend to pure keyword — otherwise
             // embedding-zero drags every result below MIN_SCORE.
-            let raw = if emb > 0.0 {
+            let blended = if emb > 0.0 {
                 KEYWORD_WEIGHT * kw + EMBEDDING_WEIGHT * emb
             } else {
                 kw
             };
-            let final_score = apply_post_bonuses(raw, connected, action.risk.display_risk());
-            if final_score < MIN_SCORE {
+            // The name bonus joins *after* the blend so an explicit service
+            // name isn't diluted by the embedding weight.
+            apply_post_bonuses(blended + name_bonus, connected, action.risk.display_risk())
+        };
+        let row = |action_key: &str, action: &ServiceAction, score: f32, instances| SearchResult {
+            template: t.def.key.clone(),
+            service_display_name: t.def.display_name.clone(),
+            instances,
+            action: Some(action_key.to_string()),
+            description: Some(action.description.clone()),
+            risk: Some(action.risk),
+            tier: t.tier.into(),
+            auth: auth_status.clone(),
+            score: Some(score),
+            setup_required: (!connected).then_some(true),
+            more_actions: Vec::new(),
+            params: param_infos(action),
+            paginated: action.pagination.is_some(),
+            additional_properties: action.additional_properties,
+        };
+
+        if !connected {
+            // Catalog template (only visible under include_catalog=true):
+            // collapse to one row — its best action — and name the runners-up
+            // in `more_actions`. Repeating the setup chain per action buried
+            // callable rows under one un-connected service.
+            let mut hits: Vec<(f32, &String, &ServiceAction)> = t
+                .def
+                .actions
+                .iter()
+                .map(|(k, a)| (score_of(&t.def, k, a), k, a))
+                .filter(|(s, _, _)| *s >= MIN_SCORE)
+                .collect();
+            hits.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.cmp(b.1)));
+            let mut hits = hits.into_iter();
+            if let Some((score, key, action)) = hits.next() {
+                let mut r = row(key, action, score, Vec::new());
+                r.more_actions = hits.take(MORE_ACTIONS).map(|(_, k, _)| k.clone()).collect();
+                scored.push(r);
+            }
+            continue;
+        }
+
+        for (action_key, action) in t.def.actions.iter() {
+            let score = score_of(&t.def, action_key, action);
+            if score < MIN_SCORE {
                 continue;
             }
-
-            if connected_instances.is_empty() {
-                // Catalog candidate — only emit when include_catalog=true
-                // (visible_templates already enforced that filter; this
-                // branch is the un-connected case under that flag).
-                if !params.include_catalog {
-                    continue;
-                }
-                scored.push(SearchResult {
-                    service: None,
-                    template: t.def.key.clone(),
-                    service_display_name: t.def.display_name.clone(),
-                    account_email: None,
-                    secret_name: None,
-                    action: Some(action_key.clone()),
-                    description: Some(action.description.clone()),
-                    risk: Some(action.risk),
-                    tier: t.tier.into(),
-                    auth: auth_status.clone(),
-                    score: Some(final_score),
-                    setup_required: Some(true),
-                    // Catalog rows have no connection; "needs setup" already
-                    // says it's not callable — don't pile on Unknown coverage.
-                    scope_coverage: None,
-                    missing_scopes: Vec::new(),
-                    params: param_infos(action),
-                    paginated: action.pagination.is_some(),
-                    additional_properties: action.additional_properties,
-                });
-            } else {
-                // Fan-out: one row per (action × instance). Score is the
-                // same across instances of the same (template, action) —
-                // tie-break sort below stabilises by service name.
-                for inst in &connected_instances {
-                    // Per-action coverage, but only for actions that actually
-                    // declare scopes (OAuth-secured). Unscoped/secret-based actions
-                    // leave the fields absent.
-                    let (scope_coverage, missing_scopes) = if action.required_scopes.is_empty() {
-                        (None, Vec::new())
-                    } else {
-                        let (c, m) = action_scope_coverage(action, inst.scopes.knowledge());
-                        (Some(c), m)
-                    };
-                    scored.push(SearchResult {
-                        service: Some(inst.name.clone()),
-                        template: t.def.key.clone(),
-                        service_display_name: t.def.display_name.clone(),
-                        account_email: inst.account_email.clone(),
-                        secret_name: inst.secret_name.clone(),
-                        action: Some(action_key.clone()),
-                        description: Some(action.description.clone()),
-                        risk: Some(action.risk),
-                        tier: t.tier.into(),
-                        auth: auth_status.clone(),
-                        score: Some(final_score),
-                        setup_required: None,
-                        scope_coverage,
-                        missing_scopes,
-                        params: param_infos(action),
-                        paginated: action.pagination.is_some(),
-                        additional_properties: action.additional_properties,
-                    });
-                }
-            }
+            let instances = connected_instances
+                .iter()
+                .map(|inst| InstanceRef::for_action(inst, action))
+                .collect();
+            scored.push(row(action_key, action, score, instances));
         }
 
         // Second pass: tools discovered on an *instance* (via MCP resync) that
         // the template doesn't declare. Only connected/visible instances reach
         // here, so a caller without access to an instance never sees its
         // instance-only tools. Instance-only tools have no template-scoped
-        // embedding row, so they score on the keyword/fuzzy path.
-        for inst in &connected_instances {
+        // embedding row, so they score on the keyword/fuzzy path. Two
+        // instances discovering the same tool merge into one row.
+        let mut discovered_rows: BTreeMap<String, SearchResult> = BTreeMap::new();
+        for inst in connected_instances {
             let Some(discovered) = inst.discovered_tools.as_ref() else {
                 continue;
             };
@@ -542,59 +561,38 @@ async fn search(
                     // Already scored + emitted in the template loop above.
                     continue;
                 }
-                let cand = Candidate {
-                    service: &inst_def,
-                    action_key,
-                    action,
-                };
-                let kw = keyword_fuzzy_score(q, &cand);
-                let emb = emb_scores
-                    .get(&(t.tier.to_string(), t.def.key.clone(), action_key.clone()))
-                    .copied()
-                    .unwrap_or(0.0);
-                let raw = if emb > 0.0 {
-                    KEYWORD_WEIGHT * kw + EMBEDDING_WEIGHT * emb
-                } else {
-                    kw
-                };
-                let final_score = apply_post_bonuses(raw, connected, action.risk.display_risk());
-                if final_score < MIN_SCORE {
+                let score = score_of(&inst_def, action_key, action);
+                if score < MIN_SCORE {
                     continue;
                 }
-                let (scope_coverage, missing_scopes) = if action.required_scopes.is_empty() {
-                    (None, Vec::new())
-                } else {
-                    let (c, m) = action_scope_coverage(action, inst.scopes.knowledge());
-                    (Some(c), m)
-                };
-                scored.push(SearchResult {
-                    service: Some(inst.name.clone()),
-                    template: t.def.key.clone(),
-                    service_display_name: t.def.display_name.clone(),
-                    account_email: inst.account_email.clone(),
-                    secret_name: inst.secret_name.clone(),
-                    action: Some(action_key.clone()),
-                    description: Some(action.description.clone()),
-                    risk: Some(action.risk),
-                    tier: t.tier.into(),
-                    auth: auth_status.clone(),
-                    score: Some(final_score),
-                    setup_required: None,
-                    scope_coverage,
-                    missing_scopes,
-                    params: param_infos(action),
-                    paginated: action.pagination.is_some(),
-                    additional_properties: action.additional_properties,
-                });
+                let inst_ref = InstanceRef::for_action(inst, action);
+                match discovered_rows.get_mut(action_key) {
+                    Some(existing) => {
+                        existing.instances.push(inst_ref);
+                        existing.score = Some(existing.score.map_or(score, |s| s.max(score)));
+                    }
+                    None => {
+                        discovered_rows.insert(
+                            action_key.clone(),
+                            row(action_key, action, score, vec![inst_ref]),
+                        );
+                    }
+                }
             }
         }
+        scored.extend(discovered_rows.into_values());
     }
 
+    // Instances arrive in DB order; sort for byte-stable output.
+    for r in &mut scored {
+        r.instances.sort_by(|a, b| a.service.cmp(&b.service));
+    }
     scored.sort_by(|a, b| {
         b.score
             .partial_cmp(&a.score)
             .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.service.cmp(&b.service))
+            .then_with(|| a.template.cmp(&b.template))
+            .then_with(|| a.action.cmp(&b.action))
     });
     scored.truncate(limit);
 

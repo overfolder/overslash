@@ -1782,7 +1782,8 @@ async fn group_granted_instance_is_callable_by_name() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|r| r["service"].as_str() == Some("shared_svc")),
+            .flat_map(|r| r["instances"].as_array().cloned().unwrap_or_default())
+            .any(|i| i["service"].as_str() == Some("shared_svc")),
         "search should find the group-granted instance"
     );
 

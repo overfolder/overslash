@@ -1385,7 +1385,7 @@ When the MCP session is OAuth-authenticated as a user (the default), Layer 2 is 
 
 ### `overslash_search`
 
-Unified discovery endpoint. Backed by `GET /v1/search` and called by the MCP `overslash_search` tool. The response is a single ranked list of rows where **each row corresponds to one configured instance**: the top-level `service` field is always the instance name to pass back as `overslash_call.service`. When a template has multiple connected instances (e.g. two Gmail accounts), it fans out into one row per instance so the agent picks the callable identifier directly without nested lookups.
+Unified discovery endpoint. Backed by `GET /v1/search` and called by the MCP `overslash_search` tool. The response is a single ranked list where **each row is one action of one template**, carrying an `instances` array of the caller's callable instances of that template. An entry's `service` is the instance name to pass back as `overslash_call.service`. When a template has multiple connected instances (e.g. two Gmail accounts), they share the row as separate `instances` entries rather than duplicating it, so the shared description and parameter contract are sent once and `limit` counts distinct actions.
 
 **Inputs**
 
@@ -1404,10 +1404,12 @@ Unified discovery endpoint. Backed by `GET /v1/search` and called by the MCP `ov
   "query": "send email",
   "results": [
     {
-      "service": "gmail_work",
       "template": "gmail",
       "service_display_name": "Gmail",
-      "account_email": "alice@example.com",
+      "instances": [
+        { "service": "gmail_personal", "account_email": "alice@gmail.com" },
+        { "service": "gmail_work", "account_email": "alice@example.com" }
+      ],
       "action": "send_message",
       "description": "Send email as {userId}",
       "risk": "write",
@@ -1420,22 +1422,9 @@ Unified discovery endpoint. Backed by `GET /v1/search` and called by the MCP `ov
       "score": 0.78
     },
     {
-      "service": "gmail_personal",
-      "template": "gmail",
-      "service_display_name": "Gmail",
-      "account_email": "alice@gmail.com",
-      "action": "send_message",
-      "description": "Send email as {userId}",
-      "risk": "write",
-      "tier": "global",
-      "auth": { "type": "oauth", "provider": "google", "connected": true },
-      "score": 0.78
-    },
-    {
-      "service": "resend_prod",
       "template": "resend",
       "service_display_name": "Resend",
-      "secret_name": "resend_prod",
+      "instances": [{ "service": "resend_prod", "secret_name": "resend_prod" }],
       "action": "send_email",
       "description": "Send email '{subject}' to {to}",
       "risk": "write",
@@ -1447,7 +1436,9 @@ Unified discovery endpoint. Backed by `GET /v1/search` and called by the MCP `ov
 }
 ```
 
-In browse mode (`query=""`), each row omits `action`, `description`, `risk`, `params`, and `score` — the response is an instance-level directory.
+In browse mode (`query=""`), there is one row per template, and each row omits `action`, `description`, `risk`, `params`, and `score` — the response is a service-level directory whose `instances` lists what is callable.
+
+**Ranking.** Keyword + Jaro-Winkler fuzzy, blended with embedding cosine when available (D11), plus three post-blend bonuses: a **service-name** bonus scaled by how much of the template's display name / key the query names outright (`"hubspot"`, `"google calendar"` — exact or prefix token hits only), a **connected** bonus, and a small **read** bonus. The service-name bonus is added after the blend so an explicit service name is not diluted by the embedding weight.
 
 **`params` — the action's caller-supplied contract** (action rows only). Each entry carries `name`, `type`, `required` (omitted when false), `description` (clamped to 160 characters), `enum`, and `default`. Ordered required-first, then alphabetically, so byte-identical requests return byte-identical JSON.
 
@@ -1455,20 +1446,19 @@ This is the answer to a specific failure: before it existed, `description` was t
 
 Parameters marked `instance-config` are excluded. An org admin pins those per service instance and they are merged in under the caller's arguments at execution time, so listing them would only invite a wrong one.
 
-**Catalog rows.** Under `include_catalog=true`, templates with no configured instance for the caller appear as catalog rows: they omit `service` and `account_email`/`secret_name`, set `auth.connected: false`, and carry `"setup_required": true`. Agents must call `overslash_auth.create_service_from_template` to provision an instance before any of those actions become callable.
+**Catalog rows.** Under `include_catalog=true`, templates with no configured instance for the caller appear as catalog rows: `instances: []`, `auth.connected: false`, and `"setup_required": true`. Each un-connected template contributes **at most one row** — its best-matching action — with up to three runner-up action keys in `more_actions`, so one catalog service cannot bury callable rows under copies of its `auth.setup` chain. Agents must call `overslash_auth.create_service_from_template` to provision an instance before any of those actions become callable.
 
 **Per-row disambiguation**
 
-Each callable row carries everything an agent needs to pick the right instance:
+Each `instances` entry carries everything an agent needs to pick the right instance (sorted by `service`):
 
 - **`service`** — the instance's runtime name (e.g. `gmail_work`). Unique per `(org, owner, name)`. Pass it verbatim as `overslash_call.service`.
-- **`template`** — the underlying template key (e.g. `gmail`). Lets the agent recognise that `gmail_work` and `gmail_personal` are siblings.
 - **`account_email`** — for OAuth-backed instances, the email returned by the upstream userinfo endpoint at OAuth time. Sourced from `connections.account_email`. Absent for secret-based services.
 - **`secret_name`** — for secret-based instances, the variable name of the secret that backs the instance. The value, version, and encryption envelope are **never** exposed via this or any other API.
 
-When two instances share the same `account_email` (two services pinned to one OAuth connection) or the same `secret_name`, the `service` (instance name) is the disambiguator — it always uniquely identifies the row.
+- **`scope_coverage`** / **`missing_scopes`** — on action rows whose action declares OAuth scopes, whether *this instance's* connection covers it (`covered` / `needs_reconnect` / `unknown`). Per instance, because two instances of one template can be bound to different grants.
 
-**Action definitions are DRY; rows are not.** Actions are defined once on the template (in the global YAML under `services/` or in `service_templates.openapi`). A keyword match against `(template, action)` fans out into one row per visible instance so the agent can pick a callable directly; the underlying definition is shared.
+When two instances share the same `account_email` (two services pinned to one OAuth connection) or the same `secret_name`, the `service` (instance name) is the disambiguator — it always uniquely identifies the entry. The row's top-level `template` key is never callable.
 
 **Visibility** matches the rest of the API: identity-bound calls apply Layer 1 group ceiling and tier visibility (global / org / user, gated by `user_template_policy`). Hidden global templates and out-of-ceiling instances never appear in either default or `include_catalog=true` output.
 

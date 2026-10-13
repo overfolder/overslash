@@ -2157,8 +2157,9 @@ async fn email_search_rows_name_their_mailbox() {
 
     let addr_for = |svc: &str| -> Option<String> {
         rows.iter()
-            .find(|r| r["service"] == json!(svc))
-            .and_then(|r| r["account_email"].as_str())
+            .flat_map(|r| r["instances"].as_array().into_iter().flatten())
+            .find(|i| i["service"] == json!(svc))
+            .and_then(|i| i["account_email"].as_str())
             .map(str::to_string)
     };
     assert_eq!(addr_for("email_ops").as_deref(), Some("ops@example.com"));

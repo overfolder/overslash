@@ -27,6 +27,13 @@ pub const CONNECTED_BONUS: f32 = 0.15;
 /// lexical / semantic score is otherwise indistinguishable.
 pub const READ_BONUS: f32 = 0.05;
 
+/// Bonus for a query that names the service itself ("hubspot", "google
+/// calendar"), scaled by how much of the service's name the query covers.
+/// Added after the keyword/embedding blend, so a paraphrase-heavy embedding
+/// score can't dilute an explicit service name back below other services'
+/// actions that merely describe similar work.
+pub const SERVICE_NAME_BONUS: f32 = 0.25;
+
 /// Jaro-Winkler threshold below which a fuzzy word match doesn't contribute.
 const FUZZY_THRESHOLD: f64 = 0.85;
 
@@ -78,6 +85,41 @@ pub fn keyword_fuzzy_score(query: &str, c: &Candidate<'_>) -> f32 {
     }
 
     (contribution / weight_sum).clamp(0.0, 1.0)
+}
+
+/// Lexical service-name bonus in `[0.0, SERVICE_NAME_BONUS]`.
+///
+/// The service's name tokens are the union of its display name and key
+/// tokens; coverage is the fraction of them that some query token hits
+/// exactly or as a prefix. Fuzzy matches don't count: a typo'd service
+/// name is the embedding's job, and Jaro-Winkler on short names ("gmail" vs
+/// "email") collides too easily to justify a flat boost. So "google
+/// calendar" earns the full bonus on Google Calendar and half on Google Drive.
+///
+/// Per-service, not per-action — callers compute it once per template.
+pub fn service_name_bonus(query: &str, service: &ServiceDefinition) -> f32 {
+    let query_tokens = tokenize(query);
+    if query_tokens.is_empty() {
+        return 0.0;
+    }
+    let mut name_tokens = tokenize(&service.display_name);
+    for t in tokenize(&service.key) {
+        if !name_tokens.contains(&t) {
+            name_tokens.push(t);
+        }
+    }
+    if name_tokens.is_empty() {
+        return 0.0;
+    }
+    let covered = name_tokens
+        .iter()
+        .filter(|nt| {
+            query_tokens
+                .iter()
+                .any(|qt| token_match_strength(qt, std::slice::from_ref(*nt)) >= 0.9)
+        })
+        .count();
+    SERVICE_NAME_BONUS * covered as f32 / name_tokens.len() as f32
 }
 
 /// Compute the match strength for a single query token `qt` against a field.
@@ -157,7 +199,8 @@ pub fn apply_post_bonuses(score: f32, connected: bool, risk: Risk) -> f32 {
     if matches!(risk, Risk::Read) {
         s += READ_BONUS;
     }
-    s.clamp(0.0, 1.0 + CONNECTED_BONUS + READ_BONUS)
+    // The ceiling leaves room for a `service_name_bonus` folded into `score`.
+    s.clamp(0.0, 1.0 + SERVICE_NAME_BONUS + CONNECTED_BONUS + READ_BONUS)
 }
 
 #[cfg(test)]
@@ -373,6 +416,47 @@ mod tests {
             keyword_fuzzy_score(q, &c_desc) > keyword_fuzzy_score(q, &c_name),
             "action description weighting should beat service-name weighting"
         );
+    }
+
+    #[test]
+    fn service_name_bonus_scales_with_name_coverage() {
+        let cal = mk_service("google_calendar", "Google Calendar", None);
+        let drive = mk_service("google_drive", "Google Drive", None);
+        let full = service_name_bonus("google calendar", &cal);
+        let half = service_name_bonus("google calendar", &drive);
+        assert!((full - SERVICE_NAME_BONUS).abs() < 1e-6, "{full}");
+        assert!((half - SERVICE_NAME_BONUS / 2.0).abs() < 1e-6, "{half}");
+        // Prefix of a name token counts; a fuzzy near-miss does not.
+        let hub = mk_service("hubspot", "HubSpot", None);
+        assert!(service_name_bonus("hubs", &hub) > 0.0);
+        let gmail = mk_service("gmail", "Gmail", None);
+        assert_eq!(service_name_bonus("email", &gmail), 0.0);
+        assert_eq!(service_name_bonus("send a message", &gmail), 0.0);
+    }
+
+    #[test]
+    fn naming_the_service_beats_a_better_description_match() {
+        // "resend email": Gmail's action describes email better, but the
+        // query named Resend — with the bonus, Resend's row comes first.
+        let gmail = mk_service("gmail", "Gmail", None);
+        let gmail_send = mk_action("Send an email message", Risk::Write);
+        let resend = mk_service("resend", "Resend", None);
+        let resend_send = mk_action("Deliver a transactional message", Risk::Write);
+        let q = "resend email";
+        let kw = |svc: &ServiceDefinition, key: &str, a: &ServiceAction| {
+            let c = Candidate {
+                service: svc,
+                action_key: key,
+                action: a,
+            };
+            keyword_fuzzy_score(q, &c)
+        };
+        let g = kw(&gmail, "send_message", &gmail_send);
+        let r = kw(&resend, "deliver", &resend_send);
+        assert!(r <= g, "precondition: keyword alone doesn't favour resend");
+        let g = g + service_name_bonus(q, &gmail);
+        let r = r + service_name_bonus(q, &resend);
+        assert!(r > g, "resend {r} should beat gmail {g}");
     }
 
     #[test]
