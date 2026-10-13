@@ -122,14 +122,17 @@ pub(super) fn collect_body_parameters(
     let content = b.get("content").and_then(Value::as_object);
     let (media, multipart) = match content {
         Some(c) if c.contains_key("application/json") => (c.get("application/json"), false),
-        Some(c) => (c.get("multipart/form-data"), true),
-        None => (None, false),
+        Some(c) if c.contains_key("multipart/form-data") => (c.get("multipart/form-data"), true),
+        _ => (None, false),
     };
     let Some(schema) = media
         .and_then(Value::as_object)
         .and_then(|j| j.get("schema"))
         .and_then(Value::as_object)
     else {
+        if multipart {
+            require_staged_part(false, base, issues);
+        }
         return;
     };
 

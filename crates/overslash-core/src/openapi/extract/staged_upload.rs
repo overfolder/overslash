@@ -238,6 +238,18 @@ mod tests {
         let text_only = doc("multipart/form-data", json!({"note": {"type": "string"}}));
         assert!(codes(&text_only).contains(&"multipart_without_staged_upload".to_string()));
 
+        let mut schemaless = doc("multipart/form-data", json!({}));
+        schemaless["paths"]["/x"]["post"]["requestBody"]["content"]["multipart/form-data"] =
+            json!({});
+        assert!(codes(&schemaless).contains(&"multipart_without_staged_upload".to_string()));
+
+        // Only a declared form is one: an urlencoded body is not held to it.
+        let urlencoded = doc(
+            "application/x-www-form-urlencoded",
+            json!({"note": {"type": "string"}}),
+        );
+        assert!(!codes(&urlencoded).contains(&"multipart_without_staged_upload".to_string()));
+
         let with_file = doc(
             "multipart/form-data",
             json!({"file": file_field(None), "note": {"type": "string"}}),
