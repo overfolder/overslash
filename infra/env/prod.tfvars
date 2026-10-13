@@ -19,6 +19,11 @@ enable_api_lb         = true
 api_lb_ssl_profile         = "RESTRICTED"
 api_lb_cloud_armor_preview = true
 
+# Serve the API LB over IPv6 too (same proxies, so same cert/TLS/Armor).
+# After apply, publish `tofu output api_lb_ipv6` as AAAA for `api` and `*.api`
+# — docs/runbooks/lb-hardening.md "IPv6".
+api_lb_enable_ipv6 = true
+
 # Wildcard CORS so `<slug>.app.overslash.com` browser sessions can call the
 # API cross-origin without enumerating slugs.
 dashboard_origin = "https://app.overslash.com,https://*.app.overslash.com"

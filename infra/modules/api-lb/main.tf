@@ -119,9 +119,23 @@ variable "cloud_armor_waf_preview" {
   description = "Run the WAF rules in preview: matches are logged on the LB request log (`jsonPayload.previewSecurityPolicy`) but traffic is never blocked. Flip to false only after tuning against those logs."
 }
 
+variable "enable_ipv6" {
+  type        = bool
+  default     = false
+  description = "Also serve the LB on a global IPv6 address: one more `google_compute_global_address` and a 443 + 80 forwarding-rule pair on the existing proxies, so v6 gets the same cert map, SSL policy and Cloud Armor policy. Publish `lb_ipv6` as AAAA for `<apex>` and `*.<apex>`."
+}
+
 resource "google_compute_global_address" "api_lb_ip" {
   name    = "${var.base_prefix}-api-lb-ip"
   project = var.project_id
+}
+
+resource "google_compute_global_address" "api_lb_ipv6" {
+  count = var.enable_ipv6 ? 1 : 0
+
+  name       = "${var.base_prefix}-api-lb-ipv6"
+  project    = var.project_id
+  ip_version = "IPV6"
 }
 
 resource "google_certificate_manager_dns_authorization" "api" {
@@ -359,9 +373,42 @@ resource "google_compute_global_forwarding_rule" "api_http" {
   target                = google_compute_target_http_proxy.api_http.id
 }
 
+# IPv6 front door. A forwarding rule binds one address, so v6 needs its own
+# pair — but both target the proxies above, so the cert map, SSL policy and
+# Cloud Armor policy (on the backend service) apply to v6 unchanged. Turning
+# this on is purely additive: nothing on the IPv4 path is touched.
+resource "google_compute_global_forwarding_rule" "api_https_v6" {
+  count = var.enable_ipv6 ? 1 : 0
+
+  name                  = "${var.base_prefix}-api-https-fr-v6"
+  project               = var.project_id
+  load_balancing_scheme = "EXTERNAL_MANAGED"
+  ip_address            = google_compute_global_address.api_lb_ipv6[0].address
+  ip_protocol           = "TCP"
+  port_range            = "443"
+  target                = google_compute_target_https_proxy.api.id
+}
+
+resource "google_compute_global_forwarding_rule" "api_http_v6" {
+  count = var.enable_ipv6 ? 1 : 0
+
+  name                  = "${var.base_prefix}-api-http-fr-v6"
+  project               = var.project_id
+  load_balancing_scheme = "EXTERNAL_MANAGED"
+  ip_address            = google_compute_global_address.api_lb_ipv6[0].address
+  ip_protocol           = "TCP"
+  port_range            = "80"
+  target                = google_compute_target_http_proxy.api_http.id
+}
+
 output "lb_ip" {
   value       = google_compute_global_address.api_lb_ip.address
   description = "Anycast IP for `<apex>` and `*.<apex>` A records."
+}
+
+output "lb_ipv6" {
+  value       = var.enable_ipv6 ? google_compute_global_address.api_lb_ipv6[0].address : ""
+  description = "Anycast IPv6 address for `<apex>` and `*.<apex>` AAAA records. Empty unless `enable_ipv6`."
 }
 
 output "cert_id" {

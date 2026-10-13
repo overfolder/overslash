@@ -42,3 +42,13 @@ output "valkey_host" {
   description = "Valkey host (if enabled)"
   value       = var.enable_valkey && var.use_private_vpc ? module.memorystore[0].redis_host : ""
 }
+
+output "api_lb_ip" {
+  description = "API LB IPv4 address (A record for `api_host_suffix` and `*.<suffix>`). Empty without enable_api_lb."
+  value       = var.enable_api_lb ? module.api_lb[0].lb_ip : ""
+}
+
+output "api_lb_ipv6" {
+  description = "API LB IPv6 address (AAAA record for `api_host_suffix` and `*.<suffix>`). Empty unless enable_api_lb and api_lb_enable_ipv6."
+  value       = var.enable_api_lb ? module.api_lb[0].lb_ipv6 : ""
+}
