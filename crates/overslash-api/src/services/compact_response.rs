@@ -543,6 +543,7 @@ mod tests {
             body: body.into(),
             duration_ms: 42,
             filtered_body: None,
+            wire_bytes: None,
         }
     }
 

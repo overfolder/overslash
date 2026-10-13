@@ -202,6 +202,7 @@ pub(crate) async fn intercept_mint(
         body: serde_json::to_string(&descriptor).unwrap_or_default(),
         duration_ms: started.elapsed().as_millis() as u64,
         filtered_body: None,
+        wire_bytes: None,
     })
 }
 

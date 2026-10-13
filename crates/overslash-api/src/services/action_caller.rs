@@ -520,12 +520,7 @@ pub async fn call_action_request(
         {
             Ok(upstream) => upstream,
             Err(e) => {
-                log_transport_error_audit(
-                    &ctx,
-                    action_req,
-                    audit_capture::scrub_transport_error(&e),
-                )
-                .await;
+                log_transport_error_audit(&ctx, action_req, &e).await;
                 return Err(map_call_error(e, ctx.timeout));
             }
         };
@@ -586,8 +581,7 @@ pub async fn call_action_request(
             // Transport failures / oversized bodies used to bail with no
             // audit trail at all. Record the attempt with a secret-safe
             // error summary before propagating.
-            log_transport_error_audit(&ctx, action_req, audit_capture::scrub_transport_error(&e))
-                .await;
+            log_transport_error_audit(&ctx, action_req, &e).await;
             return Err(map_call_error(e, ctx.timeout));
         }
     };
@@ -615,6 +609,10 @@ pub async fn call_action_request(
         "service": ctx.service_key,
         "action": ctx.action_key,
     });
+    // Metric for this path is recorded by `stored_call`, which knows the
+    // bounded template key; the audit row is written here.
+    super::response_size::ResponseSize::complete(&result, ctx.state.config.max_response_body_bytes)
+        .stamp(&mut audit_detail);
     // Org-gated response capture (off / errors_only / all), truncated at
     // AUDIT_RESPONSE_BODY_MAX_BYTES.
     if audit_capture::should_capture(ctx.audit_body_mode, result.status_code >= 400) {
@@ -677,6 +675,7 @@ fn map_call_error(e: http_caller::CallError, timeout: CallTimeout) -> AppError {
             content_length,
             content_type,
             limit_bytes,
+            ..
         } => AppError::ResponseTooLarge {
             content_length,
             content_type,
@@ -726,16 +725,18 @@ fn map_call_error(e: http_caller::CallError, timeout: CallTimeout) -> AppError {
 async fn log_transport_error_audit(
     ctx: &CallContext<'_>,
     action_req: &ActionRequest,
-    error_detail: serde_json::Value,
+    err: &http_caller::CallError,
 ) {
-    let mut audit_detail = serde_json::json!({
-        "method": action_req.method,
-        "url": action_req.url,
-        "is_error": true,
-        "error": error_detail,
-        "service": ctx.service_key,
-        "action": ctx.action_key,
-    });
+    let mut audit_detail = audit_capture::transport_error_detail(
+        serde_json::json!({
+            "method": action_req.method,
+            "url": action_req.url,
+            "is_error": true,
+            "service": ctx.service_key,
+            "action": ctx.action_key,
+        }),
+        err,
+    );
     ctx.audit_source.stamp_refs(&mut audit_detail);
 
     let _ = OrgScope::new(ctx.scope.org_id(), ctx.state.db.clone())
@@ -768,6 +769,7 @@ async fn write_stream_audit(
         "service": ctx.service_key,
         "action": ctx.action_key,
     });
+    super::response_size::ResponseSize::streamed(content_length).stamp(&mut audit_detail);
     // The streamed body is never buffered, so it can't be captured. A small
     // marker keeps "streamed, body unavailable" distinguishable from
     // "capture off" on rows where capture would have applied.

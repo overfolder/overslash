@@ -401,7 +401,15 @@ pub fn resolve_same_origin(base_url: &str, raw: &str) -> Result<String, AppError
 /// the point. A 40 MB video is exactly the case the 5 MB buffered cap exists to
 /// prevent from reaching a context window, and exactly the case this path is
 /// for.
-pub fn stream_through(upstream: reqwest::Response, idle: std::time::Duration) -> Response {
+///
+/// The body is wrapped in a [`Metered`](super::response_size::Metered) counter;
+/// `on_done` receives the bytes that actually flowed once the transfer ends,
+/// errors, or the client hangs up.
+pub fn stream_through(
+    upstream: reqwest::Response,
+    idle: std::time::Duration,
+    on_done: impl FnOnce(super::response_size::StreamTally) + Send + 'static,
+) -> Response {
     let status = upstream.status().as_u16();
     let headers = upstream.headers().clone();
     // Guarded per chunk rather than in total: the response is already
@@ -409,8 +417,11 @@ pub fn stream_through(upstream: reqwest::Response, idle: std::time::Duration) ->
     // is a stall. Applied here rather than at the two call sites so the
     // inline `prefer_stream` path and `GET /v1/downloads/{token}` cannot
     // drift apart on it, exactly as they already share the header allowlist.
-    let body = axum::body::Body::from_stream(crate::services::http_caller::idle_guarded_stream(
-        upstream, idle,
+    let declared = upstream.content_length();
+    let body = axum::body::Body::from_stream(super::response_size::Metered::new(
+        crate::services::http_caller::idle_guarded_stream(upstream, idle),
+        declared,
+        on_done,
     ));
 
     let mut builder = Response::builder().status(status);

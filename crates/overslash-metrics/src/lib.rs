@@ -54,6 +54,28 @@ const HTTP_LATENCY_BUCKETS: &[f64] = &[
 const ACTION_DURATION_BUCKETS: &[f64] =
     &[0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 20.0, 30.0, 60.0, 120.0];
 
+/// Bucket bounds for `overslash_action_response_bytes`, in bytes.
+///
+/// The edges that matter are the deployment's own caps, so "share of traffic
+/// over the cap" is an exact bucket ratio rather than an interpolation:
+/// `8192` is the compact-render budget (`COMPACT_BUDGET_BYTES`), `1_048_576`
+/// the default `CALL_RESULT_MAX_BYTES`, `5_242_880` the default
+/// `MAX_RESPONSE_BODY_BYTES`. The rest spread out above the cap so the tail a
+/// bump would have to cover is visible. Retune alongside those defaults.
+const RESPONSE_SIZE_BUCKETS: &[f64] = &[
+    1_024.0,
+    8_192.0,
+    65_536.0,
+    262_144.0,
+    1_048_576.0,
+    2_621_440.0,
+    5_242_880.0,
+    10_485_760.0,
+    26_214_400.0,
+    52_428_800.0,
+    104_857_600.0,
+];
+
 /// Install the global Prometheus recorder on first call; subsequent calls
 /// return the same handle. Idempotent so tests that build many app routers
 /// in one process don't fight over the global recorder.
@@ -83,6 +105,11 @@ pub fn setup() -> PrometheusHandle {
                     ACTION_DURATION_BUCKETS,
                 )
                 .expect("action duration buckets are non-empty")
+                .set_buckets_for_metric(
+                    Matcher::Full("overslash_action_response_bytes".to_owned()),
+                    RESPONSE_SIZE_BUCKETS,
+                )
+                .expect("response size buckets are non-empty")
                 .install_recorder()
                 .expect("failed to install Prometheus recorder");
             spawn_upkeep(handle.clone(), Duration::from_secs(5));
@@ -178,6 +205,25 @@ mod tests {
             text.contains(r#"path="/v1/test""#),
             "expected a `path` label the alert can exclude on, got: {text}",
         );
+    }
+
+    #[tokio::test]
+    async fn response_size_buckets_land_on_the_caps() {
+        // "Share of responses over the cap" is only an exact bucket ratio when
+        // the caps are real bucket edges. Pin the three that tuning reads.
+        let handle = setup();
+        crate::actions::record_response_size("metabase", "http", "complete", 300_000);
+        let text = handle.render();
+        assert!(
+            text.contains("overslash_action_response_bytes_bucket{"),
+            "expected a bucketed histogram, got: {text}",
+        );
+        for edge in ["8192", "1048576", "5242880"] {
+            assert!(
+                text.contains(&format!(r#"le="{edge}""#)),
+                "missing cap edge {edge}: {text}",
+            );
+        }
     }
 
     #[tokio::test]

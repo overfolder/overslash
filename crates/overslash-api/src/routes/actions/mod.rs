@@ -57,6 +57,7 @@ mod auth_resolve;
 mod auth_scopes;
 mod call;
 mod call_mcp;
+mod call_stream;
 mod deferred;
 mod dto;
 mod errors;

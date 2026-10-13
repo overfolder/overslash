@@ -18,6 +18,7 @@ use crate::{
         audit_capture::{self, AuditResponseBodyMode},
         call_timeout, credential_scrub, group_ceiling, http_caller,
         response_filter::{self},
+        response_size::ResponseSize,
         staged_upload,
     },
 };
@@ -604,6 +605,7 @@ pub(super) async fn call_action_impl(
             headers: std::collections::HashMap::new(),
             duration_ms: 0,
             filtered_body: None,
+            wire_bytes: None,
         };
         let mut audit_detail = serde_json::json!({
             "runtime": "platform",
@@ -682,133 +684,26 @@ pub(super) async fn call_action_impl(
     // Staged uploads meet the body here, as credentials meet the headers above.
     let wire = staged_upload::wire_body(&state, scope.db(), auth.org_id, &action_req).await?;
 
-    // Streaming proxy path
+    // Streaming proxy path — see `call_stream`.
     if req.prefer_stream.unwrap_or(false) {
-        // Header phase only — see `http_caller`'s module docs on why a total
-        // deadline must not reach a streamed body.
-        let upstream = match http_caller::call_streaming(
-            &action_req.method,
-            &resolved_url,
-            &resolved_headers,
-            wire.or(action_req.body.as_deref()),
-            call_timeout.duration(),
-        )
-        .await
-        {
-            Ok(upstream) => upstream,
-            Err(e) => {
-                log_transport_error_audit(
-                    &scope,
-                    auth.org_id,
-                    identity_id,
-                    &action_req,
-                    req.service.as_deref(),
-                    req.action.as_deref(),
-                    audit_capture::scrub_transport_error(&e),
-                    meta.description.as_deref(),
-                    ip.0.as_deref(),
-                    &tags::with_outcome(call_tags.clone(), true),
-                )
-                .await;
-                // Streamed fork: never buffers, so never oversized — there is
-                // nothing to mint from.
-                return Err(map_call_error(
-                    e,
-                    call_timeout,
-                    transport.offers_prefer_stream(),
-                    None,
-                    page_size_param(&meta),
-                ));
-            }
+        let d = deferred::HttpDeferred {
+            auth: &auth,
+            req: &req,
+            meta: &meta,
+            identity_id,
+            ip: ip.0.as_deref(),
+            tags: &call_tags,
         };
-
-        let upstream_status = upstream.status();
-        // A transport failure above propagates via `?` and records nothing
-        // here — this counter only counts responses that actually arrived.
-        overslash_metrics::actions::record_upstream_response(
-            &upstream_tpl,
-            "http",
-            overslash_metrics::actions::status_class(upstream_status.as_u16()),
-        );
-        let content_length = upstream
-            .headers()
-            .get("content-length")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.parse::<u64>().ok());
-
-        let mut streamed_detail = serde_json::json!({
-            "method": action_req.method,
-            "url": action_req.url,
-            "status_code": upstream_status.as_u16(),
-            // Normalized upstream-failure flag, same field MCP audit details
-            // carry — lets the dashboard flag failed executions across
-            // runtimes without re-deriving from status_code.
-            "is_error": upstream_status.as_u16() >= 400,
-            "content_length": content_length,
-            "service": req.service,
-            "action": req.action,
-        });
-        // The streamed body is never buffered, so it can't be captured. A
-        // small marker keeps "streamed, body unavailable" distinguishable
-        // from "capture off" on rows where capture would have applied.
-        if audit_capture::should_capture(audit_body_mode, upstream_status.as_u16() >= 400) {
-            streamed_detail
-                .as_object_mut()
-                .expect("audit detail is a json object")
-                .insert(
-                    "response".into(),
-                    serde_json::json!({ "skipped": "streamed" }),
-                );
-        }
-        let streamed_disclosed = compute_disclosure(
-            &meta,
-            &action_req,
-            std::time::Duration::from_millis(state.config.filter_timeout_ms),
-        )
-        .await;
-        if !streamed_disclosed.is_empty() {
-            streamed_detail
-                .as_object_mut()
-                .expect("audit detail is a json object")
-                .insert(
-                    "disclosed".into(),
-                    serde_json::to_value(&streamed_disclosed).unwrap_or_default(),
-                );
-        }
-
-        let _ = scope
-            .clone()
-            .log_audit_tagged(
-                AuditEntry {
-                    org_id: auth.org_id,
-                    identity_id: Some(identity_id),
-                    action: "action.streamed",
-                    resource_type: req.service.as_deref(),
-                    resource_id: None,
-                    detail: streamed_detail,
-                    description: meta.description.as_deref(),
-                    ip_address: ip.0.as_deref(),
-                },
-                // Same predicate `streamed_detail.is_error` uses, so the tag
-                // and the detail block can never disagree.
-                &tags::with_outcome(call_tags.clone(), upstream_status.as_u16() >= 400),
-            )
-            .await;
-
-        // Build streaming response — pipe upstream bytes through to caller.
-        // Shared with `GET /v1/downloads/{token}` so the forwarded-header
-        // allowlist can't drift between the inline and deferred paths.
-        let mut response = crate::services::deferred_download::stream_through(
-            upstream,
-            std::time::Duration::from_millis(state.config.call_stream_idle_timeout_ms),
-        );
-        // Streamed 5xx passes the upstream status straight through, where
-        // the metrics wrapper would otherwise classify it as Overslash's
-        // own "failed". The marker keeps it attributed to the upstream.
-        if upstream_status.as_u16() >= 500 {
-            response.extensions_mut().insert(UpstreamErrored);
-        }
-        return Ok(response);
+        let s = super::call_stream::InlineStream {
+            url: &resolved_url,
+            headers: &resolved_headers,
+            body: wire.or(action_req.body.as_deref()),
+            timeout: call_timeout,
+            offer_prefer_stream: transport.offers_prefer_stream(),
+            audit_body_mode,
+            upstream_tpl: &upstream_tpl,
+        };
+        return super::call_stream::stream_inline(&state, &scope, &action_req, &d, s).await;
     }
 
     // Buffered call path (default). Echoed credentials are scrubbed on arrival.
@@ -834,7 +729,7 @@ pub(super) async fn call_action_impl(
                 &action_req,
                 req.service.as_deref(),
                 req.action.as_deref(),
-                audit_capture::scrub_transport_error(&e),
+                &e,
                 meta.description.as_deref(),
                 ip.0.as_deref(),
                 &tags::with_outcome(call_tags.clone(), true),
@@ -846,6 +741,9 @@ pub(super) async fn call_action_impl(
             // mint that fails for any other reason must not replace the error
             // the caller actually hit — so every failure collapses to `None`
             // and the 502 goes out exactly as it did before.
+            if let Some(size) = crate::services::response_size::of_call_error(&e) {
+                size.record_metric(&upstream_tpl, "http");
+            }
             let download = if matches!(e, http_caller::CallError::ResponseTooLarge { .. }) {
                 deferred::mint_http_descriptor(
                     &state,
@@ -900,6 +798,10 @@ pub(super) async fn call_action_impl(
         "service": req.service,
         "action": req.action,
     });
+    let max_body = state.config.max_response_body_bytes;
+    let size = ResponseSize::complete(&result, max_body);
+    size.stamp(&mut audit_detail);
+    size.record_metric(&upstream_tpl, "http");
     if let Some(sp) = &sql_policy {
         audit_detail
             .as_object_mut()

@@ -23,6 +23,7 @@ fn result(status: u16, body: Value, headers: &[(&str, &str)]) -> ActionResult {
         body: body.to_string(),
         duration_ms: 1,
         filtered_body: None,
+        wire_bytes: None,
     }
 }
 

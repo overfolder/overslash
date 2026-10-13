@@ -199,6 +199,11 @@ async fn run_http(ctx: StoredCallCtx<'_>, stored: StoredCallRequest) -> StoredOu
                 "http",
                 overslash_metrics::actions::status_class(result.status_code),
             );
+            super::response_size::ResponseSize::complete(
+                &result,
+                ctx.state.config.max_response_body_bytes,
+            )
+            .record_metric(ctx.metrics_tpl, "http");
             let mut result_json = serde_json::to_value(&result)
                 .unwrap_or_else(|_| serde_json::json!({"note": "result not serializable"}));
             if stored.prefer_stream
@@ -375,6 +380,11 @@ async fn run_mcp(ctx: StoredCallCtx<'_>, call: StoredMcpCall) -> StoredOutcome {
                 "mcp",
                 if is_error { "error" } else { "2xx" },
             );
+            super::response_size::ResponseSize::complete(
+                &result,
+                super::mcp_client::DEFAULT_MAX_BODY_BYTES,
+            )
+            .record_metric(ctx.metrics_tpl, "mcp");
             {
                 ctx.audit_source.stamp_refs(&mut audit_detail);
                 let obj = audit_detail
@@ -437,6 +447,9 @@ async fn run_mcp(ctx: StoredCallCtx<'_>, call: StoredMcpCall) -> StoredOutcome {
                     "is_error": true,
                     "error": error_detail,
                 });
+                if let Some(size) = &invoke_err.size {
+                    size.stamp(&mut detail);
+                }
                 ctx.audit_source.stamp_refs(&mut detail);
                 let _ = ctx
                     .scope
@@ -503,6 +516,7 @@ async fn run_platform(ctx: StoredCallCtx<'_>, call: StoredPlatformCall) -> Store
                 headers: std::collections::HashMap::new(),
                 duration_ms: 0,
                 filtered_body: None,
+                wire_bytes: None,
             };
             let mut result_json = serde_json::to_value(&result)
                 .unwrap_or_else(|_| serde_json::json!({"note": "result not serializable"}));

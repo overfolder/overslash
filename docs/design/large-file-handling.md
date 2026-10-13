@@ -69,6 +69,39 @@ which today means direct REST callers; it is absent from the `overslash_read`
 `routes::mcp::forward` stamps `X-Overslash-Transport` on its loopback request
 and `extractors::CallerTransport` reads it back.
 
+### Measuring it
+
+The cap is only as good as the guess behind it, so every execution row
+records what the upstream actually sent. `action.executed` and
+`action.streamed` carry `detail.size`:
+
+```json
+"size": { "bytes": 1234567, "content_length": 1234567, "read": "complete", "limit_bytes": 5242880 }
+```
+
+| `read` | `bytes` | `content_length` |
+|---|---|---|
+| `complete` | the bytes the upstream sent, counted before `from_utf8_lossy` (MCP: the result envelope) | the upstream header, if sent — compressed size when the upstream compressed |
+| `aborted_at_cap` | what was read before stopping — `0` when the declared length refused the body up front, otherwise a **lower bound** | the true size, when the upstream declared one |
+| `streamed` | `null` — nothing is read before the row is written | the upstream header, if sent |
+
+We do not keep reading past the cap to measure a chunked body: that would
+spend exactly the bandwidth the cap is there to save. The true size arrives
+later if the caller follows through — every streamed transfer (an inline
+`prefer_stream` call, or a redeemed `download_url`, including the one D57
+mints on the 502) writes an `action.stream_completed` row when the body ends,
+with `bytes_streamed`, `completed` (`false` = upstream error, idle stall, or
+client hang-up, so the count is a floor) and `via` (`prefer_stream` |
+`download`; for `download`, `resource_id` is the token).
+
+The same observations feed `overslash_action_response_bytes{template_key,
+runtime, read}`, a histogram whose bucket edges sit on the caps themselves
+(8 KB compact budget, 1 MB `CALL_RESULT_MAX_BYTES`, 5 MB
+`MAX_RESPONSE_BODY_BYTES`) so "share of calls over the cap" is an exact
+ratio. MCP rows are measured on the normalized result envelope against the
+fixed 5 MB `DEFAULT_MAX_BODY_BYTES`. The query for tuning against one client
+lives in [`docs/runbooks/response-size-analysis.md`](../runbooks/response-size-analysis.md).
+
 ### Not the same wall as the compact crop
 
 There are two distinct size limits, they fire at different moments, and they

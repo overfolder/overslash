@@ -78,6 +78,27 @@ pub fn record_upstream_response(template_key: &str, mode: &str, status_class: &s
     .increment(1);
 }
 
+/// Size of one upstream response body, in bytes. Fed from the same sites
+/// that write `detail.size` on `action.executed` rows, so the histogram and
+/// the audit log agree on what was measured.
+///
+/// Labels:
+/// * `template_key` — registry-bounded, same rules as [`record_execution`].
+/// * `runtime` — `"http"` | `"mcp"` | `"download"` (a redeemed capability
+///   URL or an inline `prefer_stream` transfer, measured as it flowed).
+/// * `read` — `"complete"`, `"aborted_at_cap"` (the value is the declared
+///   `Content-Length` when known, else the lower bound read before the cap),
+///   or `"streamed"`.
+pub fn record_response_size(template_key: &str, runtime: &str, read: &str, bytes: u64) {
+    histogram!(
+        "overslash_action_response_bytes",
+        "template_key" => template_key.to_string(),
+        "runtime" => runtime.to_string(),
+        "read" => read.to_string(),
+    )
+    .record(bytes as f64);
+}
+
 /// One `execution: "hybrid"` call, by which branch answered the connection.
 ///
 /// Labels:

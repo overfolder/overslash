@@ -34,6 +34,7 @@ pub(super) fn map_call_error(
             content_length,
             content_type,
             limit_bytes,
+            ..
         } => AppError::ResponseTooLarge {
             content_length,
             content_type,
@@ -80,7 +81,7 @@ pub(super) async fn log_transport_error_audit(
     action_req: &overslash_core::types::ActionRequest,
     service: Option<&str>,
     action: Option<&str>,
-    error_detail: serde_json::Value,
+    err: &http_caller::CallError,
     description: Option<&str>,
     ip: Option<&str>,
     tags: &[String],
@@ -94,14 +95,16 @@ pub(super) async fn log_transport_error_audit(
                 action: "action.executed",
                 resource_type: service,
                 resource_id: None,
-                detail: serde_json::json!({
-                    "method": action_req.method,
-                    "url": action_req.url,
-                    "is_error": true,
-                    "error": error_detail,
-                    "service": service,
-                    "action": action,
-                }),
+                detail: crate::services::audit_capture::transport_error_detail(
+                    serde_json::json!({
+                        "method": action_req.method,
+                        "url": action_req.url,
+                        "is_error": true,
+                        "service": service,
+                        "action": action,
+                    }),
+                    err,
+                ),
                 description,
                 ip_address: ip,
             },
