@@ -246,6 +246,13 @@ where
     type Item = Result<Bytes, E>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        // Fused: once the body has ended or errored, never poll the inner
+        // stream again. hyper can poll a body past its end, and the stream
+        // this wraps (`idle_guarded_stream`, an `unfold`) panics if polled
+        // after it returned `None`.
+        if self.on_done.is_none() {
+            return Poll::Ready(None);
+        }
         let polled = self.inner.as_mut().poll_next(cx);
         match &polled {
             Poll::Ready(Some(Ok(chunk))) => self.bytes += chunk.len() as u64,
@@ -425,6 +432,31 @@ mod tests {
             *seen.lock().unwrap(),
             vec![StreamTally {
                 bytes: 5,
+                completed: true
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn metered_is_fused_after_the_end() {
+        // An `unfold` panics if polled after it returned `None`; the meter
+        // must absorb a caller that polls past the end (hyper does).
+        let inner = futures_util::stream::unfold(0u8, |n| async move {
+            (n == 0).then(|| (Ok::<_, std::io::Error>(Bytes::from_static(b"x")), 1))
+        });
+        let (seen, sink) = tally_sink();
+        let mut m = Metered::new(inner, None, sink);
+        assert!(m.next().await.is_some());
+        assert!(m.next().await.is_none());
+        assert!(
+            m.next().await.is_none(),
+            "polling past the end must not panic"
+        );
+        drop(m);
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![StreamTally {
+                bytes: 1,
                 completed: true
             }]
         );

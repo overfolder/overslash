@@ -189,3 +189,38 @@ async fn prefer_stream_records_bytes_on_completion() {
     assert_eq!(done["detail"]["bytes_streamed"], 102400, "{done}");
     assert_eq!(done["detail"]["completed"], true, "{done}");
 }
+
+#[tokio::test]
+async fn prefer_stream_without_content_length_completes() {
+    // A chunked body runs the meter to the stream's end, where hyper may poll
+    // once more. The meter must stay fused there rather than re-poll the
+    // underlying `unfold`, which panics and drops the connection.
+    let pool = common::test_pool().await;
+    let mock_addr = common::start_mock().await;
+    let (api_addr, client) = common::start_api_with_body_limit(pool.clone(), 1024).await;
+    let base = format!("http://{api_addr}");
+    let (_org, _ident, api_key, admin_key) = common::bootstrap_org_identity(&base, &client).await;
+
+    // 5 × "chunk", no Content-Length.
+    let resp = call(
+        &client,
+        &base,
+        &api_key,
+        json!({
+            "service": "http",
+            "method": "GET",
+            "url": format!("http://{mock_addr}/slow-stream?chunks=5&gap_ms=0"),
+            "prefer_stream": true,
+        }),
+    )
+    .await;
+    assert_eq!(resp.status(), 200);
+    assert_eq!(
+        resp.bytes().await.unwrap().as_ref(),
+        b"chunkchunkchunkchunkchunk"
+    );
+
+    let done = wait_for_completion(&client, &base, &admin_key).await;
+    assert_eq!(done["detail"]["bytes_streamed"], 25, "{done}");
+    assert_eq!(done["detail"]["completed"], true, "{done}");
+}

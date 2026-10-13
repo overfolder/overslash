@@ -10,8 +10,11 @@ import { login, makeSnapper, seedExecution } from '../tests/scenarios/index.mjs'
 
 const session = await login('admin');
 
-await seedExecution(session, { url: `${session.apiUrl}/health` });
-await seedExecution(session, { url: `${session.apiUrl}/health`, preferStream: true });
+// The gateway dials this as the upstream, so it must name the address the API
+// listens on: `localhost` can resolve to ::1 first, which nothing answers.
+const upstream = `${session.apiUrl.replace('localhost', '127.0.0.1')}/health`;
+await seedExecution(session, { url: upstream });
+await seedExecution(session, { url: upstream, preferStream: true });
 
 const snap = await makeSnapper(session);
 
