@@ -72,6 +72,7 @@ pub mod staged_upload;
 pub mod stored_call;
 pub mod template_resolve;
 pub mod user_sessions;
+pub mod valkey;
 pub mod wait_mode;
 pub mod webhook_digest;
 pub mod webhook_dispatcher;

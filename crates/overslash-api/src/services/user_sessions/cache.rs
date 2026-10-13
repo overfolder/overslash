@@ -176,14 +176,22 @@ pub fn disabled() -> Arc<dyn SessionCache> {
 
 /// A Valkey-backed cache, or why not.
 pub async fn redis(url: &str) -> Result<Arc<dyn SessionCache>, redis::RedisError> {
-    let conn = redis::Client::open(url)?.get_connection_manager().await?;
+    from_client(redis::Client::open(url)?).await
+}
+
+async fn from_client(client: redis::Client) -> Result<Arc<dyn SessionCache>, redis::RedisError> {
+    let conn = client.get_connection_manager().await?;
     Ok(Arc::new(RedisSessionCache { conn }))
 }
 
 /// Valkey when `REDIS_URL` is set and reachable at boot, otherwise none.
 pub async fn create_session_cache(config: &Config) -> Arc<dyn SessionCache> {
-    if let Some(ref url) = config.redis_url {
-        match redis(url).await {
+    if let Some(client) = crate::services::valkey::client(config) {
+        let cache = match client {
+            Ok(client) => from_client(client).await,
+            Err(e) => Err(e),
+        };
+        match cache {
             Ok(cache) => {
                 tracing::info!("Session cache: using Redis/Valkey");
                 return cache;

@@ -209,6 +209,13 @@ pub struct Config {
     /// (`/v1/*` etc.). Default empty.
     pub mcp_extra_origins: String,
     pub redis_url: Option<String>,
+    /// Valkey AUTH string, applied on top of `redis_url` (CASA 6.7.1). Kept
+    /// separate so the URL stays non-secret; Cloud Run sources it from Secret
+    /// Manager. See `services::valkey`.
+    pub redis_password: Option<String>,
+    /// PEM bundle of the Valkey server CAs. When set, `redis_url` must be
+    /// `rediss://` and the server certificate is verified against only these.
+    pub redis_ca_cert: Option<String>,
     // ── Display-param resolver cache (D64) ──────────────────────────
     /// Default reuse window for a resolver's answer, in seconds. A resolver's
     /// own `cache_ttl:` overrides it; `0` disables the cache entirely.
@@ -884,6 +891,8 @@ pub(crate) mod tests {
             dashboard_origin: "*".into(),
             mcp_extra_origins: String::new(),
             redis_url: None,
+            redis_password: None,
+            redis_ca_cert: None,
             resolve_cache_ttl_secs: 300,
             resolve_cache_negative_ttl_secs: 30,
             resolve_cache_scope_ttl_max_secs: 300,

@@ -16,7 +16,12 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let config = Config::from_env()?;
-    let storage = Storage::connect(&config.valkey_url).await?;
+    let storage = Storage::connect_with(
+        &config.valkey_url,
+        config.valkey_password.as_deref(),
+        config.valkey_ca_cert.as_deref(),
+    )
+    .await?;
 
     // Fail loudly on boot if Valkey isn't reachable — Cloud Run will retry
     // the instance rather than serve traffic we can't satisfy.

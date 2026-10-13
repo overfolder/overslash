@@ -1972,6 +1972,8 @@ fn build_config_shape() -> overslash_api::config::Config {
         dashboard_origin: "*localhost*".into(),
         mcp_extra_origins: String::new(),
         redis_url: None,
+        redis_password: None,
+        redis_ca_cert: None,
         resolve_cache_ttl_secs: 300,
         resolve_cache_negative_ttl_secs: 30,
         resolve_cache_scope_ttl_max_secs: 300,

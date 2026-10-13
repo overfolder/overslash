@@ -132,6 +132,8 @@ impl Config {
             dashboard_origin: env::or_default("DASHBOARD_ORIGIN", "*localhost*"),
             mcp_extra_origins: env::or_default("MCP_EXTRA_ORIGINS", ""),
             redis_url: env::optional("REDIS_URL"),
+            redis_password: env::optional("REDIS_PASSWORD"),
+            redis_ca_cert: env::optional("REDIS_CA_CERT"),
             // No `.filter(|n| *n > 0)` on the TTLs: `0` is a real value that
             // turns the cache off, not a typo to fall back from.
             resolve_cache_ttl_secs: env::parse_opt("RESOLVE_CACHE_TTL_SECS").unwrap_or(300), // 5 min
