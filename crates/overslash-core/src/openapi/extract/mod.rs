@@ -35,6 +35,7 @@ mod mcp;
 mod params;
 mod schemes;
 mod shape;
+mod staged_upload;
 
 pub use mcp::overlay_discovered_tools;
 

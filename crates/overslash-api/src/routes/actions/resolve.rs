@@ -603,7 +603,12 @@ pub(super) async fn resolve_request(
             // reaches this code. `check_action` rejects it at authoring time
             // (`additional_properties_needs_a_json_body`), which is the only
             // place the author can still fix it.
-            let declared_json = action.request_body.as_ref().is_some_and(|rb| rb.is_json());
+            // A form travels as JSON until the dial too (`staged_upload::wire_body`
+            // re-encodes it), so disclosure and replay read one shape.
+            let declared_json = action
+                .request_body
+                .as_ref()
+                .is_some_and(|rb| rb.is_json() || rb.is_multipart());
             // Only the *undeclared* arguments motivate a synthesized body, and
             // only they go into it. `ParamLocation` defaults to `Body`
             // (`extract::params` maps any unrecognized `in:` to it), so an

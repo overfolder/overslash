@@ -78,6 +78,7 @@ mod groups;
 mod headless_oauth;
 mod health;
 mod holded;
+mod holded_attachments;
 mod hubspot;
 mod hybrid_call;
 mod hybrid_sweeps;
