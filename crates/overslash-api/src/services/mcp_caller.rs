@@ -119,20 +119,21 @@ pub async fn invoke(
         .await
         .map_err(|app| McpInvokeError { app, audit: None })?;
 
+    // A server that echoes the bearer — in a tool result, an HTTP error body
+    // or a JSON-RPC error message — must not hand it to the caller or the
+    // audit capture. See `credential_scrub`.
+    let scrubber = CredentialScrubber::from_headers(&headers);
     let start = Instant::now();
     let mut result = client
         .tools_call(&headers, tool, arguments)
         .await
         .map_err(|e| McpInvokeError {
             audit: Some(scrub_client_error(&e)),
-            app: map_client_error(e),
+            app: scrub_app_error(&scrubber, map_client_error(e)),
         })?;
     let duration_ms = start.elapsed().as_millis() as u64;
 
-    // A tool that echoes the bearer must not hand it to the caller or the
-    // audit capture. Scrubbed while still parsed, so the envelope stays valid
-    // JSON — see `credential_scrub`.
-    let scrubber = CredentialScrubber::from_headers(&headers);
+    // Scrubbed while still parsed, so the envelope stays valid JSON.
     let hit_structured = result
         .structured
         .as_mut()
@@ -244,6 +245,16 @@ fn scrub_client_error(err: &crate::services::mcp_client::McpClientError) -> Valu
     }
 }
 
+/// [`map_client_error`] quotes upstream text (an HTTP error body, a JSON-RPC
+/// message) into the error the caller reads; strip injected credentials from it.
+fn scrub_app_error(scrubber: &CredentialScrubber, e: AppError) -> AppError {
+    match e {
+        AppError::BadGateway(m) => AppError::BadGateway(scrubber.scrub_str(&m).unwrap_or(m)),
+        AppError::BadRequest(m) => AppError::BadRequest(scrubber.scrub_str(&m).unwrap_or(m)),
+        other => other,
+    }
+}
+
 fn map_client_error(err: crate::services::mcp_client::McpClientError) -> AppError {
     use crate::services::mcp_client::McpClientError::*;
     match err {
@@ -273,8 +284,9 @@ fn map_client_error(err: crate::services::mcp_client::McpClientError) -> AppErro
 
 #[cfg(test)]
 mod tests {
-    use super::map_client_error;
+    use super::{map_client_error, scrub_app_error};
     use crate::error::AppError;
+    use crate::services::credential_scrub::CredentialScrubber;
     use crate::services::mcp_client::McpClientError;
 
     fn is_bad_gateway(e: &AppError) -> bool {
@@ -318,5 +330,33 @@ mod tests {
     fn map_unexpected_shape_is_bad_gateway() {
         let e = map_client_error(McpClientError::UnexpectedShape("no result".into()));
         assert!(is_bad_gateway(&e));
+    }
+
+    #[test]
+    fn upstream_error_text_is_scrubbed_of_the_bearer() {
+        let mut h = reqwest::header::HeaderMap::new();
+        h.insert(
+            reqwest::header::AUTHORIZATION,
+            "Bearer mcp-bearer-SEKRET-1".parse().unwrap(),
+        );
+        let scrubber = CredentialScrubber::from_headers(&h);
+        for err in [
+            McpClientError::Http {
+                status: 401,
+                body: "bad token mcp-bearer-SEKRET-1".into(),
+            },
+            McpClientError::Rpc {
+                code: -32001,
+                message: "rejected Bearer mcp-bearer-SEKRET-1".into(),
+            },
+        ] {
+            match scrub_app_error(&scrubber, map_client_error(err)) {
+                AppError::BadGateway(m) => {
+                    assert!(!m.contains("SEKRET"), "{m}");
+                    assert!(m.contains("[REDACTED]"), "{m}");
+                }
+                other => panic!("expected BadGateway, got {other:?}"),
+            }
+        }
     }
 }
