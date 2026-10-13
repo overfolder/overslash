@@ -105,23 +105,24 @@ makes exactly the same request it always did.
 
 ---
 
-## Resolver cache: Valkey holds PII, on an instance with no AUTH and no TLS
+## Resolver cache: Valkey holds PII, in a keyspace shared with the shortener
 
 `services::resolve_cache` (D64) writes resolved display names — people's names,
 phone numbers, email addresses, Drive file titles — to Valkey when `REDIS_URL`
 is set. The values are encrypted with the existing keyring, so what lands in
 the store is ciphertext, and the key hashes everything except the org id.
 
-What is *not* fixed: `infra/modules/memorystore/main.tf` creates
-`google_redis_instance.valkey` with neither `auth_enabled` nor
-`transit_encryption_mode`, so the instance is protected only by
-`authorized_network` — and `infra/main.tf` points both the API's `REDIS_URL`
-and `oversla-sh`'s `VALKEY_URL` at the same `module.memorystore[0]`, so a
-public URL shortener shares that keyspace. That was unremarkable while the only
-tenant was rate-limit counters. Follow-up: set `auth_enabled = true` and
-`transit_encryption_mode = "SERVER_AUTHENTICATION"`, plumbing the auth string
-through Secret Manager into both URLs. Note this is **breaking for oversla-sh**
-too, and there is no terraform CI — someone has to run `make tofu-apply`.
+AUTH and TLS are now in code (CASA 6.7.1): `infra/modules/memorystore/main.tf`
+sets `auth_enabled` and `transit_encryption_mode = "SERVER_AUTHENTICATION"`,
+and both clients connect `rediss://` with the AUTH string and a pinned CA from
+Secret Manager. It is **not live until an operator applies it**, and that apply
+replaces the instance — [memorystore-auth-tls.md](docs/runbooks/memorystore-auth-tls.md).
+
+What remains: `infra/main.tf` still points both the API's `REDIS_URL` and
+`oversla-sh`'s `VALKEY_URL` at the same `module.memorystore[0]`, and Memorystore
+has one AUTH string per instance, so the public URL shortener holds a
+credential that reads the API's keyspace. Splitting them needs either a second
+instance or Valkey ACL users (not offered on Memorystore for Redis).
 
 ---
 

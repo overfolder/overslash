@@ -141,6 +141,11 @@ describes as holding "people's names, addresses and phone numbers". Anything tha
 the VPC reads and writes it without credentials, in cleartext. `BASIC` also means no
 replica and no persistence.
 
+*Remediation in code, pending apply (2026-10-13):* AUTH + `SERVER_AUTHENTICATION` in
+`infra/modules/memorystore/main.tf`; see
+[memorystore-auth-tls.md](../../runbooks/memorystore-auth-tls.md). The table above is
+the live state until that runbook has been run.
+
 ### Audit logging — both projects
 
 ```
