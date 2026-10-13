@@ -47,7 +47,9 @@ test('admin can invoke a Mode-C action against a connected GitHub service', asyn
 	// override landed: real api.github.com would return a different shape.
 	const echoed = JSON.parse(called.result.body);
 	expect(echoed.uri).toContain(`/repos/${repo}`);
-	expect(String(echoed.headers.authorization ?? '')).toMatch(/^Bearer /);
+	// The gateway scrubs injected credentials out of what it returns, so the
+	// echoed token reads as the marker; the recorder below shows what was sent.
+	expect(echoed.headers.authorization).toBe('[REDACTED]');
 
 	// Out-of-band confirmation that the fake itself saw the request — the
 	// echoed body alone could in principle be reflected back from anywhere.
