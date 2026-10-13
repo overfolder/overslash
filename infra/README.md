@@ -130,7 +130,7 @@ the GitHub button on `/auth/providers` only once both are populated.
 | `cloud-build` | GitHub push trigger: build -> push -> deploy |
 | `infra-scheduler` | (Optional) Stop/start Cloud SQL on cron (Europe/Madrid) |
 | `dns` | (Optional) Cloud DNS managed zone |
-| `memorystore` | (Optional) Valkey via Memorystore |
+| `memorystore` | (Optional) Valkey via Memorystore, AUTH + TLS on; AUTH string and server CA published to Secret Manager — applying it **replaces** the instance, see [docs/runbooks/memorystore-auth-tls.md](../docs/runbooks/memorystore-auth-tls.md) |
 | `cloud-run-shortener` | (Optional) oversla.sh URL shortener |
 | `cloud-run-overfwd` | (Optional) Shared overfwd Mailbox Gateway behind `services/email.yaml` — see [docs/runbooks/mailbox-gateway.md](../docs/runbooks/mailbox-gateway.md) |
 | `audit-logging` | Data Access audit logs, a retained (and in prod **locked**) audit log bucket + sink, and an alert on unexpected secret reads — see [Audit logging](#audit-logging-casa-671) |

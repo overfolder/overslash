@@ -216,6 +216,18 @@ variable "redis_port" {
   default = ""
 }
 
+variable "redis_auth_secret_id" {
+  type        = string
+  default     = ""
+  description = "GSM secret ID holding the Memorystore AUTH string, surfaced as REDIS_PASSWORD. Empty = no AUTH."
+}
+
+variable "redis_ca_cert_secret_id" {
+  type        = string
+  default     = ""
+  description = "GSM secret ID holding the Memorystore server CA bundle, surfaced as REDIS_CA_CERT. Set = REDIS_URL is rediss:// and the server is verified against it."
+}
+
 variable "cloud_billing" {
   type    = bool
   default = false
@@ -443,7 +455,11 @@ locals {
     var.dashboard_url != "/" ? { PUBLIC_URL = var.dashboard_url } : {},
     var.enable_dev_auth ? { DEV_AUTH = "1" } : {},
     var.enable_live_map ? { OVERSLASH_LIVE_MAP = "1" } : {},
-    var.redis_host != "" ? { REDIS_URL = "redis://${var.redis_host}:${var.redis_port}" } : {},
+    # The CA is what makes this a TLS endpoint: the API refuses a CA paired
+    # with a plaintext URL, so the scheme follows it (CASA 6.7.1).
+    var.redis_host != "" ? {
+      REDIS_URL = "${var.redis_ca_cert_secret_id != "" ? "rediss" : "redis"}://${var.redis_host}:${var.redis_port}"
+    } : {},
     var.cloud_billing ? {
       CLOUD_BILLING         = "true"
       STRIPE_EUR_LOOKUP_KEY = var.stripe_eur_lookup_key
@@ -512,6 +528,8 @@ locals {
     var.enable_trusted_proxy_secret && var.trusted_proxy_secret_secret_id != "" ? {
       OVERSLASH_TRUSTED_PROXY_SECRET = var.trusted_proxy_secret_secret_id
     } : {},
+    var.redis_host != "" && var.redis_auth_secret_id != "" ? { REDIS_PASSWORD = var.redis_auth_secret_id } : {},
+    var.redis_host != "" && var.redis_ca_cert_secret_id != "" ? { REDIS_CA_CERT = var.redis_ca_cert_secret_id } : {},
   )
 }
 
