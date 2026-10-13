@@ -180,6 +180,66 @@ async fn ipv6_clients_are_bucketed_by_their_64() {
     );
 }
 
+/// Prod's shape: behind the GCLB the client address comes from the header the
+/// LB stamps, not from XFF — and once the LB has an IPv6 address, that header
+/// carries the v6 client. The /64 keying has to hold on this path too.
+#[tokio::test]
+async fn ipv6_from_the_lb_edge_header_is_bucketed_by_its_64() {
+    const EDGE: &str = "x-overslash-edge-client-ip";
+    let pool = common::test_pool().await;
+    let (addr, client) = common::start_api_with(pool, |c| {
+        c.ingress_rate_limits = IngressRateLimits {
+            oauth_register_ip: limit(1, 3600),
+            ..IngressRateLimits::disabled()
+        };
+        c.trusted_proxies = TrustedProxies::parse(None, None, None)
+            .unwrap()
+            .with_client_ip_header(Some(EDGE))
+            .unwrap();
+    })
+    .await;
+    let base = format!("http://{addr}");
+    let register_from = |edge: &'static str| {
+        client
+            .post(format!("{base}/oauth/register"))
+            .header(EDGE, edge)
+            .json(&json!({
+                "client_name": "ingress-rate-limit-test",
+                "redirect_uris": ["http://127.0.0.1:33418/callback"],
+                "token_endpoint_auth_method": "none",
+            }))
+            .send()
+    };
+
+    assert_eq!(
+        register_from("2001:db8:a:b::1").await.unwrap().status(),
+        StatusCode::CREATED
+    );
+    // Rotating within the /64 is the same subscriber…
+    assert_eq!(
+        register_from("2001:db8:a:b:1234:5678:9abc:def0")
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    // …a neighbouring /64 is not.
+    assert_eq!(
+        register_from("2001:db8:a:c::1").await.unwrap().status(),
+        StatusCode::CREATED
+    );
+
+    // A v4-mapped address is the IPv4 client it carries: one bucket, not two.
+    assert_eq!(
+        register_from("203.0.113.40").await.unwrap().status(),
+        StatusCode::CREATED
+    );
+    assert_eq!(
+        register_from("::ffff:203.0.113.40").await.unwrap().status(),
+        StatusCode::TOO_MANY_REQUESTS
+    );
+}
+
 #[tokio::test]
 async fn spoofed_xff_without_a_trusted_proxy_shares_one_bucket() {
     let (base, client) = start(IngressRateLimits {
