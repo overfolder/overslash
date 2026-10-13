@@ -10,8 +10,9 @@
 //!      the live API;
 //!   3. the uniform `{items, cursor, has_more}` envelope pages, and stops when
 //!      `has_more` goes false;
-//!   4. the writes that move money or leave the building disclose what they
-//!      are about, including the fields whose *absence* is the dangerous case.
+//!   4. the writes that move money, settle the books or leave the building
+//!      disclose what they are about, including the fields whose *absence* is
+//!      the dangerous case.
 //!
 //! The real-account test at the bottom is `#[ignore]`d and needs
 //! `HOLDED_TEST_API_KEY` (Settings → Developers → Credentials). It only reads:
@@ -81,6 +82,7 @@ fn holded_yaml_parses() {
         "list_payments",
         "list_banking_accounts",
         "list_bank_movements",
+        "reconcile_bank_movement",
         "list_ledger_entries",
         "list_payment_methods",
         "list_taxes",
@@ -92,7 +94,7 @@ fn holded_yaml_parses() {
             "holded.yaml should declare {action}"
         );
     }
-    assert_eq!(svc.actions.len(), 36, "the curated set is 36 actions");
+    assert_eq!(svc.actions.len(), 37, "the curated set is 37 actions");
 
     // Nothing here deletes. A fiscal document is cancelled or corrected with a
     // credit note; Holded's delete and bulk-delete endpoints are deliberately
@@ -239,6 +241,13 @@ async fn start_mock_holded() -> (SocketAddr, SeenLog) {
             json!({ "ok": true })
         } else if path.starts_with("/api/v2/invoices/") && parts.method == "GET" {
             json!({ "id": "6410a1b2c3d4e5f600000002", "document_number": "F-2026-0042" })
+        } else if path.starts_with("/api/v2/treasury/accounts/")
+            && parts.method == "GET"
+            && !path.ends_with("/bank-movements")
+        {
+            json!({ "id": "6410a1b2c3d4e5f600000009", "name": "BBVA Operativa", "type": "bank" })
+        } else if path.ends_with("/bank-movements") {
+            json!({ "items": [], "cursor": null, "has_more": false })
         } else if path == "/api/v2/taxes" {
             json!({ "items": [{ "id": "t1", "name": "IVA 21%" }] })
         } else {
@@ -585,6 +594,147 @@ async fn an_invoice_write_is_scoped_to_the_invoice_it_names() {
         rendered.contains("holded:cancel_invoice:invoiceId=6410a1b2c3d4e5f600000002"),
         "expected an invoice-scoped permission key, got: {rendered}"
     );
+}
+
+// ============================================================================
+// Bank reconciliation
+// ============================================================================
+
+const ACCOUNT: &str = "6410a1b2c3d4e5f600000009";
+const MOVEMENT: &str = "6410a1b2c3d4e5f600000010";
+
+/// Linking a movement settles documents, so the approval names the account by
+/// its name and every document the movement is matched against.
+#[tokio::test]
+async fn reconciling_discloses_the_account_and_every_document() {
+    let pool = common::test_pool().await;
+    let (mock, seen) = start_mock_holded().await;
+    let (base, client, agent_key, _admin) = setup(pool, mock, "admin").await;
+
+    let body = call(
+        &base,
+        &client,
+        &agent_key,
+        "reconcile_bank_movement",
+        json!({
+            "bankingAccountId": ACCOUNT,
+            "movementId": MOVEMENT,
+            "documents": [
+                { "document_id": "6410a1b2c3d4e5f600000002", "document_type": "invoice" },
+                { "document_id": "6410a1b2c3d4e5f600000003", "document_type": "purchase" },
+            ],
+        }),
+    )
+    .await;
+    assert_eq!(body["status"], json!("pending_approval"), "{body}");
+
+    let rendered = serde_json::to_string(&body["disclosed_fields"]).unwrap();
+    for needle in [
+        "BBVA Operativa",
+        MOVEMENT,
+        "invoice 6410a1b2c3d4e5f600000002",
+        "purchase 6410a1b2c3d4e5f600000003",
+    ] {
+        assert!(
+            rendered.contains(needle),
+            "the reconcile disclosure must show {needle}: {rendered}"
+        );
+    }
+    assert!(
+        !seen
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|r| r.method == "POST" && r.path.ends_with("/reconcile")),
+        "a pending approval must not have reached the upstream"
+    );
+}
+
+/// An empty body force-reconciles: the movement leaves the pending queue with
+/// nothing linked. That is the shape a reviewer most needs to see, so it must
+/// render as words rather than as an absent row.
+#[tokio::test]
+async fn force_reconcile_says_no_document_is_linked() {
+    let pool = common::test_pool().await;
+    let (mock, _seen) = start_mock_holded().await;
+    let (base, client, agent_key, _admin) = setup(pool, mock, "admin").await;
+
+    let body = call(
+        &base,
+        &client,
+        &agent_key,
+        "reconcile_bank_movement",
+        json!({ "bankingAccountId": ACCOUNT, "movementId": MOVEMENT }),
+    )
+    .await;
+    assert_eq!(body["status"], json!("pending_approval"), "{body}");
+
+    let documents = body["disclosed_fields"]
+        .as_array()
+        .and_then(|f| f.iter().find(|f| f["label"] == json!("Documents")).cloned())
+        .expect("a force-reconcile must still disclose its Documents row");
+    assert!(
+        serde_json::to_string(&documents)
+            .unwrap()
+            .contains("without linking any document"),
+        "a force-reconcile must say nothing is linked: {documents}"
+    );
+}
+
+/// A reconcile grant covers one bank account, not every account on the books
+/// and not just one movement.
+#[tokio::test]
+async fn reconcile_is_scoped_to_the_bank_account() {
+    let pool = common::test_pool().await;
+    let (mock, _seen) = start_mock_holded().await;
+    let (base, client, agent_key, _admin) = setup(pool, mock, "admin").await;
+
+    let body = call(
+        &base,
+        &client,
+        &agent_key,
+        "reconcile_bank_movement",
+        json!({ "bankingAccountId": ACCOUNT, "movementId": MOVEMENT }),
+    )
+    .await;
+    let rendered = serde_json::to_string(&body).unwrap();
+    assert!(
+        rendered.contains(&format!(
+            "holded:reconcile_bank_movement:bankingAccountId={ACCOUNT}"
+        )),
+        "expected an account-scoped permission key, got: {rendered}"
+    );
+}
+
+/// Holded reads `status` as one comma-joined value (`explode: false`). An
+/// array param would go out as repeated keys, which is not what it parses.
+#[tokio::test]
+async fn bank_movement_status_goes_out_comma_joined() {
+    let pool = common::test_pool().await;
+    let (mock, seen) = start_mock_holded().await;
+    let (base, client, agent_key, _admin) = setup(pool, mock, "read").await;
+
+    let body = call(
+        &base,
+        &client,
+        &agent_key,
+        "list_bank_movements",
+        json!({ "id": ACCOUNT, "status": "pending,partial" }),
+    )
+    .await;
+    assert_eq!(body["status"], json!("called"), "{body}");
+
+    let req = seen.lock().unwrap().last().cloned().unwrap();
+    assert_eq!(
+        req.path,
+        format!("/api/v2/treasury/accounts/{ACCOUNT}/bank-movements")
+    );
+    assert!(
+        req.query.contains("status=pending%2Cpartial"),
+        "status must be one comma-joined value: {}",
+        req.query
+    );
+    assert_eq!(req.query.matches("status=").count(), 1, "{}", req.query);
 }
 
 // ============================================================================
