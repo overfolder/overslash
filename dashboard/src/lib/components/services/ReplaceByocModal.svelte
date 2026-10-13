@@ -7,7 +7,7 @@
 	 * inputs and the redirect-URI setup reminder.
 	 */
 	import ByocSection from './ByocSection.svelte';
-	import { updateByocCredential } from '$lib/api/services';
+	import { updateByocCredential } from '#lib/api/services.ts';
 
 	let {
 		open,

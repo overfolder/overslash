@@ -6,9 +6,9 @@
  * Auth relies on the `__Host-`/`__Secure-oss_session` HttpOnly cookie set by the backend.
  */
 
-// Type-only, so the `$lib/api/account` → `$lib/session` import cycle is erased
+// Type-only, so the `#lib/api/account` → `#lib/session` import cycle is erased
 // at build time rather than becoming a runtime one.
-import type { PendingInvitation } from '$lib/api/account';
+import type { PendingInvitation } from '#lib/api/account.ts';
 
 export class ApiError extends Error {
 	constructor(

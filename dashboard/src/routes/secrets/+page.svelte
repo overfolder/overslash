@@ -1,20 +1,20 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
-	import { page } from '$app/stores';
-	import { ApiError, session } from '$lib/session';
-	import { listSecrets, vaultOf } from '$lib/api/secrets';
+	import { page } from '$app/state';
+	import { ApiError, session } from '#lib/session.ts';
+	import { listSecrets, vaultOf } from '#lib/api/secrets.ts';
 	import {
 		listByocCredentials,
 		deleteByocCredential,
 		listOAuthProviders
-	} from '$lib/api/services';
+	} from '#lib/api/services.ts';
 	import type {
 		ByocCredentialSummary,
 		Identity,
 		OAuthProviderInfo,
 		SecretSummary
-	} from '$lib/types';
+	} from '#lib/types.ts';
 	import SearchBar, {
 		emptySearch,
 		filterTerms,
@@ -22,18 +22,18 @@
 		type FilterTerm,
 		type SearchKey,
 		type SearchValue
-	} from '$lib/components/SearchBar.svelte';
-	import OwnerCell from '$lib/components/secrets/OwnerCell.svelte';
-	import NewSecretModal from '$lib/components/secrets/NewSecretModal.svelte';
-	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
-	import ReplaceByocModal from '$lib/components/services/ReplaceByocModal.svelte';
-	import { formatTime } from '$lib/utils/time';
+	} from '#lib/components/SearchBar.svelte';
+	import OwnerCell from '#lib/components/secrets/OwnerCell.svelte';
+	import NewSecretModal from '#lib/components/secrets/NewSecretModal.svelte';
+	import ConfirmModal from '#lib/components/ConfirmModal.svelte';
+	import ReplaceByocModal from '#lib/components/services/ReplaceByocModal.svelte';
+	import { formatTime } from '#lib/utils/time.ts';
 
-	const currentUserId = $derived(($page as any).data?.user?.identity_id as string | undefined);
-	const isAdmin = $derived(($page as any).data?.user?.is_org_admin === true);
+	const currentUserId = $derived((page as any).data?.user?.identity_id as string | undefined);
+	const isAdmin = $derived((page as any).data?.user?.is_org_admin === true);
 	// Owner labels use the email; the layout supplies the org's allowed domains
-	// so a single one can be stripped off. See `$lib/identityDisplay`.
-	const allowedDomains = $derived((($page as any).data?.allowedDomains ?? []) as string[]);
+	// so a single one can be stripped off. See `#lib/identityDisplay`.
+	const allowedDomains = $derived(((page as any).data?.allowedDomains ?? []) as string[]);
 
 	let secrets = $state<SecretSummary[]>([]);
 	let identities = $state<Identity[]>([]);

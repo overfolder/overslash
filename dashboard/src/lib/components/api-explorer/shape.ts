@@ -14,7 +14,7 @@
  * blocks calls the gateway would have run.
  */
 
-import type { NestedParam, ParamShape } from '$lib/types';
+import type { NestedParam, ParamShape } from '#lib/types.ts';
 
 /** One field of a shape, flattened for display with its path. */
 export interface ShapeField {

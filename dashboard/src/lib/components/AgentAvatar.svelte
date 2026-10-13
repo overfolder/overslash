@@ -15,7 +15,7 @@
 	missing from the build, and `ServiceIcon` degrades to a letter tile.
 -->
 <script lang="ts">
-	import ServiceIcon from '$lib/components/ServiceIcon.svelte';
+	import ServiceIcon from '#lib/components/ServiceIcon.svelte';
 
 	let {
 		iconUrl = null,

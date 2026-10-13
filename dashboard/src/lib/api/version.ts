@@ -8,8 +8,8 @@
  * commit for uptime monitors; this route is the one that skips `/health`'s
  * per-request database probe and pre-abbreviates the SHA.
  */
-import { session } from '$lib/session';
-import type { BuildInfo } from '$lib/types';
+import { session } from '#lib/session.ts';
+import type { BuildInfo } from '#lib/types.ts';
 
 export const getVersion = (signal?: AbortSignal) =>
 	session.get<BuildInfo>('/v1/version', signal);

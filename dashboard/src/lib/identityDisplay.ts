@@ -10,8 +10,8 @@
 // so they keep rendering their name unchanged.
 
 /** The subset of an identity this module needs. Structural on purpose: all
- *  three `Identity` declarations in the app (`$lib/types`, `routes/members`,
- *  `$lib/api/groups`) satisfy it without edits. */
+ *  three `Identity` declarations in the app (`#lib/types`, `routes/members`,
+ *  `#lib/api/groups`) satisfy it without edits. */
 export interface IdentityLike {
 	name: string;
 	email?: string | null;

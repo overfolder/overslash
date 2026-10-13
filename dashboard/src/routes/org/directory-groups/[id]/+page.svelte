@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { page } from '$app/stores';
-	import { ApiError } from '$lib/session';
+	import { page } from '$app/state';
+	import { ApiError } from '#lib/session.ts';
 	import {
 		groupsApi,
 		directoryGroupsApi,
@@ -10,11 +10,11 @@
 		type Group,
 		type DirectoryGroupSummary,
 		type Identity
-	} from '$lib/api/groups';
-	import PillPicker from '$lib/components/PillPicker.svelte';
-	import { makeIdentityFormatter } from '$lib/identityDisplay';
+	} from '#lib/api/groups.ts';
+	import PillPicker from '#lib/components/PillPicker.svelte';
+	import { makeIdentityFormatter } from '#lib/identityDisplay.ts';
 
-	const directoryGroupId = $derived($page.params.id as string);
+	const directoryGroupId = $derived(page.params.id as string);
 
 	let directoryGroup = $state<DirectoryGroupSummary | null>(null);
 	let memberIds = $state<string[]>([]);
@@ -25,7 +25,7 @@
 	let mapBusy = $state(false);
 	let mapError = $state<string | null>(null);
 
-	const allowedDomains = $derived((($page as any).data?.allowedDomains ?? []) as string[]);
+	const allowedDomains = $derived(((page as any).data?.allowedDomains ?? []) as string[]);
 	const fmt = $derived(makeIdentityFormatter(allowedDomains));
 	const identityById = $derived(new Map(identities.map((i) => [i.id, i])));
 	const groupById = $derived(new Map(groups.map((g) => [g.id, g])));

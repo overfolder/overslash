@@ -1,13 +1,13 @@
 <script lang="ts">
-	import IdentityPath from '$lib/components/IdentityPath.svelte';
-	import AgentAvatar from '$lib/components/AgentAvatar.svelte';
-	import { identityUnits, formatIdentityPath } from '$lib/identityPath';
+	import IdentityPath from '#lib/components/IdentityPath.svelte';
+	import AgentAvatar from '#lib/components/AgentAvatar.svelte';
+	import { identityUnits, formatIdentityPath } from '#lib/identityPath.ts';
 	import {
 		makeIdentityFormatter,
 		type IdentityFormatter,
 		type IdentityLike
-	} from '$lib/identityDisplay';
-	import { formatBytes } from '$lib/approvals/format';
+	} from '#lib/identityDisplay.ts';
+	import { formatBytes } from '#lib/approvals/format.ts';
 	import {
 		recordedNames,
 		responseCapture,

@@ -1,6 +1,6 @@
 import type { PageLoad } from './$types';
-import { loadPublicRequest } from '$lib/public-request';
-import type { ProvideMetadata, PublicRequestLoad } from '$lib/public-request';
+import { loadPublicRequest } from '#lib/public-request.ts';
+import type { ProvideMetadata, PublicRequestLoad } from '#lib/public-request.ts';
 
 export const ssr = false;
 export const prerender = false;

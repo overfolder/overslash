@@ -1,5 +1,5 @@
 import type { PageLoad } from './$types';
-import { session, ApiError } from '$lib/session';
+import { session, ApiError } from '#lib/session.ts';
 
 export const ssr = false;
 export const prerender = false;

@@ -8,12 +8,12 @@
  * no values; this client only ever calls it with the dashboard session
  * cookie, which gets the full `SecretSummary` shape (SPEC §6).
  */
-import { session } from '$lib/session';
+import { session } from '#lib/session.ts';
 import type {
 	SecretDetail,
 	SecretReveal,
 	SecretSummary
-} from '$lib/types';
+} from '#lib/types.ts';
 
 /**
  * Which vault a request addresses. Secret names are unique per vault, not per

@@ -1,7 +1,7 @@
 import type { StorybookConfig } from '@storybook/sveltekit';
 
 // Storybook reuses the dashboard's own Vite + Svelte config via the sveltekit
-// framework, so design tokens, Tailwind, and the `$lib` alias all resolve the
+// framework, so design tokens, Tailwind, and the `#lib` alias all resolve the
 // same way they do in `vite dev`.
 //
 // NOTE: we intentionally do NOT install `@storybook/addon-vitest`. On Vite 8

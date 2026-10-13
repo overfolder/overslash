@@ -4,9 +4,6 @@
 // path carries the IdP display name frozen at write time, the audit row passes
 // a resolver that relabels `user` units by email. The no-resolver default is
 // still part of the exported contract, so it is pinned here too.
-//
-// Imported by relative path: `$lib` is a SvelteKit alias that Playwright's
-// transform does not resolve.
 import { test, expect } from '@playwright/test';
 import { formatIdentityPath } from '../../../src/lib/identityPath';
 

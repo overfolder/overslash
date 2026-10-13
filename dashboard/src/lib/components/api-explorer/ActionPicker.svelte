@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { ActionSummary } from '$lib/types';
+	import type { ActionSummary } from '#lib/types.ts';
 	import HttpMethodBadge from './HttpMethodBadge.svelte';
 
 	let {

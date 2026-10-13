@@ -125,7 +125,7 @@ if git diff --cached --name-only --diff-filter=ACMR | grep -q '^dashboard/'; the
         exit 1
     }
     # Fail on any Svelte/Rollup warning or oversize chunk. See
-    # dashboard/svelte.config.js onwarn, vite.config.ts rollupOptions.onwarn,
+    # dashboard/vite.config.ts (the sveltekit() onwarn and rollupOptions.onwarn)
     # and scripts/check-chunk-sizes.mjs.
     (cd dashboard && npm run build:strict) || {
         echo "ERROR: dashboard build emitted warnings (see output above)."

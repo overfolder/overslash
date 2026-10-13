@@ -6,8 +6,8 @@
 -->
 <script lang="ts">
 	import { goto } from '$app/navigation';
-	import { ApiError } from '$lib/session';
-	import { putSecret, type SecretVault } from '$lib/api/secrets';
+	import { ApiError } from '#lib/session.ts';
+	import { putSecret, type SecretVault } from '#lib/api/secrets.ts';
 
 	let {
 		onClose,

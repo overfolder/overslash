@@ -1,23 +1,23 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
-	import { ApiError, session, type MeIdentity } from '$lib/session';
-	import { listConnections, setConnectionDefault } from '$lib/api/services';
-	import type { ConnectionSummary, Identity, OAuthProviderInfo } from '$lib/types';
-	import { compareBy, type SortDir } from '$lib/sort';
-	import { resolveOwner, ownerLabel, ownerTitle, type OwnerScope } from '$lib/ownerLabel';
-	import { relativeTime, absoluteTime } from '$lib/utils/time';
+	import { ApiError, session, type MeIdentity } from '#lib/session.ts';
+	import { listConnections, setConnectionDefault } from '#lib/api/services.ts';
+	import type { ConnectionSummary, Identity, OAuthProviderInfo } from '#lib/types.ts';
+	import { compareBy, type SortDir } from '#lib/sort.ts';
+	import { resolveOwner, ownerLabel, ownerTitle, type OwnerScope } from '#lib/ownerLabel.ts';
+	import { relativeTime, absoluteTime } from '#lib/utils/time.ts';
 	import SearchBar, {
 		emptySearch,
 		filterTerms,
 		matchesAllText,
 		type SearchKey,
 		type SearchValue
-	} from '$lib/components/SearchBar.svelte';
-	import SortableHeader from '$lib/components/SortableHeader.svelte';
-	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
-	import ConnectionAvatar from '$lib/components/connections/ConnectionAvatar.svelte';
-	import ConnectAccountModal from '$lib/components/connections/ConnectAccountModal.svelte';
+	} from '#lib/components/SearchBar.svelte';
+	import SortableHeader from '#lib/components/SortableHeader.svelte';
+	import ToggleSwitch from '#lib/components/ToggleSwitch.svelte';
+	import ConnectionAvatar from '#lib/components/connections/ConnectionAvatar.svelte';
+	import ConnectAccountModal from '#lib/components/connections/ConnectAccountModal.svelte';
 
 	let {
 		data
@@ -48,9 +48,9 @@
 
 	// Display label for a connection's owner in the "all users" view. Connections
 	// are bound to the user identity (D22), so owner_identity_id is always set —
-	// this column never renders 'Org'. Labelled by email via `$lib/ownerLabel`,
+	// this column never renders 'Org'. Labelled by email via `#lib/ownerLabel`,
 	// matching the services list, because the IdP `name` claim is neither unique
-	// nor stable (see `$lib/identityDisplay`).
+	// nor stable (see `#lib/identityDisplay`).
 	function ownerOf(c: ConnectionSummary): OwnerScope {
 		return resolveOwner(c.owner_identity_id, identityById, currentUserId, allowedDomains);
 	}

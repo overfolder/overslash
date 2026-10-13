@@ -1,25 +1,25 @@
 <script lang="ts">
 	import { onDestroy, onMount } from 'svelte';
 	import { goto } from '$app/navigation';
-	import { page } from '$app/stores';
-	import { ApiError, type MeIdentity } from '$lib/session';
+	import { page } from '$app/state';
+	import { ApiError, type MeIdentity } from '#lib/session.ts';
 	import {
 		getConnection,
 		setConnectionDefault,
 		setConnectionKeep,
 		deleteConnection,
 		upgradeConnectionScopes
-	} from '$lib/api/services';
-	import type { ConnectionDetail, OAuthProviderInfo } from '$lib/types';
-	import { relativeTime, absoluteTime } from '$lib/utils/time';
-	import { PopupBlockedError } from '$lib/oauth-connect';
-	import ConnectionAvatar from '$lib/components/connections/ConnectionAvatar.svelte';
-	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
-	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
+	} from '#lib/api/services.ts';
+	import type { ConnectionDetail, OAuthProviderInfo } from '#lib/types.ts';
+	import { relativeTime, absoluteTime } from '#lib/utils/time.ts';
+	import { PopupBlockedError } from '#lib/oauth-connect.ts';
+	import ConnectionAvatar from '#lib/components/connections/ConnectionAvatar.svelte';
+	import ToggleSwitch from '#lib/components/ToggleSwitch.svelte';
+	import ConfirmModal from '#lib/components/ConfirmModal.svelte';
 
 	let { data }: { data: { user: MeIdentity | null; providers: OAuthProviderInfo[] } } = $props();
 
-	const id = $derived($page.params.id ?? '');
+	const id = $derived(page.params.id ?? '');
 	const providerName = $derived(new Map(data.providers.map((p) => [p.key, p.display_name])));
 	const displayName = $derived((key: string) => providerName.get(key) ?? key);
 

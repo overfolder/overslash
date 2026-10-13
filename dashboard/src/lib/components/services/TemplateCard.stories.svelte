@@ -1,7 +1,7 @@
 <script module lang="ts">
 	import { defineMeta } from '@storybook/addon-svelte-csf';
 	import { fn } from 'storybook/test';
-	import type { TemplateSummary } from '$lib/types';
+	import type { TemplateSummary } from '#lib/types.ts';
 	import TemplateCard from './TemplateCard.svelte';
 
 	const github: TemplateSummary = {

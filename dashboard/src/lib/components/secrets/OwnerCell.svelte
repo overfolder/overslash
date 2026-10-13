@@ -4,8 +4,8 @@
   label, with a tooltip showing the full identity path on agent owners.
 -->
 <script lang="ts">
-	import type { Identity } from '$lib/types';
-	import { formatIdentity } from '$lib/identityDisplay';
+	import type { Identity } from '#lib/types.ts';
+	import { formatIdentity } from '#lib/identityDisplay.ts';
 
 	let {
 		ownerId,

@@ -1,4 +1,4 @@
-import { session } from '$lib/session';
+import { session } from '#lib/session.ts';
 import type { Identity, ApiKeySummary } from './types';
 
 export const ssr = false;

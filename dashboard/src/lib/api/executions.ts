@@ -8,8 +8,8 @@
  * A viewer outside that set still sees the row, with `result_redacted: true`
  * and no body.
  */
-import { session } from '$lib/session';
-import type { ExecutionDetail, ExecutionListItem } from '$lib/session';
+import { session } from '#lib/session.ts';
+import type { ExecutionDetail, ExecutionListItem } from '#lib/session.ts';
 
 export interface ExecutionQuery {
 	/** `mine` (default) or `subtree` — the caller plus their descendants. */

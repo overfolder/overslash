@@ -51,7 +51,7 @@ export async function makeSnapper(session, outDir = resolve('screenshots')) {
 		const dark = opts.theme === 'dark';
 		const ctx = await browser.newContext({
 			viewport: opts.viewport ?? { width: 1280, height: 800 },
-			// `initialTheme()` in `$lib/stores/shell` falls back to
+			// `initialTheme()` in `#lib/stores/shell` falls back to
 			// `prefers-color-scheme` when nothing is stored, so this alone
 			// already produces a dark render. Belt to the braces below.
 			colorScheme: dark ? 'dark' : 'light'

@@ -1,61 +1,61 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
 	import { goto } from '$app/navigation';
-	import { page } from '$app/stores';
-	import { ApiError, apiErrorReason, session } from '$lib/session';
+	import { page } from '$app/state';
+	import { ApiError, apiErrorReason, session } from '#lib/session.ts';
 	import {
 		listServices,
 		listConnections,
 		deleteService,
 		setServiceStatus
-	} from '$lib/api/services';
-	import { credentialStatus } from '$lib/api/service-status';
+	} from '#lib/api/services.ts';
+	import { credentialStatus } from '#lib/api/service-status.ts';
 	import type {
 		Identity,
 		ServiceInstanceSummary,
 		ServiceStatus,
 		ConnectionSummary
-	} from '$lib/types';
-	import ServiceIcon from '$lib/components/ServiceIcon.svelte';
-	import StatusBadge from '$lib/components/services/StatusBadge.svelte';
-	import ConfirmDialog from '$lib/components/services/ConfirmDialog.svelte';
+	} from '#lib/types.ts';
+	import ServiceIcon from '#lib/components/ServiceIcon.svelte';
+	import StatusBadge from '#lib/components/services/StatusBadge.svelte';
+	import ConfirmDialog from '#lib/components/services/ConfirmDialog.svelte';
 	import SearchBar, {
 		emptySearch,
 		filterTerms,
 		matchesAllText,
 		type FilterTerm, type SearchKey, type SearchValue
-	} from '$lib/components/SearchBar.svelte';
-	import SortableHeader from '$lib/components/SortableHeader.svelte';
-	import { compareBy, type SortDir } from '$lib/sort';
-	import { formatIdentity } from '$lib/identityDisplay';
+	} from '#lib/components/SearchBar.svelte';
+	import SortableHeader from '#lib/components/SortableHeader.svelte';
+	import { compareBy, type SortDir } from '#lib/sort.ts';
+	import { formatIdentity } from '#lib/identityDisplay.ts';
 	import {
 		resolveOwner,
 		ownerLabel,
 		ownerTitle,
 		needsOwnerPrefix,
 		type OwnerScope
-	} from '$lib/ownerLabel';
-	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
-	import TemplateCatalog from '$lib/components/templates/TemplateCatalog.svelte';
-	import ApiExplorer from '$lib/components/api-explorer/ApiExplorer.svelte';
+	} from '#lib/ownerLabel.ts';
+	import ToggleSwitch from '#lib/components/ToggleSwitch.svelte';
+	import TemplateCatalog from '#lib/components/templates/TemplateCatalog.svelte';
+	import ApiExplorer from '#lib/components/api-explorer/ApiExplorer.svelte';
 
 	type TabKey = 'instances' | 'catalog' | 'api-explorer';
 
-	function tabFromUrl(p: URL): TabKey {
+	function tabFromUrl(p: { searchParams: { get(name: string): string | null } }): TabKey {
 		const v = p.searchParams.get('tab');
 		return v === 'catalog' || v === 'api-explorer' ? v : 'instances';
 	}
 
-	let activeTab = $state<TabKey>(tabFromUrl($page.url));
-	let explorerInitialService = $state<string | null>($page.url.searchParams.get('service'));
+	let activeTab = $state<TabKey>(tabFromUrl(page.url));
+	let explorerInitialService = $state<string | null>(page.url.searchParams.get('service'));
 
 	function selectTab(next: TabKey) {
 		activeTab = next;
-		const url = new URL($page.url);
+		const url = new URL(page.url.href);
 		if (next === 'instances') url.searchParams.delete('tab');
 		else url.searchParams.set('tab', next);
 		if (next !== 'api-explorer') url.searchParams.delete('service');
-		goto(`${url.pathname}${url.search}`, { replaceState: true, keepFocus: true, noScroll: true });
+		goto(`${url.pathname}${url.search}`, { replace: true, reset: false });
 	}
 
 	function openInExplorer(idOrName: string) {
@@ -64,30 +64,30 @@
 		// caller-scoped name resolver.
 		explorerInitialService = idOrName;
 		activeTab = 'api-explorer';
-		const url = new URL($page.url);
+		const url = new URL(page.url.href);
 		url.searchParams.set('tab', 'api-explorer');
 		url.searchParams.set('service', idOrName);
-		goto(`${url.pathname}${url.search}`, { replaceState: false, keepFocus: true, noScroll: true });
+		goto(`${url.pathname}${url.search}`, { replace: false, reset: false });
 	}
 
 	// Derive isAdmin + current user id from layout data
-	const isAdmin = $derived(($page as any).data?.user?.is_org_admin === true);
-	const currentUserId = $derived(($page as any).data?.user?.identity_id as string | undefined);
-	// Org's allowed sign-in domains — `$lib/ownerLabel` strips a matching domain
+	const isAdmin = $derived((page as any).data?.user?.is_org_admin === true);
+	const currentUserId = $derived((page as any).data?.user?.identity_id as string | undefined);
+	// Org's allowed sign-in domains — `#lib/ownerLabel` strips a matching domain
 	// off owner emails so another user's rows read `ada / gcal`, not
 	// `ada@acme.com / gcal`. Supplied by the root layout load.
-	const allowedDomains = $derived((($page as any).data?.allowedDomains ?? []) as string[]);
+	const allowedDomains = $derived(((page as any).data?.allowedDomains ?? []) as string[]);
 
 	// `?user=<id>` (admin-only) scopes the list to a single user's accessible
 	// services — set when an admin drills in from the Users list. The backend
 	// ignores it for non-admins.
-	const userFilter = $derived($page.url.searchParams.get('user'));
+	const userFilter = $derived(page.url.searchParams.get('user'));
 
 	// `?connection=<id>` filters the list to instances bound to one connection —
 	// the cross-link target from the Connections view's "Used by" column. The
 	// backend filters precisely by id; the pill resolves the id to the account
 	// label once the connections list loads.
-	const connectionFilter = $derived($page.url.searchParams.get('connection'));
+	const connectionFilter = $derived(page.url.searchParams.get('connection'));
 
 	let services = $state<ServiceInstanceSummary[]>([]);
 	let connections = $state<ConnectionSummary[]>([]);
@@ -119,15 +119,15 @@
 	);
 
 	function clearUserFilter() {
-		const url = new URL($page.url);
+		const url = new URL(page.url.href);
 		url.searchParams.delete('user');
-		goto(`${url.pathname}${url.search}`, { keepFocus: true, noScroll: true });
+		goto(`${url.pathname}${url.search}`, { reset: false });
 	}
 
 	function clearConnectionFilter() {
-		const url = new URL($page.url);
+		const url = new URL(page.url.href);
 		url.searchParams.delete('connection');
-		goto(`${url.pathname}${url.search}`, { keepFocus: true, noScroll: true });
+		goto(`${url.pathname}${url.search}`, { reset: false });
 	}
 
 	// `?user=` / `?connection=` are server-side filters owned by the URL, so they
@@ -535,7 +535,7 @@
 			</div>
 		{/if}
 	{:else if activeTab === 'catalog'}
-		<TemplateCatalog {isAdmin} orgId={($page as any).data?.user?.org_id} />
+		<TemplateCatalog {isAdmin} orgId={(page as any).data?.user?.org_id} />
 	{:else}
 		<ApiExplorer initialService={explorerInitialService} {isAdmin} {currentUserId} {allowedDomains} />
 	{/if}

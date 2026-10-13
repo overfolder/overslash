@@ -10,16 +10,16 @@
 	 * stays inert in Storybook and screenshot scenarios.
 	 */
 	import { invalidateAll } from '$app/navigation';
-	import { sidebarCollapsed } from '$lib/stores/shell';
-	import { pushToast } from '$lib/stores/toasts.svelte';
-	import { ApiError } from '$lib/session';
+	import { sidebarCollapsed } from '#lib/stores/shell.ts';
+	import { pushToast } from '#lib/stores/toasts.svelte.ts';
+	import { ApiError } from '#lib/session.ts';
 	import {
 		acceptInvitation,
 		declineInvitation,
 		switchOrg,
 		type PendingInvitation
-	} from '$lib/api/account';
-	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
+	} from '#lib/api/account.ts';
+	import ConfirmModal from '#lib/components/ConfirmModal.svelte';
 
 	type Props = {
 		invitations: PendingInvitation[];

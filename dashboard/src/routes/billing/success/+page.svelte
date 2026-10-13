@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { page } from '$app/stores';
-	import { session } from '$lib/session';
+	import { page } from '$app/state';
+	import { session } from '#lib/session.ts';
 
 	type StatusResponse = {
 		status: 'pending' | 'fulfilled';
@@ -17,7 +17,7 @@
 	let switchError: string | null = null;
 
 	onMount(() => {
-		const sessionId = $page.url.searchParams.get('session_id');
+		const sessionId = page.url.searchParams.get('session_id');
 		if (!sessionId) {
 			view = 'error';
 			errorMsg = 'No session ID in URL.';

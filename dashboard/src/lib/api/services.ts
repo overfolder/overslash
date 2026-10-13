@@ -2,7 +2,7 @@
  * API client wrappers for the Services view: templates, service instances,
  * and OAuth connections.
  */
-import { ApiError, apiErrorReason, session } from '$lib/session';
+import { ApiError, apiErrorReason, session } from '#lib/session.ts';
 import type {
 	ActionSummary,
 	ByocCredentialSummary,
@@ -33,7 +33,7 @@ import type {
 	UpdateServiceRequest,
 	UpdateTemplateRequest,
 	ValidationResult
-} from '$lib/types';
+} from '#lib/types.ts';
 
 // -- Templates --
 

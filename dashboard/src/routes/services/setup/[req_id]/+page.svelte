@@ -14,15 +14,15 @@
 -->
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
-	import ServiceIcon from '$lib/components/ServiceIcon.svelte';
-	import PublicRequestCard from '$lib/components/secrets/PublicRequestCard.svelte';
-	import RequestIdentityBox from '$lib/components/RequestIdentityBox.svelte';
-	import SecretValueField from '$lib/components/secrets/SecretValueField.svelte';
-	import TestResult from '$lib/components/services/TestResult.svelte';
-	import { runActivate } from '$lib/api/services';
-	import { fmtCountdown, loginUrl, submitPublicRequest } from '$lib/public-request';
-	import { setupOutcome } from '$lib/setup-outcome';
-	import type { ServiceStatus, ServiceTestResponse } from '$lib/types';
+	import ServiceIcon from '#lib/components/ServiceIcon.svelte';
+	import PublicRequestCard from '#lib/components/secrets/PublicRequestCard.svelte';
+	import RequestIdentityBox from '#lib/components/RequestIdentityBox.svelte';
+	import SecretValueField from '#lib/components/secrets/SecretValueField.svelte';
+	import TestResult from '#lib/components/services/TestResult.svelte';
+	import { runActivate } from '#lib/api/services.ts';
+	import { fmtCountdown, loginUrl, submitPublicRequest } from '#lib/public-request.ts';
+	import { setupOutcome } from '#lib/setup-outcome.ts';
+	import type { ServiceStatus, ServiceTestResponse } from '#lib/types.ts';
 
 	let { data } = $props();
 

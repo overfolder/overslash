@@ -2,7 +2,7 @@
  * Typed client for /v1/groups endpoints (PR #45).
  * See crates/overslash-api/src/routes/groups.rs for the source of truth.
  */
-import { session } from '$lib/session';
+import { session } from '#lib/session.ts';
 
 export interface Group {
 	id: string;

@@ -1,6 +1,6 @@
 <script lang="ts">
-	import type { Group, GroupGrantPick } from '$lib/api/groups';
-	import AutoApproveSelect from '$lib/components/AutoApproveSelect.svelte';
+	import type { Group, GroupGrantPick } from '#lib/api/groups.ts';
+	import AutoApproveSelect from '#lib/components/AutoApproveSelect.svelte';
 
 	let {
 		groups,

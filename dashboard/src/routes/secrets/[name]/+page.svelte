@@ -1,28 +1,28 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
-	import { page } from '$app/stores';
-	import { ApiError, session } from '$lib/session';
-	import { getSecret, type SecretVault } from '$lib/api/secrets';
-	import type { Identity, SecretDetail, SecretVersionView } from '$lib/types';
-	import OwnerCell from '$lib/components/secrets/OwnerCell.svelte';
-	import { formatIdentity } from '$lib/identityDisplay';
-	import RevealModal from '$lib/components/secrets/RevealModal.svelte';
-	import UpdateValueModal from '$lib/components/secrets/UpdateValueModal.svelte';
-	import RestoreVersionModal from '$lib/components/secrets/RestoreVersionModal.svelte';
-	import DeleteSecretModal from '$lib/components/secrets/DeleteSecretModal.svelte';
+	import { page } from '$app/state';
+	import { ApiError, session } from '#lib/session.ts';
+	import { getSecret, type SecretVault } from '#lib/api/secrets.ts';
+	import type { Identity, SecretDetail, SecretVersionView } from '#lib/types.ts';
+	import OwnerCell from '#lib/components/secrets/OwnerCell.svelte';
+	import { formatIdentity } from '#lib/identityDisplay.ts';
+	import RevealModal from '#lib/components/secrets/RevealModal.svelte';
+	import UpdateValueModal from '#lib/components/secrets/UpdateValueModal.svelte';
+	import RestoreVersionModal from '#lib/components/secrets/RestoreVersionModal.svelte';
+	import DeleteSecretModal from '#lib/components/secrets/DeleteSecretModal.svelte';
 
-	const name = $derived($page.params.name ?? '');
+	const name = $derived(page.params.name ?? '');
 	// Names are unique per vault: `?owner=<id>` / `?scope=org` say which one.
 	// Neither means the viewer's own.
 	const vault = $derived.by<SecretVault | undefined>(() => {
-		const q = $page.url.searchParams;
+		const q = page.url.searchParams;
 		if (q.get('scope') === 'org') return { scope: 'org' };
 		const owner = q.get('owner');
 		return owner ? { owner } : undefined;
 	});
-	const currentUserId = $derived(($page as any).data?.user?.identity_id as string | undefined);
-	const allowedDomains = $derived((($page as any).data?.allowedDomains ?? []) as string[]);
+	const currentUserId = $derived((page as any).data?.user?.identity_id as string | undefined);
+	const allowedDomains = $derived(((page as any).data?.allowedDomains ?? []) as string[]);
 
 	let detail = $state<SecretDetail | null>(null);
 	let identities = $state<Identity[]>([]);

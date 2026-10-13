@@ -3,8 +3,8 @@
 // agents tree). Kept framework-free so all three stay in lockstep — see
 // resolution.svelte.ts for the async/lifecycle half of the split.
 
-import { highlightJson } from '$lib/api';
-import { ApiError, type ApprovalResponse, type DerivedKey, type DisclosedField } from '$lib/session';
+import { highlightJson } from '#lib/api.ts';
+import { ApiError, type ApprovalResponse, type DerivedKey, type DisclosedField } from '#lib/session.ts';
 
 /**
  * Extract a human-readable message from a failed request. Prefers the gateway's

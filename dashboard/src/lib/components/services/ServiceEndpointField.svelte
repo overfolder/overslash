@@ -1,5 +1,5 @@
 <script lang="ts">
-	import EndpointTlsHint from '$lib/components/services/EndpointTlsHint.svelte';
+	import EndpointTlsHint from '#lib/components/services/EndpointTlsHint.svelte';
 
 	// The per-instance endpoint input, shared by the create and edit forms. It
 	// always says what an empty field means — the template's default, the org

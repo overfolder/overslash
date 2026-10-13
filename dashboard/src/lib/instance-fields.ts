@@ -1,4 +1,4 @@
-import type { InstanceConfigParam } from '$lib/types';
+import type { InstanceConfigParam } from '#lib/types.ts';
 
 // Which per-instance fields the service form shows up front, and which it
 // keeps behind "Show more options". Every endpoint and config field can be

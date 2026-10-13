@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { TrialSummary } from '$lib/session';
+	import type { TrialSummary } from '#lib/session.ts';
 
 	let { trial, isAdmin = false }: { trial: TrialSummary; isAdmin?: boolean } = $props();
 

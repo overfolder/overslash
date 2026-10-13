@@ -23,7 +23,7 @@
 	restyle them because they are served cross-origin and rendered in an `<img>`.
 -->
 <script lang="ts">
-	import ServiceTile from '$lib/components/approval/ServiceTile.svelte';
+	import ServiceTile from '#lib/components/approval/ServiceTile.svelte';
 
 	let {
 		src = null,

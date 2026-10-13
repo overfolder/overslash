@@ -10,7 +10,7 @@
 	//
 	// `mcpUrl` is whatever `ownMcpUrlFor` decided — the slug form on the
 	// managed cloud, the dashboard's own origin anywhere else. This component
-	// just renders it; the choice lives in `$lib/env`.
+	// just renders it; the choice lives in `#lib/env`.
 	import CopyCommand from './CopyCommand.svelte';
 
 	let { mcpUrl, variant = 'panel' }: { mcpUrl: string; variant?: 'panel' | 'modal' } = $props();

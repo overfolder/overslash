@@ -1,4 +1,4 @@
-import type { SearchKey, SearchValue, Term } from '$lib/search/terms';
+import type { SearchKey, SearchValue, Term } from '#lib/search/terms.ts';
 import type { AuditFilters } from './types';
 
 /** Time presets accepted by the `time` key. */

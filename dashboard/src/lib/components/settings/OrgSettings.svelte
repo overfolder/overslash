@@ -1,6 +1,6 @@
 <script lang="ts">
-	import { ApiError, session } from '$lib/session';
-	import { page } from '$app/stores';
+	import { ApiError, session } from '#lib/session.ts';
+	import { page } from '$app/state';
 	import type {
 		AuditResponseBodyMode,
 		AuditSettings,
@@ -18,16 +18,16 @@
 		Webhook,
 		WebhookCreated,
 		WebhookDelivery
-	} from '$lib/types';
+	} from '#lib/types.ts';
 	import type { OrgPageData, OrgSubscription } from './org-settings-load';
-	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
-	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
-	import ChipInput from '$lib/components/ChipInput.svelte';
-	import GoogleDirectoryCard from '$lib/components/org/GoogleDirectoryCard.svelte';
-	import { absoluteTime } from '$lib/utils/time';
-	import { invalidateAllowedDomains } from '$lib/orgDomains';
+	import ConfirmModal from '#lib/components/ConfirmModal.svelte';
+	import ToggleSwitch from '#lib/components/ToggleSwitch.svelte';
+	import ChipInput from '#lib/components/ChipInput.svelte';
+	import GoogleDirectoryCard from '#lib/components/org/GoogleDirectoryCard.svelte';
+	import { absoluteTime } from '#lib/utils/time.ts';
+	import { invalidateAllowedDomains } from '#lib/orgDomains.ts';
 	import { goto } from '$app/navigation';
-	import { leaveOrg } from '$lib/api/account';
+	import { leaveOrg } from '#lib/api/account.ts';
 	import {
 		DEFAULT_SETTINGS_SECTION,
 		LEGACY_ANCHORS,
@@ -108,7 +108,7 @@
 	// (merged into page data), not OrgPageData. `is_instance_admin` is granted
 	// only via DB; the sole other capability today is creating free-unlimited
 	// orgs. Enforcement of trials is banner-only (see DECISIONS D25).
-	const isInstanceAdmin = $derived($page.data.user?.is_instance_admin === true);
+	const isInstanceAdmin = $derived(page.data.user?.is_instance_admin === true);
 	const isTrial = $derived(subscription?.plan === 'trial');
 	let trialDurationDays = $state(30);
 	let trialExtendDays = $state(30);
@@ -183,10 +183,10 @@
 	// Before the sub-nav, sections were anchors on one long page. Keep those
 	// links (billing emails, docs) landing on the right section.
 	$effect(() => {
-		const hash = $page.url.hash.slice(1);
+		const hash = page.url.hash.slice(1);
 		const target = LEGACY_ANCHORS[hash];
 		if (target && section === DEFAULT_SETTINGS_SECTION) {
-			void goto(settingsHref(target), { replaceState: true });
+			void goto(settingsHref(target), { replace: true });
 		}
 	});
 

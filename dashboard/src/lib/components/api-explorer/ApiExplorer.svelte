@@ -1,10 +1,10 @@
 <script lang="ts">
 	import { onMount, untrack } from 'svelte';
 	import { goto } from '$app/navigation';
-	import { page } from '$app/stores';
-	import { ApiError, apiErrorReason, session } from '$lib/session';
-	import { listServices, listConnections, getServiceActions } from '$lib/api/services';
-	import { callAction, getTemplateActionDetail } from '$lib/api/actions';
+	import { page } from '$app/state';
+	import { ApiError, apiErrorReason, session } from '#lib/session.ts';
+	import { listServices, listConnections, getServiceActions } from '#lib/api/services.ts';
+	import { callAction, getTemplateActionDetail } from '#lib/api/actions.ts';
 	import type {
 		ActionDetail,
 		ActionSummary,
@@ -15,8 +15,8 @@
 		SecretRef,
 		ServiceInstanceSummary,
 		Identity
-	} from '$lib/types';
-	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
+	} from '#lib/types.ts';
+	import ToggleSwitch from '#lib/components/ToggleSwitch.svelte';
 	import ModePill, { type ExplorerMode } from './ModePill.svelte';
 	import ServicePicker from './ServicePicker.svelte';
 	import ActionPicker from './ActionPicker.svelte';
@@ -229,10 +229,10 @@
 
 	function handleServiceChange(v: string) {
 		selectedService = v;
-		const url = new URL($page.url);
+		const url = new URL(page.url.href);
 		if (v) url.searchParams.set('service', v);
 		else url.searchParams.delete('service');
-		goto(`${url.pathname}${url.search}`, { replaceState: true, keepFocus: true, noScroll: true });
+		goto(`${url.pathname}${url.search}`, { replace: true, reset: false });
 	}
 
 	function parseHeaders(text: string): { literal: Record<string, string>; secrets: SecretRef[] } {

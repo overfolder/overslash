@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { InstanceConfigParam } from '$lib/types';
+	import type { InstanceConfigParam } from '#lib/types.ts';
 
 	let {
 		params,

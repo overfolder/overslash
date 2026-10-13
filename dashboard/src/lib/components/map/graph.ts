@@ -12,8 +12,8 @@
  * Positions here are *targets*, not truth. The simulation springs towards
  * them; a dragged node overrides them. See `sim.ts`.
  */
-import type { Identity, ServiceInstanceSummary } from '$lib/types';
-import { formatIdentity } from '$lib/identityDisplay';
+import type { Identity, ServiceInstanceSummary } from '#lib/types.ts';
+import { formatIdentity } from '#lib/identityDisplay.ts';
 
 export type NodeKind = 'user' | 'agent' | 'subagent' | 'service' | 'org';
 
@@ -176,7 +176,7 @@ function identityNodes(identities: Identity[], allowedDomains: string[]): MapNod
 	}
 
 	return identities.map((i) => {
-		// `$lib/identityDisplay` owns what an identity is called: a user's real
+		// `#lib/identityDisplay` owns what an identity is called: a user's real
 		// handle is their email, domain-stripped when the org has one sign-in
 		// domain, and the IdP `name` claim is neither unique nor stable. The
 		// container chip is named off this, so a cluster reads the same as its

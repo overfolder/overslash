@@ -1489,7 +1489,7 @@ export interface SecretSummary {
   /** `user` or `org`. */
   scope?: 'user' | 'org';
   /** Canonical secret path — what a service binding stores
-   * (`$lib/secretPath`). */
+   * (`#lib/secretPath`). */
   path?: string;
   owner_name?: string | null;
   owner_email?: string | null;

@@ -1,11 +1,11 @@
-import { session, type ApprovalResponse, type ResolveApprovalRequest } from '$lib/session';
-import { pickApiError } from '$lib/approvals/format';
+import { session, type ApprovalResponse, type ResolveApprovalRequest } from '#lib/session.ts';
+import { pickApiError } from '#lib/approvals/format.ts';
 import {
 	EXECUTION_EVENT_TYPES,
 	type ApprovalEventData,
 	eventStream,
 	onEvent
-} from '$lib/stores/events.svelte';
+} from '#lib/stores/events.svelte.ts';
 
 /** The `executions` topic payload. Carries `approval_id` for a gated call. */
 interface ExecutionEventData {

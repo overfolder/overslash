@@ -1,7 +1,7 @@
 import { redirect } from '@sveltejs/kit';
 import type { LayoutLoad } from './$types';
-import type { MeIdentity } from '$lib/session';
-import { loadAllowedDomains } from '$lib/orgDomains';
+import type { MeIdentity } from '#lib/session.ts';
+import { loadAllowedDomains } from '#lib/orgDomains.ts';
 
 export const ssr = false;
 export const prerender = false;
@@ -35,7 +35,7 @@ export const load: LayoutLoad = async ({ url, fetch }) => {
 		const user = (await res.json()) as MeIdentity;
 		// Every page that lists identities needs this to decide whether to strip
 		// the email domain off display labels. Memoized per org in
-		// `$lib/orgDomains`, so this is one request per session, not per
+		// `#lib/orgDomains`, so this is one request per session, not per
 		// navigation, and it never fails the page.
 		const allowedDomains = await loadAllowedDomains(user.org_id, fetch);
 		return { user, allowedDomains };

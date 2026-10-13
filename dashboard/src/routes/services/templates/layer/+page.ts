@@ -1,6 +1,6 @@
 import type { PageLoad } from './$types';
-import { getTemplate } from '$lib/api/services';
-import type { TemplateDetail } from '$lib/types';
+import { getTemplate } from '#lib/api/services.ts';
+import type { TemplateDetail } from '#lib/types.ts';
 
 /**
  * Layer editor loader. Two modes:

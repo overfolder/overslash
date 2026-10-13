@@ -1,6 +1,6 @@
 <script lang="ts">
-	import { highlightJson } from '$lib/api';
-	import type { CallResponse } from '$lib/types';
+	import { highlightJson } from '#lib/api.ts';
+	import type { CallResponse } from '#lib/types.ts';
 
 	let {
 		response,

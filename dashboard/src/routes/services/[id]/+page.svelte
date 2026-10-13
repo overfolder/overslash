@@ -1,8 +1,8 @@
 <script lang="ts">
 	import { onDestroy } from 'svelte';
 	import { goto } from '$app/navigation';
-	import { page } from '$app/stores';
-	import { ApiError, apiErrorReason, session } from '$lib/session';
+	import { page } from '$app/state';
+	import { ApiError, apiErrorReason, session } from '#lib/session.ts';
 	import {
 		getService,
 		getServiceActions,
@@ -18,9 +18,9 @@
 		activateService,
 		runActivate,
 		runProbe
-	} from '$lib/api/services';
-	import { groupsApi, type Group, type GroupGrantPick } from '$lib/api/groups';
-	import GroupGrantPicker from '$lib/components/groups/GroupGrantPicker.svelte';
+	} from '#lib/api/services.ts';
+	import { groupsApi, type Group, type GroupGrantPick } from '#lib/api/groups.ts';
+	import GroupGrantPicker from '#lib/components/groups/GroupGrantPicker.svelte';
 	import type {
 		ActionPagination,
 		ActionSummary,
@@ -35,38 +35,38 @@
 		ServiceStatus,
 		ServiceTestResponse,
 		TemplateDetail
-	} from '$lib/types';
-	import { listSecrets } from '$lib/api/secrets';
-	import { bindingToWire, secretPathLabel } from '$lib/secretPath';
-	import ServiceIcon from '$lib/components/ServiceIcon.svelte';
-	import StatusBadge from '$lib/components/services/StatusBadge.svelte';
-	import TestResult from '$lib/components/services/TestResult.svelte';
-	import ConnectionAvatar from '$lib/components/connections/ConnectionAvatar.svelte';
-	import ConfirmDialog from '$lib/components/services/ConfirmDialog.svelte';
-	import SecretNamePicker from '$lib/components/SecretNamePicker.svelte';
-	import ServiceCredentials from '$lib/components/ServiceCredentials.svelte';
-	import ServiceInstanceConfig from '$lib/components/ServiceInstanceConfig.svelte';
-	import { cleanServiceMap } from '$lib/service-maps';
-	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
-	import AutoApproveSelect from '$lib/components/AutoApproveSelect.svelte';
-	import { resolveOwner, ownerLabel, ownerTitle } from '$lib/ownerLabel';
-	import { probeRejected } from '$lib/public-request';
-	import { failureKind } from '$lib/setup-outcome';
-	import { connectViaPopup, PopupBlockedError } from '$lib/oauth-connect';
-	import ServiceEndpointField from '$lib/components/services/ServiceEndpointField.svelte';
-	import MoreOptions from '$lib/components/services/MoreOptions.svelte';
+	} from '#lib/types.ts';
+	import { listSecrets } from '#lib/api/secrets.ts';
+	import { bindingToWire, secretPathLabel } from '#lib/secretPath.ts';
+	import ServiceIcon from '#lib/components/ServiceIcon.svelte';
+	import StatusBadge from '#lib/components/services/StatusBadge.svelte';
+	import TestResult from '#lib/components/services/TestResult.svelte';
+	import ConnectionAvatar from '#lib/components/connections/ConnectionAvatar.svelte';
+	import ConfirmDialog from '#lib/components/services/ConfirmDialog.svelte';
+	import SecretNamePicker from '#lib/components/SecretNamePicker.svelte';
+	import ServiceCredentials from '#lib/components/ServiceCredentials.svelte';
+	import ServiceInstanceConfig from '#lib/components/ServiceInstanceConfig.svelte';
+	import { cleanServiceMap } from '#lib/service-maps.ts';
+	import ToggleSwitch from '#lib/components/ToggleSwitch.svelte';
+	import AutoApproveSelect from '#lib/components/AutoApproveSelect.svelte';
+	import { resolveOwner, ownerLabel, ownerTitle } from '#lib/ownerLabel.ts';
+	import { probeRejected } from '#lib/public-request.ts';
+	import { failureKind } from '#lib/setup-outcome.ts';
+	import { connectViaPopup, PopupBlockedError } from '#lib/oauth-connect.ts';
+	import ServiceEndpointField from '#lib/components/services/ServiceEndpointField.svelte';
+	import MoreOptions from '#lib/components/services/MoreOptions.svelte';
 	import {
 		endpointIsMain,
 		endpointRequired,
 		splitParams,
 		type EndpointFacts
-	} from '$lib/instance-fields';
+	} from '#lib/instance-fields.ts';
 
 
-	const id = $derived($page.params.id ?? '');
-	const isAdmin = $derived(($page as any).data?.user?.is_org_admin === true);
-	const currentUserId = $derived(($page as any).data?.user?.identity_id as string | undefined);
-	const allowedDomains = $derived((($page as any).data?.allowedDomains ?? []) as string[]);
+	const id = $derived(page.params.id ?? '');
+	const isAdmin = $derived((page as any).data?.user?.is_org_admin === true);
+	const currentUserId = $derived((page as any).data?.user?.identity_id as string | undefined);
+	const allowedDomains = $derived(((page as any).data?.allowedDomains ?? []) as string[]);
 
 	let svc = $state<ServiceInstanceDetail | null>(null);
 	let template = $state<TemplateDetail | null>(null);
@@ -85,7 +85,7 @@
 	// ("gateway", "mailbox"). Seeded from svc.credentials with the legacy
 	// scalar secret_name mapped into its instance-source slot for display.
 	let editCredentials = $state<Record<string, string>>({});
-	// Bindings are secret paths (`$lib/secretPath`). The form shows each one's
+	// Bindings are secret paths (`#lib/secretPath`). The form shows each one's
 	// short label; these remember the label it was seeded with and the stored
 	// canonical path, so an untouched field saves back verbatim — keeping a
 	// shared service bound to another admin's secret when someone edits it.
@@ -292,7 +292,7 @@
 	// isn't configured, so the tab has to be addressable — landing on Overview
 	// and making the user hunt for it would defeat the hint.
 	function tabFromUrl(): Tab {
-		const t = $page.url.searchParams.get('tab');
+		const t = page.url.searchParams.get('tab');
 		return TABS.includes(t as Tab) ? (t as Tab) : 'overview';
 	}
 
@@ -302,10 +302,10 @@
 		activeTab = t;
 		// Keep the URL in step so the tab survives a reload and stays shareable.
 		// replaceState: a tab switch isn't a navigation worth a back-button entry.
-		const url = new URL($page.url);
+		const url = new URL(page.url.href);
 		if (t === 'overview') url.searchParams.delete('tab');
 		else url.searchParams.set('tab', t);
-		goto(url, { replaceState: true, noScroll: true, keepFocus: true });
+		goto(url, { replace: true, reset: false });
 	}
 
 	// Group-assignment form state
@@ -390,7 +390,7 @@
 	);
 	// Every endpoint and config pin is overridable; the ones an instance needs
 	// or the template promotes sit up front, the rest behind "Show more
-	// options". Same split as the create form (`$lib/instance-fields`).
+	// options". Same split as the create form (`#lib/instance-fields`).
 	const endpoint = $derived<EndpointFacts>({
 		configurable: template?.configurable_url === true && !isSystem,
 		defaultUrl: template?.default_url,
@@ -968,7 +968,7 @@
 		// if state somehow landed on credentials (e.g. rapid nav between
 		// instances, or a ?tab=credentials deep-link at a system service).
 		// Assign directly rather than via selectTab: routing the URL rewrite
-		// through here would make `$page` a dependency of an effect that also
+		// through here would make `page` a dependency of an effect that also
 		// writes the state it reads.
 		if (isSystem && activeTab === 'credentials') {
 			activeTab = 'overview';

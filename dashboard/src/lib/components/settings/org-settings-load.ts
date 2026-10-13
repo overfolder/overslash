@@ -5,7 +5,7 @@
  * visit, not once per click. Keep every section on that one route: a second
  * route would remount the page and refetch on every crossing.
  */
-import { ApiError, session, type MeIdentity } from '$lib/session';
+import { ApiError, session, type MeIdentity } from '#lib/session.ts';
 import type {
 	AuditSettings,
 	ExecutionSettings,
@@ -19,7 +19,7 @@ import type {
 	ServiceKeySummary,
 	TemplateSettings,
 	Webhook
-} from '$lib/types';
+} from '#lib/types.ts';
 
 export interface MeAcl {
 	identity_id: string;

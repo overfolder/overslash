@@ -1,14 +1,14 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
-	import PublicRequestCard from '$lib/components/secrets/PublicRequestCard.svelte';
-	import RequestIdentityBox from '$lib/components/RequestIdentityBox.svelte';
-	import SecretValueField from '$lib/components/secrets/SecretValueField.svelte';
+	import PublicRequestCard from '#lib/components/secrets/PublicRequestCard.svelte';
+	import RequestIdentityBox from '#lib/components/RequestIdentityBox.svelte';
+	import SecretValueField from '#lib/components/secrets/SecretValueField.svelte';
 	import {
 		declinePublicRequest,
 		fmtCountdown,
 		loginUrl,
 		submitPublicRequest
-	} from '$lib/public-request';
+	} from '#lib/public-request.ts';
 
 	let { data } = $props();
 

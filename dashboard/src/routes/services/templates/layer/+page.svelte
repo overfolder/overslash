@@ -1,17 +1,17 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
-	import { ApiError } from '$lib/session';
-	import { createTemplate, updateTemplate, deleteTemplate, validateDelta } from '$lib/api/services';
+	import { ApiError } from '#lib/session.ts';
+	import { createTemplate, updateTemplate, deleteTemplate, validateDelta } from '#lib/api/services.ts';
 	import type {
 		Delta,
 		InstanceDefaults,
 		ValidationResult,
 		ActionSummary,
 		InstanceConfigParam
-	} from '$lib/types';
-	import ConfirmDialog from '$lib/components/services/ConfirmDialog.svelte';
-	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
-	import EndpointTlsHint from '$lib/components/services/EndpointTlsHint.svelte';
+	} from '#lib/types.ts';
+	import ConfirmDialog from '#lib/components/services/ConfirmDialog.svelte';
+	import ToggleSwitch from '#lib/components/ToggleSwitch.svelte';
+	import EndpointTlsHint from '#lib/components/services/EndpointTlsHint.svelte';
 
 	let { data } = $props();
 

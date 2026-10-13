@@ -6,9 +6,6 @@
 // alone silently never fires for those rows — and a user rename is the common
 // one, since their display name is refreshed from their IdP on every sign-in
 // while an agent has to be renamed deliberately through the API.
-//
-// Imported by relative path: `$lib` is a SvelteKit alias that Playwright's
-// transform does not resolve.
 import { test, expect } from '@playwright/test';
 import { recordedNames, type AuditEntry } from '../../../src/routes/audit/types';
 import { identityUnits } from '../../../src/lib/identityPath';

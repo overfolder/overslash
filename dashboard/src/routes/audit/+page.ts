@@ -1,4 +1,4 @@
-import { session, ApiError } from '$lib/session';
+import { session, ApiError } from '#lib/session.ts';
 import type { PageLoad } from './$types';
 import {
 	buildQuery,
@@ -12,7 +12,7 @@ export const ssr = false;
 export const prerender = false;
 
 /** The slice of `/v1/identities` this page uses. `email` + `kind` make it a
- *  structural `IdentityLike` ($lib/identityDisplay), so rows can be labelled
+ *  structural `IdentityLike` (#lib/identityDisplay), so rows can be labelled
  *  by email like every other identity surface. */
 interface IdentitySummary {
 	id: string;

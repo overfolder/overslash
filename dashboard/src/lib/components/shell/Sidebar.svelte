@@ -1,7 +1,7 @@
 <script lang="ts">
-	import { page } from '$app/stores';
-	import { sidebarCollapsed } from '$lib/stores/shell';
-	import { viewport } from '$lib/stores/viewport';
+	import { page } from '$app/state';
+	import { sidebarCollapsed } from '#lib/stores/shell.ts';
+	import { viewport } from '#lib/stores/viewport.ts';
 	import {
 		NAV_ITEMS,
 		ADMIN_NAV_ITEMS,
@@ -14,11 +14,11 @@
 	import NavIcon from './NavIcon.svelte';
 	import OrgSwitcher from './OrgSwitcher.svelte';
 	import PendingInvites from './PendingInvites.svelte';
-	import CreateOrgModal from '$lib/components/CreateOrgModal.svelte';
-	import type { PendingInvitation } from '$lib/api/account';
-	import type { MembershipSummary } from '$lib/session';
-	import type { BuildInfo } from '$lib/types';
-	import { buildLabel, buildTitle, hasCommit } from '$lib/api/version';
+	import CreateOrgModal from '#lib/components/CreateOrgModal.svelte';
+	import type { PendingInvitation } from '#lib/api/account.ts';
+	import type { MembershipSummary } from '#lib/session.ts';
+	import type { BuildInfo } from '#lib/types.ts';
+	import { buildLabel, buildTitle, hasCommit } from '#lib/api/version.ts';
 
 	let {
 		isAdmin = false,
@@ -72,7 +72,7 @@
 		...(isAdmin ? [SETTINGS_NAV_ITEM] : [])
 	]);
 
-	const activeHref = $derived(pickActiveHref($page.url.pathname, allItems));
+	const activeHref = $derived(pickActiveHref(page.url.pathname, allItems));
 
 	let createOrgOpen = $state(false);
 

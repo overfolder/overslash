@@ -1,10 +1,10 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { session, type MembershipSummary, type MeIdentity } from '$lib/session';
-	import { leaveOrg, switchOrg } from '$lib/api/account';
-	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
-	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
-	import SessionsCard from '$lib/components/account/SessionsCard.svelte';
+	import { session, type MembershipSummary, type MeIdentity } from '#lib/session.ts';
+	import { leaveOrg, switchOrg } from '#lib/api/account.ts';
+	import ConfirmModal from '#lib/components/ConfirmModal.svelte';
+	import ToggleSwitch from '#lib/components/ToggleSwitch.svelte';
+	import SessionsCard from '#lib/components/account/SessionsCard.svelte';
 
 	interface EmailPreferences {
 		welcome_emails?: boolean;

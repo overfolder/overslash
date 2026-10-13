@@ -8,8 +8,8 @@
  * loop in one place avoids the near-verbatim copies these call sites used to
  * carry.
  */
-import { listConnections } from '$lib/api/services';
-import type { ConnectionSummary } from '$lib/types';
+import { listConnections } from '#lib/api/services.ts';
+import type { ConnectionSummary } from '#lib/types.ts';
 
 /** Thrown when the browser blocks the OAuth popup (window.open returns null). */
 export class PopupBlockedError extends Error {

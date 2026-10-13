@@ -1,7 +1,7 @@
 <script module lang="ts">
 	import { defineMeta } from '@storybook/addon-svelte-csf';
 	import PendingInvites from './PendingInvites.svelte';
-	import type { PendingInvitation } from '$lib/api/account';
+	import type { PendingInvitation } from '#lib/api/account.ts';
 
 	// Accept/Decline hit the real API, so these stories are for layout only —
 	// the buttons will error against a Storybook origin with no session.

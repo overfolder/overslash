@@ -1,6 +1,6 @@
 import { writable, type Writable } from 'svelte/store';
-import { session, type UserPreferences } from '$lib/session';
-import { APPROVAL_EVENT_TYPES, eventStream, onEvent } from '$lib/stores/events.svelte';
+import { session, type UserPreferences } from '#lib/session.ts';
+import { APPROVAL_EVENT_TYPES, eventStream, onEvent } from '#lib/stores/events.svelte.ts';
 
 function persisted<T>(key: string, initial: T): Writable<T> {
 	let stored = initial;

@@ -14,7 +14,7 @@
 		termId,
 		termToDraft,
 		textTerms
-	} from '$lib/search/terms';
+	} from '#lib/search/terms.ts';
 	import type {
 		FilterTerm,
 		Operator,
@@ -22,7 +22,7 @@
 		SearchValue,
 		Term,
 		TextTerm
-	} from '$lib/search/terms';
+	} from '#lib/search/terms.ts';
 
 	export {
 		addTerm,
