@@ -57,6 +57,7 @@ enum Answer {
 struct Received {
     event: String,
     org: String,
+    timestamp: String,
     signature: String,
     raw: String,
     body: Value,
@@ -106,7 +107,8 @@ async fn receive(State(r): State<Receiver>, headers: HeaderMap, raw: String) -> 
     r.received.lock().unwrap().push(Received {
         event: header("x-overslash-event"),
         org: header("x-overslash-org"),
-        signature: header("x-overslash-signature"),
+        timestamp: header("x-overslash-timestamp"),
+        signature: header("x-overslash-signature-v1"),
         raw,
         body: body.clone(),
     });
@@ -438,7 +440,10 @@ async fn a_correct_echo_verifies_and_events_flow() {
         assert_eq!(hs.org, api.org_id.to_string());
         assert_eq!(
             hs.signature,
-            format!("sha256={}", hmac_hex(secret, &hs.raw))
+            format!(
+                "v1={}",
+                hmac_hex(secret, &format!("{}.{}", hs.timestamp, hs.raw))
+            )
         );
     }
 

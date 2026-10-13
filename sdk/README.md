@@ -108,9 +108,9 @@ whitespace and the check fails — mount this route before any JSON middleware.
 The timestamp is inside the signature, so a captured delivery stops verifying
 once it is older than the tolerance; dedupe on the envelope `id` within it.
 
-`verifyWebhookSignature` checks the legacy `X-Overslash-Signature: sha256=<hex>`
-(body only, no timestamp). It still works — the header is still sent — but it
-is deprecated: that signature replays forever, and the header will be dropped.
+Overslash no longer sends the old body-only `X-Overslash-Signature: sha256=<hex>`
+— with no timestamp, a captured delivery verified forever — and
+`verifyWebhookSignature`, which checked it, is gone. Verify with `verifyWebhook`.
 
 ## Browser-side
 

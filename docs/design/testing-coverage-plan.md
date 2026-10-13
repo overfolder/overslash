@@ -191,7 +191,7 @@ The `resolve_service_auth` function (`actions.rs:507-598`) has three branches: e
 
 | # | Test Name | What It Tests | Why It Matters |
 |---|-----------|---------------|----------------|
-| 35 | `webhook_signature_is_valid_hmac` | Register webhook, trigger via approval resolve, capture `X-Overslash-Signature`, recompute HMAC-SHA256 | If broken, no consumer can verify webhook authenticity |
+| 35 | `webhook_signature_is_valid_hmac` | Register webhook, trigger via approval resolve, capture `X-Overslash-Timestamp` + `X-Overslash-Signature-V1`, recompute HMAC-SHA256 over `<ts>.<body>` | If broken, no consumer can verify webhook authenticity |
 
 ### 2.8 Audit Log Filtering
 

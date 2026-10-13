@@ -28,7 +28,7 @@
 - Permission rules (flat per-identity)
 - Approval workflow (create, resolve with allow/deny/allow_remember, expiry loop)
 - Audit trail (all actions, approvals, secret access)
-- Webhook delivery (approval.created, approval.resolved) — HTTPS-only endpoints; legacy `http://` subscriptions disabled with `disabled_reason: needs_https` (migration 124); endpoint-ownership handshake (`webhook.verification` challenge echo, `POST /v1/webhooks/{id}/verify`) before any delivery, events held while pending, pre-existing subscriptions grandfathered as verified (migration 125); every attempt signed with a timestamp (`X-Overslash-Timestamp` + `X-Overslash-Signature-V1: v1=<hmac("<ts>.<body>")>`, re-signed per retry), the body-only `X-Overslash-Signature: sha256=` still sent but deprecated; SDK `verifyWebhook` checks `v1` with a ±5 min tolerance
+- Webhook delivery (approval.created, approval.resolved) — HTTPS-only endpoints; legacy `http://` subscriptions disabled with `disabled_reason: needs_https` (migration 124); endpoint-ownership handshake (`webhook.verification` challenge echo, `POST /v1/webhooks/{id}/verify`) before any delivery, events held while pending, pre-existing subscriptions grandfathered as verified (migration 125); every attempt signed with a timestamp (`X-Overslash-Timestamp` + `X-Overslash-Signature-V1: v1=<hmac("<ts>.<body>")>`, re-signed per retry) — the only signature; the replayable body-only `X-Overslash-Signature: sha256=` is no longer sent and the SDK's `verifyWebhookSignature` is gone (D-NEXT); SDK `verifyWebhook` checks `v1` with a ±5 min tolerance
 - 8+ integration tests
 
 ### Phase 2 — OAuth + Service Registry (in progress)

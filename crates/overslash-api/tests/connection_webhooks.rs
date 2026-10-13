@@ -110,10 +110,13 @@ async fn test_connection_created_webhook_fires_on_oauth_callback() {
         "expected a connection.created webhook for the new connection",
     )
     .await;
-    let sig = created_headers["x-overslash-signature"].as_str().unwrap();
+    let sig = created_headers["x-overslash-signature-v1"]
+        .as_str()
+        .unwrap();
+    assert!(sig.starts_with("v1="), "signature should start with v1=");
     assert!(
-        sig.starts_with("sha256="),
-        "signature should start with sha256="
+        created_headers.get("x-overslash-signature").is_none(),
+        "the body-only legacy signature is no longer sent"
     );
 
     // Delete the connection — should fire `connection.deleted`.

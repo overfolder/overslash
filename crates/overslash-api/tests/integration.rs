@@ -2089,10 +2089,10 @@ async fn test_webhook_dispatch_on_approval_resolve() {
         headers[0]["x-overslash-delivery"].as_str().unwrap(),
         delivery_id
     );
-    let sig_header = headers[0]["x-overslash-signature"].as_str().unwrap();
+    let sig_header = headers[0]["x-overslash-signature-v1"].as_str().unwrap();
     assert!(
-        sig_header.starts_with("sha256="),
-        "signature should start with sha256="
+        sig_header.starts_with("v1="),
+        "signature should start with v1="
     );
 }
 

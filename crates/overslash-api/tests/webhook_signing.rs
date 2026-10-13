@@ -1,9 +1,9 @@
 //! CASA 7.2.3 — outbound webhooks carry a signed timestamp.
 //!
 //! Every attempt is sent with `X-Overslash-Timestamp` and
-//! `X-Overslash-Signature-V1: v1=<hmac("<ts>.<body>")>`, next to the legacy
-//! body-only `X-Overslash-Signature: sha256=<hex>` that existing verifiers
-//! read. A retry is re-signed with a fresh timestamp.
+//! `X-Overslash-Signature-V1: v1=<hmac("<ts>.<body>")>`, and nothing else
+//! signs it: the old body-only `X-Overslash-Signature: sha256=<hex>` replays
+//! forever and is no longer sent. A retry is re-signed with a fresh timestamp.
 
 // Forcing a failed delivery due now is a one-off UPDATE on a row the test
 // owns; the checked macros would add a sqlx offline-cache entry for it.
@@ -26,11 +26,13 @@ use sha2::Sha256;
 
 use overslash_api::services::webhook_dispatcher;
 
+#[derive(Clone)]
 struct Received {
     event: String,
     timestamp: String,
     v1: String,
-    legacy: String,
+    /// The retired body-only `X-Overslash-Signature`, if anything sent it.
+    legacy: Option<String>,
     raw: String,
 }
 
@@ -43,20 +45,13 @@ struct Receiver {
 }
 
 impl Receiver {
-    fn of(&self, event: &str) -> Vec<(String, String, String, String)> {
+    fn of(&self, event: &str) -> Vec<Received> {
         self.received
             .lock()
             .unwrap()
             .iter()
             .filter(|r| r.event == event)
-            .map(|r| {
-                (
-                    r.timestamp.clone(),
-                    r.v1.clone(),
-                    r.legacy.clone(),
-                    r.raw.clone(),
-                )
-            })
+            .cloned()
             .collect()
     }
 }
@@ -74,7 +69,9 @@ async fn receive(State(r): State<Receiver>, headers: HeaderMap, raw: String) -> 
         event: header("x-overslash-event"),
         timestamp: header("x-overslash-timestamp"),
         v1: header("x-overslash-signature-v1"),
-        legacy: header("x-overslash-signature"),
+        legacy: headers
+            .get("x-overslash-signature")
+            .map(|v| v.to_str().unwrap_or_default().to_string()),
         raw,
     });
     if body["type"] == "webhook.verification" {
@@ -115,18 +112,18 @@ fn now_unix() -> i64 {
 
 /// Verify one received attempt the way a consumer is told to, and return its
 /// timestamp.
-fn assert_signed(secret: &str, (ts, v1, legacy, raw): &(String, String, String, String)) -> i64 {
+fn assert_signed(secret: &str, r: &Received) -> i64 {
+    let ts = &r.timestamp;
     let t: i64 = ts.parse().unwrap_or_else(|_| panic!("timestamp {ts:?}"));
     assert!((now_unix() - t).abs() <= 5, "timestamp {t} is not now");
     assert_eq!(
-        *v1,
-        format!("v1={}", hmac_hex(secret, &format!("{ts}.{raw}"))),
+        r.v1,
+        format!("v1={}", hmac_hex(secret, &format!("{ts}.{}", r.raw))),
         "v1 covers <timestamp>.<raw body>"
     );
     assert_eq!(
-        *legacy,
-        format!("sha256={}", hmac_hex(secret, raw)),
-        "the legacy body-only signature is still sent, unchanged"
+        r.legacy, None,
+        "the replayable body-only signature is no longer sent"
     );
     t
 }
@@ -178,7 +175,7 @@ impl Api {
 }
 
 #[tokio::test]
-async fn events_and_the_handshake_carry_a_signed_timestamp_and_the_legacy_signature() {
+async fn events_and_the_handshake_carry_only_the_timestamped_signature() {
     let api = boot().await;
     let (url, rx) = start_receiver(0).await;
     let (_id, secret) = api.register(&url).await;
@@ -190,12 +187,14 @@ async fn events_and_the_handshake_carry_a_signed_timestamp_and_the_legacy_signat
     api.fire().await;
     let events = rx.of("probe.fired");
     assert_eq!(events.len(), 1);
-    let (ts, v1, _, raw) = &events[0];
+    let Received {
+        timestamp, v1, raw, ..
+    } = &events[0];
     assert_signed(&secret, &events[0]);
 
     // What the timestamp buys: the same body under another timestamp — a
     // replay with the header bumped — does not verify.
-    let forged_ts = (ts.parse::<i64>().unwrap() + 600).to_string();
+    let forged_ts = (timestamp.parse::<i64>().unwrap() + 600).to_string();
     assert_ne!(
         *v1,
         format!("v1={}", hmac_hex(&secret, &format!("{forged_ts}.{raw}")))
@@ -232,8 +231,7 @@ async fn a_retry_is_re_signed_with_a_fresh_timestamp() {
     let retry = assert_signed(&secret, &attempts[1]);
     assert!(retry > first, "retry signed at {retry}, first at {first}");
 
-    // Same bytes, same legacy signature — only the timestamped one moved.
-    assert_eq!(attempts[0].3, attempts[1].3);
-    assert_eq!(attempts[0].2, attempts[1].2);
-    assert_ne!(attempts[0].1, attempts[1].1);
+    // Same bytes — only the signature, which covers the timestamp, moved.
+    assert_eq!(attempts[0].raw, attempts[1].raw);
+    assert_ne!(attempts[0].v1, attempts[1].v1);
 }
