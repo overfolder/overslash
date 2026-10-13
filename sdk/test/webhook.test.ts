@@ -1,13 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import {
-  parseWebhookEvent,
-  verifyWebhook,
-  verifyWebhookSignature,
-} from '../src/node/webhook-verify.js';
+import { parseWebhookEvent, verifyWebhook } from '../src/node/webhook-verify.js';
 
 const SECRET = 'whsec_3f8a1c';
 
-/** HMAC-SHA256, hex — both schemes use it. */
+/** HMAC-SHA256, hex. */
 async function hmacHex(message: string, secret: string): Promise<string> {
   const key = await crypto.subtle.importKey(
     'raw',
@@ -20,8 +16,8 @@ async function hmacHex(message: string, secret: string): Promise<string> {
   return [...new Uint8Array(mac)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-/** Sign like the dispatcher's legacy header: over the raw bytes alone. */
-async function sign(payload: string, secret = SECRET): Promise<string> {
+/** The retired body-only scheme (`X-Overslash-Signature: sha256=<hex>`), no longer sent. */
+async function signBodyOnly(payload: string, secret = SECRET): Promise<string> {
   return `sha256=${await hmacHex(payload, secret)}`;
 }
 
@@ -37,68 +33,6 @@ const BODY = JSON.stringify({
   type: 'approval.resolved',
   created_at: '2026-08-01T10:00:00Z',
   data: { approval_id: 'a1', status: 'allowed' },
-});
-
-describe('verifyWebhookSignature', () => {
-  it('accepts a signature the dispatcher would have produced', async () => {
-    const signature = await sign(BODY);
-    await expect(verifyWebhookSignature({ payload: BODY, signature, secret: SECRET })).resolves.toBe(
-      true,
-    );
-  });
-
-  it('rejects a body altered after signing', async () => {
-    const signature = await sign(BODY);
-    const tampered = BODY.replace('allowed', 'denied');
-    await expect(
-      verifyWebhookSignature({ payload: tampered, signature, secret: SECRET }),
-    ).resolves.toBe(false);
-  });
-
-  it('rejects the wrong secret', async () => {
-    const signature = await sign(BODY, 'whsec_someone_else');
-    await expect(verifyWebhookSignature({ payload: BODY, signature, secret: SECRET })).resolves.toBe(
-      false,
-    );
-  });
-
-  it('rejects a header without the sha256= prefix', async () => {
-    const signature = (await sign(BODY)).replace('sha256=', '');
-    await expect(verifyWebhookSignature({ payload: BODY, signature, secret: SECRET })).resolves.toBe(
-      false,
-    );
-  });
-
-  it('rejects a non-hex digest instead of throwing', async () => {
-    await expect(
-      verifyWebhookSignature({ payload: BODY, signature: 'sha256=not-hex!', secret: SECRET }),
-    ).resolves.toBe(false);
-  });
-
-  it('accepts raw bytes as readily as a string', async () => {
-    const signature = await sign(BODY);
-    const bytes = new TextEncoder().encode(BODY);
-    await expect(
-      verifyWebhookSignature({ payload: bytes, signature, secret: SECRET }),
-    ).resolves.toBe(true);
-  });
-
-  it('fails a re-serialised body — the signature is over bytes', async () => {
-    // The trap every webhook integration hits: JSON middleware parses the body,
-    // the handler stringifies it back, and the whitespace no longer matches.
-    const pretty = JSON.stringify(JSON.parse(BODY), null, 2);
-    const signature = await sign(BODY);
-    await expect(
-      verifyWebhookSignature({ payload: pretty, signature, secret: SECRET }),
-    ).resolves.toBe(false);
-  });
-
-  it('is case-insensitive about the hex digest', async () => {
-    const signature = (await sign(BODY)).toUpperCase().replace('SHA256=', 'sha256=');
-    await expect(verifyWebhookSignature({ payload: BODY, signature, secret: SECRET })).resolves.toBe(
-      true,
-    );
-  });
 });
 
 describe('verifyWebhook', () => {
@@ -153,10 +87,28 @@ describe('verifyWebhook', () => {
     await expect(verify({ signature: await signV1(BODY, NOW, 'whsec_other') })).resolves.toBe(false);
   });
 
-  it('does not accept the legacy signature in place of v1', async () => {
-    const legacyHex = (await sign(BODY)).slice('sha256='.length);
-    await expect(verify({ signature: `v1=${legacyHex}` })).resolves.toBe(false);
-    await expect(verify({ signature: await sign(BODY) })).resolves.toBe(false);
+  it('does not accept the retired body-only signature in place of v1', async () => {
+    const bodyOnlyHex = (await signBodyOnly(BODY)).slice('sha256='.length);
+    await expect(verify({ signature: `v1=${bodyOnlyHex}` })).resolves.toBe(false);
+    await expect(verify({ signature: await signBodyOnly(BODY) })).resolves.toBe(false);
+  });
+
+  it('fails a re-serialised body — the signature is over bytes', async () => {
+    // The trap every webhook integration hits: JSON middleware parses the body,
+    // the handler stringifies it back, and the whitespace no longer matches.
+    const pretty = JSON.stringify(JSON.parse(BODY), null, 2);
+    await expect(verify({ signature: await signV1(BODY, NOW), payload: pretty })).resolves.toBe(
+      false,
+    );
+  });
+
+  it('rejects a non-hex digest instead of throwing', async () => {
+    await expect(verify({ signature: 'v1=not-hex!' })).resolves.toBe(false);
+  });
+
+  it('is case-insensitive about the hex digest', async () => {
+    const signature = (await signV1(BODY, NOW)).toUpperCase().replace('V1=', 'v1=');
+    await expect(verify({ signature })).resolves.toBe(true);
   });
 
   it('accepts when any of several v1 entries matches', async () => {

@@ -1520,11 +1520,10 @@ The `id` and `created_at` are stable across retries, so receivers can dedupe by 
 |---|---|---|
 | `X-Overslash-Timestamp` | unix seconds when this attempt was signed | — |
 | `X-Overslash-Signature-V1` | `v1=<hex>` | `"<timestamp>.<raw body>"` |
-| `X-Overslash-Signature` | `sha256=<hex>` — **deprecated** | the raw body only |
 
 Verify `v1`: read the raw body bytes (never a re-serialised object), reject a missing or non-integer `X-Overslash-Timestamp`, reject a timestamp more than **5 minutes** from your clock in either direction, compute HMAC-SHA256 over `"<timestamp>." + body`, and compare in constant time against each comma-separated `v1=` entry in `X-Overslash-Signature-V1` (accept if any matches; more than one appears only during a secret rotation). A retry is re-signed with a fresh timestamp over the same body, so a slow retry still verifies while a delivery captured earlier does not. Dedupe on `id` inside the window. `@overslash/sdk/node` ships `verifyWebhook` doing exactly this.
 
-`X-Overslash-Signature` is the pre-timestamp scheme, still sent unchanged so verifiers written against it keep working. It has no time component — a captured delivery verifies forever — and will stop being sent; move to `v1`. Deprecation plan in TECH_DEBT.md.
+There is no other signature. The pre-timestamp `X-Overslash-Signature: sha256=<hex>` (HMAC over the body alone) is no longer sent: with no time component, a captured delivery verified forever, and as long as it was on the wire a receiver could keep checking it instead of `v1`. A verifier still reading it sees the header missing and must fail closed — move it to `v1`.
 
 **Webhook endpoints are HTTPS-only.** `POST /v1/webhooks` refuses an `http://` (or any non-`https`) URL with a 400, and the dispatcher refuses to deliver to one, recording the attempt as a failed delivery. The only exception is plain `http` to loopback when the operator allow-lists loopback in `OVERSLASH_SSRF_ALLOWED_CIDRS` (tests, a receiver on the same host). A subscription registered over `http://` before this rule is listed with `active: false` and `disabled_reason: "needs_https"`; nothing is delivered to it until it is recreated with an `https://` URL.
 
