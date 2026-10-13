@@ -313,8 +313,8 @@ pub async fn create_resolve_cache(
         return (disabled(), None);
     }
     let timeout = Duration::from_millis(config.resolve_cache_timeout_ms);
-    if let Some(ref url) = config.redis_url {
-        match redis::Client::open(url.as_str()) {
+    if let Some(client) = crate::services::valkey::client(config) {
+        match client {
             Ok(client) => match client.get_connection_manager().await {
                 Ok(conn) => {
                     tracing::info!("Resolver cache: using Redis/Valkey");
@@ -327,7 +327,9 @@ pub async fn create_resolve_cache(
                 }
             },
             Err(e) => {
-                tracing::warn!("Invalid REDIS_URL, falling back to in-memory resolver cache: {e}");
+                tracing::warn!(
+                    "Invalid Valkey config, falling back to in-memory resolver cache: {e}"
+                );
             }
         }
     }

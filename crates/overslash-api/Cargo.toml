@@ -58,6 +58,7 @@ base64 = "0.23"
 jsonwebtoken = { workspace = true }
 futures-util = "0.3"
 redis = { workspace = true }
+rustls = { workspace = true }
 dashmap = { workspace = true }
 jaq-core = "=3.1.1"
 jaq-std = "=3.0.3"

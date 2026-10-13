@@ -49,6 +49,26 @@ variable "max_instances" {
   default = 3
 }
 
+variable "valkey_auth_secret_id" {
+  type        = string
+  description = "GSM secret ID holding the Memorystore AUTH string (VALKEY_PASSWORD)."
+
+  validation {
+    condition     = length(var.valkey_auth_secret_id) > 0
+    error_message = "valkey_auth_secret_id is required: Memorystore runs with AUTH on (CASA 6.7.1)."
+  }
+}
+
+variable "valkey_ca_cert_secret_id" {
+  type        = string
+  description = "GSM secret ID holding the Memorystore server CA bundle (VALKEY_CA_CERT)."
+
+  validation {
+    condition     = length(var.valkey_ca_cert_secret_id) > 0
+    error_message = "valkey_ca_cert_secret_id is required: Memorystore runs with TLS on (CASA 6.7.1)."
+  }
+}
+
 variable "api_key_secret_id" {
   type        = string
   description = "GSM secret ID whose latest version is the shortener API key."
@@ -109,7 +129,7 @@ locals {
   env_vars = merge(
     {
       HOST         = "0.0.0.0"
-      VALKEY_URL   = "redis://${var.valkey_host}:${var.valkey_port}"
+      VALKEY_URL   = "rediss://${var.valkey_host}:${var.valkey_port}"
       BASE_URL     = var.base_url
       MIN_TTL_SECS = tostring(var.min_ttl_secs)
       MAX_TTL_SECS = tostring(var.max_ttl_secs)
@@ -119,7 +139,9 @@ locals {
   )
 
   env_secrets = {
-    API_KEY = var.api_key_secret_id
+    API_KEY         = var.api_key_secret_id
+    VALKEY_PASSWORD = var.valkey_auth_secret_id
+    VALKEY_CA_CERT  = var.valkey_ca_cert_secret_id
   }
 }
 

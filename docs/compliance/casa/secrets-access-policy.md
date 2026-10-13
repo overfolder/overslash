@@ -194,4 +194,9 @@ These are tracked in [TODO.md §1.6](../../../TODO.md) and are **not** closed by
   `overslash-tfstate` bucket (versioned, 90-day history, no CMEK). Reading state is a path
   to those values that no Secret Manager audit log records; it is recorded only as a GCS
   object read, and only if GCS Data Access logs are on — they are not.
-- **Memorystore** runs without AUTH or transit encryption (`overslash-prod-valkey`).
+- **Memorystore** runs without AUTH or transit encryption (`overslash-prod-valkey`). Fixed
+  in code — AUTH + TLS, with the AUTH string and server CA in Secret Manager
+  (`overslash-<env>-valkey-auth`, `overslash-<env>-valkey-server-ca`), read by the runtime
+  service account like every other secret — and pending an apply that replaces the
+  instance ([memorystore-auth-tls.md](../../runbooks/memorystore-auth-tls.md)). The AUTH
+  string is provider-generated, so it also lives in Terraform state.

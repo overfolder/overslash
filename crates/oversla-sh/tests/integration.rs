@@ -39,6 +39,8 @@ async fn start() -> (SocketAddr, Client) {
         host: "127.0.0.1".into(),
         port: 0,
         valkey_url: url,
+        valkey_password: None,
+        valkey_ca_cert: None,
         api_key: TEST_API_KEY.into(),
         base_url: TEST_BASE_URL.into(),
         min_ttl_secs: 1, // relaxed for tests (production default: 60)
@@ -280,6 +282,8 @@ async fn root_redirects_when_configured() {
         host: "127.0.0.1".into(),
         port: 0,
         valkey_url: url,
+        valkey_password: None,
+        valkey_ca_cert: None,
         api_key: TEST_API_KEY.into(),
         base_url: TEST_BASE_URL.into(),
         min_ttl_secs: 1,
