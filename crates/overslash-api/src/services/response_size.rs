@@ -264,6 +264,10 @@ impl<S> Drop for Metered<S> {
     }
 }
 
+/// Histogram `read` label for a streamed transfer that ended before its
+/// body did; its byte count is a lower bound.
+pub const STREAM_CUT_SHORT: &str = "stream_cut_short";
+
 /// Who and what a metered stream belongs to, so its end can be audited.
 ///
 /// Written as `action.stream_completed` — a separate row from the
@@ -290,10 +294,19 @@ impl CompletionAudit {
     /// `Drop`, which cannot await).
     pub fn into_callback(self) -> impl FnOnce(StreamTally) + Send + 'static {
         move |tally| {
+            // A transfer cut short (upstream error, stall, client hang-up)
+            // only knows a floor. Labelled apart rather than dropped, so it
+            // can't drag the completed distribution down but still shows how
+            // often large transfers die mid-flight.
+            let read = if tally.completed {
+                SizeRead::Streamed.as_str()
+            } else {
+                STREAM_CUT_SHORT
+            };
             overslash_metrics::actions::record_response_size(
                 &self.template_key,
                 "download",
-                SizeRead::Streamed.as_str(),
+                read,
                 tally.bytes,
             );
             let Ok(rt) = tokio::runtime::Handle::try_current() else {

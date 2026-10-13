@@ -21,7 +21,8 @@ edges are the caps, so the share over each is exact:
 
 `read="aborted_at_cap"` samples are the declared size when the upstream sent
 one and a floor otherwise; `runtime="download"` samples are the bytes that
-actually flowed through a stream or a redeemed download URL.
+actually flowed through a stream or a redeemed download URL; those with
+`read="stream_cut_short"` ended early and are only a floor.
 
 ## One client: the audit log
 

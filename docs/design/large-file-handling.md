@@ -95,7 +95,7 @@ client hang-up, so the count is a floor) and `via` (`prefer_stream` |
 `download`; for `download`, `resource_id` is the token).
 
 The same observations feed `overslash_action_response_bytes{template_key,
-runtime, read}`, a histogram whose bucket edges sit on the caps themselves
+runtime, read}`, a histogram (streams that ended early are labelled `read="stream_cut_short"`, since their count is only a floor) whose bucket edges sit on the caps themselves
 (8 KB compact budget, 1 MB `CALL_RESULT_MAX_BYTES`, 5 MB
 `MAX_RESPONSE_BODY_BYTES`) so "share of calls over the cap" is an exact
 ratio. MCP rows are measured on the normalized result envelope against the

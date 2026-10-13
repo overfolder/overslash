@@ -88,7 +88,9 @@ pub fn record_upstream_response(template_key: &str, mode: &str, status_class: &s
 ///   URL or an inline `prefer_stream` transfer, measured as it flowed).
 /// * `read` — `"complete"`, `"aborted_at_cap"` (the value is the declared
 ///   `Content-Length` when known, else the lower bound read before the cap),
-///   or `"streamed"`.
+///   `"streamed"` (bytes a finished stream carried), or `"stream_cut_short"`
+///   (a stream that ended early — upstream error, stall, or client hang-up —
+///   so the value is a lower bound; kept apart so it can't skew `streamed`).
 pub fn record_response_size(template_key: &str, runtime: &str, read: &str, bytes: u64) {
     histogram!(
         "overslash_action_response_bytes",
