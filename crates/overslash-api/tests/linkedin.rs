@@ -170,7 +170,7 @@ async fn test_linkedin_mock_read_and_write() {
     assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.unwrap();
     assert_eq!(body["status"], "called");
-    let echo: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
+    let echo = common::last_received(mock_addr).await;
     let uri = echo["uri"].as_str().unwrap();
     assert!(
         uri.contains("/v2/userinfo"),
@@ -196,7 +196,7 @@ async fn test_linkedin_mock_read_and_write() {
     assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.unwrap();
     assert_eq!(body["status"], "called", "create_post response: {body:?}");
-    let echo: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
+    let echo = common::last_received(mock_addr).await;
     let uri = echo["uri"].as_str().unwrap();
     assert!(
         uri.contains("/v2/ugcPosts"),

@@ -34,6 +34,7 @@ use crate::{
     services::{
         audit_capture::{self, AuditResponseBodyMode},
         call_timeout::CallTimeout,
+        credential_scrub::CredentialScrubber,
         credential_template, http_caller,
         response_filter::{self, ResponseFilter},
     },
@@ -576,7 +577,11 @@ pub async fn call_action_request(
     )
     .await
     {
-        Ok(result) => result,
+        // An upstream that echoes the credential must not hand it to the
+        // caller or the audit capture below — see `credential_scrub`.
+        Ok(result) => {
+            CredentialScrubber::injected(&secret_values, auth_header).scrub_result(result)
+        }
         Err(e) => {
             // Transport failures / oversized bodies used to bail with no
             // audit trail at all. Record the attempt with a secret-safe

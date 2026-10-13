@@ -16,7 +16,7 @@ use crate::{
     extractors::{AuthContext, CallerTransport, ClientIp, ReqExt},
     services::{
         audit_capture::{self, AuditResponseBodyMode},
-        call_timeout, group_ceiling, http_caller,
+        call_timeout, credential_scrub, group_ceiling, http_caller,
         response_filter::{self},
         staged_upload,
     },
@@ -811,7 +811,9 @@ pub(super) async fn call_action_impl(
         return Ok(response);
     }
 
-    // Buffered call path (default)
+    // Buffered call path (default). Echoed credentials are scrubbed on arrival.
+    let scrubber =
+        credential_scrub::CredentialScrubber::injected(&secret_values, auth_header.as_ref());
     let mut result = match http_caller::call(
         &action_req.method,
         &resolved_url,
@@ -822,11 +824,9 @@ pub(super) async fn call_action_impl(
     )
     .await
     {
-        Ok(result) => result,
+        Ok(result) => scrubber.scrub_result(result),
         Err(e) => {
-            // Transport failures / oversized bodies used to bail with no
-            // audit trail at all — only metrics saw them. Record the
-            // attempt with a secret-safe error summary before propagating.
+            // Nothing arrived: audit a secret-safe error summary, then propagate.
             log_transport_error_audit(
                 &scope,
                 auth.org_id,

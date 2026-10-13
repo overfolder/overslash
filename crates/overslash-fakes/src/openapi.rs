@@ -56,6 +56,10 @@ pub fn router(state: SharedState) -> Router {
             "/echo",
             get(echo).post(echo).put(echo).delete(echo).patch(echo),
         )
+        .route(
+            "/echo-status/{code}",
+            get(echo_with_status).post(echo_with_status),
+        )
         .route("/large-file", get(large_file))
         .route("/paged/cursor", get(paged_cursor))
         .route("/paged/offset", get(paged_offset))
@@ -105,6 +109,21 @@ async fn echo(
         }));
     }
     Json(response)
+}
+
+/// [`echo`] answered with `code` — an upstream that rejects the request and
+/// quotes it back in the error, which is what real APIs do with a bad key.
+async fn echo_with_status(
+    state: State<SharedState>,
+    axum::extract::Path(code): axum::extract::Path<u16>,
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> impl IntoResponse {
+    let status =
+        axum::http::StatusCode::from_u16(code).unwrap_or(axum::http::StatusCode::BAD_REQUEST);
+    (status, echo(state, method, uri, headers, body).await)
 }
 
 async fn list_received_requests(State(s): State<SharedState>) -> Json<Value> {

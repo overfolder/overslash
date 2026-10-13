@@ -480,9 +480,12 @@ async fn test_happy_path_call_with_permission() {
     let body: Value = resp.json().await.unwrap();
     assert_eq!(body["status"], "called");
 
-    // Verify secret injection in echo response
+    // Verify secret injection in echo response. The gateway scrubs the
+    // injected value back out of what it returns, so the prefix survives and
+    // the secret reads as the marker (this mock keeps no request log).
     let echo_body: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
-    assert_eq!(echo_body["headers"]["x-token"], "tok_secret-value-123");
+    assert_eq!(echo_body["headers"]["x-token"], "tok_[REDACTED]");
+    assert!(!body.to_string().contains("secret-value-123"), "{body}");
 }
 
 /// An upstream 4xx/5xx still executes (gateway 200, `status: "called"`) but

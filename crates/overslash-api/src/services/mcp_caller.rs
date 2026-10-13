@@ -29,6 +29,7 @@ use serde_json::{Value, json};
 use crate::AppState;
 use crate::error::AppError;
 use crate::services::{
+    credential_scrub::CredentialScrubber,
     mcp_auth,
     mcp_client::{DEFAULT_MAX_BODY_BYTES, McpClient},
     ssrf_guard,
@@ -119,7 +120,7 @@ pub async fn invoke(
         .map_err(|app| McpInvokeError { app, audit: None })?;
 
     let start = Instant::now();
-    let result = client
+    let mut result = client
         .tools_call(&headers, tool, arguments)
         .await
         .map_err(|e| McpInvokeError {
@@ -127,6 +128,22 @@ pub async fn invoke(
             app: map_client_error(e),
         })?;
     let duration_ms = start.elapsed().as_millis() as u64;
+
+    // A tool that echoes the bearer must not hand it to the caller or the
+    // audit capture. Scrubbed while still parsed, so the envelope stays valid
+    // JSON — see `credential_scrub`.
+    let scrubber = CredentialScrubber::from_headers(&headers);
+    let hit_structured = result
+        .structured
+        .as_mut()
+        .is_some_and(|v| scrubber.scrub_json(v));
+    let hit_content = scrubber.scrub_json(&mut result.content);
+    if hit_structured || hit_content {
+        tracing::warn!(
+            tool,
+            "MCP tool result echoed an injected credential; redacted"
+        );
+    }
 
     let envelope = json!({
         "runtime": "mcp",

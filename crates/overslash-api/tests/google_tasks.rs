@@ -131,8 +131,10 @@ async fn test_google_tasks_readonly_scope_split() {
         "unexpected upstream uri: {}",
         echo["uri"]
     );
+    // The gateway scrubs the injected token out of the echo — which only
+    // happens because it was injected, and only one connection is seeded.
     assert_eq!(
-        echo["headers"]["authorization"], "Bearer google-tasks-token-123",
+        echo["headers"]["authorization"], "[REDACTED]",
         "OAuth token should be auto-resolved from the connection"
     );
 

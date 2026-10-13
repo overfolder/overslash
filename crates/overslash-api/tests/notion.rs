@@ -134,8 +134,10 @@ async fn test_notion_mode_c() {
         echo["headers"]["notion-version"], "2022-06-28",
         "Notion-Version header must be stamped from the template default"
     );
+    // The result's echo is scrubbed of injected credentials; the fake's log isn't.
     assert_eq!(
-        echo["headers"]["authorization"], "Bearer notion-oauth-token-123",
+        common::last_received(mock_addr).await["headers"]["authorization"],
+        "Bearer notion-oauth-token-123",
         "OAuth token should be auto-resolved from the connection"
     );
     let req_body: Value = serde_json::from_str(echo["body"].as_str().unwrap()).unwrap();
@@ -204,7 +206,7 @@ async fn test_notion_mode_c() {
     );
     assert_eq!(echo["headers"]["notion-version"], "2022-06-28");
     assert_eq!(
-        echo["headers"]["authorization"],
+        common::last_received(mock_addr).await["headers"]["authorization"],
         "Bearer notion-oauth-token-123"
     );
     let req_body: Value = serde_json::from_str(echo["body"].as_str().unwrap()).unwrap();
