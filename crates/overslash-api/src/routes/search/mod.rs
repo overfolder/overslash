@@ -546,7 +546,8 @@ async fn search(
         // instance-only tools. Instance-only tools have no template-scoped
         // embedding row, so they score on the keyword/fuzzy path. Two
         // instances discovering the same tool merge into one row.
-        let mut discovered_rows: BTreeMap<String, SearchResult> = BTreeMap::new();
+        // Keyed by action key; several rows per key when instances disagree.
+        let mut discovered_rows: BTreeMap<String, Vec<SearchResult>> = BTreeMap::new();
         for inst in connected_instances {
             let Some(discovered) = inst.discovered_tools.as_ref() else {
                 continue;
@@ -566,21 +567,25 @@ async fn search(
                     continue;
                 }
                 let inst_ref = InstanceRef::for_action(inst, action);
-                match discovered_rows.get_mut(action_key) {
+                let candidate = row(action_key, action, score, Vec::new());
+                let rows = discovered_rows.entry(action_key.clone()).or_default();
+                // Merge only when the two instances advertise the same
+                // contract. Different server versions can expose one tool
+                // name with different params; collapsing those would show
+                // one instance's schema for the other.
+                match rows.iter_mut().find(|r| same_contract(r, &candidate)) {
                     Some(existing) => {
                         existing.instances.push(inst_ref);
                         existing.score = Some(existing.score.map_or(score, |s| s.max(score)));
                     }
-                    None => {
-                        discovered_rows.insert(
-                            action_key.clone(),
-                            row(action_key, action, score, vec![inst_ref]),
-                        );
-                    }
+                    None => rows.push(SearchResult {
+                        instances: vec![inst_ref],
+                        ..candidate
+                    }),
                 }
             }
         }
-        scored.extend(discovered_rows.into_values());
+        scored.extend(discovered_rows.into_values().flatten());
     }
 
     // Instances arrive in DB order; sort for byte-stable output.
@@ -606,6 +611,16 @@ async fn search(
         query: q.to_string(),
         results: scored,
     }))
+}
+
+/// Whether two rows for the same action advertise the same caller-facing
+/// contract, so their instances can share one row.
+fn same_contract(a: &SearchResult, b: &SearchResult) -> bool {
+    a.description == b.description
+        && a.risk.map(|r| r.display_risk()) == b.risk.map(|r| r.display_risk())
+        && a.paginated == b.paginated
+        && a.additional_properties == b.additional_properties
+        && serde_json::to_value(&a.params).ok() == serde_json::to_value(&b.params).ok()
 }
 
 /// Resolves the set of visible service templates and active instances for

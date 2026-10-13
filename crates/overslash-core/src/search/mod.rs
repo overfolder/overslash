@@ -113,11 +113,9 @@ pub fn service_name_bonus(query: &str, service: &ServiceDefinition) -> f32 {
     }
     let covered = name_tokens
         .iter()
-        .filter(|nt| {
-            query_tokens
-                .iter()
-                .any(|qt| token_match_strength(qt, std::slice::from_ref(*nt)) >= 0.9)
-        })
+        // Exact or prefix only — not `token_match_strength`, whose fuzzy
+        // branch returns raw Jaro-Winkler (a typo can score ≥ 0.9).
+        .filter(|nt| query_tokens.iter().any(|qt| nt.starts_with(qt.as_str())))
         .count();
     SERVICE_NAME_BONUS * covered as f32 / name_tokens.len() as f32
 }
@@ -431,6 +429,8 @@ mod tests {
         assert!(service_name_bonus("hubs", &hub) > 0.0);
         let gmail = mk_service("gmail", "Gmail", None);
         assert_eq!(service_name_bonus("email", &gmail), 0.0);
+        // "hubspto" is a Jaro-Winkler ≥ 0.9 typo of "hubspot" — still no bonus.
+        assert_eq!(service_name_bonus("hubspto", &hub), 0.0);
         assert_eq!(service_name_bonus("send a message", &gmail), 0.0);
     }
 

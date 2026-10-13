@@ -1044,6 +1044,124 @@ async fn mcp_instance_discovered_tool_search_visibility() {
     );
 }
 
+/// Two instances discovering the same tool share one search row — but only
+/// while they advertise the same contract. A divergent schema (say, servers
+/// on different versions) must keep its own row, or the caller would read one
+/// instance's params as the other's.
+#[tokio::test]
+async fn mcp_discovered_tool_rows_merge_only_on_matching_contract() {
+    let (pool, fx) = common::test_pool_bootstrapped().await;
+    let tool = |props: Value| {
+        json!({
+            "name": "zzgadgetfetch",
+            "description": "Fetch a gadget",
+            "inputSchema": { "type": "object", "properties": props }
+        })
+    };
+    let (addr_a, stub_a) = start_stub().await;
+    let (addr_b, stub_b) = start_stub().await;
+    stub_a.set_tools(vec![tool(json!({ "id": { "type": "string" } }))]);
+    stub_b.set_tools(vec![tool(json!({ "id": { "type": "string" } }))]);
+
+    let (base, client) = common::start_api(pool).await;
+    let base = format!("http://{base}");
+    let org_key = fx.org_key.clone();
+    let (_user, _agent, key) = common::bootstrap_agent_on_fixtures(&base, &client, &fx).await;
+
+    let resp = client
+        .post(format!("{base}/v1/templates"))
+        .header(auth(&org_key).0, auth(&org_key).1)
+        .json(&json!({"openapi": mcp_template_yaml_no_url("stub_merge", "none")}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "template: {:?}", resp.text().await);
+
+    let mut ids = Vec::new();
+    for (name, addr) in [("stub_merge_a", addr_a), ("stub_merge_b", addr_b)] {
+        let inst: Value = client
+            .post(format!("{base}/v1/services"))
+            .header(auth(&key).0, auth(&key).1)
+            .json(&json!({"name": name, "template_key": "stub_merge", "url": format!("http://{addr}/mcp")}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        ids.push(inst["id"].as_str().expect("instance id").to_string());
+    }
+    let resync = |id: String| {
+        let (client, base, key) = (client.clone(), base.clone(), key.clone());
+        async move {
+            let resp = client
+                .post(format!("{base}/v1/services/{id}/mcp/resync"))
+                .header(auth(&key).0, auth(&key).1)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), 200, "resync: {:?}", resp.text().await);
+        }
+    };
+    let rows = || {
+        let (client, base, key) = (client.clone(), base.clone(), key.clone());
+        async move {
+            let body: Value = client
+                .get(format!("{base}/v1/search?q=zzgadgetfetch"))
+                .header(auth(&key).0, auth(&key).1)
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            body["results"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|r| r["action"] == "zzgadgetfetch")
+                .cloned()
+                .collect::<Vec<Value>>()
+        }
+    };
+    for id in &ids {
+        resync(id.clone()).await;
+    }
+
+    let same = rows().await;
+    assert_eq!(same.len(), 1, "matching contracts share a row: {same:?}");
+    assert_eq!(
+        same[0]["instances"].as_array().unwrap().len(),
+        2,
+        "{same:?}"
+    );
+
+    // B's server grows a parameter: the rows must split.
+    stub_b.set_tools(vec![tool(json!({
+        "id": { "type": "string" },
+        "verbose": { "type": "boolean" }
+    }))]);
+    resync(ids[1].clone()).await;
+    let split = rows().await;
+    assert_eq!(
+        split.len(),
+        2,
+        "divergent contracts keep separate rows: {split:?}"
+    );
+    for r in &split {
+        let instances = r["instances"].as_array().unwrap();
+        assert_eq!(instances.len(), 1, "{r}");
+        let has_verbose = r["params"]
+            .as_array()
+            .is_some_and(|p| p.iter().any(|p| p["name"] == "verbose"));
+        assert_eq!(
+            has_verbose,
+            instances[0]["service"] == "stub_merge_b",
+            "each row carries its own instance's params: {r}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn mcp_agent_without_permission_triggers_approval() {
     let (pool, fx) = common::test_pool_bootstrapped().await;
