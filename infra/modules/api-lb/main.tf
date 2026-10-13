@@ -17,6 +17,13 @@
 # at the edge, keeping scanner noise out of the service's request metrics.
 # Slug dispatch still happens in `subdomain_middleware` inside the API; the
 # LB does no per-path routing.
+#
+# TLS and edge filtering (CASA 4.1.1): the HTTPS proxy carries an explicit
+# `google_compute_ssl_policy` (TLS 1.2 minimum, RESTRICTED ciphers) instead
+# of GCP's permissive default, and the backend service carries a Cloud Armor
+# policy. The Cloud Armor baseline only allows by default; its OWASP rules
+# ship in preview (logged, never enforced) until the logs show they don't
+# trip on legitimate agent payloads. See docs/runbooks/lb-hardening.md.
 
 variable "project_id" {
   type = string
@@ -56,6 +63,60 @@ variable "unmatched_redirect_host" {
   type        = string
   default     = "www.overslash.com"
   description = "Host that requests with a non-whitelisted Host header are 301'd to (path and query stripped)."
+}
+
+variable "ssl_min_tls_version" {
+  type        = string
+  default     = "TLS_1_2"
+  description = "Minimum TLS version the HTTPS proxy negotiates."
+
+  validation {
+    condition     = contains(["TLS_1_2", "TLS_1_3"], var.ssl_min_tls_version)
+    error_message = "ssl_min_tls_version must be TLS_1_2 or TLS_1_3 (CASA 4.1.1)."
+  }
+}
+
+variable "ssl_profile" {
+  type        = string
+  default     = "RESTRICTED"
+  description = "SSL policy profile. RESTRICTED drops the CBC/SHA-1 suites MODERN still offers at TLS 1.2; every client that speaks TLS 1.2 with ECDHE-GCM or ChaCha20 is unaffected."
+
+  validation {
+    condition     = contains(["MODERN", "RESTRICTED"], var.ssl_profile)
+    error_message = "ssl_profile must be MODERN or RESTRICTED (COMPATIBLE allows weak ciphers)."
+  }
+}
+
+variable "cloud_armor_waf_rules" {
+  type = list(string)
+  default = [
+    "sqli-v33-stable",
+    "xss-v33-stable",
+    "lfi-v33-stable",
+    "rfi-v33-stable",
+    "rce-v33-stable",
+    "scannerdetection-v33-stable",
+    "protocolattack-v33-stable",
+    "sessionfixation-v33-stable",
+  ]
+  description = "Cloud Armor preconfigured WAF rule sets, one deny(403) rule each at priority 1000, 1001, ... Order is significant: reordering renumbers the rules."
+}
+
+variable "cloud_armor_waf_sensitivity" {
+  type        = number
+  default     = 1
+  description = "Sensitivity level passed to every preconfigured WAF rule (1 = fewest false positives)."
+
+  validation {
+    condition     = var.cloud_armor_waf_sensitivity >= 1 && var.cloud_armor_waf_sensitivity <= 4
+    error_message = "cloud_armor_waf_sensitivity must be between 1 and 4."
+  }
+}
+
+variable "cloud_armor_waf_preview" {
+  type        = bool
+  default     = true
+  description = "Run the WAF rules in preview: matches are logged on the LB request log (`jsonPayload.previewSecurityPolicy`) but traffic is never blocked. Flip to false only after tuning against those logs."
 }
 
 resource "google_compute_global_address" "api_lb_ip" {
@@ -127,11 +188,72 @@ resource "google_compute_region_network_endpoint_group" "api_neg" {
   }
 }
 
+# Pins what the proxy negotiates so "TLS 1.2+, strong ciphers" is declared
+# config rather than whatever GCP's default profile happens to allow.
+resource "google_compute_ssl_policy" "api" {
+  name            = "${var.base_prefix}-api-ssl-policy"
+  project         = var.project_id
+  description     = "API LB: ${var.ssl_min_tls_version}+, ${var.ssl_profile} ciphers (CASA 4.1.1)."
+  min_tls_version = var.ssl_min_tls_version
+  profile         = var.ssl_profile
+}
+
+# Baseline Cloud Armor policy. The default rule allows; the OWASP rule sets
+# deny with 403 but run in preview (var.cloud_armor_waf_preview), so on day
+# one this policy blocks nothing. Agent action bodies routinely carry SQL,
+# shell snippets and HTML that a CRS rule would read as an attack, which is
+# why enforcement waits for evidence from the preview logs. Requests the URL
+# map redirects at the edge never reach the backend, so they are not
+# evaluated here.
+resource "google_compute_security_policy" "api" {
+  name        = "${var.base_prefix}-api-armor"
+  project     = var.project_id
+  description = "API LB baseline: default allow, OWASP CRS rules ${var.cloud_armor_waf_preview ? "in preview" : "enforced"}."
+  type        = "CLOUD_ARMOR"
+
+  advanced_options_config {
+    # Lets the WAF parse JSON bodies field by field instead of matching the
+    # raw body, which cuts false positives on a JSON API.
+    json_parsing = "STANDARD"
+    log_level    = "NORMAL"
+  }
+
+  dynamic "rule" {
+    for_each = var.cloud_armor_waf_rules
+    content {
+      action      = "deny(403)"
+      priority    = 1000 + rule.key
+      preview     = var.cloud_armor_waf_preview
+      description = "Preconfigured WAF: ${rule.value}"
+
+      match {
+        expr {
+          expression = "evaluatePreconfiguredWaf('${rule.value}', {'sensitivity': ${var.cloud_armor_waf_sensitivity}})"
+        }
+      }
+    }
+  }
+
+  rule {
+    action      = "allow"
+    priority    = 2147483647
+    description = "Default allow."
+
+    match {
+      versioned_expr = "SRC_IPS_V1"
+      config {
+        src_ip_ranges = ["*"]
+      }
+    }
+  }
+}
+
 resource "google_compute_backend_service" "api_backend" {
   name                  = "${var.base_prefix}-api-backend"
   project               = var.project_id
   protocol              = "HTTPS"
   load_balancing_scheme = "EXTERNAL_MANAGED"
+  security_policy       = google_compute_security_policy.api.id
 
   # Inject the client's ISO 3166-1 alpha-2 country code so the API can return
   # EUR vs USD pricing without a separate GeoIP DB, and the address the LB saw
@@ -195,6 +317,7 @@ resource "google_compute_target_https_proxy" "api" {
   # map at request time, so adding/rotating certs is a Certificate Manager
   # change, not a proxy change.
   certificate_map = "//certificatemanager.googleapis.com/${google_certificate_manager_certificate_map.api.id}"
+  ssl_policy      = google_compute_ssl_policy.api.id
 }
 
 resource "google_compute_global_forwarding_rule" "api_https" {
@@ -253,6 +376,14 @@ output "cert_map_id" {
 output "acme_challenge_name" {
   value       = google_certificate_manager_dns_authorization.api.dns_resource_record[0].name
   description = "CNAME record name for the ACME DNS-01 challenge. Already published when `dns_zone_name` was provided; otherwise create this record in your DNS provider before applying — the cert stays in PROVISIONING until it resolves."
+}
+
+output "ssl_policy_name" {
+  value = google_compute_ssl_policy.api.name
+}
+
+output "security_policy_name" {
+  value = google_compute_security_policy.api.name
 }
 
 output "acme_challenge_data" {
