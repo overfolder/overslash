@@ -43,6 +43,15 @@ ignore = [
     # tokenizers switched to `pastey` or similar, and is there a RUSTSEC
     # *vulnerability* (not just unmaintained) against paste?
     { id = "RUSTSEC-2024-0436", reason = "paste: unmaintained, not vulnerable; build-time proc-macro only, via fastembed -> tokenizers/rav1e. No maintained release to move to. review-by: 2026-12-22" },
+
+    # unsafe-libyaml 0.2.11 — unmaintained (the author archived it), not a
+    # vulnerability. Unlike paste this is runtime code: serde_yaml (itself
+    # deprecated) uses it to parse service templates in overslash-core, and
+    # org-authored templates are tenant input. No fixed release exists; the
+    # remedy is moving off serde_yaml (e.g. serde-saphyr), which is a code
+    # change, not a version bump. Re-check on review: has that migration
+    # landed, and is there a RUSTSEC *vulnerability* against unsafe-libyaml?
+    { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml: unmaintained, not vulnerable; parses service templates via serde_yaml. No maintained release; fix is migrating off serde_yaml. review-by: 2026-12-22" },
 ]
 
 [licenses]
