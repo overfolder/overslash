@@ -12,7 +12,7 @@
 //! Streamed bodies never pass through here: they are not buffered, which is
 //! also why they are never captured for audit.
 //!
-//! See D-NEXT in DECISIONS.md.
+//! See D127 in DECISIONS.md.
 
 use std::collections::HashMap;
 
