@@ -214,6 +214,11 @@ blocking. And the TLS posture is unpinned: an external probe on 2026-09-22 showe
 is fine — but nothing in the configuration says so, there is no declared policy to cite as
 evidence, and a change to Google's default would move it silently.
 
+Both are now declared in `infra/modules/api-lb/main.tf` — an SSL policy (TLS 1.2 minimum,
+`RESTRICTED`) and a Cloud Armor policy (OWASP rules in preview). Apply steps and
+verification: [lb-hardening.md](../../runbooks/lb-hardening.md). Re-measure this table after
+the apply; until then the values above are still what is live.
+
 ### Secret Manager
 
 16 secrets in each project. **None declares `rotation`, `nextRotationTime` or

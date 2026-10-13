@@ -127,6 +127,7 @@ the GitHub button on `/auth/providers` only once both are populated.
 | `secret-manager` | DB password, encryption key, Google + GitHub login + Google services OAuth secrets |
 | `cloud-sql` | PostgreSQL 16 (Auth Proxy or private IP mode). TLS-only, deletion-protected, pgAudit on — see [docs/runbooks/cloud-sql-hardening.md](../docs/runbooks/cloud-sql-hardening.md) |
 | `cloud-run` | Overslash API with health checks and secret injection |
+| `api-lb` | (Optional, `enable_api_lb`) Global HTTPS LB for `<apex>` + `*.<apex>`: wildcard Certificate Manager cert, TLS 1.2+ `RESTRICTED` SSL policy, Cloud Armor (WAF in preview) — see [docs/runbooks/lb-hardening.md](../docs/runbooks/lb-hardening.md) |
 | `cloud-build` | GitHub push trigger: build -> push -> deploy |
 | `infra-scheduler` | (Optional) Stop/start Cloud SQL on cron (Europe/Madrid) |
 | `dns` | (Optional) Cloud DNS managed zone |

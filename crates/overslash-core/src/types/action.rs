@@ -133,16 +133,22 @@ pub struct StagedUploadField {
 
 /// How a staged upload's bytes are written into the outgoing body.
 ///
-/// One variant today. An enum rather than a bare flag so a template states the
-/// encoding it expects, and a future upstream that wants something else is a
-/// new variant rather than a silent reinterpretation of an old one.
+/// An enum rather than a bare flag so a template states the encoding it
+/// expects, and a new upstream shape is a new variant rather than a silent
+/// reinterpretation of an old one. Validation pins each variant to the body
+/// media type it belongs to.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum StagedInline {
     /// Each item becomes `{filename, content_type, content_base64}`, standard
-    /// padded base64 — the shape overfwd's `POST /email/send` takes.
+    /// padded base64 — the shape overfwd's `POST /email/send` takes. JSON
+    /// bodies only.
     #[default]
     Base64,
+    /// Each item becomes one `multipart/form-data` file part named after the
+    /// field, carrying the raw bytes. `multipart/form-data` bodies only; the
+    /// rest of the body goes out as text parts beside it.
+    Multipart,
 }
 
 /// A live credential header resolved at auth time (e.g.
@@ -180,6 +186,13 @@ pub struct ActionResult {
     /// The original `body` is preserved either way.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filtered_body: Option<FilteredBody>,
+    /// Bytes the upstream actually sent, counted before `body` went through
+    /// `String::from_utf8_lossy` (which inflates each invalid byte to a
+    /// 3-byte U+FFFD). Set by the HTTP caller; `None` where the body was
+    /// produced in-process. Audit/metrics only — never serialized, so a
+    /// stored or replayed result reads it back as `None`.
+    #[serde(skip)]
+    pub wire_bytes: Option<u64>,
 }
 
 /// Result of evaluating a server-side filter against the upstream response body.

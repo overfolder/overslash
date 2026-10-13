@@ -11,6 +11,7 @@
 	import {
 		recordedNames,
 		responseCapture,
+		responseSize,
 		transportError,
 		upstreamError,
 		upstreamResultLabel,
@@ -229,6 +230,11 @@
 	// show is what left and how often the capability was redeemed — a
 	// use_count well past 1 is the signal that a download URL leaked.
 	const download = $derived(downloadSummary(entry));
+
+	// Upstream response size, recorded so the buffering caps can be tuned
+	// against real traffic. Shown on its own row because it is the one fact
+	// about an over-cap call that the error body alone doesn't carry.
+	const size = $derived(responseSize(entry));
 
 	// Upload rows describe a file too, but the useful thing to show is
 	// different: declared vs measured. The gateway verifies what was pushed
@@ -511,6 +517,15 @@
 								<dd class="muted">—</dd>
 							{/if}
 						{/each}
+					</dl>
+				{/if}
+				{#if size}
+					<dl class="disclosed">
+						<dt>Response size</dt>
+						<dd>
+							{size.bytes !== null ? `${size.atLeast ? '≥ ' : ''}${formatBytes(size.bytes)}` : '—'}
+							{#if size.note}<span class="trunc"> ({size.note})</span>{/if}
+						</dd>
 					</dl>
 				{/if}
 				{#if download}

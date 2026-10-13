@@ -157,6 +157,51 @@ export function upstreamError(entry: AuditEntry): boolean {
 	return typeof code === 'number' && code >= 400;
 }
 
+/** How big the upstream response was, for rows that recorded it:
+ * `detail.size` on `action.executed` / `action.streamed`, and
+ * `detail.bytes_streamed` on `action.stream_completed` (the bytes a streamed
+ * transfer or a redeemed download URL actually carried). `atLeast` marks a
+ * lower bound — the gateway stopped reading at its cap, or the client hung up
+ * mid-transfer — so the row never claims a size it did not see. */
+export interface AuditResponseSize {
+	bytes: number | null;
+	atLeast: boolean;
+	note: string | null;
+}
+
+export function responseSize(entry: AuditEntry): AuditResponseSize | null {
+	const d = entry.detail;
+	const num = (v: unknown) => (typeof v === 'number' ? v : null);
+	if (entry.action === 'action.stream_completed') {
+		const bytes = num(d.bytes_streamed);
+		if (bytes === null) return null;
+		const done = d.completed === true;
+		return { bytes, atLeast: !done, note: done ? null : 'transfer cut short' };
+	}
+	const s = d.size;
+	if (!s || typeof s !== 'object' || Array.isArray(s)) return null;
+	const size = s as Record<string, unknown>;
+	const bytes = num(size.bytes);
+	const declared = num(size.content_length);
+	switch (size.read) {
+		case 'complete':
+			return { bytes, atLeast: false, note: null };
+		case 'aborted_at_cap': {
+			const limit = num(size.limit_bytes);
+			const note = limit !== null ? `over the ${limit}-byte cap, not buffered` : 'over the cap';
+			// A declared length is the true size; without one, what we read
+			// before stopping is only a floor.
+			return declared !== null
+				? { bytes: declared, atLeast: false, note }
+				: { bytes, atLeast: true, note };
+		}
+		case 'streamed':
+			return { bytes: declared, atLeast: false, note: 'streamed' };
+		default:
+			return null;
+	}
+}
+
 /** Captured upstream response on execution events (`detail.response`),
  * present when the org's audit response-body mode enabled capture for the
  * row. `skipped` replaces the body fields on streamed executions, whose

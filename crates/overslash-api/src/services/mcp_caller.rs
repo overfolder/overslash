@@ -49,6 +49,9 @@ const MCP_TIMEOUT: Duration = Duration::from_secs(30);
 pub struct McpInvokeError {
     pub app: AppError,
     pub audit: Option<Value>,
+    /// Set when the failure was an oversized response — the `detail.size`
+    /// block for the error row. See `services::response_size`.
+    pub size: Option<super::response_size::ResponseSize>,
 }
 
 impl From<McpInvokeError> for AppError {
@@ -117,7 +120,11 @@ pub async fn invoke(
 ) -> Result<ActionResult, McpInvokeError> {
     let (client, headers) = build_client(state, scope, url, auth, oauth_header)
         .await
-        .map_err(|app| McpInvokeError { app, audit: None })?;
+        .map_err(|app| McpInvokeError {
+            app,
+            audit: None,
+            size: None,
+        })?;
 
     // A server that echoes the bearer — in a tool result, an HTTP error body
     // or a JSON-RPC error message — must not hand it to the caller or the
@@ -129,6 +136,7 @@ pub async fn invoke(
         .await
         .map_err(|e| McpInvokeError {
             audit: Some(scrub_client_error(&e)),
+            size: super::response_size::of_mcp_error(&e),
             app: scrub_app_error(&scrubber, map_client_error(e)),
         })?;
     let duration_ms = start.elapsed().as_millis() as u64;
@@ -162,6 +170,7 @@ pub async fn invoke(
         body: envelope.to_string(),
         duration_ms,
         filtered_body: None,
+        wire_bytes: None,
     })
 }
 
@@ -184,7 +193,7 @@ pub fn build_audit_detail(
         .and_then(|e| e.get("is_error"))
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let detail = json!({
+    let mut detail = json!({
         "runtime": "mcp",
         "tool": tool,
         "arguments": arguments,
@@ -192,6 +201,10 @@ pub fn build_audit_detail(
         "duration_ms": result.duration_ms,
         "is_error": is_error,
     });
+    // Measured on the normalized envelope, which is what every consumer of
+    // the result sees; the raw JSON-RPC frame is within a few bytes of it.
+    super::response_size::ResponseSize::complete(result, super::mcp_client::DEFAULT_MAX_BODY_BYTES)
+        .stamp(&mut detail);
     (is_error, detail)
 }
 
@@ -237,7 +250,7 @@ fn scrub_client_error(err: &crate::services::mcp_client::McpClientError) -> Valu
             "kind": "unexpected_shape",
             "message": "mcp server returned an unexpected response shape",
         }),
-        ResponseTooLarge { limit_bytes } => json!({
+        ResponseTooLarge { limit_bytes, .. } => json!({
             "kind": "response_too_large",
             "message": "mcp response exceeded the buffering limit",
             "limit_bytes": limit_bytes,
@@ -276,7 +289,7 @@ fn map_client_error(err: crate::services::mcp_client::McpClientError) -> AppErro
             AppError::BadGateway(format!("mcp JSON-RPC error {code}: {message}"))
         }
         UnexpectedShape(m) => AppError::BadGateway(format!("mcp unexpected response: {m}")),
-        ResponseTooLarge { limit_bytes } => {
+        ResponseTooLarge { limit_bytes, .. } => {
             AppError::BadGateway(format!("mcp response exceeded {limit_bytes} bytes"))
         }
     }
@@ -358,5 +371,38 @@ mod tests {
                 other => panic!("expected BadGateway, got {other:?}"),
             }
         }
+    }
+
+    #[test]
+    fn audit_detail_records_the_envelope_size() {
+        let body = r#"{"runtime":"mcp","is_error":false}"#.to_string();
+        let result = overslash_core::types::ActionResult {
+            status_code: 200,
+            headers: Default::default(),
+            body: body.clone(),
+            duration_ms: 3,
+            filtered_body: None,
+            wire_bytes: None,
+        };
+        let (_, detail) =
+            super::build_audit_detail(&result, "t", "https://m", &serde_json::json!({}));
+        assert_eq!(detail["size"]["bytes"], body.len());
+        assert_eq!(detail["size"]["read"], "complete");
+        assert_eq!(
+            detail["size"]["limit_bytes"],
+            crate::services::mcp_client::DEFAULT_MAX_BODY_BYTES
+        );
+    }
+
+    #[test]
+    fn oversized_mcp_error_carries_a_size() {
+        let e = McpClientError::ResponseTooLarge {
+            limit_bytes: 10,
+            content_length: None,
+            bytes_read: 14,
+        };
+        let size = crate::services::response_size::of_mcp_error(&e).unwrap();
+        assert_eq!(size.to_json()["read"], "aborted_at_cap");
+        assert_eq!(size.best_estimate(), Some(14));
     }
 }

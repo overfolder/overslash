@@ -349,6 +349,9 @@ module "api_lb" {
   api_apex          = var.api_host_suffix
   dns_zone_name     = var.enable_dns ? module.dns[0].zone_name : ""
 
+  ssl_profile             = var.api_lb_ssl_profile
+  cloud_armor_waf_preview = var.api_lb_cloud_armor_preview
+
   depends_on = [
     google_project_service.apis,
     module.cloud_run,

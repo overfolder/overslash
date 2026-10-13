@@ -156,6 +156,20 @@ pub(super) async fn dispatch(
             // (header resolution, SSRF guard) carry no summary and keep
             // the old no-row behavior.
             if let Some(error_detail) = invoke_err.audit {
+                let mut detail = serde_json::json!({
+                    "runtime": "mcp",
+                    "tool": mcp_target.tool,
+                    "arguments": mcp_target.arguments,
+                    "url": mcp_target.url,
+                    "is_error": true,
+                    "error": error_detail,
+                    "service": req.service,
+                    "action": req.action,
+                });
+                if let Some(size) = &invoke_err.size {
+                    size.stamp(&mut detail);
+                    size.record_metric(upstream_tpl, "mcp");
+                }
                 let _ = scope
                     .clone()
                     .log_audit_tagged(
@@ -165,16 +179,7 @@ pub(super) async fn dispatch(
                             action: "action.executed",
                             resource_type: req.service.as_deref(),
                             resource_id: None,
-                            detail: serde_json::json!({
-                                "runtime": "mcp",
-                                "tool": mcp_target.tool,
-                                "arguments": mcp_target.arguments,
-                                "url": mcp_target.url,
-                                "is_error": true,
-                                "error": error_detail,
-                                "service": req.service,
-                                "action": req.action,
-                            }),
+                            detail,
                             description: meta.description.as_deref(),
                             ip_address: ip,
                         },
@@ -210,6 +215,11 @@ pub(super) async fn dispatch(
         "mcp",
         if is_error { "error" } else { "2xx" },
     );
+    crate::services::response_size::ResponseSize::complete(
+        &result,
+        crate::services::mcp_client::DEFAULT_MAX_BODY_BYTES,
+    )
+    .record_metric(upstream_tpl, "mcp");
     {
         let obj = audit_detail
             .as_object_mut()

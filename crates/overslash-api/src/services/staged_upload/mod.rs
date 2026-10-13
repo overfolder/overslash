@@ -18,9 +18,10 @@
 //!    replay payload that gets persisted both name the real file, and neither
 //!    holds a byte of it.
 //! 2. [`wire_body`] — at send time, on every path that dials: inline, approval
-//!    replay, the async worker. Only here do the bytes leave the table,
-//!    base64-encoded into the outgoing body, exactly as a `SecretRef` only
-//!    becomes a header at send time.
+//!    replay, the async worker. Only here do the bytes leave the table —
+//!    base64-encoded into a JSON body, or as raw file parts when the action
+//!    declares `multipart/form-data` — exactly as a `SecretRef` only becomes a
+//!    header at send time.
 //!
 //! Bounds (see `StagedUploadConfig`): a per-upload and per-call byte ceiling,
 //! per-identity and per-org quotas counted from mint (reservations included),
@@ -30,6 +31,7 @@
 mod describe;
 mod inline;
 mod mint;
+mod multipart;
 mod redeem;
 
 pub(crate) use describe::describe;

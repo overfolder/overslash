@@ -24,8 +24,9 @@ pub const REDACTED: &str = "[REDACTED]";
 /// Build the jq input: `{ method, url, params, body, resolved }`.
 ///
 /// `body` is parsed as JSON when the request `Content-Type` is a JSON media
-/// type (`application/json`, `application/…+json`); otherwise it's carried
-/// through as the raw string. `None` body → `Value::Null`.
+/// type (`application/json`, `application/…+json`) or `multipart/form-data`,
+/// which the gateway carries as JSON until the dial re-encodes it; otherwise
+/// it's carried through as the raw string. `None` body → `Value::Null`.
 ///
 /// `params` is the original, post-resolution parameter map so filters can
 /// reference path/query args without re-parsing the URL.
@@ -83,7 +84,9 @@ fn is_json_content_type(headers: &HashMap<String, String>) -> bool {
         .map(|(_, v)| v.to_ascii_lowercase())
         .unwrap_or_default();
     // "application/json" or "application/vnd.api+json" etc.
-    v.starts_with("application/json") || (v.starts_with("application/") && v.contains("+json"))
+    v.starts_with("application/json")
+        || (v.starts_with("application/") && v.contains("+json"))
+        || v.starts_with("multipart/form-data")
 }
 
 /// Replace every value addressed by a dotted path in `redact_paths` with the
@@ -217,6 +220,20 @@ mod tests {
         );
         let v = build_jq_input(&r, &HashMap::new(), &HashMap::new());
         assert_eq!(v["body"], "a=1&b=2");
+    }
+
+    /// A form is held as JSON until `staged_upload::wire_body` encodes it, so
+    /// its fields are as addressable as a JSON body's.
+    #[test]
+    fn build_jq_input_form_body_is_parsed() {
+        let r = req(
+            "POST",
+            "https://x",
+            &[("Content-Type", "multipart/form-data")],
+            Some(r#"{"file":[{"filename":"a.pdf"}]}"#),
+        );
+        let v = build_jq_input(&r, &HashMap::new(), &HashMap::new());
+        assert_eq!(v["body"]["file"][0]["filename"], "a.pdf");
     }
 
     #[test]
