@@ -12,8 +12,9 @@
 # Holded's own OpenAPI document is at https://api.holded.com/openapi/api2.json —
 # 356 operations across sales, purchases, inventory, CRM, projects, HR and
 # accounting. What follows is a curated subset: the invoicing, contact and
-# treasury surface an agent needs to answer "who owes us / what do we owe" and
-# to draft, issue and settle a sales document. The v1 API (`key:` header) is
+# treasury surface an agent needs to answer "who owes us / what do we owe", to
+# draft, issue and settle a sales document, and to reconcile the bank
+# statement against those documents. The v1 API (`key:` header) is
 # deprecated and deliberately not modelled.
 #
 # Nothing here deletes. `delete_invoice`, `bulk_delete_invoices`,
@@ -36,7 +37,9 @@ info:
     payment status (`overdue`, `outstanding`), which is the entry point for
     receivables questions; `search_contacts` is how a name becomes the
     `contact_id` every sales document needs. Writes are scoped per document:
-    approving one invoice is not approving all of them. Auth is a
+    approving one invoice is not approving all of them.
+    `reconcile_bank_movement` matches a pending bank-statement movement from
+    `list_bank_movements` to the documents it settles. Auth is a
     per-module-scoped API token sent as a bearer.
 servers:
   - url: https://api.holded.com
@@ -1728,8 +1731,10 @@ paths:
       description: >-
         One page of treasury accounts — banks, cards, payment gateways and cash
         boxes. An account's `id` is the `treasury_id` that
-        `create_invoice_payment` books a payment to. Requires the token's
-        Accounting → read scope.
+        `create_invoice_payment` books a payment to, and its
+        `transactions_pending_to_reconcile` says how many movements are still
+        waiting for `reconcile_bank_movement`. Requires the token's Accounting
+        → read scope.
       parameters:
         - name: type
           in: query
@@ -1773,8 +1778,11 @@ paths:
         items: items
         has_more: has_more
       description: >-
-        One page of movements on a treasury account, with their reconciliation
-        state. Requires the token's Accounting → read scope.
+        One page of raw bank-statement movements on a treasury account, newest
+        value date first, each with its reconciliation `status` and
+        `reconciled_amount`. Filter `status=pending` for what still needs
+        reconciling with `reconcile_bank_movement`. Cash accounts always
+        answer empty. Requires the token's Accounting → read scope.
       parameters:
         - name: id
           in: path
@@ -1783,13 +1791,19 @@ paths:
           x-overslash-aliases: [banking_account_id, treasury_id, bank_account_id, account_id]
           schema:
             type: string
+        # Holded declares this `style: form, explode: false` — one
+        # comma-joined value — while the gateway explodes an array into
+        # repeated keys. So it is a plain string, and the members are named in
+        # prose: an `enum` would match the whole value and reject
+        # `pending,partial`.
         - name: status
           in: query
-          description: Reconciliation states to include
+          description: >-
+            Reconciliation states to include, comma-separated: pending,
+            reconciled, partial, forced_reconciled. `pending` is the queue
+            still to reconcile.
           schema:
-            type: array
-            items:
-              type: string
+            type: string
         - name: start_date
           in: query
           description: Movements on or after this date
@@ -1812,6 +1826,96 @@ paths:
           description: Movements per page, max 200
           schema:
             type: integer
+  /api/v2/treasury/accounts/{bankingAccountId}/bank-movements/{movementId}/reconcile:
+    post:
+      operationId: reconcile_bank_movement
+      summary: "Reconcile a movement on treasury account {bankingAccountId}"
+      risk: write
+      # Scoped per account, like `list_bank_movements`. Per movement would make
+      # every reconciliation its own approval, which is the whole job.
+      scope_param: bankingAccountId
+      description: >-
+        Reconcile one bank movement (ids from `list_bank_movements`). With
+        `documents`, link the movement to existing Holded documents: one
+        document closes it, several split the movement across them, and each
+        must belong to this account. With no `documents`, the movement is
+        force-marked reconciled without linking anything (`forced_reconciled`),
+        which clears it from the pending queue when no matching document
+        exists. Not idempotent: reconciling the same movement and document
+        again is a 422. There is no API to undo a reconciliation; that is done
+        in the Holded app. Requires the token's Accounting → banks write
+        scope.
+      disclose:
+        - label: Account
+          primary: true
+          filter: '.resolved.bankingAccountId // .params.bankingAccountId'
+        - label: Movement
+          primary: true
+          filter: .params.movementId
+        # No `// empty`: an omitted list is a force-reconcile, the most
+        # consequential shape this call has, and it must not render as nothing.
+        - label: Documents
+          primary: true
+          filter: >-
+            if ((.body.documents // []) | length) == 0
+            then "none — force-marks the movement reconciled without linking any document"
+            else .body.documents | map("\(.document_type) \(.document_id)") | join("\n")
+            end
+        - label: Effect
+          filter: '"Not reversible through the API; undoing it means unreconciling in the Holded app."'
+      parameters:
+        - name: bankingAccountId
+          in: path
+          required: true
+          description: Treasury account id (from list_banking_accounts)
+          x-overslash-aliases: [banking_account_id, treasury_id, bank_account_id, account_id]
+          schema:
+            type: string
+          resolve:
+            get: /api/v2/treasury/accounts/{bankingAccountId}
+            pick: name
+            cache_ttl: 300
+        - name: movementId
+          in: path
+          required: true
+          description: Bank movement id (from list_bank_movements)
+          x-overslash-aliases: [movement_id, bank_movement_id]
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                documents:
+                  type: array
+                  description: >-
+                    Documents to match the movement against. Several split it.
+                    Omit to force-reconcile without linking any document.
+                  items:
+                    type: object
+                    required: [document_id, document_type]
+                    properties:
+                      document_id:
+                        type: string
+                        description: Id of an existing Holded document
+                      document_type:
+                        type: string
+                        enum:
+                          - invoice
+                          - salesreceipt
+                          - purchase
+                          - creditnote
+                          - purchaserefund
+                          - payroll
+                          - payment
+                          - remittance
+                          - purchasereceipt
+                          - collection
+                          - receipt
+                          - entry
   /api/v2/ledger-entries:
     get:
       operationId: list_ledger_entries
