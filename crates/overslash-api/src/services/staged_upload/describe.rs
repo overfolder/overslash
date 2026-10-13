@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use overslash_core::types::{ServiceAction, StagedUploadField};
+use overslash_core::types::{ServiceAction, StagedInline, StagedUploadField};
 use overslash_db::repos::staged_upload;
 
 use super::MAX_PER_CALL;
@@ -40,8 +40,21 @@ pub(crate) async fn describe(
         .filter_map(|(name, p)| p.staged_upload.map(|i| (name.clone(), i)))
         .filter(|(name, _)| params.contains_key(name))
         .collect();
+    // A form's file fields are listed even when absent or empty: the list is
+    // the send path's only signal to encode a form, and it must come from the
+    // template — a raw HTTP call carrying its own multipart body sets no list
+    // and passes through untouched.
+    let form_fields: Vec<StagedUploadField> = action
+        .params
+        .iter()
+        .filter(|(_, p)| p.staged_upload == Some(StagedInline::Multipart))
+        .map(|(name, _)| StagedUploadField {
+            field: name.clone(),
+            inline_as: StagedInline::Multipart,
+        })
+        .collect();
     if fields.is_empty() {
-        return Ok(Vec::new());
+        return Ok(with_form_fields(Vec::new(), form_fields));
     }
     // Deterministic order for the persisted request, whatever the map's.
     fields.sort_by(|a, b| a.0.cmp(&b.0));
@@ -135,9 +148,25 @@ pub(crate) async fn describe(
     // list (`attachments: []`) is sent as-is and has nothing to inline, so
     // listing it would make the send path take — and hold for the whole
     // upstream call — a buffer slot it never uses.
-    Ok(fields
+    let named = fields
         .into_iter()
         .filter(|(name, _)| refs.iter().any(|(n, ids)| n == name && !ids.is_empty()))
         .map(|(field, inline_as)| StagedUploadField { field, inline_as })
-        .collect())
+        .collect();
+    Ok(with_form_fields(named, form_fields))
+}
+
+/// `named` plus every form file field it does not already carry, in field
+/// order so the persisted request is deterministic.
+fn with_form_fields(
+    mut named: Vec<StagedUploadField>,
+    form_fields: Vec<StagedUploadField>,
+) -> Vec<StagedUploadField> {
+    for f in form_fields {
+        if !named.iter().any(|n| n.field == f.field) {
+            named.push(f);
+        }
+    }
+    named.sort_by(|a, b| a.field.cmp(&b.field));
+    named
 }

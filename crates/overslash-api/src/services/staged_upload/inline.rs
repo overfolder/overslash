@@ -42,19 +42,6 @@ impl WireBody {
     }
 }
 
-/// Whether the request was resolved for a `multipart/form-data` body. The
-/// declared media type is the signal rather than the staged fields, so a form
-/// whose file was omitted still goes out as a form and not as the JSON it is
-/// carried as until here.
-fn is_multipart(req: &ActionRequest) -> bool {
-    req.headers.iter().any(|(k, v)| {
-        k.eq_ignore_ascii_case("content-type")
-            && v.trim_start()
-                .get(..19)
-                .is_some_and(|p| p.eq_ignore_ascii_case("multipart/form-data"))
-    })
-}
-
 /// Inline every staged upload `req` names. A request that names none, and is
 /// not a form, costs nothing and holds no permit.
 pub(crate) async fn wire_body(
@@ -63,18 +50,21 @@ pub(crate) async fn wire_body(
     org_id: Uuid,
     req: &ActionRequest,
 ) -> Result<WireBody, AppError> {
-    let multipart = is_multipart(req);
-    if req.staged_uploads.is_empty() && !multipart {
+    // Keyed off the template-set list, never the `Content-Type`: a raw HTTP
+    // call may carry a real multipart body of its own, and that must pass
+    // through untouched. `describe` lists a form's file fields even when the
+    // file was omitted, so such a form still goes out as one.
+    let multipart = req
+        .staged_uploads
+        .iter()
+        .any(|f| f.inline_as == StagedInline::Multipart);
+    if req.staged_uploads.is_empty() {
         return Ok(WireBody {
             body: None,
             content_type: None,
             _permit: None,
         });
     }
-    let permit = match req.staged_uploads.is_empty() {
-        true => None,
-        false => Some(super::permit(&state.config.staged_uploads).await?),
-    };
     let mut body: Value = match req.body.as_deref() {
         Some(b) => serde_json::from_str(b)?,
         None if multipart => json!({}),
@@ -83,6 +73,17 @@ pub(crate) async fn wire_body(
                 "staged uploads named on a bodyless request".into(),
             ));
         }
+    };
+    // The buffer slot is only worth holding when there are bytes to inline; a
+    // form whose file field is empty is just text parts.
+    let has_items = req.staged_uploads.iter().any(|f| {
+        body.get(&f.field)
+            .and_then(Value::as_array)
+            .is_some_and(|items| !items.is_empty())
+    });
+    let permit = match has_items {
+        true => Some(super::permit(&state.config.staged_uploads).await?),
+        false => None,
     };
     let keyring = state.config.keyring()?;
     let mut files = Vec::new();

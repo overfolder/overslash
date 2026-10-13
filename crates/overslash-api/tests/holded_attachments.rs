@@ -224,3 +224,41 @@ async fn a_user_upload_to_the_inbox_goes_out_inline_as_a_form() {
 
     assert_form_upload(&seen, "/api/v2/inbox", "document", "bill.pdf", &bytes);
 }
+
+/// Only a template can ask for a form to be built. A raw HTTP call that
+/// carries a multipart body of its own declares no staged fields, so its bytes
+/// and boundary go out exactly as the caller wrote them — never parsed as the
+/// JSON a template form is held as.
+#[tokio::test]
+async fn a_raw_multipart_call_passes_through_untouched() {
+    let pool = common::test_pool().await;
+    let (mock, seen) = start_mock_holded().await;
+    let (base, client, _agent_key, admin_key) = setup(pool, mock, "admin").await;
+
+    let raw = "--b1\r\nContent-Disposition: form-data; name=\"note\"\r\n\r\nhi\r\n--b1--\r\n";
+    let resp: Value = client
+        .post(format!("{base}/v1/actions/call"))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .json(&json!({
+            "service": "http",
+            "method": "POST",
+            "url": format!("http://{mock}/raw-form"),
+            "headers": {"Content-Type": "multipart/form-data; boundary=b1"},
+            "body": raw,
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(resp["status"], json!("called"), "{resp}");
+
+    let req = seen.lock().unwrap().last().cloned().expect("mock saw none");
+    assert_eq!(req.path, "/raw-form");
+    assert_eq!(
+        req.content_type.as_deref(),
+        Some("multipart/form-data; boundary=b1")
+    );
+    assert_eq!(req.raw, raw.as_bytes());
+}
