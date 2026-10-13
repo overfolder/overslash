@@ -238,10 +238,30 @@ async fn run_http(ctx: StoredCallCtx<'_>, stored: StoredCallRequest) -> StoredOu
                 error: None,
             }
         }
-        Ok(Err(app_err)) => StoredOutcome::Failed {
-            message: app_err.to_string(),
-            error: Some(Box::new(app_err)),
-        },
+        Ok(Err(app_err)) => {
+            // An over-cap body: the audit row (written in `action_caller`)
+            // has the exact `size`; the histogram is fed here, where the
+            // bounded template key lives. The mapped error no longer carries
+            // the bytes read, but a body cut at the cap read at least the
+            // cap, so that is the floor when no length was declared.
+            if let AppError::ResponseTooLarge {
+                content_length,
+                limit_bytes,
+                ..
+            } = &app_err
+            {
+                super::response_size::ResponseSize::aborted(
+                    *limit_bytes as u64,
+                    *content_length,
+                    *limit_bytes,
+                )
+                .record_metric(ctx.metrics_tpl, "http");
+            }
+            StoredOutcome::Failed {
+                message: app_err.to_string(),
+                error: Some(Box::new(app_err)),
+            }
+        }
         Err(_elapsed) => StoredOutcome::Failed {
             message: "replay_timeout".into(),
             error: None,
@@ -449,6 +469,7 @@ async fn run_mcp(ctx: StoredCallCtx<'_>, call: StoredMcpCall) -> StoredOutcome {
                 });
                 if let Some(size) = &invoke_err.size {
                     size.stamp(&mut detail);
+                    size.record_metric(ctx.metrics_tpl, "mcp");
                 }
                 ctx.audit_source.stamp_refs(&mut detail);
                 let _ = ctx
