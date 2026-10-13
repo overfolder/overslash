@@ -11,7 +11,7 @@ use crate::types::{
 
 use super::super::ext::{self, Ext, Pos};
 use super::shape::{lower_content_media_type, lower_shape};
-use super::staged_upload::{check_unstaged_part, parse_staged_upload};
+use super::staged_upload::{check_unstaged_part, parse_staged_upload, require_staged_part};
 use super::{parse_aliases, parse_instance_config, parse_promoted, parse_sql_policy};
 
 // ── parameters → HashMap<String, ActionParam> ────────────────────────
@@ -144,8 +144,12 @@ pub(super) fn collect_body_parameters(
         .unwrap_or_default();
 
     let Some(props) = schema.get("properties").and_then(Value::as_object) else {
+        if multipart {
+            require_staged_part(false, base, issues);
+        }
         return;
     };
+    let mut any_staged = false;
 
     for (name, prop) in props {
         let pobj = prop.as_object();
@@ -178,6 +182,7 @@ pub(super) fn collect_body_parameters(
                     issues,
                 )
             });
+        any_staged |= staged_upload.is_some();
         if multipart && staged_upload.is_none() {
             check_unstaged_part(name, pobj, &format!("{base}.requestBody.{name}"), issues);
         }
@@ -202,6 +207,9 @@ pub(super) fn collect_body_parameters(
                 staged_upload,
             },
         );
+    }
+    if multipart {
+        require_staged_part(any_staged, base, issues);
     }
 }
 

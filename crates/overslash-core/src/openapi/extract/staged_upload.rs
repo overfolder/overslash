@@ -123,6 +123,25 @@ pub(super) fn check_unstaged_part(
     }
 }
 
+/// `wire_body` builds a form only for an action that declares a `multipart`
+/// staged field — that is how it tells a template's form from a raw Mode A
+/// body that merely says `multipart/form-data`. A form body with no such field
+/// would therefore go out as JSON under a boundary-less form header, which no
+/// upstream can parse. Every form endpoint we model exists to carry a file, so
+/// the template is refused rather than taught a text-only form encoding.
+pub(super) fn require_staged_part(any_staged: bool, base: &str, issues: &mut Vec<ValidationIssue>) {
+    if !any_staged {
+        issues.push(ValidationIssue::new(
+            "multipart_without_staged_upload",
+            "a multipart/form-data body must mark its file field \
+             `x-overslash-staged-upload: {inline_as: multipart}`; a form with no staged \
+             field has no wire encoding"
+                .to_string(),
+            format!("{base}.requestBody"),
+        ));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::{Value, json};
@@ -210,5 +229,19 @@ mod tests {
             json!({"file": file_field(None), "tags": {"type": "array"}}),
         );
         assert!(codes(&nested).contains(&"multipart_field_not_scalar".to_string()));
+    }
+
+    /// The form is built only around a declared staged field, so a text-only
+    /// form would leave the dial as JSON under a form header.
+    #[test]
+    fn a_form_body_needs_a_staged_field() {
+        let text_only = doc("multipart/form-data", json!({"note": {"type": "string"}}));
+        assert!(codes(&text_only).contains(&"multipart_without_staged_upload".to_string()));
+
+        let with_file = doc(
+            "multipart/form-data",
+            json!({"file": file_field(None), "note": {"type": "string"}}),
+        );
+        assert!(!codes(&with_file).contains(&"multipart_without_staged_upload".to_string()));
     }
 }
