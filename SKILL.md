@@ -67,7 +67,8 @@ See `SPEC.md` for the full API reference.
 
 ## Bootstrapping a service from a template
 
-When `overslash_search` returns a useful **template** but no live `service`,
+When `overslash_search` returns a useful **template** with no callable
+instance (`setup_required: true`, empty `instances`),
 you can instantiate it yourself — no dashboard click needed. A first-level
 agent (one created directly under a person) holds
 `overslash:manage_services_own:*` by default, so this normally just works; if
@@ -82,10 +83,14 @@ the one URL the credential step returns.
 **Step 1 — discover.**
 
 ```
-overslash_search { "query": "calendar" }
+overslash_search { "query": "calendar", "include_catalog": true }
 ```
 
-If `services: []` and `templates: [{ key: "google_calendar", … }]`, continue.
+Each row is one action of one service; its `instances` array lists the
+instances you can call (pass an entry's `service` to `overslash_call`). If the
+`google_calendar` row comes back `setup_required: true` with `instances: []`,
+continue. A catalog row shows only its best-matching action — `more_actions`
+names the others it would unlock.
 
 **Step 2 — create the service instance.**
 
@@ -208,7 +213,7 @@ through the standard approval flow described below.
 
 ## Configuring a new service (no template exists yet)
 
-If `overslash_search` returns **neither** a live `service` **nor** a `template`
+If `overslash_search` (with `include_catalog: true`) returns **no row at all**
 for the API you need, author the template yourself, then instantiate it as in
 the section above. Needs `overslash:manage_templates_own:*`, which a
 first-level agent also holds by default.
