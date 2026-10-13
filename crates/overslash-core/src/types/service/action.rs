@@ -446,6 +446,19 @@ impl RequestBodySpec {
             .to_ascii_lowercase();
         base == "application/json" || (base.starts_with("application/") && base.ends_with("+json"))
     }
+
+    /// Whether this body is `multipart/form-data`. Its fields are extracted
+    /// like a JSON body's and travel as JSON up to the dial, where
+    /// `staged_upload::wire_body` re-encodes them as parts — so disclosure,
+    /// approvals and replay never see a multipart payload.
+    pub fn is_multipart(&self) -> bool {
+        self.content_type
+            .split(';')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .eq_ignore_ascii_case("multipart/form-data")
+    }
 }
 
 /// One entry in `ServiceAction::disclose`. The `filter` is a jq expression

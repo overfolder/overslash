@@ -88,13 +88,29 @@ fn holded_yaml_parses() {
         "list_taxes",
         "list_expenses_accounts",
         "list_accounting_accounts",
+        "list_invoice_attachments",
+        "attach_invoice_file",
+        "get_invoice_attachment",
+        "list_credit_note_attachments",
+        "attach_credit_note_file",
+        "get_credit_note_attachment",
+        "list_estimate_attachments",
+        "attach_estimate_file",
+        "get_estimate_attachment",
+        "list_purchase_attachments",
+        "attach_purchase_file",
+        "get_purchase_attachment",
+        "list_contact_attachments",
+        "attach_contact_file",
+        "get_contact_attachment",
+        "upload_inbox",
     ] {
         assert!(
             svc.actions.contains_key(action),
             "holded.yaml should declare {action}"
         );
     }
-    assert_eq!(svc.actions.len(), 37, "the curated set is 37 actions");
+    assert_eq!(svc.actions.len(), 53, "the curated set is 53 actions");
 
     // Nothing here deletes. A fiscal document is cancelled or corrected with a
     // credit note; Holded's delete and bulk-delete endpoints are deliberately
@@ -162,7 +178,7 @@ fn every_pageable_list_declares_the_same_cursor_block() {
         assert_eq!(p.items.as_deref(), Some("items"), "{key}");
         assert_eq!(p.has_more.as_deref(), Some("has_more"), "{key}");
     }
-    assert_eq!(paged, 15, "fifteen lists page");
+    assert_eq!(paged, 20, "twenty lists page");
 }
 
 // ============================================================================
@@ -170,21 +186,24 @@ fn every_pageable_list_declares_the_same_cursor_block() {
 // ============================================================================
 
 #[derive(Clone, Debug)]
-struct Seen {
-    method: String,
-    path: String,
-    query: String,
-    authorization: Option<String>,
-    key_header: Option<String>,
-    body: Value,
+pub(crate) struct Seen {
+    pub method: String,
+    pub path: String,
+    pub query: String,
+    pub authorization: Option<String>,
+    pub key_header: Option<String>,
+    pub content_type: Option<String>,
+    /// The body as received, for the form-data uploads that are not JSON.
+    pub raw: Vec<u8>,
+    pub body: Value,
 }
 
-type SeenLog = Arc<Mutex<Vec<Seen>>>;
+pub(crate) type SeenLog = Arc<Mutex<Vec<Seen>>>;
 
 /// Answers the handful of endpoints these tests touch, in Holded's own
 /// envelope, and records every request so the auth header can be asserted on
 /// rather than assumed.
-async fn start_mock_holded() -> (SocketAddr, SeenLog) {
+pub(crate) async fn start_mock_holded() -> (SocketAddr, SeenLog) {
     let seen: SeenLog = Arc::new(Mutex::new(Vec::new()));
 
     async fn handler(
@@ -213,6 +232,8 @@ async fn start_mock_holded() -> (SocketAddr, SeenLog) {
             // Holded's deprecated v1 API took the key in a bare `key` header.
             // Recorded so the test can prove we send the v2 bearer and not it.
             key_header: header("key"),
+            content_type: header("content-type"),
+            raw: bytes.to_vec(),
             body,
         });
 
@@ -269,7 +290,7 @@ async fn start_mock_holded() -> (SocketAddr, SeenLog) {
 
 /// Boot the API on the shipped registry, seed the `holded_api_key` org secret,
 /// and create an org-level `holded` instance pointed at the mock.
-async fn setup(
+pub(crate) async fn setup(
     pool: sqlx::PgPool,
     mock: SocketAddr,
     access_level: &str,
@@ -315,7 +336,7 @@ async fn setup(
     (base, client, agent_key, admin_key)
 }
 
-async fn call(
+pub(crate) async fn call(
     base: &str,
     client: &reqwest::Client,
     agent_key: &str,
