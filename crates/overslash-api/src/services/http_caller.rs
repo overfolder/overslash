@@ -61,6 +61,10 @@ pub enum CallError {
         content_length: Option<u64>,
         content_type: Option<String>,
         limit_bytes: usize,
+        /// Bytes actually read before we stopped: `0` when the declared
+        /// `Content-Length` refused the body up front, otherwise a lower bound
+        /// on a chunked body's true size. Audit-only — see `ResponseSize`.
+        bytes_read: u64,
     },
 
     /// The SSRF guard refused the target before anything was dialed.
@@ -375,6 +379,7 @@ async fn call_inner(
             content_length: Some(len),
             content_type,
             limit_bytes: max_body_bytes,
+            bytes_read: 0,
         });
     }
 
@@ -390,10 +395,12 @@ async fn call_inner(
                 content_length,
                 content_type,
                 limit_bytes: max_body_bytes,
+                bytes_read: collected.len() as u64,
             });
         }
     }
 
+    let wire_bytes = collected.len() as u64;
     let body = String::from_utf8_lossy(&collected).into_owned();
     let duration_ms = start.elapsed().as_millis() as u64;
 
@@ -403,6 +410,7 @@ async fn call_inner(
         body,
         duration_ms,
         filtered_body: None,
+        wire_bytes: Some(wire_bytes),
     })
 }
 

@@ -180,6 +180,13 @@ pub struct ActionResult {
     /// The original `body` is preserved either way.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filtered_body: Option<FilteredBody>,
+    /// Bytes the upstream actually sent, counted before `body` went through
+    /// `String::from_utf8_lossy` (which inflates each invalid byte to a
+    /// 3-byte U+FFFD). Set by the HTTP caller; `None` where the body was
+    /// produced in-process. Audit/metrics only — never serialized, so a
+    /// stored or replayed result reads it back as `None`.
+    #[serde(skip)]
+    pub wire_bytes: Option<u64>,
 }
 
 /// Result of evaluating a server-side filter against the upstream response body.

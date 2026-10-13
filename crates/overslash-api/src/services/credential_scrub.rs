@@ -249,6 +249,7 @@ mod tests {
             body: "token secret-token-123 rejected".into(),
             duration_ms: 1,
             filtered_body: None,
+            wire_bytes: None,
         };
         let out = s.scrub_result(result);
         assert_eq!(out.body, "token [REDACTED] rejected");

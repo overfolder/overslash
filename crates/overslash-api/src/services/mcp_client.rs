@@ -59,7 +59,13 @@ pub enum McpClientError {
     UnexpectedShape(String),
 
     #[error("response exceeded {limit_bytes} bytes")]
-    ResponseTooLarge { limit_bytes: usize },
+    ResponseTooLarge {
+        limit_bytes: usize,
+        /// The server's declared `Content-Length`, if it sent one.
+        content_length: Option<u64>,
+        /// Bytes read before we stopped — a lower bound on the true size.
+        bytes_read: u64,
+    },
 }
 
 /// A tool description as returned by `tools/list`. We only keep the fields
@@ -223,11 +229,14 @@ impl McpClient {
 
         // Short-circuit if Content-Length is already oversized. This stops us
         // buffering anything when a server advertises a huge payload upfront.
-        if let Some(len) = response.content_length()
+        let declared = response.content_length();
+        if let Some(len) = declared
             && len as usize > self.max_body_bytes
         {
             return Err(McpClientError::ResponseTooLarge {
                 limit_bytes: self.max_body_bytes,
+                content_length: declared,
+                bytes_read: 0,
             });
         }
 
@@ -241,6 +250,8 @@ impl McpClient {
             if collected.len() + chunk.len() > self.max_body_bytes {
                 return Err(McpClientError::ResponseTooLarge {
                     limit_bytes: self.max_body_bytes,
+                    content_length: declared,
+                    bytes_read: (collected.len() + chunk.len()) as u64,
                 });
             }
             collected.extend_from_slice(&chunk);
@@ -578,7 +589,7 @@ mod tests {
             .await
             .unwrap_err();
         match err {
-            McpClientError::ResponseTooLarge { limit_bytes } => {
+            McpClientError::ResponseTooLarge { limit_bytes, .. } => {
                 assert_eq!(limit_bytes, 64 * 1024)
             }
             other => panic!("wrong err: {other:?}"),

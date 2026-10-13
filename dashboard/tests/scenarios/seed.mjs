@@ -463,7 +463,7 @@ export async function seedApprovalResolution(session, approvalId, resolution) {
  * when pointing at localhost.
  *
  * @param {import('./auth.mjs').Session} session
- * @param {{ url: string, method?: string, expect?: number | number[] }} input
+ * @param {{ url: string, method?: string, expect?: number | number[], preferStream?: boolean }} input
  * @returns {Promise<{ status: string, is_error?: boolean, result?: unknown }>}
  */
 export async function seedExecution(session, input) {
@@ -472,7 +472,10 @@ export async function seedExecution(session, input) {
 		body: {
 			service: 'http',
 			method: input.method ?? 'GET',
-			url: input.url
+			url: input.url,
+			// Streamed calls write `action.streamed` plus, once the body has
+			// flowed, `action.stream_completed` with the bytes carried.
+			...(input.preferStream ? { prefer_stream: true } : {})
 		},
 		// A transport-level failure (e.g. connection refused) surfaces as a
 		// 502 from the gateway while still writing the `action.executed`
