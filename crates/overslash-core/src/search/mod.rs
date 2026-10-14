@@ -34,6 +34,10 @@ pub const READ_BONUS: f32 = 0.05;
 /// actions that merely describe similar work.
 pub const SERVICE_NAME_BONUS: f32 = 0.25;
 
+/// Shortest query token that may hit a service name as a *prefix*; shorter
+/// ones must match exactly. See [`service_name_bonus`].
+const NAME_PREFIX_MIN_CHARS: usize = 3;
+
 /// Jaro-Winkler threshold below which a fuzzy word match doesn't contribute.
 const FUZZY_THRESHOLD: f64 = 0.85;
 
@@ -96,6 +100,12 @@ pub fn keyword_fuzzy_score(query: &str, c: &Candidate<'_>) -> f32 {
 /// "email") collides too easily to justify a flat boost. So "google
 /// calendar" earns the full bonus on Google Calendar and half on Google Drive.
 ///
+/// A query token shorter than [`NAME_PREFIX_MIN_CHARS`] must match a name
+/// token exactly. Tokenizing splits contractions, so "what's" yields a bare
+/// "s" that would otherwise prefix Slack, Stripe and Shortcut; "go" would
+/// prefix every Google service. A one-letter service ("x") still earns its
+/// bonus from an exact "x".
+///
 /// Per-service, not per-action — callers compute it once per template.
 pub fn service_name_bonus(query: &str, service: &ServiceDefinition) -> f32 {
     let query_tokens = tokenize(query);
@@ -115,7 +125,15 @@ pub fn service_name_bonus(query: &str, service: &ServiceDefinition) -> f32 {
         .iter()
         // Exact or prefix only — not `token_match_strength`, whose fuzzy
         // branch returns raw Jaro-Winkler (a typo can score ≥ 0.9).
-        .filter(|nt| query_tokens.iter().any(|qt| nt.starts_with(qt.as_str())))
+        .filter(|nt| {
+            query_tokens.iter().any(|qt| {
+                if qt.chars().count() < NAME_PREFIX_MIN_CHARS {
+                    *nt == qt
+                } else {
+                    nt.starts_with(qt.as_str())
+                }
+            })
+        })
         .count();
     SERVICE_NAME_BONUS * covered as f32 / name_tokens.len() as f32
 }
@@ -432,6 +450,20 @@ mod tests {
         // "hubspto" is a Jaro-Winkler ≥ 0.9 typo of "hubspot" — still no bonus.
         assert_eq!(service_name_bonus("hubspto", &hub), 0.0);
         assert_eq!(service_name_bonus("send a message", &gmail), 0.0);
+    }
+
+    #[test]
+    fn short_query_tokens_only_match_service_names_exactly() {
+        let slack = mk_service("slack", "Slack", None);
+        let cal = mk_service("google_calendar", "Google Calendar", None);
+        // "what's" tokenizes to "what" + "s"; the stray "s" must not prefix Slack.
+        assert_eq!(service_name_bonus("what's on my calendar", &slack), 0.0);
+        assert_eq!(service_name_bonus("go", &cal), 0.0);
+        // Three characters is enough for a prefix.
+        assert!(service_name_bonus("sla", &slack) > 0.0);
+        // A one-letter service name still matches exactly.
+        let x = mk_service("x", "X", None);
+        assert!((service_name_bonus("post on x", &x) - SERVICE_NAME_BONUS).abs() < 1e-6);
     }
 
     #[test]
