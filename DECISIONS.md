@@ -1460,7 +1460,7 @@ This amends D115 (an endpoint override no longer carries org-vault credentials),
 The disclosure input parses a form's body as JSON, as it does for a JSON body.
 **Rationale**: Keeping the body JSON until the dial means no new shape exists anywhere a reviewer or an audit row reads, and no byte reaches `approvals.replay_payload`. D114's split between descriptor and bytes holds unchanged. Multipart is only another way of writing the bytes in step two. The form is built by hand rather than with `reqwest::multipart::Form` because a `Form` is a one-shot stream, while a buffered body has to survive the 307/308 replays in `send_following_redirects`. Whether to build a form is decided by the request's `staged_uploads` list, which only a template can set, and never by the `Content-Type` header. A raw HTTP call carrying its own multipart body therefore passes through untouched. `describe` lists a form's file fields even when the file was omitted, so such a form still goes out as one. The file field stays a list of `{upload_id}`, the same as `email.send`'s `attachments`, so an agent learns one shape. `maxItems: 1` documents an upstream that reads a single part, but nothing enforces it: a second item goes out as a second part, and the upstream decides what to do with it.
 
-## D-NEXT: Users are addressed by UUID or email, never by display name
+## D129: Users are addressed by UUID or email, never by display name
 
 **Date**: 2026-10-14
 **Decision**: A user's display name (`identities.name`, the IdP's `name` claim) no longer serves as an address anywhere.
