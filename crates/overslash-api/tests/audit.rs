@@ -1851,7 +1851,8 @@ async fn test_query_audit_log_overwrites_filter_org_id() {
 #[tokio::test]
 async fn test_audit_api_includes_identity_path() {
     let (pool, fx) = common::test_pool_bootstrapped().await;
-    let (base, key, _org_id, _ident_id, client) = setup_with_perm(pool, &fx, "http:**").await;
+    let (base, key, _org_id, _ident_id, client) =
+        setup_with_perm(pool.clone(), &fx, "http:**").await;
     let mock_addr = start_mock().await;
 
     client
@@ -1874,7 +1875,6 @@ async fn test_audit_api_includes_identity_path() {
         path.starts_with("spiffe://"),
         "expected SPIFFE-format path, got {path}"
     );
-    assert!(path.contains("/user/test-user"), "got {path}");
     assert!(path.contains("/agent/test-agent"), "got {path}");
 
     // The id list should align: one id per `(kind, name)` unit (user + agent = 2).
@@ -1882,6 +1882,30 @@ async fn test_audit_api_includes_identity_path() {
         .as_array()
         .expect("identity_path_ids should be an array");
     assert_eq!(ids.len(), 2, "expected 2 path ids for user→agent chain");
+    let user_id: Uuid = ids[0].as_str().unwrap().parse().unwrap();
+
+    // The fixture user has no email, so its unit falls back to the UUID —
+    // never the display name, which is editable and not unique.
+    assert!(path.contains(&format!("/user/{user_id}/")), "got {path}");
+    assert!(!path.contains("test-user"), "display name leaked: {path}");
+
+    // Give the user an email and a display name that differs from it. The
+    // path is built at read time, so the same audit row now names the user by
+    // email, and the display name still appears nowhere.
+    sqlx::query("UPDATE identities SET email = $1, name = $2 WHERE id = $3")
+        .bind("ada@example.com")
+        .bind("Ada Lovelace")
+        .bind(user_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let entries = fetch_audit_with(&base, &client, &key, "action=action.executed").await;
+    let path = entries[0]["identity_path"].as_str().unwrap();
+    assert!(
+        path.contains("/user/ada@example.com/agent/test-agent"),
+        "got {path}"
+    );
+    assert!(!path.contains("Lovelace"), "display name leaked: {path}");
 }
 
 #[tokio::test]

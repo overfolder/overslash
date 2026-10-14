@@ -1,6 +1,9 @@
 // Parsing for SPIFFE-style identity paths.
 // Format: spiffe://<org>/<kind>/<name>/<kind>/<name>/...
 //
+// `user` units are named by email and `agent` units by name (see the API's
+// services/identity_path.rs) — never by a user's display name.
+//
 // Each `kind/name` pair is one identity unit. The leading `spiffe://` scheme
 // and the org slug are stripped/handled separately. `ids` carries one UUID per
 // `(kind, name)` unit, aligned in order (no id for the org slug).
@@ -26,17 +29,12 @@ export function parseIdentityPath(path: string, ids: string[] = []): IdentitySeg
 		const kind = parts[i];
 		const name = parts[i + 1];
 		const id = ids[unitIndex];
-		// Agent units link by id when available so /agents/<id> can resolve
-		// directly without a name → id lookup. User units stay name-keyed to
-		// match the /users/[name] route. If the caller hasn't supplied ids
-		// (legacy), fall back to name-keyed agent links and accept the (rare)
+		// Units link by id when available. Without ids (legacy callers) a user
+		// falls back to its segment — an email, which /users/[id] also
+		// accepts — and an agent to its name, accepting the (rare)
 		// name-collision risk.
-		const href =
-			kind === 'user'
-				? `/users/${name}`
-				: id
-					? `/agents/${id}`
-					: `/agents/${name}`;
+		const ref = encodeURIComponent(id ?? name);
+		const href = kind === 'user' ? `/users/${ref}` : `/agents/${ref}`;
 		out.push({ type: 'unit', kind, name, href });
 		unitIndex += 1;
 	}
@@ -46,9 +44,8 @@ export function parseIdentityPath(path: string, ids: string[] = []): IdentitySeg
 export interface IdentityUnit {
 	name: string;
 	href: string;
-	/** Identity UUID for this unit, when the caller supplied aligned `ids`.
-	 *  User units are name-keyed for their href but still carry an id here so
-	 *  callers can match against a known identity (e.g. the logged-in user). */
+	/** Identity UUID for this unit, when the caller supplied aligned `ids` —
+	 *  lets callers match against a known identity (e.g. the logged-in user). */
 	id: string | null;
 }
 

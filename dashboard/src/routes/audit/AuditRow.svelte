@@ -32,9 +32,9 @@
 		ontoggle: () => void;
 		/** Identity id of the logged-in user, so their own rows show a "Me" pill. */
 		currentUserId?: string | null;
-		/** Org identities keyed by id, so a path unit can be labelled by email
-		 *  rather than by the display name frozen into the SPIFFE path — and so
-		 *  an agent unit can carry its client mark. */
+		/** Org identities keyed by id, so a path unit can be labelled by the
+		 *  domain-stripped email, a recorded name can be compared against the
+		 *  live display name, and an agent unit can carry its client mark. */
 		identityById?: Map<
 			string,
 			IdentityLike & {
@@ -61,10 +61,10 @@
 	const isMe = $derived(!!currentUserId && units.user?.id === currentUserId);
 
 	// Users are labelled by (domain-stripped) email everywhere in the dashboard;
-	// the audit table is no exception. The path only carries the IdP display
-	// name, so resolve the unit's id against the org's identities and fall back
-	// to the path name when it doesn't resolve (identity outside the fetched
-	// set, or a legacy row with no aligned ids).
+	// the audit table is no exception. The path's user unit is the full email,
+	// so resolve the unit's id against the org's identities for the shortened
+	// label and fall back to the path segment when it doesn't resolve (identity
+	// outside the fetched set, or a legacy row with no aligned ids).
 	const userDisplay = $derived.by(() => {
 		const i = units.user?.id ? identityById.get(units.user.id) : null;
 		return i ? fmt.format(i) : null;
@@ -92,17 +92,22 @@
 	// labels use. A leaf outside the fetched set (or a legacy row with no
 	// aligned ids) simply has no icon, and the link renders alone as before.
 	const leafIcon = $derived(units.leaf?.id ? identityById.get(units.leaf.id) : null);
-	const names = $derived(recordedNames(entry, units));
+	const names = $derived(
+		recordedNames(
+			entry,
+			units,
+			units.user?.id ? (identityById.get(units.user.id)?.name ?? null) : null
+		)
+	);
 	const renamedSince = $derived(names.actor.renamed);
 	const leafLabel = $derived(names.actor.label);
 	const leafTitle = $derived(
 		renamedSince ? `now ${names.actor.live} — ${chainTitle}` : chainTitle
 	);
-	// The User column normally renders an *email* resolved live by id, and an
-	// email does not move when a display name does — so it is only marked when
-	// it has fallen back to rendering the path's name, which is the value that
-	// actually changed.
-	const userNameIsLive = $derived(!userDisplay && names.user.renamed);
+	// The User column renders an email — resolved by id, or the path's own
+	// user segment — and an email does not move when a display name does, so
+	// the column itself is never marked renamed. A display-name change shows
+	// in the expanded pane's "Recorded as" line.
 
 	function relativeTime(iso: string): string {
 		const then = new Date(iso).getTime();
@@ -305,9 +310,8 @@
 		{:else if units.user}
 			<a
 				class="identity-link"
-				class:renamed={userNameIsLive}
 				href={units.user.href}
-				title={userNameIsLive ? `recorded as ${names.user.recorded}` : userDisplay?.title}
+				title={userDisplay?.title ?? units.user.name}
 				onclick={(e) => e.stopPropagation()}
 			>{userDisplay?.primary ?? units.user.name}</a>
 		{:else if entry.owner_user_name}

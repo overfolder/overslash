@@ -12,6 +12,7 @@
 	import RememberControl from './approval/RememberControl.svelte';
 	import ExpiryControl from './approval/ExpiryControl.svelte';
 	import { relativeTime } from '#lib/utils/time.ts';
+	import { shortEmail } from '#lib/identityDisplay.ts';
 	import { createResolution } from '#lib/approvals/resolution.svelte.ts';
 	import { pushToast } from '#lib/stores/toasts.svelte.ts';
 	import {
@@ -137,7 +138,15 @@
 		return units;
 	}
 	const idUnits = $derived(parseIdentity(current.identity_path));
-	const userNode = $derived(idUnits.find((u) => u.kind === 'user')?.name ?? null);
+	// The user unit carries the email; strip the domain the same way every
+	// other surface labels a user.
+	const allowedDomains = $derived(
+		(page.data as { allowedDomains?: string[] })?.allowedDomains ?? []
+	);
+	const userNode = $derived.by(() => {
+		const name = idUnits.find((u) => u.kind === 'user')?.name;
+		return name ? shortEmail(name, allowedDomains) : null;
+	});
 	const agentName = $derived(
 		idUnits.length ? idUnits[idUnits.length - 1].name : current.requesting_identity_id.slice(0, 8)
 	);

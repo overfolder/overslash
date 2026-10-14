@@ -6,11 +6,13 @@
 //! path uses when an invited "admin" is provisioned. Without the flag + group
 //! a role='admin' membership does NOT pass `AdminAcl` (see `extractors.rs`).
 
+use crate::services::identity_ref;
 use axum::{
     Json, Router,
     extract::{Path, State},
     routing::patch,
 };
+use overslash_core::identity_path::IdentityRef;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
@@ -56,9 +58,10 @@ async fn update_member_role(
     AdminAcl(acl): AdminAcl,
     scope: OrgScope,
     ip: ClientIp,
-    Path(identity_id): Path<Uuid>,
+    Path(identity_id): Path<IdentityRef>,
     Json(req): Json<UpdateMemberRoleRequest>,
 ) -> Result<Json<MemberRoleResponse>> {
+    let identity_id = identity_ref::resolve(&scope, &identity_id).await?;
     let make_admin = match req.role.as_str() {
         membership::ROLE_ADMIN => true,
         membership::ROLE_MEMBER => false,
