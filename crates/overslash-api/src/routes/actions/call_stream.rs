@@ -36,7 +36,7 @@ use super::{approval_detail::compute_disclosure, tags};
 pub(super) struct InlineStream<'a> {
     pub(super) url: &'a str,
     pub(super) headers: &'a HashMap<String, String>,
-    pub(super) body: Option<&'a str>,
+    pub(super) body: Option<http_caller::Payload<'a>>,
     pub(super) timeout: CallTimeout,
     pub(super) offer_prefer_stream: bool,
     pub(super) audit_body_mode: AuditResponseBodyMode,
