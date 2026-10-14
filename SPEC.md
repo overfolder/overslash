@@ -663,7 +663,7 @@ When an approval is created, Overslash derives the most specific permission keys
 {
   "id": "apr_abc123",
   "status": "pending",
-  "identity": "spiffe://acme/user/alice/agent/henry",
+  "identity": "spiffe://acme/user/alice@acme.com/agent/henry",
   "derived_keys": [
     { "key": "github:create_pull_request:repo=overfolder/backend",
       "service": "github", "action": "create_pull_request",

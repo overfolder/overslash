@@ -1,8 +1,10 @@
+use crate::services::identity_ref;
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
     routing::{get, post, put},
 };
+use overslash_core::identity_path::IdentityRef;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
@@ -51,13 +53,13 @@ struct PutSecretRequest {
 /// unique per vault, not per org, so a name alone is not an address.
 ///
 /// * neither set — the caller's own user vault (an agent's is its owner's)
-/// * `owner=<user identity id>` — that user's vault; admin-only unless it is
-///   the caller's own
+/// * `owner=<user identity id or email>` — that user's vault; admin-only
+///   unless it is the caller's own
 /// * `scope=org` — the org-wide vault; admin-only
 #[derive(Deserialize, Default)]
 struct NamespaceQuery {
     #[serde(default)]
-    owner: Option<Uuid>,
+    owner: Option<IdentityRef>,
     #[serde(default)]
     scope: Option<String>,
 }
@@ -78,10 +80,16 @@ async fn select_namespace(
     q: &NamespaceQuery,
 ) -> Result<Option<SecretNamespace>> {
     let own = own_namespace(scope, identity_id).await?;
-    let wanted = match (q.scope.as_deref(), q.owner) {
+    let wanted = match (q.scope.as_deref(), &q.owner) {
         (Some("org"), None) => SecretNamespace::Org,
         (Some("user") | None, None) => return Ok(Some(own)),
-        (Some("user") | None, Some(owner)) => SecretNamespace::User(owner),
+        // An unknown email is out of reach like any other vault: `None`, so
+        // the 404 does not reveal whether the address is a member.
+        (Some("user") | None, Some(owner)) => match identity_ref::resolve(scope, owner).await {
+            Ok(owner) => SecretNamespace::User(owner),
+            Err(AppError::NotFound(_)) => return Ok(None),
+            Err(e) => return Err(e),
+        },
         (Some(other), _) => {
             return Err(AppError::BadRequest(format!(
                 "invalid scope `{other}`: expected `user` or `org`, and `owner` only with `user`"

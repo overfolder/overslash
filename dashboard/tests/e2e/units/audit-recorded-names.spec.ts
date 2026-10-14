@@ -34,14 +34,17 @@ function entry(over: Partial<AuditEntry> = {}): AuditEntry {
 	};
 }
 
-const AGENT_PATH = 'spiffe://acme/user/alice/agent/henry';
-const USER_PATH = 'spiffe://acme/user/alice';
+// The path's user unit is the email; the user's live display name comes from
+// the identity record and is passed separately.
+const AGENT_PATH = 'spiffe://acme/user/alice@acme.com/agent/henry';
+const USER_PATH = 'spiffe://acme/user/alice@acme.com';
 
 test('a renamed agent reports against the leaf', () => {
 	const units = identityUnits(AGENT_PATH, ['u1', 'a1']);
 	const names = recordedNames(
 		entry({ identity_name: 'deploy-bot', owner_user_name: 'alice' }),
-		units
+		units,
+		'alice'
 	);
 	expect(names.actor).toMatchObject({ recorded: 'deploy-bot', live: 'henry', renamed: true });
 	expect(names.actor.label).toBe('deploy-bot');
@@ -54,7 +57,8 @@ test('a renamed user acting directly is reported, not silently skipped', () => {
 	expect(units.leaf).toBeNull(); // the reason a leaf-only comparison misses this
 	const names = recordedNames(
 		entry({ identity_name: 'alice.old', owner_user_name: 'alice.old' }),
-		units
+		units,
+		'alice'
 	);
 	expect(names.actor).toMatchObject({ recorded: 'alice.old', live: 'alice', renamed: true });
 	expect(names.actorIsAgent).toBe(false);
@@ -62,14 +66,22 @@ test('a renamed user acting directly is reported, not silently skipped', () => {
 
 test('an unrenamed identity reports no divergence', () => {
 	const units = identityUnits(AGENT_PATH, ['u1', 'a1']);
-	const names = recordedNames(entry({ identity_name: 'henry', owner_user_name: 'alice' }), units);
+	const names = recordedNames(
+		entry({ identity_name: 'henry', owner_user_name: 'alice' }),
+		units,
+		'alice'
+	);
 	expect(names.actor.renamed).toBe(false);
 	expect(names.user.renamed).toBe(false);
 });
 
 test('a renamed owner is reported separately from the actor', () => {
 	const units = identityUnits(AGENT_PATH, ['u1', 'a1']);
-	const names = recordedNames(entry({ identity_name: 'henry', owner_user_name: 'alice.old' }), units);
+	const names = recordedNames(
+		entry({ identity_name: 'henry', owner_user_name: 'alice.old' }),
+		units,
+		'alice'
+	);
 	expect(names.actor.renamed).toBe(false);
 	expect(names.user).toMatchObject({ recorded: 'alice.old', live: 'alice', renamed: true });
 });
@@ -90,4 +102,24 @@ test('a deleted identity has a record but no live chain, and is not "renamed"', 
 	expect(names.actor).toMatchObject({ recorded: 'gone-bot', live: null, renamed: false });
 	// The label is still the recorded name — that row used to render nothing.
 	expect(names.actor.label).toBe('gone-bot');
+});
+
+test('the email in the path is never compared against a recorded display name', () => {
+	// Without the live display name (identity outside the fetched set) there
+	// is nothing to compare: `Alice Liddell` vs `alice@acme.com` is not a rename.
+	const units = identityUnits(USER_PATH, ['u1']);
+	const names = recordedNames(
+		entry({ identity_name: 'Alice Liddell', owner_user_name: 'Alice Liddell' }),
+		units
+	);
+	expect(names.actor.renamed).toBe(false);
+	expect(names.user.renamed).toBe(false);
+	expect(names.actor.label).toBe('Alice Liddell');
+});
+
+test('a user row that recorded nothing is labelled by the path email', () => {
+	const units = identityUnits(USER_PATH, ['u1']);
+	const names = recordedNames(entry(), units);
+	expect(names.actor.label).toBe('alice@acme.com');
+	expect(names.user.label).toBe('alice@acme.com');
 });

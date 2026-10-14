@@ -29,6 +29,7 @@ pub mod https_policy;
 pub mod hybrid;
 pub mod icon_url;
 pub mod identity_path;
+pub mod identity_ref;
 pub mod inbox;
 pub mod invite_adoption;
 pub mod invite_email;

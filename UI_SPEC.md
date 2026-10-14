@@ -635,7 +635,7 @@ Accessible by clicking the user badge in the top bar. Shows the authenticated us
 ### Identity
 
 - **Name**, **email**, **avatar** (from IDP)
-- **Identity path**: displayed as `acme / user / alice` — each segment is a clickable link (org → org dashboard, user → this profile). *(Design note: segments mirror the SPIFFE ID path structure.)*
+- **Identity path**: displayed as `acme / user / alice` — each segment is a clickable link (org → org dashboard, user → this profile at `/users/<uuid>`). *(Design note: segments mirror the SPIFFE ID path structure.)*
 - **Org**: which org the user belongs to, and their role (admin, member, read-only)
 - **Login method**: which IDP was used (Google, GitHub, corporate SSO, dev login)
 - **Created / Last login** timestamps
@@ -1297,12 +1297,12 @@ Each row shows enough to scan without clicking:
 ```
 Timestamp            Identity (SPIFFE)                                    Event              Service        Result
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-2m ago               spiffe://acme/user/alice/agent/henry/sa/researcher   Action executed    GitHub         ✓ 200
-5m ago               spiffe://acme/user/alice/agent/henry                 Approval resolved  —              Allowed (24h)
-12m ago              spiffe://acme/user/alice/agent/henry/sa/emailer      Action executed    Gmail          ✗ 403
-15m ago              spiffe://acme/user/alice                             Secret accessed    Stripe         ✓ injected
-18m ago              spiffe://acme/user/alice/agent/henry                 Connection changed Google         ✓ reconnected
-1h ago               spiffe://acme/user/alice/agent/henry/sa/researcher   Approval created   Slack          ⏳ pending
+2m ago               spiffe://acme/user/alice@acme.com/agent/henry/sa/researcher Action executed    GitHub         ✓ 200
+5m ago               spiffe://acme/user/alice@acme.com/agent/henry        Approval resolved  —              Allowed (24h)
+12m ago              spiffe://acme/user/alice@acme.com/agent/henry/sa/emailer Action executed    Gmail          ✗ 403
+15m ago              spiffe://acme/user/alice@acme.com                    Secret accessed    Stripe         ✓ injected
+18m ago              spiffe://acme/user/alice@acme.com/agent/henry        Connection changed Google         ✓ reconnected
+1h ago               spiffe://acme/user/alice@acme.com/agent/henry/sa/researcher Approval created   Slack          ⏳ pending
 ```
 
 - **Timestamp** — relative for recent, absolute for older. Hover shows full UTC + local.

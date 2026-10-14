@@ -283,7 +283,7 @@ export interface ApprovalResponse {
 	 *  on explicit BubbleUp or via the per-org auto-bubble timer. */
 	current_resolver_identity_id: string;
 	/** SPIFFE-style hierarchical path of the requesting identity, e.g.
-	 *  `spiffe://acme/user/alice/agent/henry`. May be null if the chain
+	 *  `spiffe://acme/user/alice@acme.com/agent/henry`. May be null if the chain
 	 *  could not be resolved. */
 	identity_path: string | null;
 	/** Identity ids for each `(kind, name)` unit in `identity_path`, in the

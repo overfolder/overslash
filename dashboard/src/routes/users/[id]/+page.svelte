@@ -7,7 +7,7 @@
 		data
 	}: {
 		data: {
-			requestedName: string;
+			requestedRef: string;
 			identity: Identity | null;
 			identities: Identity[];
 			allowedDomains: string[];
@@ -15,17 +15,15 @@
 	} = $props();
 
 	const ident = $derived(data.identity);
-	// This route stays name-keyed (SPIFFE path segments carry names, and
-	// #lib/identityPath builds /users/<name> from them), but the page itself
-	// labels the user by email like every other surface — otherwise an audit-log
-	// link reading `ada` lands on a page headed `Ada Lovelace`.
+	// The route is keyed by UUID (or email); the page labels the user by email
+	// like every other surface, with the display name demoted to a detail row.
 	const display = $derived(ident ? formatIdentity(ident, data.allowedDomains) : null);
 	const agents = $derived(
 		ident ? data.identities.filter((i) => i.owner_id === ident.id) : []
 	);
 </script>
 
-<svelte:head><title>{data.requestedName} · Users · Overslash</title></svelte:head>
+<svelte:head><title>{display?.primary ?? 'User'} · Users · Overslash</title></svelte:head>
 
 <section class="page">
 	<a class="back" href="/members">← Back to members</a>
@@ -33,7 +31,7 @@
 	{#if !ident}
 		<div class="empty">
 			<h1>User not found</h1>
-			<p>No user named <span class="mono">{data.requestedName}</span> in this org.</p>
+			<p>No user <span class="mono">{data.requestedRef}</span> in this org.</p>
 		</div>
 	{:else}
 		<header class="header">
