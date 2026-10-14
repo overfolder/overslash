@@ -1,3 +1,6 @@
+use crate::error::AppError;
+use crate::services::identity_ref;
+use overslash_core::identity_path::IdentityRef;
 use std::collections::HashMap;
 
 use axum::{Json, Router, routing::get};
@@ -74,7 +77,8 @@ struct AuditQuery {
     before_id: Option<Uuid>,
     action: Option<String>,
     resource_type: Option<String>,
-    identity_id: Option<Uuid>,
+    /// Exact actor: an identity UUID, or a user's email.
+    identity_id: Option<IdentityRef>,
     /// Free-text search over action, description and identity name. Comma
     /// separated, and every term must match (AND) — the same convention as
     /// `tag` and `identity_kind`, so the search bar's text bubbles narrow the
@@ -205,11 +209,19 @@ async fn query_audit(
             .filter(|t| !t.is_empty())
             .collect::<Vec<_>>()
     });
+    // A filter is not an address: an email naming nobody (unknown, or an
+    // archived user — the lookup matches live users only) matches no rows,
+    // the same empty page an unknown UUID gets, rather than a 404.
+    let identity_id = match identity_ref::resolve_opt(&scope, params.identity_id.as_ref()).await {
+        Ok(id) => id,
+        Err(AppError::NotFound(_)) => return Ok(Json(Vec::new())),
+        Err(e) => return Err(e),
+    };
     let filter = AuditFilter {
         org_id: scope.org_id(),
         action: params.action,
         resource_type: params.resource_type,
-        identity_id: params.identity_id,
+        identity_id,
         since: params.since,
         until: params.until,
         q_terms: q_terms.filter(|v| !v.is_empty()),

@@ -2,6 +2,8 @@
 //! plus admin member-removal and the `/v1/whoami` self-introspection probe.
 
 use super::*;
+use crate::services::identity_ref;
+use overslash_core::identity_path::IdentityRef;
 
 /// Bearer-friendly self-introspection for API-key callers (CLI, MCP).
 /// Returns the calling identity's `identity_id`/`org_id`/`kind` so a
@@ -121,9 +123,10 @@ pub(super) async fn update_identity(
     AdminAcl(acl): AdminAcl,
     scope: OrgScope,
     ip: ClientIp,
-    Path(id): Path<Uuid>,
+    Path(id): Path<IdentityRef>,
     Json(req): Json<UpdateIdentityRequest>,
 ) -> Result<Json<IdentityResponse>> {
+    let id = identity_ref::resolve(&scope, &id).await?;
     // AdminAcl already enforces admin-level access. Identity-mutation is
     // intentionally admin-only because it can rewire ownership chains and
     // delete agents/users.
@@ -264,8 +267,9 @@ pub(super) async fn delete_identity(
     AdminAcl(acl): AdminAcl,
     scope: OrgScope,
     ip: ClientIp,
-    Path(id): Path<Uuid>,
+    Path(id): Path<IdentityRef>,
 ) -> Result<StatusCode> {
+    let id = identity_ref::resolve(&scope, &id).await?;
     use overslash_db::repos::identity::DeleteLeafOutcome;
 
     // Look the target up first so we can branch on kind. A `user`-kind identity
@@ -616,9 +620,10 @@ pub(super) async fn list_identities(
 pub(super) async fn list_children(
     State(state): State<AppState>,
     scope: OrgScope,
-    Path(id): Path<Uuid>,
+    Path(id): Path<IdentityRef>,
     Query(q): Query<ListIdentitiesQuery>,
 ) -> Result<Json<Vec<IdentityResponse>>> {
+    let id = identity_ref::resolve(&scope, &id).await?;
     // Verify the parent itself lives in this org. Cross-tenant ids return None.
     let _ident = scope
         .get_identity(id)
@@ -639,8 +644,9 @@ pub(super) async fn list_children(
 pub(super) async fn get_chain(
     State(state): State<AppState>,
     scope: OrgScope,
-    Path(id): Path<Uuid>,
+    Path(id): Path<IdentityRef>,
 ) -> Result<Json<Vec<IdentityResponse>>> {
+    let id = identity_ref::resolve(&scope, &id).await?;
     let _ident = scope
         .get_identity(id)
         .await?

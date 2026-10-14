@@ -1,3 +1,5 @@
+use crate::services::identity_ref;
+use overslash_core::identity_path::IdentityRef;
 use std::collections::{HashMap, HashSet};
 
 use axum::{
@@ -140,7 +142,8 @@ async fn create_permission(
 
 #[derive(Deserialize)]
 struct ListPermissionsQuery {
-    identity_id: Option<Uuid>,
+    /// An identity UUID, or a user's email.
+    identity_id: Option<IdentityRef>,
 }
 
 async fn list_permissions(
@@ -159,7 +162,8 @@ async fn list_permissions(
     let caller = acl
         .identity_id
         .ok_or_else(|| AppError::BadRequest("no identity on this key".into()))?;
-    let identity_id = if let Some(target) = q.identity_id {
+    let identity_id = if let Some(target) = &q.identity_id {
+        let target = identity_ref::resolve(&scope, target).await?;
         scope
             .get_identity(target)
             .await?

@@ -1,3 +1,5 @@
+use crate::services::identity_ref;
+use overslash_core::identity_path::IdentityRef;
 use std::collections::HashSet;
 
 use axum::{
@@ -807,8 +809,9 @@ async fn unassign_identity(
     AdminAcl(acl): AdminAcl,
     scope: OrgScope,
     ip: ClientIp,
-    Path((group_id, identity_id)): Path<(Uuid, Uuid)>,
+    Path((group_id, identity_id)): Path<(Uuid, IdentityRef)>,
 ) -> Result<Json<serde_json::Value>> {
+    let identity_id = identity_ref::resolve(&scope, &identity_id).await?;
     let auth = acl;
     // Verify group belongs to org
     let grp = scope

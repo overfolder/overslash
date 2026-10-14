@@ -2,7 +2,9 @@
 //!
 //! Overslash renders identities throughout the UI (audit log, approval pages,
 //! detail panels) as a hierarchical SPIFFE-like path of the form
-//! `spiffe://<org_slug>/<kind>/<name>/<kind>/<name>/...`. The leading
+//! `spiffe://<org_slug>/<kind>/<name>/<kind>/<name>/...`. User units are
+//! named by email and agents by name (see the API's
+//! `services::identity_path`); this builder only joins segments. The leading
 //! `spiffe://` scheme is conventional and may be stripped for display.
 //!
 //! See `UI_SPEC.md` §"Audit Log" for the rendering rules. Sub-agents are
@@ -21,11 +23,11 @@ pub fn normalize_kind(kind: &str) -> &str {
 /// ```
 /// use overslash_core::identity_path::build_spiffe_path;
 /// let p = build_spiffe_path("acme", &[
-///     ("user", "alice"),
+///     ("user", "alice@acme.com"),
 ///     ("agent", "henry"),
 ///     ("agent", "researcher"),
 /// ]);
-/// assert_eq!(p, "spiffe://acme/user/alice/agent/henry/agent/researcher");
+/// assert_eq!(p, "spiffe://acme/user/alice@acme.com/agent/henry/agent/researcher");
 /// ```
 pub fn build_spiffe_path(org_slug: &str, segments: &[(&str, &str)]) -> String {
     let mut s = String::with_capacity(16 + org_slug.len() + segments.len() * 16);
@@ -133,24 +135,97 @@ pub fn parse_target_path(raw: &str) -> Result<TargetPath<'_>, TargetPathError> {
         return Err(TargetPathError::TooDeep);
     }
 
-    let root_raw = segments[0];
-    // UUID first: an identity id is the pre-existing contract and can never
-    // contain '@', so there's no overlap to disambiguate.
-    let root = match root_raw.parse::<uuid::Uuid>() {
-        Ok(id) => TargetRoot::Id(id),
-        // Structural check only — the same bar the invite path applies. The
-        // email is matched against `identities.email`, which was verified by
-        // an IdP at sign-in; nothing here trusts the string itself.
-        Err(_) if root_raw.contains('@') && !root_raw.contains(char::is_whitespace) => {
-            TargetRoot::Email(root_raw)
-        }
-        Err(_) => return Err(TargetPathError::RootNotUuidOrEmail),
-    };
+    let root = parse_root(segments[0]).ok_or(TargetPathError::RootNotUuidOrEmail)?;
 
     Ok(TargetPath {
         root,
         agents: segments[1..].to_vec(),
     })
+}
+
+/// Classify a string as an identity UUID or a user email. Shared by the
+/// impersonation target root and [`IdentityRef`], so "names a user" means the
+/// same thing in a header, a path segment, and a query arg.
+fn parse_root(raw: &str) -> Option<TargetRoot<'_>> {
+    // UUID first: an identity id is the pre-existing contract and can never
+    // contain '@', so there's no overlap to disambiguate.
+    match raw.parse::<uuid::Uuid>() {
+        Ok(id) => Some(TargetRoot::Id(id)),
+        // Structural check only — the same bar the invite path applies. The
+        // email is matched against `identities.email`, which was verified by
+        // an IdP at sign-in; nothing here trusts the string itself.
+        Err(_) if raw.contains('@') && !raw.contains(char::is_whitespace) => {
+            Some(TargetRoot::Email(raw))
+        }
+        Err(_) => None,
+    }
+}
+
+/// An identity named in a path segment or query arg: its UUID, or — for a
+/// user — its email. Parsed at the boundary (`Path<IdentityRef>`,
+/// `Option<IdentityRef>` in a `Query` struct); the API resolves an email to a
+/// live user in the caller's org, so an email can never reach across tenants.
+///
+/// ```
+/// use overslash_core::identity_path::IdentityRef;
+///
+/// let r: IdentityRef = "ada@acme.com".parse().unwrap();
+/// assert_eq!(r, IdentityRef::Email("ada@acme.com".into()));
+/// assert!(matches!(
+///     "6f1a4d3c-0000-4000-8000-000000000000".parse::<IdentityRef>().unwrap(),
+///     IdentityRef::Id(_)
+/// ));
+/// assert!("Ada Lovelace".parse::<IdentityRef>().is_err());
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IdentityRef {
+    Id(uuid::Uuid),
+    Email(String),
+}
+
+/// An [`IdentityRef`] that is neither a UUID nor an email.
+#[derive(Debug, PartialEq, Eq)]
+pub struct IdentityRefError;
+
+impl std::fmt::Display for IdentityRefError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("expected an identity UUID or a user email")
+    }
+}
+
+impl std::error::Error for IdentityRefError {}
+
+impl std::str::FromStr for IdentityRef {
+    type Err = IdentityRefError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match parse_root(s.trim()).ok_or(IdentityRefError)? {
+            TargetRoot::Id(id) => Ok(Self::Id(id)),
+            TargetRoot::Email(email) => Ok(Self::Email(email.to_string())),
+        }
+    }
+}
+
+impl std::fmt::Display for IdentityRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Id(id) => id.fmt(f),
+            Self::Email(email) => f.write_str(email),
+        }
+    }
+}
+
+impl From<uuid::Uuid> for IdentityRef {
+    fn from(id: uuid::Uuid) -> Self {
+        Self::Id(id)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for IdentityRef {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let raw = String::deserialize(d)?;
+        raw.parse().map_err(serde::de::Error::custom)
+    }
 }
 
 /// Maximum length, in characters, of a display name supplied via
@@ -295,8 +370,8 @@ mod tests {
     #[test]
     fn user_only() {
         assert_eq!(
-            build_spiffe_path("acme", &[("user", "alice")]),
-            "spiffe://acme/user/alice"
+            build_spiffe_path("acme", &[("user", "alice@acme.com")]),
+            "spiffe://acme/user/alice@acme.com"
         );
     }
 
@@ -306,12 +381,12 @@ mod tests {
             build_spiffe_path(
                 "acme",
                 &[
-                    ("user", "alice"),
+                    ("user", "alice@acme.com"),
                     ("agent", "henry"),
                     ("sub_agent", "researcher")
                 ]
             ),
-            "spiffe://acme/user/alice/agent/henry/agent/researcher"
+            "spiffe://acme/user/alice@acme.com/agent/henry/agent/researcher"
         );
     }
 
@@ -521,5 +596,40 @@ mod display_name_tests {
         // must not be refused for being fat.
         let wide = "é".repeat(MAX_DISPLAY_NAME_CHARS);
         assert_eq!(parse_display_name(&wide).unwrap(), wide);
+    }
+}
+
+#[cfg(test)]
+mod identity_ref_tests {
+    use super::*;
+
+    #[test]
+    fn parses_uuid_email_and_rejects_names() {
+        let id = uuid::Uuid::new_v4();
+        assert_eq!(
+            id.to_string().parse::<IdentityRef>(),
+            Ok(IdentityRef::Id(id))
+        );
+        assert_eq!(
+            " Ada@Acme.com ".parse::<IdentityRef>(),
+            Ok(IdentityRef::Email("Ada@Acme.com".into()))
+        );
+        assert_eq!("Ada Lovelace".parse::<IdentityRef>(), Err(IdentityRefError));
+        assert_eq!("".parse::<IdentityRef>(), Err(IdentityRefError));
+        assert_eq!("a b@acme.com".parse::<IdentityRef>(), Err(IdentityRefError));
+    }
+
+    #[test]
+    fn deserializes_from_a_string() {
+        let r: IdentityRef = serde_json::from_str("\"ada@acme.com\"").unwrap();
+        assert_eq!(r, IdentityRef::Email("ada@acme.com".into()));
+        assert!(serde_json::from_str::<IdentityRef>("\"henry\"").is_err());
+    }
+
+    #[test]
+    fn display_round_trips() {
+        for raw in ["ada@acme.com", "6f1a4d3c-0000-4000-8000-000000000000"] {
+            assert_eq!(raw.parse::<IdentityRef>().unwrap().to_string(), raw);
+        }
     }
 }

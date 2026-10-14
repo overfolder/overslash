@@ -10,7 +10,7 @@ export interface AuditEntry {
 	 * no longer be resolved. */
 	owner_user_name: string | null;
 	/** SPIFFE-style hierarchical path of the actor identity, e.g.
-	 * `spiffe://acme/user/alice/agent/henry`. Null when the chain could not be
+	 * `spiffe://acme/user/alice@acme.com/agent/henry`. Null when the chain could not be
 	 * resolved (deleted identity / missing org). Render with IdentityPath. */
 	identity_path: string | null;
 	/** UUIDs aligned with each `(kind, name)` unit in `identity_path`. Empty
@@ -112,23 +112,37 @@ export interface RecordedNames {
 	actorIsAgent: boolean;
 }
 
-function compare(recorded: string | null, live: string | null): RecordedName {
+function compare(
+	recorded: string | null,
+	live: string | null,
+	fallback: string | null = live
+): RecordedName {
 	return {
 		recorded,
 		live,
 		renamed: !!recorded && !!live && recorded !== live,
-		label: recorded ?? live
+		label: recorded ?? live ?? fallback
 	};
 }
 
+/** `liveUserName` is the user's *current display name*, from the identity
+ *  record. It cannot come from the path: the path's user unit is the email,
+ *  while the row records the display name, so comparing the two would flag
+ *  every user row as renamed. Without it (identity outside the fetched set)
+ *  no user rename is reported, and the email labels a row that recorded
+ *  nothing. */
 export function recordedNames(
 	entry: AuditEntry,
-	units: { user: { name: string } | null; leaf: { name: string } | null }
+	units: { user: { name: string } | null; leaf: { name: string } | null },
+	liveUserName: string | null = null
 ): RecordedNames {
-	const liveUser = units.user?.name ?? null;
+	const liveUser = units.user ? liveUserName : null;
+	const userFallback = units.user?.name ?? null;
 	return {
-		actor: compare(entry.identity_name, units.leaf?.name ?? liveUser),
-		user: compare(entry.owner_user_name, liveUser),
+		actor: units.leaf
+			? compare(entry.identity_name, units.leaf.name)
+			: compare(entry.identity_name, liveUser, userFallback),
+		user: compare(entry.owner_user_name, liveUser, userFallback),
 		actorIsAgent: !!units.leaf
 	};
 }

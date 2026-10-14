@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.0](https://github.com/overfolder/overslash/compare/v0.19.0...v0.20.0) (2026-10-14)
+
+
+### Features
+
+* **identity:** address users by UUID or email, never display name ([#776](https://github.com/overfolder/overslash/issues/776)) ([bb9a221](https://github.com/overfolder/overslash/commit/bb9a221b5411221fe0ed9793f5b5fee880f52f9b))
+
 ## [0.19.0](https://github.com/overfolder/overslash/compare/v0.18.1...v0.19.0) (2026-10-14)
 
 

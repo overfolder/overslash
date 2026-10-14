@@ -1460,6 +1460,16 @@ This amends D115 (an endpoint override no longer carries org-vault credentials),
 The disclosure input parses a form's body as JSON, as it does for a JSON body.
 **Rationale**: Keeping the body JSON until the dial means no new shape exists anywhere a reviewer or an audit row reads, and no byte reaches `approvals.replay_payload`. D114's split between descriptor and bytes holds unchanged. Multipart is only another way of writing the bytes in step two. The form is built by hand rather than with `reqwest::multipart::Form` because a `Form` is a one-shot stream, while a buffered body has to survive the 307/308 replays in `send_following_redirects`. Whether to build a form is decided by the request's `staged_uploads` list, which only a template can set, and never by the `Content-Type` header. A raw HTTP call carrying its own multipart body therefore passes through untouched. `describe` lists a form's file fields even when the file was omitted, so such a form still goes out as one. The file field stays a list of `{upload_id}`, the same as `email.send`'s `attachments`, so an agent learns one shape. `maxItems: 1` documents an upstream that reads a single part, but nothing enforces it: a second item goes out as a second part, and the upstream decides what to do with it.
 
+## D129: Users are addressed by UUID or email, never by display name
+
+**Date**: 2026-10-14
+**Decision**: A user's display name (`identities.name`, the IdP's `name` claim) no longer serves as an address anywhere.
+- The `user` unit of a SPIFFE `identity_path` is the user's email: `spiffe://acme/user/alice@acme.com/agent/henry`. A user with no email falls back to the identity UUID. Agents keep their names. The path is built at read time, so existing audit and approval rows render the new form with no migration.
+- The dashboard's user page is `/users/<uuid>`, and `/users/<email>` also resolves. Old name-keyed links show "User not found". Redirecting them would land on whoever holds that name today.
+- API path segments and query args that name an identity also accept a user's email (`IdentityRef`, `overslash_core::identity_path`). These are `/v1/identities/{id}` and its children, chain, archive and restore routes; `/v1/org-members/{id}`; `/v1/groups/{id}/members/{id}`; and `?identity_id=` on audit, permissions and approvals, plus `?owner=` on secrets. An email resolves among the caller's org's *live* users only, matched case-insensitively. An unknown email gets the same answer as an unknown UUID. Agent-only routes and JSON bodies still take UUIDs.
+
+**Rationale**: A display name is editable and not unique. It can also contain `/`, which corrupts the path. A name-keyed URL can therefore point at a different person after a rename. The email is the handle the IdP verified, and it is the same root `X-Overslash-As` already accepts. Shortening it for display (`alice`) stays a dashboard concern (`shortEmail`). The path keeps the full, unambiguous form.
+
 ## D-NEXT: The cache is Memorystore for Valkey, authenticated by IAM
 
 **Date**: 2026-10-14
