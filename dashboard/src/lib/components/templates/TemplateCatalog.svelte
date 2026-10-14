@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
-	import { ApiError } from '$lib/session';
+	import { ApiError } from '#lib/session.ts';
 	import {
 		listTemplates,
 		listAdminTemplates,
@@ -15,18 +15,18 @@
 		listEnabledGlobals,
 		enableGlobalTemplate,
 		disableGlobalTemplate
-	} from '$lib/api/services';
-	import type { AdminTemplateSummary, DraftTemplateDetail, TemplateSummary } from '$lib/types';
-	import StatusBadge from '$lib/components/services/StatusBadge.svelte';
-	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
-	import ConfirmDialog from '$lib/components/services/ConfirmDialog.svelte';
+	} from '#lib/api/services.ts';
+	import type { AdminTemplateSummary, DraftTemplateDetail, TemplateSummary } from '#lib/types.ts';
+	import StatusBadge from '#lib/components/services/StatusBadge.svelte';
+	import ToggleSwitch from '#lib/components/ToggleSwitch.svelte';
+	import ConfirmDialog from '#lib/components/services/ConfirmDialog.svelte';
 	import SearchBar, {
 		emptySearch,
 		filterTerms,
 		matchesAllText, type SearchKey, type SearchValue
-	} from '$lib/components/SearchBar.svelte';
-	import SortableHeader from '$lib/components/SortableHeader.svelte';
-	import { compareBy, type SortDir } from '$lib/sort';
+	} from '#lib/components/SearchBar.svelte';
+	import SortableHeader from '#lib/components/SortableHeader.svelte';
+	import { compareBy, type SortDir } from '#lib/sort.ts';
 
 	let { isAdmin = false, orgId = undefined }: { isAdmin?: boolean; orgId?: string } = $props();
 

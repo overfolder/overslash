@@ -1,9 +1,9 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { onEvent, eventStream, type StreamEvent } from '$lib/stores/events.svelte';
-	import type { Identity, ServiceInstanceSummary } from '$lib/types';
+	import { onEvent, eventStream, type StreamEvent } from '#lib/stores/events.svelte.ts';
+	import type { Identity, ServiceInstanceSummary } from '#lib/types.ts';
 	import { RAW_HTTP_ID, buildGraph, type CollapseState, type MapNode } from './graph';
-	import { resolveOwner, ownerLabel } from '$lib/ownerLabel';
+	import { resolveOwner, ownerLabel } from '#lib/ownerLabel.ts';
 	import { createSim, SIZES, type CallOutcome, type Sim, type TooltipCall } from './sim';
 
 	let {
@@ -17,7 +17,7 @@
 		services?: ServiceInstanceSummary[];
 		/** The viewer, so their own services read "You" rather than their email. */
 		currentUserId?: string;
-		/** Org sign-in domains, stripped off owner emails by `$lib/ownerLabel`. */
+		/** Org sign-in domains, stripped off owner emails by `#lib/ownerLabel`. */
 		allowedDomains?: string[];
 		/** An event named an identity or a service we have never heard of — the
 		 *  fleet snapshot is stale. The page decides whether to refetch. */

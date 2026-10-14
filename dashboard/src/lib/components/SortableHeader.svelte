@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { SortDir } from '$lib/sort';
+	import type { SortDir } from '#lib/sort.ts';
 
 	let {
 		label,

@@ -5,10 +5,10 @@
 		revokeOtherSessions,
 		revokeSession,
 		type AccountSession
-	} from '$lib/api/account';
-	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
-	import { absoluteTime, relativeTime } from '$lib/utils/time';
-	import { describeUserAgent } from '$lib/utils/userAgent';
+	} from '#lib/api/account.ts';
+	import ConfirmModal from '#lib/components/ConfirmModal.svelte';
+	import { absoluteTime, relativeTime } from '#lib/utils/time.ts';
+	import { describeUserAgent } from '#lib/utils/userAgent.ts';
 
 	let sessions: AccountSession[] = $state([]);
 	let loading = $state(true);

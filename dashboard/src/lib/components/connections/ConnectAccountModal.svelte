@@ -11,11 +11,11 @@
 -->
 <script lang="ts">
 	import { onDestroy } from 'svelte';
-	import { ApiError } from '$lib/session';
-	import { createByocCredential, initiateOAuth } from '$lib/api/services';
-	import { connectViaPopup, PopupBlockedError } from '$lib/oauth-connect';
-	import type { ConnectionSummary, OAuthProviderInfo } from '$lib/types';
-	import ByocSection from '$lib/components/services/ByocSection.svelte';
+	import { ApiError } from '#lib/session.ts';
+	import { createByocCredential, initiateOAuth } from '#lib/api/services.ts';
+	import { connectViaPopup, PopupBlockedError } from '#lib/oauth-connect.ts';
+	import type { ConnectionSummary, OAuthProviderInfo } from '#lib/types.ts';
+	import ByocSection from '#lib/components/services/ByocSection.svelte';
 	import ProviderTile from './ProviderTile.svelte';
 	import { defaultScopesFor } from './providers';
 
@@ -84,7 +84,7 @@
 			}
 
 			// 2. Start the OAuth flow and complete it in a popup, polling for the
-			//    new connection row (shared mechanics — see $lib/oauth-connect).
+			//    new connection row (shared mechanics — see #lib/oauth-connect).
 			const beforeIds = new Set(existing.map((c) => c.id));
 			const resp = await initiateOAuth(
 				{ provider, scopes: defaultScopesFor(pickedProvider), byoc_credential_id: byocCredentialId },

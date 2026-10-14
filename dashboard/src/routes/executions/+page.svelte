@@ -1,11 +1,11 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
-	import { ApiError } from '$lib/session';
-	import type { ExecutionListItem } from '$lib/session';
-	import { listExecutions, type ExecutionQuery } from '$lib/api/executions';
-	import { eventStream, onEvent, EXECUTION_EVENT_TYPES } from '$lib/stores/events.svelte';
-	import { formatTime } from '$lib/utils/time';
+	import { ApiError } from '#lib/session.ts';
+	import type { ExecutionListItem } from '#lib/session.ts';
+	import { listExecutions, type ExecutionQuery } from '#lib/api/executions.ts';
+	import { eventStream, onEvent, EXECUTION_EVENT_TYPES } from '#lib/stores/events.svelte.ts';
+	import { formatTime } from '#lib/utils/time.ts';
 
 	let rows = $state<ExecutionListItem[]>([]);
 	let loading = $state(true);

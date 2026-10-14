@@ -1,16 +1,16 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
-	import { highlightJson } from '$lib/api';
-	import { createResolution } from '$lib/approvals/resolution.svelte';
+	import { highlightJson } from '#lib/api.ts';
+	import { createResolution } from '#lib/approvals/resolution.svelte.ts';
 	import {
 		extractAgentName,
 		humanize,
 		resolutionToast,
 		scopeArgSummary
-	} from '$lib/approvals/format';
-	import { pushToast } from '$lib/stores/toasts.svelte';
-	import type { ApprovalResponse } from '$lib/session';
-	import { relativeTime } from '$lib/utils/time';
+	} from '#lib/approvals/format.ts';
+	import { pushToast } from '#lib/stores/toasts.svelte.ts';
+	import type { ApprovalResponse } from '#lib/session.ts';
+	import { relativeTime } from '#lib/utils/time.ts';
 	import IdentityPath from '../IdentityPath.svelte';
 	import RiskBadge from './RiskBadge.svelte';
 	import ServiceTile from './ServiceTile.svelte';

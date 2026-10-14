@@ -45,6 +45,24 @@ variable "enable_api_lb" {
   default     = false
 }
 
+variable "api_lb_ssl_profile" {
+  description = "SSL policy profile on the API LB's HTTPS proxy (MODERN or RESTRICTED; min TLS 1.2 either way). Only used when enable_api_lb. CASA 4.1.1."
+  type        = string
+  default     = "RESTRICTED"
+}
+
+variable "api_lb_cloud_armor_preview" {
+  description = "Run the API LB's Cloud Armor WAF rules in preview (log only, never block). Only used when enable_api_lb. Flip to false only after tuning against the preview logs — docs/runbooks/lb-hardening.md."
+  type        = bool
+  default     = true
+}
+
+variable "api_lb_enable_ipv6" {
+  description = "Also serve the API LB on a global IPv6 address (one more address, a 443 + 80 forwarding-rule pair on the same proxies). Only used when enable_api_lb. Publish the `api_lb_ipv6` output as AAAA — docs/runbooks/lb-hardening.md \"IPv6\"."
+  type        = bool
+  default     = false
+}
+
 variable "extra_api_domain_mappings" {
   description = "No-LB path: list of fully-qualified hostnames to expose via 1-1 google_cloud_run_domain_mapping (e.g. [\"acme.api.dev.overslash.com\"]). Used when enable_api_lb=false to map a small set of per-org subdomains without standing up a global LB. DNS for each entry must already point at Cloud Run (CNAME ghs.googlehosted.com) and the apex must be Search-Console verified."
   type        = list(string)

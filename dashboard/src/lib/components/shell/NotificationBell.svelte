@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { notificationsStore } from '$lib/stores/shell';
+	import { notificationsStore } from '#lib/stores/shell.ts';
 
 	const count = $derived($notificationsStore.count);
 

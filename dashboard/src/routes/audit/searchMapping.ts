@@ -1,4 +1,4 @@
-import type { SearchKey, SearchValue, Term } from '$lib/search/terms';
+import type { SearchKey, SearchValue, Term } from '#lib/search/terms.ts';
 import type { AuditFilters } from './types';
 
 /** Time presets accepted by the `time` key. */
@@ -12,6 +12,7 @@ const TIME_PRESETS: Record<string, number> = {
 /** Resource types known to the backend (UI_SPEC §Audit Log "event" key). */
 const EVENT_VALUES = [
 	'action.executed',
+	'action.stream_completed',
 	'approval.created',
 	'approval.resolved',
 	'secret.accessed',

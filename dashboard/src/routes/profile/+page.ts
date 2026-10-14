@@ -4,9 +4,9 @@ import {
 	type SecretMetadata,
 	type PermissionRule,
 	type UserPreferences
-} from '$lib/session';
-import { listByocCredentials, listOAuthProviders } from '$lib/api/services';
-import type { ByocCredentialSummary, OAuthProviderInfo } from '$lib/types';
+} from '#lib/session.ts';
+import { listByocCredentials, listOAuthProviders } from '#lib/api/services.ts';
+import type { ByocCredentialSummary, OAuthProviderInfo } from '#lib/types.ts';
 
 export const load: PageLoad = async () => {
 	const [secrets, permissions, preferences, byoc, providers] = await Promise.all([

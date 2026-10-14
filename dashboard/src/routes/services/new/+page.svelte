@@ -1,8 +1,8 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
-	import { page } from '$app/stores';
+	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
-	import { ApiError, type MeIdentity } from '$lib/session';
+	import { ApiError, type MeIdentity } from '#lib/session.ts';
 	import {
 		listTemplates,
 		getTemplate,
@@ -13,7 +13,7 @@
 		activateService,
 		runActivate,
 		updateService
-	} from '$lib/api/services';
+	} from '#lib/api/services.ts';
 	import type {
 		AuthMode,
 		ConnectionSummary,
@@ -26,39 +26,39 @@
 		TemplateDetail,
 		TemplateSummary,
 		SecretNameConflictBody
-	} from '$lib/types';
-	import { listSecrets, putSecret } from '$lib/api/secrets';
-	import { connectViaPopup, PopupBlockedError } from '$lib/oauth-connect';
-	import ServiceIcon from '$lib/components/ServiceIcon.svelte';
-	import TemplateCard from '$lib/components/services/TemplateCard.svelte';
-	import StatusBadge from '$lib/components/services/StatusBadge.svelte';
-	import TestResult from '$lib/components/services/TestResult.svelte';
-	import ByocSection from '$lib/components/services/ByocSection.svelte';
+	} from '#lib/types.ts';
+	import { listSecrets, putSecret } from '#lib/api/secrets.ts';
+	import { connectViaPopup, PopupBlockedError } from '#lib/oauth-connect.ts';
+	import ServiceIcon from '#lib/components/ServiceIcon.svelte';
+	import TemplateCard from '#lib/components/services/TemplateCard.svelte';
+	import StatusBadge from '#lib/components/services/StatusBadge.svelte';
+	import TestResult from '#lib/components/services/TestResult.svelte';
+	import ByocSection from '#lib/components/services/ByocSection.svelte';
 	import SearchBar, {
 		emptySearch,
 		filterTerms,
 		matchesAllText, type SearchKey, type SearchValue
-	} from '$lib/components/SearchBar.svelte';
-	import SecretNamePicker from '$lib/components/SecretNamePicker.svelte';
-	import SecretValueField from '$lib/components/secrets/SecretValueField.svelte';
-	import ServiceCredentials from '$lib/components/ServiceCredentials.svelte';
-	import ServiceInstanceConfig from '$lib/components/ServiceInstanceConfig.svelte';
-	import ConfirmDialog from '$lib/components/services/ConfirmDialog.svelte';
-	import { cleanServiceMap } from '$lib/service-maps';
-	import { probeRejected } from '$lib/public-request';
-	import { credentialLabel, failureKind } from '$lib/setup-outcome';
-	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
-	import GroupGrantPicker from '$lib/components/groups/GroupGrantPicker.svelte';
-	import EndpointTlsHint from '$lib/components/services/EndpointTlsHint.svelte';
-	import ServiceEndpointField from '$lib/components/services/ServiceEndpointField.svelte';
-	import MoreOptions from '$lib/components/services/MoreOptions.svelte';
+	} from '#lib/components/SearchBar.svelte';
+	import SecretNamePicker from '#lib/components/SecretNamePicker.svelte';
+	import SecretValueField from '#lib/components/secrets/SecretValueField.svelte';
+	import ServiceCredentials from '#lib/components/ServiceCredentials.svelte';
+	import ServiceInstanceConfig from '#lib/components/ServiceInstanceConfig.svelte';
+	import ConfirmDialog from '#lib/components/services/ConfirmDialog.svelte';
+	import { cleanServiceMap } from '#lib/service-maps.ts';
+	import { probeRejected } from '#lib/public-request.ts';
+	import { credentialLabel, failureKind } from '#lib/setup-outcome.ts';
+	import ToggleSwitch from '#lib/components/ToggleSwitch.svelte';
+	import GroupGrantPicker from '#lib/components/groups/GroupGrantPicker.svelte';
+	import EndpointTlsHint from '#lib/components/services/EndpointTlsHint.svelte';
+	import ServiceEndpointField from '#lib/components/services/ServiceEndpointField.svelte';
+	import MoreOptions from '#lib/components/services/MoreOptions.svelte';
 	import {
 		endpointIsMain,
 		endpointRequired,
 		splitParams,
 		type EndpointFacts
-	} from '$lib/instance-fields';
-	import type { Group, GroupGrantPick } from '$lib/api/groups';
+	} from '#lib/instance-fields.ts';
+	import type { Group, GroupGrantPick } from '#lib/api/groups.ts';
 
 
 	let { data }: { data: { user: MeIdentity | null; providers: OAuthProviderInfo[]; providersLoaded: boolean; groups: Group[] } } = $props();
@@ -364,8 +364,8 @@
 		// Suggest only what a new binding may name: the creator's own vault as
 		// bare names, plus — for an org admin — the org vault as `org/<name>`.
 		// (An admin's unfiltered list spans every user's vault.)
-		const me = ($page as any).data?.user?.identity_id as string | undefined;
-		const admin = ($page as any).data?.user?.is_org_admin === true;
+		const me = (page as any).data?.user?.identity_id as string | undefined;
+		const admin = (page as any).data?.user?.is_org_admin === true;
 		Promise.all([
 			listSecrets(me ? { owner: me } : undefined),
 			admin ? listSecrets({ scope: 'org' }).catch(() => []) : Promise.resolve([])
@@ -819,7 +819,7 @@
 
 	onMount(async () => {
 		await loadTemplates();
-		const presetKey = $page.url.searchParams.get('template');
+		const presetKey = page.url.searchParams.get('template');
 		if (presetKey) {
 			const match = templates.find((t) => t.key === presetKey);
 			if (match) {

@@ -5,7 +5,7 @@
 	// NOTE: the clock is an inline SVG (1.6px stroke). The Overslash unicode
 	// glyph set has no clock, so this is a deliberate substitution.
 
-	import { TTL_OPTIONS } from '$lib/approvals/format';
+	import { TTL_OPTIONS } from '#lib/approvals/format.ts';
 
 	// `value` (bindable) drives approval usage. Rule surfaces instead pass a
 	// `displayLabel` (the real remaining time, which won't map to a fixed

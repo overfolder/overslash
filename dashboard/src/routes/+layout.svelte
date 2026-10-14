@@ -1,36 +1,36 @@
 <script lang="ts">
 	import '../app.css';
 	import type { Snippet } from 'svelte';
-	import { browser } from '$app/environment';
-	import { page } from '$app/stores';
-	import { type MeIdentity } from '$lib/session';
-	import { currentEnvironment, type AppEnv } from '$lib/env';
-	import { getVersion } from '$lib/api/version';
-	import type { BuildInfo } from '$lib/types';
+	import { browser } from '$app/env';
+	import { page } from '$app/state';
+	import { type MeIdentity } from '#lib/session.ts';
+	import { currentEnvironment, type AppEnv } from '#lib/env.ts';
+	import { getVersion } from '#lib/api/version.ts';
+	import type { BuildInfo } from '#lib/types.ts';
 	import {
 		sidebarCollapsed,
 		theme,
 		startNotificationPolling,
 		stopNotificationPolling,
 		hydrateUserPreferences
-	} from '$lib/stores/shell';
-	import { startEventStream, stopEventStream } from '$lib/stores/events.svelte';
-	import { viewport } from '$lib/stores/viewport';
-	import Sidebar from '$lib/components/shell/Sidebar.svelte';
-	import TopBar from '$lib/components/shell/TopBar.svelte';
-	import MobileTabBar from '$lib/components/shell/MobileTabBar.svelte';
-	import TrialBanner from '$lib/components/shell/TrialBanner.svelte';
-	import DevEnvBanner from '$lib/components/shell/DevEnvBanner.svelte';
-	import Toaster from '$lib/components/Toaster.svelte';
-	import { isSettingsPath } from '$lib/components/settings/sections';
+	} from '#lib/stores/shell.ts';
+	import { startEventStream, stopEventStream } from '#lib/stores/events.svelte.ts';
+	import { viewport } from '#lib/stores/viewport.ts';
+	import Sidebar from '#lib/components/shell/Sidebar.svelte';
+	import TopBar from '#lib/components/shell/TopBar.svelte';
+	import MobileTabBar from '#lib/components/shell/MobileTabBar.svelte';
+	import TrialBanner from '#lib/components/shell/TrialBanner.svelte';
+	import DevEnvBanner from '#lib/components/shell/DevEnvBanner.svelte';
+	import Toaster from '#lib/components/Toaster.svelte';
+	import { isSettingsPath } from '#lib/components/settings/sections.ts';
 
 	let { children, data }: { children: Snippet; data: { user: MeIdentity | null } } = $props();
 
 	const standalone = $derived(
-		$page.url.pathname === '/login' ||
-			$page.url.pathname.startsWith('/secrets/provide/') ||
-			$page.url.pathname.startsWith('/services/setup/') ||
-			$page.url.pathname.startsWith('/oauth/consent')
+		page.url.pathname === '/login' ||
+			page.url.pathname.startsWith('/secrets/provide/') ||
+			page.url.pathname.startsWith('/services/setup/') ||
+			page.url.pathname.startsWith('/oauth/consent')
 	);
 	const isAdmin = $derived(data?.user?.is_org_admin === true);
 	const isInstanceAdmin = $derived(data?.user?.is_instance_admin === true);
@@ -98,10 +98,10 @@
 	// The Live Map wants the whole pane: `.content`'s padding would frame a
 	// full-bleed canvas, and its `overflow-y: auto` would let the graph push
 	// the page taller instead of being clipped to it.
-	const fullBleed = $derived($page.url.pathname.startsWith('/map'));
+	const fullBleed = $derived(page.url.pathname.startsWith('/map'));
 	// Org Settings docks its own sub-nav against the sidebar rail, so its
 	// routes take the content area edge to edge (but still scroll normally).
-	const flush = $derived(isSettingsPath($page.url.pathname));
+	const flush = $derived(isSettingsPath(page.url.pathname));
 
 	// Build identity of the API, shown in the sidebar footer. Fetched once per
 	// session rather than per navigation — it cannot change without a reload of
@@ -136,7 +136,7 @@
 	// when the viewport grows past mobile.
 	$effect(() => {
 		// Track pathname so this effect re-runs on navigation.
-		void $page.url.pathname;
+		void page.url.pathname;
 		mobileDrawerOpen = false;
 	});
 	$effect(() => {

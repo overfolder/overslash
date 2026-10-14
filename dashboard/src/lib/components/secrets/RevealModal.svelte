@@ -6,9 +6,9 @@
 -->
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { ApiError } from '$lib/session';
-	import { revealSecretVersion, type SecretVault } from '$lib/api/secrets';
-	import type { SecretVersionView } from '$lib/types';
+	import { ApiError } from '#lib/session.ts';
+	import { revealSecretVersion, type SecretVault } from '#lib/api/secrets.ts';
+	import type { SecretVersionView } from '#lib/types.ts';
 
 	let {
 		secretName,

@@ -135,9 +135,27 @@ async fn redeem(
 
     let status = upstream.status().as_u16();
     log_download(&scope, &row, ip, Redeemed::Upstream { status }).await;
+    // The redemption row is written before the body flows; the bytes that
+    // actually reached the client land on `action.stream_completed`. For a
+    // URL minted because the inline call blew the cap, this is the only
+    // place the response's true size is ever measured.
+    let completion = crate::services::response_size::CompletionAudit {
+        scope: scope.clone(),
+        identity_id: row.identity_id,
+        service: row.service_key.clone(),
+        action: row.action_key.clone(),
+        template_key: crate::routes::actions::bounded_template_key(
+            &state.registry,
+            row.service_key.as_deref(),
+        ),
+        via: "download",
+        token_id: Some(row.id),
+        ip: Some(ip.to_string()),
+    };
     deferred_download::stream_through(
         upstream,
         std::time::Duration::from_millis(state.config.call_stream_idle_timeout_ms),
+        completion.into_callback(),
     )
 }
 

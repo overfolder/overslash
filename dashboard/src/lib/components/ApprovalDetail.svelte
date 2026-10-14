@@ -3,17 +3,17 @@
 		session,
 		type ApprovalResponse,
 		type ResolveApprovalRequest
-	} from '$lib/session';
-	import { onEvent } from '$lib/stores/events.svelte';
-	import { page } from '$app/stores';
+	} from '#lib/session.ts';
+	import { onEvent } from '#lib/stores/events.svelte.ts';
+	import { page } from '$app/state';
 	import IdentityPath from './IdentityPath.svelte';
 	import RiskBadge from './approval/RiskBadge.svelte';
 	import ServiceTile from './approval/ServiceTile.svelte';
 	import RememberControl from './approval/RememberControl.svelte';
 	import ExpiryControl from './approval/ExpiryControl.svelte';
-	import { relativeTime } from '$lib/utils/time';
-	import { createResolution } from '$lib/approvals/resolution.svelte';
-	import { pushToast } from '$lib/stores/toasts.svelte';
+	import { relativeTime } from '#lib/utils/time.ts';
+	import { createResolution } from '#lib/approvals/resolution.svelte.ts';
+	import { pushToast } from '#lib/stores/toasts.svelte.ts';
 	import {
 		humanize,
 		scopeArgSummary,
@@ -23,7 +23,7 @@
 		splitDisclosed,
 		rememberKeys,
 		resolutionToast
-	} from '$lib/approvals/format';
+	} from '#lib/approvals/format.ts';
 	import { onMount } from 'svelte';
 
 	let {
@@ -100,7 +100,7 @@
 	} as const;
 
 	const viewerIdentityId = $derived(
-		($page.data as { user?: { identity_id?: string } })?.user?.identity_id ?? null
+		(page.data as { user?: { identity_id?: string } })?.user?.identity_id ?? null
 	);
 	const isCurrentResolver = $derived(
 		!!viewerIdentityId && viewerIdentityId === current.current_resolver_identity_id

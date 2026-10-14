@@ -61,6 +61,10 @@ pub enum CallError {
         content_length: Option<u64>,
         content_type: Option<String>,
         limit_bytes: usize,
+        /// Bytes actually read before we stopped: `0` when the declared
+        /// `Content-Length` refused the body up front, otherwise a lower bound
+        /// on a chunked body's true size. Audit-only — see `ResponseSize`.
+        bytes_read: u64,
     },
 
     /// The SSRF guard refused the target before anything was dialed.
@@ -103,8 +107,30 @@ pub enum CallError {
 /// a stated `application/json` as a claim rather than a gap.
 enum OutgoingBody<'a> {
     None,
-    Text(&'a str),
+    Buffered(Payload<'a>),
     Stream(reqwest::Body),
+}
+
+/// A buffered request body: bytes, plus the `Content-Type` they must go out
+/// under when that is decided by the body itself rather than the template.
+///
+/// The override exists for `multipart/form-data`, whose boundary is minted
+/// with the body at send time (`staged_upload::wire_body`) and so cannot be
+/// known when the request's headers are resolved. Carrying it here, beside
+/// the bytes it describes, means no call site can send one without the other.
+#[derive(Clone, Copy)]
+pub struct Payload<'a> {
+    pub bytes: &'a [u8],
+    pub content_type: Option<&'a str>,
+}
+
+impl<'a> From<&'a str> for Payload<'a> {
+    fn from(text: &'a str) -> Self {
+        Self {
+            bytes: text.as_bytes(),
+            content_type: None,
+        }
+    }
 }
 
 /// Build a reqwest request from the given parameters.
@@ -124,20 +150,28 @@ fn build_request(
         .unwrap_or(reqwest::Method::GET);
     let mut builder = client.request(method, url);
 
+    // A body that names its own `Content-Type` replaces the resolved one;
+    // `header` appends, so skipping it here is what keeps the request to one.
+    let overridden = matches!(&body, OutgoingBody::Buffered(p) if p.content_type.is_some());
     for (k, v) in headers {
+        if overridden && k.eq_ignore_ascii_case("content-type") {
+            continue;
+        }
         builder = builder.header(k.as_str(), v.as_str());
     }
 
     match body {
         OutgoingBody::None => {}
-        OutgoingBody::Text(body) => {
-            if !headers
+        OutgoingBody::Buffered(body) => {
+            if let Some(ct) = body.content_type {
+                builder = builder.header("Content-Type", ct);
+            } else if !headers
                 .keys()
                 .any(|k| k.eq_ignore_ascii_case("content-type"))
             {
                 builder = builder.header("Content-Type", "application/json");
             }
-            builder = builder.body(body.to_string());
+            builder = builder.body(body.bytes.to_vec());
         }
         // No content-type default. The caller decides — and on the upload path
         // it deliberately sends none when it has none, so the upstream sniffs
@@ -232,19 +266,18 @@ async fn send_following_redirects(
     method: &str,
     url: &str,
     headers: &HashMap<String, String>,
-    body: Option<&str>,
+    mut body: Option<Payload<'_>>,
     total_timeout: Option<Duration>,
     timeout_ms: u64,
 ) -> Result<reqwest::Response, CallError> {
     let mut method = method.to_string();
-    let mut body = body.map(str::to_owned);
     let mut headers = headers.clone();
     let mut target = url.to_string();
 
     for _hop in 0..=MAX_REDIRECTS {
         let (client, current) = guarded_client(&target).await?;
-        let outgoing = match body.as_deref() {
-            Some(b) => OutgoingBody::Text(b),
+        let outgoing = match body {
+            Some(b) => OutgoingBody::Buffered(b),
             None => OutgoingBody::None,
         };
         let response = build_request(&client, &method, &target, &headers, outgoing, total_timeout)
@@ -294,7 +327,7 @@ pub async fn call(
     method: &str,
     url: &str,
     headers: &HashMap<String, String>,
-    body: Option<&str>,
+    body: Option<Payload<'_>>,
     max_body_bytes: usize,
     timeout: Duration,
 ) -> Result<ActionResult, CallError> {
@@ -332,7 +365,7 @@ async fn call_inner(
     method: &str,
     url: &str,
     headers: &HashMap<String, String>,
-    body: Option<&str>,
+    body: Option<Payload<'_>>,
     max_body_bytes: usize,
     timeout: Duration,
     timeout_ms: u64,
@@ -375,6 +408,7 @@ async fn call_inner(
             content_length: Some(len),
             content_type,
             limit_bytes: max_body_bytes,
+            bytes_read: 0,
         });
     }
 
@@ -390,10 +424,12 @@ async fn call_inner(
                 content_length,
                 content_type,
                 limit_bytes: max_body_bytes,
+                bytes_read: collected.len() as u64,
             });
         }
     }
 
+    let wire_bytes = collected.len() as u64;
     let body = String::from_utf8_lossy(&collected).into_owned();
     let duration_ms = start.elapsed().as_millis() as u64;
 
@@ -403,6 +439,7 @@ async fn call_inner(
         body,
         duration_ms,
         filtered_body: None,
+        wire_bytes: Some(wire_bytes),
     })
 }
 
@@ -417,7 +454,7 @@ pub async fn call_streaming(
     method: &str,
     url: &str,
     headers: &HashMap<String, String>,
-    body: Option<&str>,
+    body: Option<Payload<'_>>,
     timeout: Duration,
 ) -> Result<reqwest::Response, CallError> {
     let timeout_ms = timeout.as_millis() as u64;

@@ -13,6 +13,17 @@ api_host_suffix       = "api.overslash.com"
 session_cookie_domain = ".app.overslash.com"
 enable_api_lb         = true
 
+# Edge TLS + WAF on the API LB (CASA 4.1.1; docs/runbooks/lb-hardening.md).
+# The SSL policy pins TLS 1.2+ with RESTRICTED ciphers. Cloud Armor's OWASP
+# rules log matches only while preview is on; flip after tuning.
+api_lb_ssl_profile         = "RESTRICTED"
+api_lb_cloud_armor_preview = true
+
+# Serve the API LB over IPv6 too (same proxies, so same cert/TLS/Armor).
+# After apply, publish `tofu output api_lb_ipv6` as AAAA for `api` and `*.api`
+# — docs/runbooks/lb-hardening.md "IPv6".
+api_lb_enable_ipv6 = true
+
 # Wildcard CORS so `<slug>.app.overslash.com` browser sessions can call the
 # API cross-origin without enumerating slugs.
 dashboard_origin = "https://app.overslash.com,https://*.app.overslash.com"
@@ -173,3 +184,6 @@ enable_trusted_proxy_secret = true
 # "Audit logging") before this line reaches a prod apply.
 audit_log_retention_days = 400
 audit_log_bucket_locked  = true
+
+enable_google_directory_sync = true
+

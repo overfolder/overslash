@@ -1,16 +1,16 @@
 <script lang="ts">
 	import { onDestroy, onMount } from 'svelte';
-	import { page } from '$app/stores';
-	import { apiErrorReason } from '$lib/session';
-	import { absoluteTime } from '$lib/utils/time';
-	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
-	import CopyCommand from '$lib/components/CopyCommand.svelte';
+	import { page } from '$app/state';
+	import { apiErrorReason } from '#lib/session.ts';
+	import { absoluteTime } from '#lib/utils/time.ts';
+	import ConfirmModal from '#lib/components/ConfirmModal.svelte';
+	import CopyCommand from '#lib/components/CopyCommand.svelte';
 	import {
 		CONNECT_ERRORS,
 		googleDirectoryApi,
 		type GoogleDirectoryConfig,
 		type GoogleDirectoryInstance
-	} from '$lib/api/googleDirectory';
+	} from '#lib/api/googleDirectory.ts';
 
 	const POLL_MS = 3000;
 	const INTERVALS = [1, 2, 4, 8, 12, 24, 48, 168];
@@ -33,7 +33,7 @@
 	/** The outcome the Google callback redirected back with, if any. Read once
 	 *  from the URL; not state, so it never feeds an effect. */
 	const returned = (() => {
-		const q = $page.url.searchParams;
+		const q = page.url.searchParams;
 		if (q.get('google_directory') === 'connected') {
 			return { ok: true, text: 'Google Workspace connected. The first sync starts within a minute.' };
 		}

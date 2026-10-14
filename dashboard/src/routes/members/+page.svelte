@@ -1,11 +1,11 @@
 <script lang="ts">
-	import { ApiError, session } from '$lib/session';
+	import { ApiError, session } from '#lib/session.ts';
 	import { invalidateAll } from '$app/navigation';
 	import type { Identity, ApiKeySummary } from './types';
-	import { makeIdentityFormatter, providerLabel } from '$lib/identityDisplay';
-	import Avatar from '$lib/components/Avatar.svelte';
-	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
-	import { deleteIdentity } from '$lib/identityApi';
+	import { makeIdentityFormatter, providerLabel } from '#lib/identityDisplay.ts';
+	import Avatar from '#lib/components/Avatar.svelte';
+	import ConfirmModal from '#lib/components/ConfirmModal.svelte';
+	import { deleteIdentity } from '#lib/identityApi.ts';
 	import SearchBar, {
 		emptySearch,
 		filterTerms,
@@ -13,7 +13,7 @@
 		type FilterTerm,
 		type SearchKey,
 		type SearchValue
-	} from '$lib/components/SearchBar.svelte';
+	} from '#lib/components/SearchBar.svelte';
 
 	let {
 		data
@@ -28,7 +28,7 @@
 	} = $props();
 
 	// Members are labelled by email; the IdP display name is the secondary line
-	// and the drawer carries both losslessly. See `$lib/identityDisplay`.
+	// and the drawer carries both losslessly. See `#lib/identityDisplay`.
 	const fmt = $derived(makeIdentityFormatter(data.allowedDomains));
 
 	let search = $state<SearchValue>(emptySearch());

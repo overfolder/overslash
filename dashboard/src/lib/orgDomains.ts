@@ -1,12 +1,12 @@
 // The org's allowed sign-in domains, fetched once per session.
 //
-// `$lib/identityDisplay` strips `@domain` from displayed emails when the org
+// `#lib/identityDisplay` strips `@domain` from displayed emails when the org
 // has exactly one allowed domain, so nearly every page that lists identities
 // needs this list. The root layout load is the one place that runs before all
 // of them — but it re-runs on every navigation (it reads `url.pathname`), so
 // the fetch is memoized here rather than repeated per page view.
 
-import type { ManagedSigninSettings } from '$lib/types';
+import type { ManagedSigninSettings } from '#lib/types.ts';
 
 type Fetch = typeof globalThis.fetch;
 

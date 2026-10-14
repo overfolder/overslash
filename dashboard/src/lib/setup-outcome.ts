@@ -8,8 +8,8 @@
  * degrading rather than failing a write it has already committed; a page that
  * collapses the two announces a service ready on a shrug. It did, once.
  */
-import { probeRejected } from '$lib/public-request';
-import type { ServiceStatus, ServiceTestResponse } from '$lib/types';
+import { probeRejected } from '#lib/public-request.ts';
+import type { ServiceStatus, ServiceTestResponse } from '#lib/types.ts';
 
 export type SetupOutcome =
 	/** Saved to the vault, but never attached to the instance. */

@@ -1,13 +1,13 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
-	import { page } from '$app/stores';
-	import { ApiError } from '$lib/session';
-	import { createTemplate } from '$lib/api/services';
+	import { page } from '$app/state';
+	import { ApiError } from '#lib/session.ts';
+	import { createTemplate } from '#lib/api/services.ts';
 
 	// Lazy-loaded: keeps CodeMirror + yaml out of the main bundle.
-	const loadYamlEditor = () => import('$lib/components/templates/TemplateEditorYaml.svelte');
+	const loadYamlEditor = () => import('#lib/components/templates/TemplateEditorYaml.svelte');
 
-	const isAdmin = $derived(($page as any).data?.user?.is_org_admin === true);
+	const isAdmin = $derived((page as any).data?.user?.is_org_admin === true);
 
 	// Default to user-level when non-admin (they can't create org templates)
 	// svelte-ignore state_referenced_locally

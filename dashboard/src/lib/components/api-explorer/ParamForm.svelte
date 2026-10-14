@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { ActionDetail, ActionParam, ExtraArg } from '$lib/types';
+	import type { ActionDetail, ActionParam, ExtraArg } from '#lib/types.ts';
 	import { shapeErrors, shapeFields, skeletonFor } from './shape';
 
 	let {

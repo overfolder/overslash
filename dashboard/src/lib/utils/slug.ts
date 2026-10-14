@@ -1,4 +1,4 @@
-import { session } from '$lib/session';
+import { session } from '#lib/session.ts';
 
 /**
  * Stable lowercase-hyphen slug derived from arbitrary user input.

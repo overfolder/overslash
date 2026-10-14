@@ -4,7 +4,7 @@
 	// Row shape matches `services/ByocSection.svelte`'s setup rows — the other
 	// place in the app where we hand the user a literal string to paste
 	// somewhere else — so the two read as the same control.
-	import { copyToClipboard } from '$lib/utils/clipboard';
+	import { copyToClipboard } from '#lib/utils/clipboard.ts';
 
 	let {
 		command,

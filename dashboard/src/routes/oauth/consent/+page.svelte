@@ -1,9 +1,9 @@
 <script lang="ts">
-	import { session, ApiError } from '$lib/session';
-	import RequestIdentityBox from '$lib/components/RequestIdentityBox.svelte';
-	import ToggleSwitch from '$lib/components/ToggleSwitch.svelte';
-	import GroupSearch from '$lib/components/GroupSearch.svelte';
-	import type { ConsentContext } from './+page';
+	import { session, ApiError } from '#lib/session.ts';
+	import RequestIdentityBox from '#lib/components/RequestIdentityBox.svelte';
+	import ToggleSwitch from '#lib/components/ToggleSwitch.svelte';
+	import GroupSearch from '#lib/components/GroupSearch.svelte';
+	import type { ConsentContext, ConsentReauthTarget } from './+page';
 
 	let { data } = $props();
 
@@ -17,30 +17,66 @@
 	let switching = $state(false);
 	let errorMsg = $state<string | null>(null);
 
+	// Reauth is a guess (same client_name + software_id as a prior binding),
+	// so a genuinely separate instance of the same client can land on it.
+	// Setting this drops back to the new-agent form; `finish` honours the
+	// posted mode, not the one the context suggested.
+	let forceNew = $state(false);
+
 	let nameInput: HTMLInputElement | undefined = $state();
+
+	function prefillReauth(target: ConsentReauthTarget) {
+		agentName = target.agent_name;
+		parentId = target.parent_id ?? '';
+		// Pre-fill from the existing binding so reconnecting doesn't
+		// silently flip the user's saved choice off. Deliberately not
+		// AND-ed with elicitation_supported: a client that has not
+		// initialized yet has declared nothing, and that is every
+		// freshly-registered client_id. The capability check happens at
+		// request time, where the answer is actually known.
+		elicitationEnabled = target.elicitation_enabled;
+	}
+
+	function prefillNew(ctx: ConsentContext) {
+		// The suggestion is slugified from the same client_name the reauth
+		// target was, so it usually equals that agent's name. Two agents
+		// with one name are legal but unreadable in the tree — nudge to a
+		// free suffix. Computed in a local: reading `agentName` here would
+		// make the init $effect track it and reset every keystroke.
+		const taken = ctx.reauth_target?.agent_name;
+		const suggested = ctx.suggested_agent_name;
+		agentName = taken && suggested === taken ? `${taken}-2` : suggested;
+		parentId = ctx.parents.find((p) => p.is_you)?.id ?? ctx.parents[0]?.id ?? '';
+		inherits = false;
+		groupNames = [];
+		// On by default. The reauth branch deliberately prefills from the
+		// existing binding instead — that is what makes an opt-out stick.
+		elicitationEnabled = true;
+	}
 
 	$effect(() => {
 		if (data.state !== 'ready') return;
 		const ctx = data.context;
 		if (ctx.mode === 'reauth' && ctx.reauth_target) {
-			agentName = ctx.reauth_target.agent_name;
-			parentId = ctx.reauth_target.parent_id ?? '';
-			// Pre-fill from the existing binding so reconnecting doesn't
-			// silently flip the user's saved choice off. Deliberately not
-			// AND-ed with elicitation_supported: a client that has not
-			// initialized yet has declared nothing, and that is every
-			// freshly-registered client_id. The capability check happens at
-			// request time, where the answer is actually known.
-			elicitationEnabled = ctx.reauth_target.elicitation_enabled;
+			prefillReauth(ctx.reauth_target);
 		} else {
-			agentName = ctx.suggested_agent_name;
-			parentId = ctx.parents.find((p) => p.is_you)?.id ?? ctx.parents[0]?.id ?? '';
-			// On by default. The reauth branch above deliberately prefills
-			// from the existing binding instead — that is what makes an
-			// opt-out stick.
-			elicitationEnabled = true;
+			prefillNew(ctx);
 		}
 	});
+
+	function startNew(edit: boolean) {
+		if (data.state !== 'ready') return;
+		forceNew = true;
+		prefillNew(data.context);
+		isEditingName = edit;
+	}
+
+	function backToReauth() {
+		if (data.state !== 'ready' || !data.context.reauth_target) return;
+		forceNew = false;
+		isEditingName = false;
+		prefillReauth(data.context.reauth_target);
+	}
 
 	$effect(() => {
 		if (isEditingName && nameInput) {
@@ -69,7 +105,7 @@
 		errorMsg = null;
 		try {
 			const body =
-				data.context.mode === 'reauth'
+				data.context.mode === 'reauth' && !forceNew
 					? {
 							mode: 'reauth',
 							reauth_agent_id: data.context.reauth_target?.agent_id,
@@ -155,7 +191,8 @@
 		</div>
 	{:else if data.state === 'ready'}
 		{@const ctx = data.context}
-		{@const isReauth = ctx.mode === 'reauth'}
+		{@const isReauth = ctx.mode === 'reauth' && !forceNew}
+		{@const canReauth = ctx.mode === 'reauth' && !!ctx.reauth_target}
 		{@const canSubmit = !!agentName.trim()}
 		<div class="card">
 			<!-- Wordmark -->
@@ -181,8 +218,17 @@
 					{#if isReauth}
 						This client was previously bound to an agent. Approve to restore
 						access.
+						<button type="button" class="link-btn" onclick={() => startNew(false)}>
+							Not the same client? Connect as a new agent instead
+						</button>
 					{:else}
 						A new agent will be created for this client.
+						{#if canReauth}
+							<button type="button" class="link-btn" onclick={backToReauth}>
+								Reconnect <code class="mono small">agent:{ctx.reauth_target?.agent_name}</code>
+								instead
+							</button>
+						{/if}
 					{/if}
 				</div>
 			</div>
@@ -228,7 +274,7 @@
 				</div>
 				<div class="client-body">
 					<div class="agent-row">
-						{#if isEditingName && !isReauth}
+						{#if isEditingName}
 							<div class="edit-wrap">
 								<span class="prefix">agent:</span>
 								<input
@@ -245,18 +291,20 @@
 							<h3 class="agent-name">
 								<span class="prefix">agent:</span>{agentName}
 							</h3>
-							{#if !isReauth}
-								<button
-									type="button"
-									class="rename-btn"
-									onclick={() => (isEditingName = true)}
-									title="Rename">Rename</button
-								>
-							{:else if ctx.reauth_target?.last_seen_at}
+							{#if isReauth && ctx.reauth_target?.last_seen_at}
 								<span class="last-seen">
 									last seen {new Date(ctx.reauth_target.last_seen_at).toLocaleString()}
 								</span>
 							{/if}
+							<!-- Always offered: on reauth, renaming is how the user says
+							     "this is a different client" — it switches to a new agent. -->
+							<button
+								type="button"
+								class="rename-btn"
+								onclick={() => (isReauth ? startNew(true) : (isEditingName = true))}
+								title={isReauth ? 'Rename — creates a new agent' : 'Rename'}
+								>{isReauth ? 'Rename (new agent)' : 'Rename'}</button
+							>
 						{/if}
 					</div>
 
@@ -651,6 +699,21 @@
 	}
 	.rename-btn:hover {
 		color: var(--color-primary);
+	}
+	.link-btn {
+		display: block;
+		margin-top: 4px;
+		padding: 0;
+		background: transparent;
+		border: 0;
+		cursor: pointer;
+		font: inherit;
+		font-size: 12px;
+		color: var(--color-primary);
+		text-align: left;
+	}
+	.link-btn:hover {
+		text-decoration: underline;
 	}
 	.last-seen {
 		font-size: 11px;

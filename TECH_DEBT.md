@@ -39,32 +39,6 @@ header comment and delete the self-hosted marker test.
 
 ---
 
-## Webhooks still send the replayable legacy signature
-
-Every webhook attempt carries the timestamped `X-Overslash-Signature-V1`
-(CASA 7.2.3) **and** the pre-existing `X-Overslash-Signature: sha256=<hex>`,
-an HMAC over the body alone. The legacy header is kept so receivers written
-against it — including anyone on `@overslash/sdk`'s `verifyWebhookSignature` —
-did not break on deploy. But as long as it is sent, a receiver that checks only
-it accepts a captured delivery forever; the replay protection is opt-in until
-the header is gone.
-
-Deprecation plan:
-
-1. **Now.** Both headers sent. SPEC, the SDK README and `verifyWebhookSignature`'s
-   `@deprecated` tag point at `v1` / `verifyWebhook`.
-2. **Announce.** The overslash-docs webhook guide gets the `v1` verification
-   section and a removal date; org admins with active subscriptions are told by
-   email. Target: no earlier than 90 days after this ships.
-3. **Remove.** Delete `LEGACY_SIGNATURE_HEADER` from `send_signed`
-   (`services/webhook_dispatcher.rs`) and `verifyWebhookSignature` from the SDK
-   (a major version). The `v1` header name stays as is — no second migration.
-
-We have no signal for which receivers still read the legacy header (it is
-their code, not ours), so the date is a policy call, not a measurement.
-
----
-
 ## SDK pins esbuild past tsup's declared range via an npm `override`
 
 `sdk/package.json` carries `overrides: { "esbuild": "^0.28.1" }`. It exists to
@@ -104,7 +78,7 @@ Since 2026-07-03, `cdn.pyke.io` answers HTTP 403 (Cloudflare bot challenge) to n
 
 `services::param_resolver::resolve_display_params` fires an authenticated GET
 per `x-overslash-resolve` declaration so approvals can name an object instead
-of its id. Two gaps remain in how those GETs are made
+of its id. Three gaps remain in how those GETs are made
 (`routes/actions/resolve.rs`, at the `resolver_headers` construction):
 
 1. **`in: query` credentials do not reach them.** Header-injected credentials
@@ -126,28 +100,75 @@ of its id. Two gaps remain in how those GETs are made
    an un-guarded egress on an operator-supplied URL, and it predates any
    particular template.
 
-Both are unchanged by the D64 cache: a hit skips the GET entirely, and a miss
+3. **Their responses are not credential-scrubbed.** D127 scrubs injected
+   values out of execution responses, but a resolver GET's body is read by
+   `param_resolver` directly. An upstream that echoes the credential into the
+   field a resolver picks (an error object rendered as the display value)
+   would put it into the approval's disclosure, which approvers read. Low
+   likelihood, since a resolver keeps one field from a 2xx, but the fix is
+   cheap: build a `CredentialScrubber` from the same values and run it over
+   the body before extraction.
+
+All three are unchanged by the D64 cache: a hit skips the GET entirely, and a miss
 makes exactly the same request it always did.
 
 ---
 
-## Resolver cache: Valkey holds PII, on an instance with no AUTH and no TLS
+## Streamed responses bypass the D127 credential scrub
+
+D127 replaces every injected credential with `[REDACTED]` in *buffered*
+upstream responses. Two paths pipe upstream bytes to the caller without
+buffering, so nothing scrubs them:
+
+- **Inline `prefer_stream`**: `routes/actions/call_stream.rs` →
+  `deferred_download::stream_through`.
+- **Download redemption that re-dials the upstream**: `GET /v1/downloads/{token}`
+  (`routes/downloads.rs`) re-injects the credential via `open_upstream` and
+  streams the reply. Tokens served from a stored D61 result are fine, because
+  those bytes were scrubbed before they were stored.
+
+An upstream that echoes the credential (`"invalid key sk-…"`, a 400 repeating
+`?api_key=`) therefore hands it to whoever reads the stream: the agent, or any
+holder of the capability URL. Audit capture is not affected, because D18 never
+captures a streamed body. `prefer_stream` is caller-chosen, so an agent that
+knows an upstream echoes its key can opt out of the scrub on purpose. Until
+this is fixed, D127 protects against accidental echoes, not deliberate ones,
+and must not be cited as a complete control (CASA).
+
+This predates D127: streaming never scrubbed anything. D127 closed the
+buffered path and left this one documented as out of scope.
+
+**Fix, in two steps.**
+1. **Error statuses (≥ 400).** On both paths, buffer the body up to
+   `max_response_body_bytes`, scrub it, and send it. Echoes live almost
+   entirely in error bodies, and those are small, so this closes the realistic
+   case at almost no cost. Bodies over the cap can be cut off with an error
+   rather than streamed raw.
+2. **Success streams.** Scrub in flight: hold back the last
+   `longest_needle − 1` bytes of each chunk, so a value split across a chunk
+   boundary still matches. Downloads need the scrubber built from the values
+   `open_upstream` resolves.
+
+---
+
+## Resolver cache: Valkey holds PII, in a keyspace shared with the shortener
 
 `services::resolve_cache` (D64) writes resolved display names — people's names,
 phone numbers, email addresses, Drive file titles — to Valkey when `REDIS_URL`
 is set. The values are encrypted with the existing keyring, so what lands in
 the store is ciphertext, and the key hashes everything except the org id.
 
-What is *not* fixed: `infra/modules/memorystore/main.tf` creates
-`google_redis_instance.valkey` with neither `auth_enabled` nor
-`transit_encryption_mode`, so the instance is protected only by
-`authorized_network` — and `infra/main.tf` points both the API's `REDIS_URL`
-and `oversla-sh`'s `VALKEY_URL` at the same `module.memorystore[0]`, so a
-public URL shortener shares that keyspace. That was unremarkable while the only
-tenant was rate-limit counters. Follow-up: set `auth_enabled = true` and
-`transit_encryption_mode = "SERVER_AUTHENTICATION"`, plumbing the auth string
-through Secret Manager into both URLs. Note this is **breaking for oversla-sh**
-too, and there is no terraform CI — someone has to run `make tofu-apply`.
+AUTH and TLS are now in code (CASA 6.7.1): `infra/modules/memorystore/main.tf`
+sets `auth_enabled` and `transit_encryption_mode = "SERVER_AUTHENTICATION"`,
+and both clients connect `rediss://` with the AUTH string and a pinned CA from
+Secret Manager. It is **not live until an operator applies it**, and that apply
+replaces the instance — [memorystore-auth-tls.md](docs/runbooks/memorystore-auth-tls.md).
+
+What remains: `infra/main.tf` still points both the API's `REDIS_URL` and
+`oversla-sh`'s `VALKEY_URL` at the same `module.memorystore[0]`, and Memorystore
+has one AUTH string per instance, so the public URL shortener holds a
+credential that reads the API's keyspace. Splitting them needs either a second
+instance or Valkey ACL users (not offered on Memorystore for Redis).
 
 ---
 

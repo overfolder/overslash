@@ -306,7 +306,7 @@ async fn test_figma_mock_read_and_write() {
     assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.unwrap();
     assert_eq!(body["status"], "called", "get_file response: {body:?}");
-    let echo: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
+    let echo = common::last_received(mock_addr).await;
     let uri = echo["uri"].as_str().unwrap();
     assert!(
         uri.contains("/v1/files/abc123DEF"),
@@ -337,7 +337,7 @@ async fn test_figma_mock_read_and_write() {
     assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.unwrap();
     assert_eq!(body["status"], "called", "post_comment response: {body:?}");
-    let echo: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
+    let echo = common::last_received(mock_addr).await;
     let uri = echo["uri"].as_str().unwrap();
     assert!(
         uri.contains("/v1/files/abc123DEF/comments"),
@@ -606,7 +606,7 @@ async fn test_figma_refreshes_at_its_own_refresh_endpoint() {
         body["status"], "called",
         "the refresh must reach refresh_endpoint; token_endpoint 404s here. Got: {body:?}"
     );
-    let echo: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
+    let echo = common::last_received(mock_addr).await;
     assert_eq!(
         echo["headers"]["authorization"], "Bearer mock_refreshed_access_token",
         "the call should carry the refreshed token, not the stale one"
@@ -673,7 +673,7 @@ async fn test_null_refresh_endpoint_still_refreshes_at_token_endpoint() {
         body["status"], "called",
         "a NULL refresh_endpoint must still refresh at token_endpoint: {body:?}"
     );
-    let echo: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
+    let echo = common::last_received(mock_addr).await;
     assert_eq!(
         echo["headers"]["authorization"],
         "Bearer mock_refreshed_access_token"

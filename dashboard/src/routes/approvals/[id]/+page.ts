@@ -1,4 +1,4 @@
-import { session, ApiError, type ApprovalResponse } from '$lib/session';
+import { session, ApiError, type ApprovalResponse } from '#lib/session.ts';
 import type { PageLoad } from './$types';
 
 export const ssr = false;

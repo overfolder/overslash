@@ -1385,7 +1385,7 @@ When the MCP session is OAuth-authenticated as a user (the default), Layer 2 is 
 
 ### `overslash_search`
 
-Unified discovery endpoint. Backed by `GET /v1/search` and called by the MCP `overslash_search` tool. The response is a single ranked list of rows where **each row corresponds to one configured instance**: the top-level `service` field is always the instance name to pass back as `overslash_call.service`. When a template has multiple connected instances (e.g. two Gmail accounts), it fans out into one row per instance so the agent picks the callable identifier directly without nested lookups.
+Unified discovery endpoint. Backed by `GET /v1/search` and called by the MCP `overslash_search` tool. The response is a single ranked list where **each row is one action of one template**, carrying an `instances` array of the caller's callable instances of that template. An entry's `service` is the instance name to pass back as `overslash_call.service`. When a template has multiple connected instances (e.g. two Gmail accounts), they share the row as separate `instances` entries rather than duplicating it, so the shared description and parameter contract are sent once and `limit` counts distinct actions.
 
 **Inputs**
 
@@ -1404,10 +1404,12 @@ Unified discovery endpoint. Backed by `GET /v1/search` and called by the MCP `ov
   "query": "send email",
   "results": [
     {
-      "service": "gmail_work",
       "template": "gmail",
       "service_display_name": "Gmail",
-      "account_email": "alice@example.com",
+      "instances": [
+        { "service": "gmail_personal", "account_email": "alice@gmail.com" },
+        { "service": "gmail_work", "account_email": "alice@example.com" }
+      ],
       "action": "send_message",
       "description": "Send email as {userId}",
       "risk": "write",
@@ -1420,22 +1422,9 @@ Unified discovery endpoint. Backed by `GET /v1/search` and called by the MCP `ov
       "score": 0.78
     },
     {
-      "service": "gmail_personal",
-      "template": "gmail",
-      "service_display_name": "Gmail",
-      "account_email": "alice@gmail.com",
-      "action": "send_message",
-      "description": "Send email as {userId}",
-      "risk": "write",
-      "tier": "global",
-      "auth": { "type": "oauth", "provider": "google", "connected": true },
-      "score": 0.78
-    },
-    {
-      "service": "resend_prod",
       "template": "resend",
       "service_display_name": "Resend",
-      "secret_name": "resend_prod",
+      "instances": [{ "service": "resend_prod", "secret_name": "resend_prod" }],
       "action": "send_email",
       "description": "Send email '{subject}' to {to}",
       "risk": "write",
@@ -1447,7 +1436,9 @@ Unified discovery endpoint. Backed by `GET /v1/search` and called by the MCP `ov
 }
 ```
 
-In browse mode (`query=""`), each row omits `action`, `description`, `risk`, `params`, and `score` — the response is an instance-level directory.
+In browse mode (`query=""`), there is one row per template, and each row omits `action`, `description`, `risk`, `params`, and `score` — the response is a service-level directory whose `instances` lists what is callable.
+
+**Ranking.** Keyword + Jaro-Winkler fuzzy, blended with embedding cosine when available (D11), plus three post-blend bonuses: a **service-name** bonus scaled by how much of the template's display name / key the query names outright (`"hubspot"`, `"google calendar"` — exact or prefix token hits only), a **connected** bonus, and a small **read** bonus. The service-name bonus is added after the blend so an explicit service name is not diluted by the embedding weight.
 
 **`params` — the action's caller-supplied contract** (action rows only). Each entry carries `name`, `type`, `required` (omitted when false), `description` (clamped to 160 characters), `enum`, and `default`. Ordered required-first, then alphabetically, so byte-identical requests return byte-identical JSON.
 
@@ -1455,20 +1446,19 @@ This is the answer to a specific failure: before it existed, `description` was t
 
 Parameters marked `instance-config` are excluded. An org admin pins those per service instance and they are merged in under the caller's arguments at execution time, so listing them would only invite a wrong one.
 
-**Catalog rows.** Under `include_catalog=true`, templates with no configured instance for the caller appear as catalog rows: they omit `service` and `account_email`/`secret_name`, set `auth.connected: false`, and carry `"setup_required": true`. Agents must call `overslash_auth.create_service_from_template` to provision an instance before any of those actions become callable.
+**Catalog rows.** Under `include_catalog=true`, templates with no configured instance for the caller appear as catalog rows: `instances: []`, `auth.connected: false`, and `"setup_required": true`. Each un-connected template contributes **at most one row** — its best-matching action — with up to three runner-up action keys in `more_actions`, so one catalog service cannot bury callable rows under copies of its `auth.setup` chain. Agents must call `overslash_auth.create_service_from_template` to provision an instance before any of those actions become callable.
 
 **Per-row disambiguation**
 
-Each callable row carries everything an agent needs to pick the right instance:
+Each `instances` entry carries everything an agent needs to pick the right instance (sorted by `service`):
 
 - **`service`** — the instance's runtime name (e.g. `gmail_work`). Unique per `(org, owner, name)`. Pass it verbatim as `overslash_call.service`.
-- **`template`** — the underlying template key (e.g. `gmail`). Lets the agent recognise that `gmail_work` and `gmail_personal` are siblings.
 - **`account_email`** — for OAuth-backed instances, the email returned by the upstream userinfo endpoint at OAuth time. Sourced from `connections.account_email`. Absent for secret-based services.
 - **`secret_name`** — for secret-based instances, the variable name of the secret that backs the instance. The value, version, and encryption envelope are **never** exposed via this or any other API.
 
-When two instances share the same `account_email` (two services pinned to one OAuth connection) or the same `secret_name`, the `service` (instance name) is the disambiguator — it always uniquely identifies the row.
+- **`scope_coverage`** / **`missing_scopes`** — on action rows whose action declares OAuth scopes, whether *this instance's* connection covers it (`covered` / `needs_reconnect` / `unknown`). Per instance, because two instances of one template can be bound to different grants.
 
-**Action definitions are DRY; rows are not.** Actions are defined once on the template (in the global YAML under `services/` or in `service_templates.openapi`). A keyword match against `(template, action)` fans out into one row per visible instance so the agent can pick a callable directly; the underlying definition is shared.
+When two instances share the same `account_email` (two services pinned to one OAuth connection) or the same `secret_name`, the `service` (instance name) is the disambiguator — it always uniquely identifies the entry. The row's top-level `template` key is never callable.
 
 **Visibility** matches the rest of the API: identity-bound calls apply Layer 1 group ceiling and tier visibility (global / org / user, gated by `user_template_policy`). Hidden global templates and out-of-ceiling instances never appear in either default or `include_catalog=true` output.
 
@@ -1520,11 +1510,10 @@ The `id` and `created_at` are stable across retries, so receivers can dedupe by 
 |---|---|---|
 | `X-Overslash-Timestamp` | unix seconds when this attempt was signed | — |
 | `X-Overslash-Signature-V1` | `v1=<hex>` | `"<timestamp>.<raw body>"` |
-| `X-Overslash-Signature` | `sha256=<hex>` — **deprecated** | the raw body only |
 
 Verify `v1`: read the raw body bytes (never a re-serialised object), reject a missing or non-integer `X-Overslash-Timestamp`, reject a timestamp more than **5 minutes** from your clock in either direction, compute HMAC-SHA256 over `"<timestamp>." + body`, and compare in constant time against each comma-separated `v1=` entry in `X-Overslash-Signature-V1` (accept if any matches; more than one appears only during a secret rotation). A retry is re-signed with a fresh timestamp over the same body, so a slow retry still verifies while a delivery captured earlier does not. Dedupe on `id` inside the window. `@overslash/sdk/node` ships `verifyWebhook` doing exactly this.
 
-`X-Overslash-Signature` is the pre-timestamp scheme, still sent unchanged so verifiers written against it keep working. It has no time component — a captured delivery verifies forever — and will stop being sent; move to `v1`. Deprecation plan in TECH_DEBT.md.
+There is no other signature. The pre-timestamp `X-Overslash-Signature: sha256=<hex>` (HMAC over the body alone) is no longer sent: with no time component, a captured delivery verified forever, and as long as it was on the wire a receiver could keep checking it instead of `v1`. A verifier still reading it sees the header missing and must fail closed — move it to `v1`.
 
 **Webhook endpoints are HTTPS-only.** `POST /v1/webhooks` refuses an `http://` (or any non-`https`) URL with a 400, and the dispatcher refuses to deliver to one, recording the attempt as a failed delivery. The only exception is plain `http` to loopback when the operator allow-lists loopback in `OVERSLASH_SSRF_ALLOWED_CIDRS` (tests, a receiver on the same host). A subscription registered over `http://` before this rule is listed with `active: false` and `disabled_reason: "needs_https"`; nothing is delivered to it until it is recreated with an `https://` URL.
 
@@ -1748,7 +1737,7 @@ one. Whether page two is worth fetching is a question about the caller's task.
 
 `GET /v1/downloads/{token}` is unauthenticated — the token *is* the capability, the way a presigned URL is. It is 256 bits of randomness stored only as a SHA-256 hash, expires after `DOWNLOAD_TOKEN_TTL_SECS` (default 900), and stays redeemable until then so a resumed or retried transfer works. Redemption re-resolves the upstream credential from the vault and re-checks the identity, then streams the bytes through with `content-type` / `content-length` / `content-disposition` / `etag` / `last-modified` / `cache-control` forwarded. `MAX_RESPONSE_BODY_BYTES` does not apply, exactly as with `prefer_stream`. Unknown and expired tokens both return a bare `404`.
 
-`filter` is reachable from every surface including MCP, where both call tools declare it as a bare jq string and the dispatcher lifts it into the wire's `{lang, expr}`. It applies on all three runtimes (HTTP, MCP, platform). It narrows what the caller *receives*, not what the upstream *sends*: the size cap fires while the body is still arriving, so an oversized response fails before the filter runs — pair it with the action's own paging parameters. Combining `deliver: "url"` with `filter` or `prefer_stream` is a `400`, as is passing a credential in an inline `headers` entry on a raw-HTTP call — name it via `secrets` instead, and it is resolved at fetch time. Mint writes an `action.deferred` audit row (HTTP runtime only; MCP already wrote `action.executed`); redemption writes `action.downloaded`.
+`filter` is reachable from every surface including MCP, where both call tools declare it as a bare jq string and the dispatcher lifts it into the wire's `{lang, expr}`. It applies on all three runtimes (HTTP, MCP, platform). It narrows what the caller *receives*, not what the upstream *sends*: the size cap fires while the body is still arriving, so an oversized response fails before the filter runs — pair it with the action's own paging parameters. Combining `deliver: "url"` with `filter` or `prefer_stream` is a `400`, as is passing a credential in an inline `headers` entry on a raw-HTTP call — name it via `secrets` instead, and it is resolved at fetch time. Mint writes an `action.deferred` audit row (HTTP runtime only; MCP already wrote `action.executed`); redemption writes `action.downloaded`, and an `action.stream_completed` row records the bytes that actually flowed once the transfer ends (also written for inline `prefer_stream`). Every execution row carries `detail.size` — bytes read, the declared `Content-Length`, and whether the body was read in full, cut at the cap, or streamed — so the buffering caps can be tuned against real traffic; see `docs/runbooks/response-size-analysis.md`.
 
 An HTTP action needs no declaration — it *is* its own download, so the token captures the resolved request. An MCP tool returns a *descriptor pointing at* the bytes, so it declares where:
 

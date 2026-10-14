@@ -3,9 +3,6 @@
 // Every bubble in the bar is a term, and terms AND together. The parsing and
 // dedup rules decide what a keystroke turns into, so they are pinned here
 // rather than left to a screenshot to notice.
-//
-// Imported by relative path: `$lib` is a SvelteKit alias that Playwright's
-// transform does not resolve.
 import { test, expect } from '@playwright/test';
 import {
 	addTerm,

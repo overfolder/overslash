@@ -82,11 +82,20 @@ async fn create_gmail_service(
     assert_eq!(resp["name"], name, "create gmail service failed: {resp}");
 }
 
-/// First search row matching `(template, action)`.
+/// The search row matching `(template, action)`.
 fn find_action<'a>(results: &'a [Value], template: &str, action: &str) -> Option<&'a Value> {
     results
         .iter()
         .find(|r| r["template"] == template && r["action"] == action)
+}
+
+/// The `instances` entry for instance `service` on `row`. Coverage is
+/// per-instance, since each instance may be bound to a different grant.
+fn instance<'a>(row: &'a Value, service: &str) -> &'a Value {
+    row["instances"]
+        .as_array()
+        .and_then(|a| a.iter().find(|i| i["service"] == service))
+        .unwrap_or_else(|| panic!("instance {service} missing from {row}"))
 }
 
 async fn search(base: &str, client: &reqwest::Client, key: &str, q: &str) -> Vec<Value> {
@@ -115,6 +124,7 @@ async fn search_flags_uncovered_action_as_needs_reconnect() {
     // list_messages requires gmail.readonly — metadata-only grant → needs_reconnect.
     let row = find_action(&results, "gmail", "list_messages")
         .unwrap_or_else(|| panic!("list_messages row missing: {results:?}"));
+    let row = instance(row, "gmail-partial");
     assert_eq!(
         row["scope_coverage"], "needs_reconnect",
         "uncovered action should flag needs_reconnect: {row}"
@@ -138,6 +148,7 @@ async fn search_marks_covered_action_covered() {
     let results = search(&base, &client, &fx.admin_key, "profile").await;
     let row = find_action(&results, "gmail", "get_profile")
         .unwrap_or_else(|| panic!("get_profile row missing: {results:?}"));
+    let row = instance(row, "gmail-meta");
     assert_eq!(row["scope_coverage"], "covered", "row: {row}");
     assert!(
         row.get("missing_scopes").is_none(),
@@ -158,8 +169,38 @@ async fn search_reports_unknown_for_unrecorded_scopes() {
     let results = search(&base, &client, &fx.admin_key, "messages").await;
     let row = find_action(&results, "gmail", "list_messages")
         .unwrap_or_else(|| panic!("list_messages row missing: {results:?}"));
+    let row = instance(row, "gmail-legacy");
     assert_eq!(row["scope_coverage"], "unknown", "row: {row}");
     assert!(row.get("missing_scopes").is_none(), "row: {row}");
+}
+
+/// Two instances of one template share a row, but each keeps its own
+/// coverage — collapsing the fan-out must not smear one grant over the other.
+#[tokio::test]
+async fn search_keeps_coverage_per_instance_on_a_shared_row() {
+    let (pool, fx) = common::test_pool_bootstrapped().await;
+    let pool2 = pool.clone();
+    let (base, client) = common::start_api_for_search(pool).await;
+    let narrow = seed_connection(&pool2, fx.org_id, fx.user_ids[0], Some(&[METADATA])).await;
+    let wide = seed_connection(&pool2, fx.org_id, fx.user_ids[0], Some(&[READONLY])).await;
+    create_gmail_service(&base, &client, &fx.admin_key, "gmail-narrow", narrow).await;
+    create_gmail_service(&base, &client, &fx.admin_key, "gmail-wide", wide).await;
+
+    let results = search(&base, &client, &fx.admin_key, "messages").await;
+    let rows: Vec<&Value> = results
+        .iter()
+        .filter(|r| r["template"] == "gmail" && r["action"] == "list_messages")
+        .collect();
+    assert_eq!(rows.len(), 1, "one row for both instances: {rows:?}");
+    let row = rows[0];
+    assert_eq!(row["instances"].as_array().unwrap().len(), 2, "{row}");
+
+    let narrow = instance(row, "gmail-narrow");
+    assert_eq!(narrow["scope_coverage"], "needs_reconnect", "{row}");
+    assert_eq!(narrow["missing_scopes"][0], READONLY, "{row}");
+    let wide = instance(row, "gmail-wide");
+    assert_eq!(wide["scope_coverage"], "covered", "{row}");
+    assert!(wide.get("missing_scopes").is_none(), "{row}");
 }
 
 #[tokio::test]

@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { theme } from '$lib/stores/shell';
+	import { theme } from '#lib/stores/shell.ts';
 
 	function toggle() {
 		theme.update((t) => (t === 'dark' ? 'light' : 'dark'));

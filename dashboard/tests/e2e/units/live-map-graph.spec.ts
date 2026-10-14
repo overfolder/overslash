@@ -6,9 +6,6 @@
 // not per org, so an admin's listing can hold three rows called `gcal`; if the
 // graph keys them by name they collapse onto one ball, and a ball can only sit
 // inside one ownership container.
-//
-// Imported by relative path: `$lib` is a SvelteKit alias that Playwright's
-// transform does not resolve.
 import { test, expect } from '@playwright/test';
 import { buildGraph, RAW_HTTP_ID } from '../../../src/lib/components/map/graph';
 import type { Identity, ServiceInstanceSummary } from '../../../src/lib/types';

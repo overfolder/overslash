@@ -1,10 +1,10 @@
 <script lang="ts">
-	import ApprovalRow from '$lib/components/approval/ApprovalRow.svelte';
-	import { session, type ApprovalResponse } from '$lib/session';
-	import { humanize, extractAgentName, scopeArgSummary } from '$lib/approvals/format';
-	import { collapse, motionDuration } from '$lib/utils/motion';
+	import ApprovalRow from '#lib/components/approval/ApprovalRow.svelte';
+	import { session, type ApprovalResponse } from '#lib/session.ts';
+	import { humanize, extractAgentName, scopeArgSummary } from '#lib/approvals/format.ts';
+	import { collapse, motionDuration } from '#lib/utils/motion.ts';
 	import { flip } from 'svelte/animate';
-	import { APPROVAL_EVENT_TYPES, eventStream, onEvent } from '$lib/stores/events.svelte';
+	import { APPROVAL_EVENT_TYPES, eventStream, onEvent } from '#lib/stores/events.svelte.ts';
 	import SearchBar, {
 		addTerm,
 		emptySearch,
@@ -16,7 +16,7 @@
 		type SearchKey,
 		type SearchValue,
 		type Term
-	} from '$lib/components/SearchBar.svelte';
+	} from '#lib/components/SearchBar.svelte';
 
 	let {
 		data

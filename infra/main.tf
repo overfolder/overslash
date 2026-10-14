@@ -231,6 +231,9 @@ module "cloud_run" {
   redis_host = var.enable_valkey && var.use_private_vpc ? module.memorystore[0].redis_host : ""
   redis_port = var.enable_valkey && var.use_private_vpc ? module.memorystore[0].redis_port : ""
 
+  redis_auth_secret_id    = var.enable_valkey && var.use_private_vpc ? module.memorystore[0].auth_secret_id : ""
+  redis_ca_cert_secret_id = var.enable_valkey && var.use_private_vpc ? module.memorystore[0].server_ca_secret_id : ""
+
   enable_metrics_sidecar = var.enable_metrics_sidecar
   rust_log               = var.rust_log
 
@@ -345,6 +348,10 @@ module "api_lb" {
   cloud_run_service = module.cloud_run.service_name
   api_apex          = var.api_host_suffix
   dns_zone_name     = var.enable_dns ? module.dns[0].zone_name : ""
+
+  ssl_profile             = var.api_lb_ssl_profile
+  cloud_armor_waf_preview = var.api_lb_cloud_armor_preview
+  enable_ipv6             = var.api_lb_enable_ipv6
 
   depends_on = [
     google_project_service.apis,
@@ -494,6 +501,9 @@ module "cloud_run_shortener" {
 
   valkey_host = var.enable_valkey && var.use_private_vpc ? module.memorystore[0].redis_host : ""
   valkey_port = var.enable_valkey && var.use_private_vpc ? module.memorystore[0].redis_port : ""
+
+  valkey_auth_secret_id    = var.enable_valkey && var.use_private_vpc ? module.memorystore[0].auth_secret_id : ""
+  valkey_ca_cert_secret_id = var.enable_valkey && var.use_private_vpc ? module.memorystore[0].server_ca_secret_id : ""
 
   base_url          = var.shortener_base_url
   domain            = var.shortener_domain

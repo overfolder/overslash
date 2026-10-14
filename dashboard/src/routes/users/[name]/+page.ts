@@ -1,5 +1,5 @@
-import { session } from '$lib/session';
-import type { Identity } from '$lib/types';
+import { session } from '#lib/session.ts';
+import type { Identity } from '#lib/types.ts';
 
 export const ssr = false;
 

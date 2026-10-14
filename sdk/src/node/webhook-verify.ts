@@ -2,16 +2,12 @@
  * Webhook verification.
  *
  * Mirrors `crates/overslash-api/src/services/webhook_dispatcher.rs`. Every
- * attempt carries two signatures, both HMAC-SHA256 with the subscription
- * secret, hex-encoded:
- *
- * - `X-Overslash-Timestamp: <unix seconds>` and
- *   `X-Overslash-Signature-V1: v1=<hex>` over `"<timestamp>.<raw body>"` —
- *   what {@link verifyWebhook} checks. The timestamp is inside the MAC, so a
- *   captured delivery stops verifying once it falls outside the tolerance.
- * - `X-Overslash-Signature: sha256=<hex>` over the raw body alone — the
- *   legacy scheme, deprecated: it replays forever. {@link verifyWebhookSignature}
- *   still checks it for integrations that have not moved yet.
+ * attempt carries `X-Overslash-Timestamp: <unix seconds>` and
+ * `X-Overslash-Signature-V1: v1=<hex>`, HMAC-SHA256 with the subscription
+ * secret over `"<timestamp>.<raw body>"` — what {@link verifyWebhook} checks.
+ * The timestamp is inside the MAC, so a captured delivery stops verifying once
+ * it falls outside the tolerance. The old body-only `X-Overslash-Signature:
+ * sha256=<hex>` replayed forever and is no longer sent.
  *
  * WebCrypto rather than `node:crypto`, so the same code verifies in a Worker or
  * an edge runtime — and so the package keeps its "no Node built-ins" property.
@@ -24,7 +20,11 @@ export const DEFAULT_WEBHOOK_TOLERANCE_SECONDS = 5 * 60;
 
 export interface VerifyWebhookV1Options {
   /**
-   * The **raw** body, exactly as received — see {@link VerifyWebhookOptions.payload}.
+   * The **raw** body, exactly as received.
+   *
+   * Not a re-serialised object: `JSON.stringify(JSON.parse(body))` reorders
+   * nothing but reformats everything, and the signature is over bytes. Read the
+   * body as text or a Buffer before any JSON middleware touches it.
    */
   payload: string | Uint8Array;
   /** The `X-Overslash-Timestamp` header. A missing one fails verification. */
@@ -72,35 +72,6 @@ export async function verifyWebhook(opts: VerifyWebhookV1Options): Promise<boole
   return ok;
 }
 
-export interface VerifyWebhookOptions {
-  /**
-   * The **raw** body, exactly as received.
-   *
-   * Not a re-serialised object: `JSON.stringify(JSON.parse(body))` reorders
-   * nothing but reformats everything, and the signature is over bytes. Read the
-   * body as text or a Buffer before any JSON middleware touches it.
-   */
-  payload: string | Uint8Array;
-  /** The full header value, `sha256=` prefix included. */
-  signature: string;
-  /** The subscription secret, returned once when the webhook was created. */
-  secret: string;
-}
-
-/**
- * Verify the legacy body-only `X-Overslash-Signature: sha256=<hex>`.
- *
- * @deprecated It has no time component, so a captured delivery verifies
- * forever. Use {@link verifyWebhook}; this header will stop being sent.
- */
-export async function verifyWebhookSignature(opts: VerifyWebhookOptions): Promise<boolean> {
-  const expected = stripPrefix(opts.signature);
-  if (!expected) return false;
-
-  const body = typeof opts.payload === 'string' ? new TextEncoder().encode(opts.payload) : opts.payload;
-  return timingSafeEqual(await hmacHex(opts.secret, body), expected);
-}
-
 async function hmacHex(secret: string, message: Uint8Array): Promise<string> {
   const key = await crypto.subtle.importKey(
     'raw',
@@ -125,13 +96,6 @@ export function parseWebhookEvent<T = Record<string, unknown>>(
     throw new Error('Not an Overslash event envelope');
   }
   return parsed;
-}
-
-function stripPrefix(signature: string): string | null {
-  const trimmed = signature.trim();
-  if (!trimmed.startsWith('sha256=')) return null;
-  const hex = trimmed.slice('sha256='.length);
-  return /^[0-9a-f]+$/i.test(hex) ? hex.toLowerCase() : null;
 }
 
 function toHex(bytes: Uint8Array): string {

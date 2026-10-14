@@ -1,13 +1,13 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { page } from '$app/stores';
-	import { ApiError, session } from '$lib/session';
+	import { page } from '$app/state';
+	import { ApiError, session } from '#lib/session.ts';
 
 	let view: 'redirecting' | 'error' = 'redirecting';
 	let errorMsg: string | null = null;
 
 	onMount(async () => {
-		const orgId = $page.url.searchParams.get('org_id');
+		const orgId = page.url.searchParams.get('org_id');
 		if (!orgId) {
 			view = 'error';
 			errorMsg = 'No org ID specified.';

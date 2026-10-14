@@ -209,6 +209,7 @@ pub(super) async fn mint_http_download(
         body: serde_json::to_string(&descriptor).unwrap_or_default(),
         duration_ms: 0,
         filtered_body: None,
+        wire_bytes: None,
     };
     Ok((
         StatusCode::OK,

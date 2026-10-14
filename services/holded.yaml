@@ -12,8 +12,9 @@
 # Holded's own OpenAPI document is at https://api.holded.com/openapi/api2.json —
 # 356 operations across sales, purchases, inventory, CRM, projects, HR and
 # accounting. What follows is a curated subset: the invoicing, contact and
-# treasury surface an agent needs to answer "who owes us / what do we owe" and
-# to draft, issue and settle a sales document. The v1 API (`key:` header) is
+# treasury surface an agent needs to answer "who owes us / what do we owe", to
+# draft, issue and settle a sales document, to reconcile the bank statement
+# against those documents, and to attach the files that back them. The v1 API (`key:` header) is
 # deprecated and deliberately not modelled.
 #
 # Nothing here deletes. `delete_invoice`, `bulk_delete_invoices`,
@@ -36,7 +37,12 @@ info:
     payment status (`overdue`, `outstanding`), which is the entry point for
     receivables questions; `search_contacts` is how a name becomes the
     `contact_id` every sales document needs. Writes are scoped per document:
-    approving one invoice is not approving all of them. Auth is a
+    approving one invoice is not approving all of them.
+    `reconcile_bank_movement` matches a pending bank-statement movement from
+    `list_bank_movements` to the documents it settles. Files attach to
+    invoices, credit notes, estimates, purchases and contacts, and
+    `upload_inbox` hands a supplier bill to Holded's inbox; each takes a file
+    staged first with the overslash service's `upload_file`. Auth is a
     per-module-scoped API token sent as a bearer.
 servers:
   - url: https://api.holded.com
@@ -1647,6 +1653,673 @@ paths:
           schema:
             type: string
 
+  # --- Attachments ---------------------------------------------------------
+  # Uploads go through gateway staging: the agent stages the file with the
+  # overslash service's `upload_file`, then names it here as `[{upload_id}]`.
+  # Downloads are binary; past the inline size cap they come back with a
+  # `download_url` (D57), and `deliver: "url"` asks for one up front.
+  # Attachment deletes are left out, as every delete here is.
+  /api/v2/invoices/{invoiceId}/attachments:
+    get:
+      operationId: list_invoice_attachments
+      summary: "List files attached to invoice {invoiceId}"
+      risk: read
+      pagination:
+        page_size:
+          param: limit
+          default: 50
+          max: 200
+        next:
+          style: cursor
+          param: cursor
+          from: cursor
+        items: items
+        has_more: has_more
+      description: >-
+        One page of the files attached to an invoice, each with its id, file
+        name and size. Download one with `get_invoice_attachment`. Requires the
+        token's Sales → read scope.
+      parameters:
+        - name: invoiceId
+          in: path
+          required: true
+          description: Invoice id (24-character hex)
+          x-overslash-aliases: [invoice_id, document_id, id]
+          schema:
+            type: string
+        - name: cursor
+          in: query
+          description: Cursor from the previous response's `cursor`
+          schema:
+            type: string
+        - name: limit
+          in: query
+          description: Attachments per page, max 200
+          schema:
+            type: integer
+    post:
+      operationId: attach_invoice_file
+      summary: "Attach a file to invoice {invoiceId}"
+      risk: write
+      scope_param: invoiceId
+      description: >-
+        Attach one file (10 MB max) to an invoice. Stage it first with the
+        overslash service's `upload_file`, then pass `file: [{"upload_id":
+        "…"}]`. Attachments are visible to the team in Holded and are not
+        sent to the contact. Requires the token's Sales → write
+        scope.
+      disclose:
+        - label: Invoice
+          primary: true
+          filter: '.resolved.invoiceId // .params.invoiceId'
+        - label: File
+          primary: true
+          filter: >-
+            .body.file // empty
+            | map("\(.filename) (\(.content_type), \(.size_bytes) bytes, sha256 \(.sha256[0:12])…)")
+            | join("\n")
+      parameters:
+        - name: invoiceId
+          in: path
+          required: true
+          description: Invoice id (24-character hex)
+          x-overslash-aliases: [invoice_id, document_id, id]
+          schema:
+            type: string
+          resolve:
+            get: /api/v2/invoices/{invoiceId}
+            pick: document_number
+            cache_ttl: 60
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                # Staged by the overslash service's `upload_file` and sent as
+                # the one file part Holded reads; no byte of it is in the
+                # approval, the replay payload or the audit row (D114).
+                file:
+                  type: array
+                  maxItems: 1
+                  x-overslash-staged-upload:
+                    inline_as: multipart
+                  description: >-
+                    The file to attach: exactly one staged upload.
+                  items:
+                    type: object
+                    required: [upload_id]
+                    properties:
+                      upload_id:
+                        type: string
+                        description: The upload_id returned by upload_file.
+  /api/v2/invoices/{invoiceId}/attachments/{attachmentId}:
+    get:
+      operationId: get_invoice_attachment
+      summary: "Download a file attached to invoice {invoiceId}"
+      risk: read
+      description: >-
+        The raw bytes of one attachment. For anything but a small file, call
+        with `deliver: "url"` to get a short-lived download link instead of
+        the bytes inline. Requires the token's Sales → read scope.
+      responses:
+        "200":
+          content:
+            application/octet-stream: {}
+      parameters:
+        - name: invoiceId
+          in: path
+          required: true
+          description: Invoice id (24-character hex)
+          x-overslash-aliases: [invoice_id, document_id, id]
+          schema:
+            type: string
+        - name: attachmentId
+          in: path
+          required: true
+          description: Attachment id (from list_invoice_attachments)
+          schema:
+            type: string
+  /api/v2/credit-notes/{creditNoteId}/attachments:
+    get:
+      operationId: list_credit_note_attachments
+      summary: "List files attached to credit note {creditNoteId}"
+      risk: read
+      pagination:
+        page_size:
+          param: limit
+          default: 50
+          max: 200
+        next:
+          style: cursor
+          param: cursor
+          from: cursor
+        items: items
+        has_more: has_more
+      description: >-
+        One page of the files attached to a credit note, each with its id, file
+        name and size. Download one with `get_credit_note_attachment`. Requires the
+        token's Sales → read scope.
+      parameters:
+        - name: creditNoteId
+          in: path
+          required: true
+          description: Credit note id (24-character hex)
+          x-overslash-aliases: [credit_note_id, document_id, id]
+          schema:
+            type: string
+        - name: cursor
+          in: query
+          description: Cursor from the previous response's `cursor`
+          schema:
+            type: string
+        - name: limit
+          in: query
+          description: Attachments per page, max 200
+          schema:
+            type: integer
+    post:
+      operationId: attach_credit_note_file
+      summary: "Attach a file to credit note {creditNoteId}"
+      risk: write
+      scope_param: creditNoteId
+      description: >-
+        Attach one file (10 MB max) to a credit note. Stage it first with the
+        overslash service's `upload_file`, then pass `file: [{"upload_id":
+        "…"}]`. Attachments are visible to the team in Holded and are not
+        sent to the contact. Requires the token's Sales → write
+        scope.
+      disclose:
+        - label: Credit note
+          primary: true
+          filter: '.resolved.creditNoteId // .params.creditNoteId'
+        - label: File
+          primary: true
+          filter: >-
+            .body.file // empty
+            | map("\(.filename) (\(.content_type), \(.size_bytes) bytes, sha256 \(.sha256[0:12])…)")
+            | join("\n")
+      parameters:
+        - name: creditNoteId
+          in: path
+          required: true
+          description: Credit note id (24-character hex)
+          x-overslash-aliases: [credit_note_id, document_id, id]
+          schema:
+            type: string
+          resolve:
+            get: /api/v2/credit-notes/{creditNoteId}
+            pick: document_number
+            cache_ttl: 60
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                # Staged by the overslash service's `upload_file` and sent as
+                # the one file part Holded reads; no byte of it is in the
+                # approval, the replay payload or the audit row (D114).
+                file:
+                  type: array
+                  maxItems: 1
+                  x-overslash-staged-upload:
+                    inline_as: multipart
+                  description: >-
+                    The file to attach: exactly one staged upload.
+                  items:
+                    type: object
+                    required: [upload_id]
+                    properties:
+                      upload_id:
+                        type: string
+                        description: The upload_id returned by upload_file.
+  /api/v2/credit-notes/{creditNoteId}/attachments/{attachmentId}:
+    get:
+      operationId: get_credit_note_attachment
+      summary: "Download a file attached to credit note {creditNoteId}"
+      risk: read
+      description: >-
+        The raw bytes of one attachment. For anything but a small file, call
+        with `deliver: "url"` to get a short-lived download link instead of
+        the bytes inline. Requires the token's Sales → read scope.
+      responses:
+        "200":
+          content:
+            application/octet-stream: {}
+      parameters:
+        - name: creditNoteId
+          in: path
+          required: true
+          description: Credit note id (24-character hex)
+          x-overslash-aliases: [credit_note_id, document_id, id]
+          schema:
+            type: string
+        - name: attachmentId
+          in: path
+          required: true
+          description: Attachment id (from list_credit_note_attachments)
+          schema:
+            type: string
+  /api/v2/estimates/{estimateId}/attachments:
+    get:
+      operationId: list_estimate_attachments
+      summary: "List files attached to estimate {estimateId}"
+      risk: read
+      pagination:
+        page_size:
+          param: limit
+          default: 50
+          max: 200
+        next:
+          style: cursor
+          param: cursor
+          from: cursor
+        items: items
+        has_more: has_more
+      description: >-
+        One page of the files attached to an estimate, each with its id, file
+        name and size. Download one with `get_estimate_attachment`. Requires the
+        token's Sales → read scope.
+      parameters:
+        - name: estimateId
+          in: path
+          required: true
+          description: Estimate id (24-character hex)
+          x-overslash-aliases: [estimate_id, document_id, id]
+          schema:
+            type: string
+        - name: cursor
+          in: query
+          description: Cursor from the previous response's `cursor`
+          schema:
+            type: string
+        - name: limit
+          in: query
+          description: Attachments per page, max 200
+          schema:
+            type: integer
+    post:
+      operationId: attach_estimate_file
+      summary: "Attach a file to estimate {estimateId}"
+      risk: write
+      scope_param: estimateId
+      description: >-
+        Attach one file (10 MB max) to an estimate. Stage it first with the
+        overslash service's `upload_file`, then pass `file: [{"upload_id":
+        "…"}]`. Attachments are visible to the team in Holded and are not
+        sent to the contact. Requires the token's Sales → write
+        scope.
+      disclose:
+        - label: Estimate
+          primary: true
+          filter: '.resolved.estimateId // .params.estimateId'
+        - label: File
+          primary: true
+          filter: >-
+            .body.file // empty
+            | map("\(.filename) (\(.content_type), \(.size_bytes) bytes, sha256 \(.sha256[0:12])…)")
+            | join("\n")
+      parameters:
+        - name: estimateId
+          in: path
+          required: true
+          description: Estimate id (24-character hex)
+          x-overslash-aliases: [estimate_id, document_id, id]
+          schema:
+            type: string
+          resolve:
+            get: /api/v2/estimates/{estimateId}
+            pick: document_number
+            cache_ttl: 60
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                # Staged by the overslash service's `upload_file` and sent as
+                # the one file part Holded reads; no byte of it is in the
+                # approval, the replay payload or the audit row (D114).
+                file:
+                  type: array
+                  maxItems: 1
+                  x-overslash-staged-upload:
+                    inline_as: multipart
+                  description: >-
+                    The file to attach: exactly one staged upload.
+                  items:
+                    type: object
+                    required: [upload_id]
+                    properties:
+                      upload_id:
+                        type: string
+                        description: The upload_id returned by upload_file.
+  /api/v2/estimates/{estimateId}/attachments/{attachmentId}:
+    get:
+      operationId: get_estimate_attachment
+      summary: "Download a file attached to estimate {estimateId}"
+      risk: read
+      description: >-
+        The raw bytes of one attachment. For anything but a small file, call
+        with `deliver: "url"` to get a short-lived download link instead of
+        the bytes inline. Requires the token's Sales → read scope.
+      responses:
+        "200":
+          content:
+            application/octet-stream: {}
+      parameters:
+        - name: estimateId
+          in: path
+          required: true
+          description: Estimate id (24-character hex)
+          x-overslash-aliases: [estimate_id, document_id, id]
+          schema:
+            type: string
+        - name: attachmentId
+          in: path
+          required: true
+          description: Attachment id (from list_estimate_attachments)
+          schema:
+            type: string
+  /api/v2/purchases/{purchaseId}/attachments:
+    get:
+      operationId: list_purchase_attachments
+      summary: "List files attached to purchase {purchaseId}"
+      risk: read
+      pagination:
+        page_size:
+          param: limit
+          default: 50
+          max: 200
+        next:
+          style: cursor
+          param: cursor
+          from: cursor
+        items: items
+        has_more: has_more
+      description: >-
+        One page of the files attached to a purchase, each with its id, file
+        name and size. Download one with `get_purchase_attachment`. Requires the
+        token's Accounting → read scope.
+      parameters:
+        - name: purchaseId
+          in: path
+          required: true
+          description: Purchase id (24-character hex)
+          x-overslash-aliases: [purchase_id, document_id, id]
+          schema:
+            type: string
+        - name: cursor
+          in: query
+          description: Cursor from the previous response's `cursor`
+          schema:
+            type: string
+        - name: limit
+          in: query
+          description: Attachments per page, max 200
+          schema:
+            type: integer
+    post:
+      operationId: attach_purchase_file
+      summary: "Attach a file to purchase {purchaseId}"
+      risk: write
+      scope_param: purchaseId
+      description: >-
+        Attach one file (10 MB max) to a purchase. Stage it first with the
+        overslash service's `upload_file`, then pass `file: [{"upload_id":
+        "…"}]`. Attachments are visible to the team in Holded and are not
+        sent to the contact. Requires the token's Accounting → write
+        scope.
+      disclose:
+        - label: Purchase
+          primary: true
+          filter: '.resolved.purchaseId // .params.purchaseId'
+        - label: File
+          primary: true
+          filter: >-
+            .body.file // empty
+            | map("\(.filename) (\(.content_type), \(.size_bytes) bytes, sha256 \(.sha256[0:12])…)")
+            | join("\n")
+      parameters:
+        - name: purchaseId
+          in: path
+          required: true
+          description: Purchase id (24-character hex)
+          x-overslash-aliases: [purchase_id, document_id, id]
+          schema:
+            type: string
+          resolve:
+            get: /api/v2/purchases/{purchaseId}
+            pick: document_number
+            cache_ttl: 60
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                # Staged by the overslash service's `upload_file` and sent as
+                # the one file part Holded reads; no byte of it is in the
+                # approval, the replay payload or the audit row (D114).
+                file:
+                  type: array
+                  maxItems: 1
+                  x-overslash-staged-upload:
+                    inline_as: multipart
+                  description: >-
+                    The file to attach: exactly one staged upload.
+                  items:
+                    type: object
+                    required: [upload_id]
+                    properties:
+                      upload_id:
+                        type: string
+                        description: The upload_id returned by upload_file.
+  /api/v2/purchases/{purchaseId}/attachments/{attachmentId}:
+    get:
+      operationId: get_purchase_attachment
+      summary: "Download a file attached to purchase {purchaseId}"
+      risk: read
+      description: >-
+        The raw bytes of one attachment. For anything but a small file, call
+        with `deliver: "url"` to get a short-lived download link instead of
+        the bytes inline. Requires the token's Accounting → read scope.
+      responses:
+        "200":
+          content:
+            application/octet-stream: {}
+      parameters:
+        - name: purchaseId
+          in: path
+          required: true
+          description: Purchase id (24-character hex)
+          x-overslash-aliases: [purchase_id, document_id, id]
+          schema:
+            type: string
+        - name: attachmentId
+          in: path
+          required: true
+          description: Attachment id (from list_purchase_attachments)
+          schema:
+            type: string
+  /api/v2/contacts/{contactId}/attachments:
+    get:
+      operationId: list_contact_attachments
+      summary: "List files attached to contact {contactId}"
+      risk: read
+      pagination:
+        page_size:
+          param: limit
+          default: 50
+          max: 200
+        next:
+          style: cursor
+          param: cursor
+          from: cursor
+        items: items
+        has_more: has_more
+      description: >-
+        One page of the files attached to a contact, each with its id, file
+        name and size. Download one with `get_contact_attachment`. Requires the
+        token's Contacts → read scope.
+      parameters:
+        - name: contactId
+          in: path
+          required: true
+          description: Contact id (24-character hex)
+          x-overslash-aliases: [contact_id, id]
+          schema:
+            type: string
+        - name: cursor
+          in: query
+          description: Cursor from the previous response's `cursor`
+          schema:
+            type: string
+        - name: limit
+          in: query
+          description: Attachments per page, max 200
+          schema:
+            type: integer
+    post:
+      operationId: attach_contact_file
+      summary: "Attach a file to contact {contactId}"
+      risk: write
+      scope_param: contactId
+      description: >-
+        Attach one file (10 MB max) to a contact. Stage it first with the
+        overslash service's `upload_file`, then pass `file: [{"upload_id":
+        "…"}]`. Attachments are visible to the team in Holded and are not
+        sent to the contact. Holded strips special characters and spaces from the file name, and a file whose cleaned name already exists on the contact is overwritten in place. Requires the token's Contacts → write
+        scope.
+      disclose:
+        - label: Contact
+          primary: true
+          filter: '.resolved.contactId // .params.contactId'
+        - label: File
+          primary: true
+          filter: >-
+            .body.file // empty
+            | map("\(.filename) (\(.content_type), \(.size_bytes) bytes, sha256 \(.sha256[0:12])…)")
+            | join("\n")
+        - label: Effect
+          filter: '"A file with the same cleaned name already on this contact is overwritten."'
+      parameters:
+        - name: contactId
+          in: path
+          required: true
+          description: Contact id (24-character hex)
+          x-overslash-aliases: [contact_id, id]
+          schema:
+            type: string
+          resolve:
+            get: /api/v2/contacts/{contactId}
+            pick: name
+            cache_ttl: 60
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                # Staged by the overslash service's `upload_file` and sent as
+                # the one file part Holded reads; no byte of it is in the
+                # approval, the replay payload or the audit row (D114).
+                file:
+                  type: array
+                  maxItems: 1
+                  x-overslash-staged-upload:
+                    inline_as: multipart
+                  description: >-
+                    The file to attach: exactly one staged upload.
+                  items:
+                    type: object
+                    required: [upload_id]
+                    properties:
+                      upload_id:
+                        type: string
+                        description: The upload_id returned by upload_file.
+  /api/v2/contacts/{contactId}/attachments/{filename}:
+    get:
+      operationId: get_contact_attachment
+      summary: "Download a file attached to contact {contactId}"
+      risk: read
+      description: >-
+        The raw bytes of one attachment. For anything but a small file, call
+        with `deliver: "url"` to get a short-lived download link instead of
+        the bytes inline. Requires the token's Contacts → read scope.
+      responses:
+        "200":
+          content:
+            application/octet-stream: {}
+      parameters:
+        - name: contactId
+          in: path
+          required: true
+          description: Contact id (24-character hex)
+          x-overslash-aliases: [contact_id, id]
+          schema:
+            type: string
+        - name: filename
+          in: path
+          required: true
+          description: Attachment file name, as list_contact_attachments returns it
+          schema:
+            type: string
+  /api/v2/inbox:
+    post:
+      operationId: upload_inbox
+      summary: Upload a document to the Holded inbox
+      risk: write
+      description: >-
+        Drop one document (a supplier bill, a receipt) into Holded's inbox,
+        where Holded reads it and proposes the purchase or expense to book.
+        Nothing is booked by this call; the document waits in the inbox for
+        review. Stage the file first with the overslash service's
+        `upload_file`, then pass `document: [{"upload_id": "…"}]`. Requires
+        the token's Inbox → write scope.
+      disclose:
+        - label: Document
+          primary: true
+          filter: >-
+            .body.document // empty
+            | map("\(.filename) (\(.content_type), \(.size_bytes) bytes, sha256 \(.sha256[0:12])…)")
+            | join("\n")
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [document]
+              properties:
+                # Staged by the overslash service's `upload_file` and sent as
+                # the one file part Holded reads; no byte of it is in the
+                # approval, the replay payload or the audit row (D114).
+                document:
+                  type: array
+                  maxItems: 1
+                  x-overslash-staged-upload:
+                    inline_as: multipart
+                  description: >-
+                    The document to upload: exactly one staged upload.
+                  items:
+                    type: object
+                    required: [upload_id]
+                    properties:
+                      upload_id:
+                        type: string
+                        description: The upload_id returned by upload_file.
   # --- Treasury and accounting ---------------------------------------------
   /api/v2/payments:
     get:
@@ -1728,8 +2401,10 @@ paths:
       description: >-
         One page of treasury accounts — banks, cards, payment gateways and cash
         boxes. An account's `id` is the `treasury_id` that
-        `create_invoice_payment` books a payment to. Requires the token's
-        Accounting → read scope.
+        `create_invoice_payment` books a payment to, and its
+        `transactions_pending_to_reconcile` says how many movements are still
+        waiting for `reconcile_bank_movement`. Requires the token's Accounting
+        → read scope.
       parameters:
         - name: type
           in: query
@@ -1773,8 +2448,11 @@ paths:
         items: items
         has_more: has_more
       description: >-
-        One page of movements on a treasury account, with their reconciliation
-        state. Requires the token's Accounting → read scope.
+        One page of raw bank-statement movements on a treasury account, newest
+        value date first, each with its reconciliation `status` and
+        `reconciled_amount`. Filter `status=pending` for what still needs
+        reconciling with `reconcile_bank_movement`. Cash accounts always
+        answer empty. Requires the token's Accounting → read scope.
       parameters:
         - name: id
           in: path
@@ -1783,13 +2461,19 @@ paths:
           x-overslash-aliases: [banking_account_id, treasury_id, bank_account_id, account_id]
           schema:
             type: string
+        # Holded declares this `style: form, explode: false` — one
+        # comma-joined value — while the gateway explodes an array into
+        # repeated keys. So it is a plain string, and the members are named in
+        # prose: an `enum` would match the whole value and reject
+        # `pending,partial`.
         - name: status
           in: query
-          description: Reconciliation states to include
+          description: >-
+            Reconciliation states to include, comma-separated: pending,
+            reconciled, partial, forced_reconciled. `pending` is the queue
+            still to reconcile.
           schema:
-            type: array
-            items:
-              type: string
+            type: string
         - name: start_date
           in: query
           description: Movements on or after this date
@@ -1812,6 +2496,96 @@ paths:
           description: Movements per page, max 200
           schema:
             type: integer
+  /api/v2/treasury/accounts/{bankingAccountId}/bank-movements/{movementId}/reconcile:
+    post:
+      operationId: reconcile_bank_movement
+      summary: "Reconcile a movement on treasury account {bankingAccountId}"
+      risk: write
+      # Scoped per account, like `list_bank_movements`. Per movement would make
+      # every reconciliation its own approval, which is the whole job.
+      scope_param: bankingAccountId
+      description: >-
+        Reconcile one bank movement (ids from `list_bank_movements`). With
+        `documents`, link the movement to existing Holded documents: one
+        document closes it, several split the movement across them, and each
+        must belong to this account. With no `documents`, the movement is
+        force-marked reconciled without linking anything (`forced_reconciled`),
+        which clears it from the pending queue when no matching document
+        exists. Not idempotent: reconciling the same movement and document
+        again is a 422. There is no API to undo a reconciliation; that is done
+        in the Holded app. Requires the token's Accounting → banks write
+        scope.
+      disclose:
+        - label: Account
+          primary: true
+          filter: '.resolved.bankingAccountId // .params.bankingAccountId'
+        - label: Movement
+          primary: true
+          filter: .params.movementId
+        # No `// empty`: an omitted list is a force-reconcile, the most
+        # consequential shape this call has, and it must not render as nothing.
+        - label: Documents
+          primary: true
+          filter: >-
+            if ((.body.documents // []) | length) == 0
+            then "none — force-marks the movement reconciled without linking any document"
+            else .body.documents | map("\(.document_type) \(.document_id)") | join("\n")
+            end
+        - label: Effect
+          filter: '"Not reversible through the API; undoing it means unreconciling in the Holded app."'
+      parameters:
+        - name: bankingAccountId
+          in: path
+          required: true
+          description: Treasury account id (from list_banking_accounts)
+          x-overslash-aliases: [banking_account_id, treasury_id, bank_account_id, account_id]
+          schema:
+            type: string
+          resolve:
+            get: /api/v2/treasury/accounts/{bankingAccountId}
+            pick: name
+            cache_ttl: 300
+        - name: movementId
+          in: path
+          required: true
+          description: Bank movement id (from list_bank_movements)
+          x-overslash-aliases: [movement_id, bank_movement_id]
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                documents:
+                  type: array
+                  description: >-
+                    Documents to match the movement against. Several split it.
+                    Omit to force-reconcile without linking any document.
+                  items:
+                    type: object
+                    required: [document_id, document_type]
+                    properties:
+                      document_id:
+                        type: string
+                        description: Id of an existing Holded document
+                      document_type:
+                        type: string
+                        enum:
+                          - invoice
+                          - salesreceipt
+                          - purchase
+                          - creditnote
+                          - purchaserefund
+                          - payroll
+                          - payment
+                          - remittance
+                          - purchasereceipt
+                          - collection
+                          - receipt
+                          - entry
   /api/v2/ledger-entries:
     get:
       operationId: list_ledger_entries

@@ -285,8 +285,7 @@ async fn inline_secrets_reach_only_the_callers_own_vault() {
     // A bare name is julia's own.
     let r = inline_call(&o, &o.julia.agent_key, "shortcut_api_token", mock).await;
     assert_eq!(r.status(), 200);
-    let body: Value = r.json().await.unwrap();
-    let echo: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
+    let echo = common::last_received(mock).await;
     assert_eq!(echo["headers"]["x-token"], "julia-token");
 
     // Angel's vault, by id or by handle: refused before anything is dialled.

@@ -1,12 +1,12 @@
 <script lang="ts">
-	import { replaceState } from '$app/navigation';
+	import { goto } from '$app/navigation';
 	import { tick } from 'svelte';
-	import { session, ApiError } from '$lib/session';
-	import SearchBar, { addTerm, type SearchValue, type Term } from '$lib/components/SearchBar.svelte';
+	import { session, ApiError } from '#lib/session.ts';
+	import SearchBar, { addTerm, type SearchValue, type Term } from '#lib/components/SearchBar.svelte';
 	import AuditRow from './AuditRow.svelte';
 	import { downloadCsv } from './exportCsv';
 	import { buildAuditSearchKeys, filtersToSearch, searchToFilters } from './searchMapping';
-	import { makeIdentityFormatter } from '$lib/identityDisplay';
+	import { makeIdentityFormatter } from '#lib/identityDisplay.ts';
 	import {
 		buildQuery,
 		cursorFrom,
@@ -120,7 +120,7 @@
 		// Update the URL in place so filters are shareable, without re-running
 		// the page `load` function (which would duplicate the network request
 		// triggered by fetchPage below).
-		replaceState(buildUrl(next), {});
+		void goto(buildUrl(next), { shallow: true, replace: true });
 		fetchPage(true);
 	}
 
@@ -151,7 +151,7 @@
 		eventId = null;
 		anchor = null;
 		expandedId = null;
-		replaceState(`/audit${filtersToSearchString(filters)}`, {});
+		void goto(`/audit${filtersToSearchString(filters)}`, { shallow: true, replace: true });
 	}
 
 	async function scrollToEvent(id: string) {

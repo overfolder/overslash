@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { page } from '$app/stores';
+	import { page } from '$app/state';
 	import { isActive } from './nav-items';
 	import NavIcon, { type IconName } from './NavIcon.svelte';
 
@@ -23,7 +23,7 @@
 	} = $props();
 
 	const active = $derived(
-		activeHref !== null ? href === activeHref : isActive($page.url.pathname, href)
+		activeHref !== null ? href === activeHref : isActive(page.url.pathname, href)
 	);
 </script>
 

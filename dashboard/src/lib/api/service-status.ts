@@ -12,7 +12,7 @@
  * resolvable, or a pre-`credentials_status` API). The `connections` argument is
  * no longer consulted (kept for signature stability).
  */
-import type { ConnectionSummary, ServiceInstanceSummary } from '$lib/types';
+import type { ConnectionSummary, ServiceInstanceSummary } from '#lib/types.ts';
 
 export type CredentialStatus =
 	| 'connected'

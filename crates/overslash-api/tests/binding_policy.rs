@@ -99,12 +99,12 @@ impl World {
     /// Call `action` on the service named `service` through the action shape
     /// (it dials the instance's own base — the fake).
     async fn call(&self, key: &str, service: &str, action: &str) -> (u16, String) {
-        self.post(
-            key,
-            "/v1/actions/call",
-            json!({"service": service, "action": action, "params": {}}),
-        )
-        .await
+        let req = self
+            .client
+            .post(format!("{}/v1/actions/call", self.base))
+            .header(auth(key).0, auth(key).1)
+            .json(&json!({"service": service, "action": action, "params": {}}));
+        common::call_seen_upstream(self.mock, "", req).await
     }
 
     async fn template(&self, key: &str, user_level: bool, openapi: String) {

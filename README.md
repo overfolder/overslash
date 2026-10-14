@@ -139,7 +139,8 @@ feature on without them is a startup failure, not a silent degradation.
 | `PORT` | `3000` | Bind port. |
 | `PUBLIC_URL` | derived from `HOST`/`PORT` | The origin advertised in redirect URIs and links. Set it behind a reverse proxy. |
 | `DASHBOARD_ORIGIN` | `*localhost*` | Comma-separated CORS origins. Set explicit origins in production. |
-| `REDIS_URL` | unset | Valkey/Redis for rate-limit counters and the resolver cache. Unset means process-local, which is correct for a single replica. |
+| `REDIS_URL` | unset | Valkey/Redis for rate-limit counters and the resolver cache. Unset means process-local, which is correct for a single replica. Use `rediss://` for TLS. |
+| `REDIS_PASSWORD`, `REDIS_CA_CERT` | unset | Valkey AUTH string, and the PEM bundle of server CAs to verify a `rediss://` server against (only these are trusted). Both are secrets in production; see [the Memorystore runbook](docs/runbooks/memorystore-auth-tls.md). |
 | `GOOGLE_AUTH_CLIENT_ID`, `GOOGLE_AUTH_CLIENT_SECRET` | unset | Google sign-in. Both halves or neither. An IdP configured here takes precedence over one configured in the dashboard. |
 | `GITHUB_AUTH_CLIENT_ID`, `GITHUB_AUTH_CLIENT_SECRET` | unset | GitHub sign-in, same rules. |
 | `DEV_AUTH` | off | Enables `/auth/dev/token`, a passwordless local login. **Leave off in production.** |

@@ -8,6 +8,7 @@
 //! weights into CI.
 
 use crate::common;
+use std::collections::HashSet;
 
 use reqwest::{Client, StatusCode};
 use serde_json::{Value, json};
@@ -135,15 +136,26 @@ async fn create_api_key_service(
     resp
 }
 
-/// Find the first result with the matching `(template, action)` pair. After
-/// the fan-out rewrite, the top-level `service` field carries an instance
-/// name; tests almost always want "any row from this template", so we look
-/// up by `template` instead.
+/// Find the result with the matching `(template, action)` pair. Rows are one
+/// per (template, action); the callable instance names live in
+/// `instances[].service`.
 fn find(results: &[Value], template: &str, action: &str) -> Option<Value> {
     results
         .iter()
         .find(|r| r["template"].as_str() == Some(template) && r["action"].as_str() == Some(action))
         .cloned()
+}
+
+/// The `instances` of the single row for `template`. Browse mode emits one
+/// row per template, so more than one is a regression to the old
+/// per-instance fan-out.
+fn instances_of(results: &[Value], template: &str) -> Vec<Value> {
+    let rows: Vec<&Value> = results
+        .iter()
+        .filter(|r| r["template"] == template)
+        .collect();
+    assert_eq!(rows.len(), 1, "expected one {template} row: {rows:?}");
+    rows[0]["instances"].as_array().unwrap().clone()
 }
 
 fn rank_of(results: &[Value], template: &str, action: &str) -> Option<usize> {
@@ -312,8 +324,8 @@ async fn empty_query_floats_connected_services_first() {
         results[resend_rank]
     );
     assert_eq!(
-        results[resend_rank]["service"], "resend-work",
-        "expected fanned-out resend-work as the callable service: {}",
+        results[resend_rank]["instances"][0]["service"], "resend-work",
+        "expected resend-work as the callable instance: {}",
         results[resend_rank]
     );
 }
@@ -409,13 +421,14 @@ async fn find_send_email_across_gmail_and_resend() {
         results.iter().any(|r| r["template"] == "resend"),
         "expected a resend hit; got {results:?}"
     );
-    // Top result for a mail query should come from one of the two
-    // email-centric services.
+    // Top result for a mail query should come from an email-centric
+    // service. The `email` (IMAP/SMTP gateway) template is one too, and
+    // "email" names it outright, so the service-name boost may float it.
     let top = &results[0];
     let top_template = top["template"].as_str().unwrap();
     assert!(
-        matches!(top_template, "gmail" | "resend"),
-        "top hit was {top_template}, expected gmail or resend"
+        matches!(top_template, "gmail" | "resend" | "email"),
+        "top hit was {top_template}, expected an email service"
     );
 }
 
@@ -521,22 +534,21 @@ async fn connected_instance_surfaces_at_top_level() {
         .expect("resend result missing");
     let auth = &resend_hit["auth"];
     assert_eq!(auth["connected"], true, "expected connected=true: {auth}");
-    // After the fan-out rewrite the row IS the instance — no nested
-    // `auth.instances`. The instance name is `service`, the secret label
-    // is hoisted to the top level.
+    // Instances live on the row's `instances` list, not under `auth`.
     assert!(
         auth.get("instances").is_none(),
-        "auth.instances must be gone after fan-out: {auth}"
+        "auth.instances must not exist: {auth}"
     );
-    assert_eq!(resend_hit["service"], "resend-work");
-    assert_eq!(resend_hit["secret_name"], "resend_api_key");
+    let inst = &resend_hit["instances"][0];
+    assert_eq!(inst["service"], "resend-work");
+    assert_eq!(inst["secret_name"], "resend_api_key");
     assert!(
         resend_hit.get("owner_email").is_none(),
         "owner_email leaked into payload: {resend_hit}"
     );
     assert!(
-        resend_hit.get("account_email").is_none(),
-        "api-key row must not surface account_email: {resend_hit}"
+        inst.get("account_email").is_none(),
+        "api-key instance must not surface account_email: {resend_hit}"
     );
     // No raw UUID anywhere — the search response should never expose
     // internal identifiers like connection_id or service_instance_id.
@@ -903,9 +915,10 @@ async fn keyword_query_with_include_catalog_searches_full_catalog() {
         gmail_row["setup_required"], true,
         "gmail catalog row missing setup_required: {gmail_row}"
     );
-    assert!(
-        gmail_row.get("service").is_none(),
-        "catalog row must omit `service`: {gmail_row}"
+    assert_eq!(
+        gmail_row["instances"],
+        serde_json::json!([]),
+        "catalog row must have no instances: {gmail_row}"
     );
 }
 
@@ -947,19 +960,20 @@ async fn oauth_instance_exposes_account_email() {
         .iter()
         .find(|r| r["template"] == "gmail")
         .expect("connected gmail missing");
-    assert_eq!(gmail["service"], "gmail-alice");
-    assert_eq!(gmail["account_email"], "alice@gmail.com");
+    let inst = &gmail["instances"][0];
+    assert_eq!(inst["service"], "gmail-alice");
+    assert_eq!(inst["account_email"], "alice@gmail.com");
     assert!(
         gmail.get("owner_email").is_none(),
         "owner_email leaked: {gmail}"
     );
     assert!(
-        gmail.get("secret_name").is_none(),
-        "OAuth row must not expose secret_name: {gmail}"
+        inst.get("secret_name").is_none(),
+        "OAuth instance must not expose secret_name: {gmail}"
     );
     assert!(
         gmail["auth"].get("instances").is_none(),
-        "auth.instances must be gone after fan-out: {}",
+        "auth.instances must not exist: {}",
         gmail["auth"]
     );
 }
@@ -994,10 +1008,11 @@ async fn api_key_instance_exposes_secret_name() {
         .iter()
         .find(|r| r["template"] == "resend")
         .expect("resend missing");
-    assert_eq!(resend["service"], "resend-work");
-    assert_eq!(resend["secret_name"], "resend_work");
+    let inst = &resend["instances"][0];
+    assert_eq!(inst["service"], "resend-work");
+    assert_eq!(inst["secret_name"], "resend_work");
     assert!(
-        resend.get("account_email").is_none(),
+        inst.get("account_email").is_none(),
         "api-key row leaked account_email: {resend}"
     );
     // Defense-in-depth: nothing in the response body should look like an
@@ -1016,11 +1031,9 @@ async fn api_key_instance_exposes_secret_name() {
 }
 
 #[tokio::test]
-async fn multiple_instances_of_same_template_fan_out_with_account_email() {
-    // Two Google Calendar accounts (a@ + b@) should each surface as a
-    // distinct row carrying its own `account_email`, since the fan-out
-    // rewrite emits one row per (template, action, instance). Browse mode
-    // skips actions, so we expect exactly two service-level gmail rows.
+async fn multiple_instances_of_same_template_share_one_row_with_account_email() {
+    // Two Gmail accounts (a@ + b@) collapse into one row whose `instances`
+    // list carries each instance's own `account_email`.
     let (base, client, fixtures, pool) = bootstrap_full().await;
     let conn_a = seed_oauth_connection(
         &pool,
@@ -1067,15 +1080,11 @@ async fn multiple_instances_of_same_template_fan_out_with_account_email() {
         .await
         .unwrap();
     let results = body["results"].as_array().unwrap();
-    let gmail_rows: Vec<&Value> = results
-        .iter()
-        .filter(|r| r["template"] == "gmail")
-        .collect();
+    let gmail_rows = instances_of(results, "gmail");
     assert_eq!(
         gmail_rows.len(),
         2,
-        "expected two fanned-out gmail rows (browse mode), got {}",
-        gmail_rows.len()
+        "expected two gmail instances on one row: {gmail_rows:?}"
     );
     let mut pairs: Vec<(String, String)> = gmail_rows
         .iter()
@@ -1097,10 +1106,9 @@ async fn multiple_instances_of_same_template_fan_out_with_account_email() {
 }
 
 #[tokio::test]
-async fn multiple_instances_of_same_template_fan_out_with_secret_name() {
-    // Two Resend instances bound to different secret names should each
-    // surface as a distinct row whose top-level `secret_name` is hoisted
-    // from the per-instance binding. Browse mode → one row per instance.
+async fn multiple_instances_of_same_template_share_one_row_with_secret_name() {
+    // Two Resend instances bound to different secret names collapse into
+    // one row; each `instances` entry carries its own `secret_name`.
     let (base, client, _, admin_key, _) = bootstrap().await;
     create_api_key_service(&base, &client, &admin_key, "resend", "resend-a", "secret_a").await;
     create_api_key_service(&base, &client, &admin_key, "resend", "resend-b", "secret_b").await;
@@ -1115,15 +1123,11 @@ async fn multiple_instances_of_same_template_fan_out_with_secret_name() {
         .await
         .unwrap();
     let results = body["results"].as_array().unwrap();
-    let resend_rows: Vec<&Value> = results
-        .iter()
-        .filter(|r| r["template"] == "resend")
-        .collect();
+    let resend_rows = instances_of(results, "resend");
     assert_eq!(
         resend_rows.len(),
         2,
-        "expected two fanned-out resend rows (browse mode), got {}",
-        resend_rows.len()
+        "expected two resend instances on one row: {resend_rows:?}"
     );
     let mut pairs: Vec<(String, String)> = resend_rows
         .iter()
@@ -1147,7 +1151,7 @@ async fn multiple_instances_of_same_template_fan_out_with_secret_name() {
 #[tokio::test]
 async fn instances_with_same_account_email_disambiguate_by_service_name() {
     // Two service instances pinned to the SAME OAuth connection (sharing
-    // `account_email`) still surface as two distinct rows differing only
+    // `account_email`) still surface as two distinct instances differing only
     // by `service` (the instance name). `service` is always the canonical
     // disambiguator — the email/secret labels only assist.
     let (base, client, fixtures, pool) = bootstrap_full().await;
@@ -1188,14 +1192,11 @@ async fn instances_with_same_account_email_disambiguate_by_service_name() {
         .await
         .unwrap();
     let results = body["results"].as_array().unwrap();
-    let gmail_rows: Vec<&Value> = results
-        .iter()
-        .filter(|r| r["template"] == "gmail")
-        .collect();
+    let gmail_rows = instances_of(results, "gmail");
     assert_eq!(
         gmail_rows.len(),
         2,
-        "expected two fanned-out gmail rows despite shared connection: {gmail_rows:?}"
+        "expected two gmail instances on one row: {gmail_rows:?}"
     );
     let mut names: Vec<String> = gmail_rows
         .iter()
@@ -1203,7 +1204,7 @@ async fn instances_with_same_account_email_disambiguate_by_service_name() {
         .collect();
     names.sort();
     assert_eq!(names, vec!["gmail-archive", "gmail-priority"]);
-    for r in gmail_rows {
+    for r in &gmail_rows {
         assert_eq!(
             r["account_email"], "alice@gmail.com",
             "shared connection should yield same account_email: {r}"
@@ -1214,7 +1215,7 @@ async fn instances_with_same_account_email_disambiguate_by_service_name() {
 #[tokio::test]
 async fn instances_with_same_secret_name_disambiguate_by_service_name() {
     // Two API-key instances bound to the SAME secret label still surface
-    // as two distinct rows differing only by `service` (the instance
+    // as two distinct instances differing only by `service` (the instance
     // name) — the only canonical disambiguator.
     let (base, client, _, admin_key, _) = bootstrap().await;
     create_api_key_service(
@@ -1246,14 +1247,11 @@ async fn instances_with_same_secret_name_disambiguate_by_service_name() {
         .await
         .unwrap();
     let results = body["results"].as_array().unwrap();
-    let resend_rows: Vec<&Value> = results
-        .iter()
-        .filter(|r| r["template"] == "resend")
-        .collect();
+    let resend_rows = instances_of(results, "resend");
     assert_eq!(
         resend_rows.len(),
         2,
-        "expected two fanned-out resend rows despite shared secret_name: {resend_rows:?}"
+        "expected two resend instances on one row: {resend_rows:?}"
     );
     let mut names: Vec<String> = resend_rows
         .iter()
@@ -1261,7 +1259,7 @@ async fn instances_with_same_secret_name_disambiguate_by_service_name() {
         .collect();
     names.sort();
     assert_eq!(names, vec!["resend-prod", "resend-staging"]);
-    for r in resend_rows {
+    for r in &resend_rows {
         assert_eq!(r["secret_name"], "shared_resend_key");
     }
 }
@@ -1296,18 +1294,17 @@ async fn setup_required_rows_appear_under_include_catalog() {
         stripe["setup_required"], true,
         "stripe row missing setup_required: {stripe}"
     );
-    assert!(
-        stripe.get("service").is_none(),
-        "catalog row must omit `service`: {stripe}"
+    assert_eq!(
+        stripe["instances"],
+        serde_json::json!([]),
+        "catalog row must have no instances: {stripe}"
     );
-    assert!(
-        stripe.get("account_email").is_none(),
-        "catalog row must omit `account_email`: {stripe}"
-    );
-    assert!(
-        stripe.get("secret_name").is_none(),
-        "catalog row must omit `secret_name`: {stripe}"
-    );
+    for gone in ["service", "account_email", "secret_name"] {
+        assert!(
+            stripe.get(gone).is_none(),
+            "row must not carry top-level `{gone}`: {stripe}"
+        );
+    }
     assert_eq!(
         stripe["auth"]["connected"], false,
         "catalog row must report connected=false: {stripe}"
@@ -1873,19 +1870,16 @@ async fn exclude_param_drops_specific_instance() {
         .await
         .unwrap();
     let results = body["results"].as_array().unwrap();
-    let gmail_rows: Vec<&Value> = results
-        .iter()
-        .filter(|r| r["template"] == "gmail")
-        .collect();
+    let gmail = instances_of(results, "gmail");
     assert_eq!(
-        gmail_rows.len(),
+        gmail.len(),
         1,
-        "exactly one gmail row should remain after excluding gmail-work: {gmail_rows:?}"
+        "exactly one gmail instance should remain after excluding gmail-work: {gmail:?}"
     );
     assert_eq!(
-        gmail_rows[0]["service"], "gmail-personal",
-        "surviving row should be gmail-personal: {}",
-        gmail_rows[0]
+        gmail[0]["service"], "gmail-personal",
+        "surviving instance should be gmail-personal: {}",
+        gmail[0]
     );
 }
 
@@ -1949,19 +1943,16 @@ async fn exclude_param_accepts_comma_separated_list_and_trims_whitespace() {
         !results.iter().any(|r| r["template"] == "gmail"),
         "gmail (template-level exclude) should be gone: {results:?}"
     );
-    let resend_rows: Vec<&Value> = results
-        .iter()
-        .filter(|r| r["template"] == "resend")
-        .collect();
+    let resend = instances_of(results, "resend");
     assert_eq!(
-        resend_rows.len(),
+        resend.len(),
         1,
-        "only one resend instance should remain (resend-b excluded): {resend_rows:?}"
+        "only one resend instance should remain (resend-b excluded): {resend:?}"
     );
     assert_eq!(
-        resend_rows[0]["service"], "resend-a",
-        "surviving resend row should be resend-a: {}",
-        resend_rows[0]
+        resend[0]["service"], "resend-a",
+        "surviving resend instance should be resend-a: {}",
+        resend[0]
     );
 }
 
@@ -2184,7 +2175,7 @@ async fn hidden_template_with_connected_instance_still_surfaces() {
         .iter()
         .find(|r| r["template"] == "test_email")
         .expect("connected hidden-template instance missing from search");
-    assert_eq!(hidden["service"], "hidden-mail");
+    assert_eq!(hidden["instances"][0]["service"], "hidden-mail");
 }
 
 /// An action row carries its parameter contract.
@@ -2201,7 +2192,9 @@ async fn action_rows_carry_their_parameter_contract() {
     let body: Value = client
         .get(format!(
             "{base}/v1/search?q={}&include_catalog=true",
-            urlencoding::encode("search metabase cards")
+            // A catalog template is one row — its best action — so the query
+            // has to make `search` that action.
+            urlencoding::encode("metabase search")
         ))
         .header(auth(&admin_key).0, auth(&admin_key).1)
         .send()
@@ -2238,7 +2231,21 @@ async fn action_rows_carry_their_parameter_contract() {
     assert!(by_name("offset")["type"] == "integer");
     // `f` on list_cards *is* enum'd (single value), and its members have to
     // reach the model — an enum that only the validator can see turns a
-    // discoverable choice into a guess-and-get-400.
+    // discoverable choice into a guess-and-get-400. A second query, since
+    // the catalog row carries only the best-matching action.
+    let body: Value = client
+        .get(format!(
+            "{base}/v1/search?q={}&include_catalog=true",
+            urlencoding::encode("metabase list cards")
+        ))
+        .header(auth(&admin_key).0, auth(&admin_key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let results = body["results"].as_array().unwrap();
     let cards = results
         .iter()
         .find(|r| r["template"] == "metabase" && r["action"] == "list_cards")
@@ -2274,7 +2281,7 @@ async fn parameter_ordering_is_deterministic() {
         let body: Value = client
             .get(format!(
                 "{base}/v1/search?q={}&include_catalog=true",
-                urlencoding::encode("search metabase cards")
+                urlencoding::encode("metabase search")
             ))
             .header(auth(&admin_key).0, auth(&admin_key).1)
             .send()
@@ -2364,4 +2371,137 @@ async fn mcp_runtime_rows_carry_params_too() {
     // `cursor` is how this action pages at all, and naming it is the whole
     // point — an agent that cannot see it cannot ask for the second page.
     assert_eq!(by_name("cursor")["type"], "string");
+}
+
+async fn search_json(base: &str, client: &Client, key: &str, query: &str) -> Vec<Value> {
+    let body: Value = client
+        .get(format!("{base}/v1/search?{query}"))
+        .header(auth(key).0, auth(key).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    body["results"].as_array().cloned().unwrap_or_default()
+}
+
+/// Several instances of one template produce one row per action, listing
+/// every instance — never N identical copies that crowd the `limit` window.
+#[tokio::test]
+async fn keyword_rows_collapse_instances_of_one_template() {
+    let (base, client, _, admin_key, _) = bootstrap().await;
+    for name in ["resend-c", "resend-a", "resend-b"] {
+        create_api_key_service(&base, &client, &admin_key, "resend", name, name).await;
+    }
+
+    let results = search_json(&base, &client, &admin_key, "q=send+email&limit=100").await;
+    let send_rows: Vec<&Value> = results
+        .iter()
+        .filter(|r| r["template"] == "resend" && r["action"] == "send_email")
+        .collect();
+    assert_eq!(send_rows.len(), 1, "one row per action: {send_rows:?}");
+    let names: Vec<&str> = send_rows[0]["instances"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["service"].as_str().unwrap())
+        .collect();
+    // Sorted by name for byte-stable output, whatever the DB order.
+    assert_eq!(names, ["resend-a", "resend-b", "resend-c"]);
+    assert_eq!(send_rows[0]["instances"][1]["secret_name"], "resend-b");
+
+    // The window counts (template, action) rows: `limit=1` still returns
+    // one row carrying all three instances, not one of three copies.
+    let one = search_json(&base, &client, &admin_key, "q=send+email&limit=1").await;
+    assert_eq!(one.len(), 1, "{one:?}");
+    assert_eq!(one[0]["template"], "resend", "{one:?}");
+    assert_eq!(one[0]["instances"].as_array().unwrap().len(), 3, "{one:?}");
+}
+
+/// Under `include_catalog`, an un-connected template is one row — its best
+/// action — with the runners-up named in `more_actions`, so a single catalog
+/// service can't bury callable rows under copies of its setup chain.
+#[tokio::test]
+async fn catalog_template_collapses_to_one_row_with_more_actions() {
+    let (base, client, _, admin_key, _) = bootstrap().await;
+    let results = search_json(
+        &base,
+        &client,
+        &admin_key,
+        "q=gmail+messages&include_catalog=true&limit=100",
+    )
+    .await;
+
+    let gmail: Vec<&Value> = results
+        .iter()
+        .filter(|r| r["template"] == "gmail")
+        .collect();
+    assert_eq!(gmail.len(), 1, "one catalog row for gmail: {gmail:?}");
+    let row = gmail[0];
+    assert_eq!(row["setup_required"], true, "{row}");
+    assert_eq!(row["instances"], json!([]), "{row}");
+    assert!(row["action"].is_string(), "best action is the row: {row}");
+    assert!(row["auth"]["setup"].is_array(), "setup chain kept: {row}");
+    let more = row["more_actions"].as_array().expect("more_actions");
+    assert!(
+        !more.is_empty() && more.len() <= 3,
+        "gmail has several matching actions, at most 3 listed: {row}"
+    );
+    assert!(
+        !more.contains(&row["action"]),
+        "best action not repeated: {row}"
+    );
+
+    // Every catalog template obeys the same rule.
+    let mut seen = HashSet::new();
+    for r in results.iter().filter(|r| r["setup_required"] == true) {
+        let key = (r["tier"].to_string(), r["template"].to_string());
+        assert!(seen.insert(key), "duplicate catalog row: {r}");
+    }
+}
+
+/// A query that names a service ranks that service first, even when another
+/// connected service's action descriptions match the query's other words.
+#[tokio::test]
+async fn naming_a_service_in_the_query_ranks_it_first() {
+    let (base, client, fixtures, pool) = bootstrap_full().await;
+    let conn = seed_oauth_connection(
+        &pool,
+        fixtures.org_id,
+        fixtures.user_ids[0],
+        "google",
+        "alice@gmail.com",
+    )
+    .await;
+    create_oauth_service(
+        &base,
+        &client,
+        &fixtures.admin_key,
+        "gmail",
+        "gmail-a",
+        conn,
+    )
+    .await;
+    create_api_key_service(
+        &base,
+        &client,
+        &fixtures.admin_key,
+        "resend",
+        "resend-a",
+        "rk",
+    )
+    .await;
+
+    for (query, want) in [
+        ("q=resend+send+email", "resend"),
+        ("q=gmail+send+email", "gmail"),
+    ] {
+        let results = search_json(&base, &client, &fixtures.admin_key, query).await;
+        assert_eq!(
+            results.first().map(|r| &r["template"]),
+            Some(&json!(want)),
+            "{query}: {results:?}"
+        );
+    }
 }

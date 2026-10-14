@@ -9,7 +9,7 @@
 	whether that matters.
 -->
 <script lang="ts">
-	import type { ServiceTestResponse } from '$lib/types';
+	import type { ServiceTestResponse } from '#lib/types.ts';
 
 	let {
 		result,

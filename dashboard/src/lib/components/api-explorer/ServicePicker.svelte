@@ -1,7 +1,7 @@
 <script lang="ts">
-	import type { ServiceInstanceSummary, ConnectionSummary, Identity } from '$lib/types';
-	import { credentialStatus } from '$lib/api/service-status';
-	import { resolveOwner, qualifyName } from '$lib/ownerLabel';
+	import type { ServiceInstanceSummary, ConnectionSummary, Identity } from '#lib/types.ts';
+	import { credentialStatus } from '#lib/api/service-status.ts';
+	import { resolveOwner, qualifyName } from '#lib/ownerLabel.ts';
 
 	let {
 		services,

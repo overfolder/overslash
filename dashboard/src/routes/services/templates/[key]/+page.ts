@@ -1,5 +1,5 @@
 import type { PageLoad } from './$types';
-import { getTemplate, listOAuthProviders } from '$lib/api/services';
+import { getTemplate, listOAuthProviders } from '#lib/api/services.ts';
 
 export const load: PageLoad = async ({ params, parent }) => {
 	const layoutData = await parent();

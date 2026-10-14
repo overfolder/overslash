@@ -1,22 +1,22 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
-	import { page } from '$app/stores';
-	import { ApiError } from '$lib/session';
+	import { page } from '$app/state';
+	import { ApiError } from '#lib/session.ts';
 	import {
 		getDraft,
 		importTemplate,
 		updateDraft,
 		promoteDraft,
 		discardDraft
-	} from '$lib/api/services';
-	import type { DraftTemplateDetail, OperationInfo } from '$lib/types';
-	import ConfirmDialog from '$lib/components/services/ConfirmDialog.svelte';
-	import StatusBadge from '$lib/components/services/StatusBadge.svelte';
+	} from '#lib/api/services.ts';
+	import type { DraftTemplateDetail, OperationInfo } from '#lib/types.ts';
+	import ConfirmDialog from '#lib/components/services/ConfirmDialog.svelte';
+	import StatusBadge from '#lib/components/services/StatusBadge.svelte';
 
-	const loadYamlEditor = () => import('$lib/components/templates/TemplateEditorYaml.svelte');
+	const loadYamlEditor = () => import('#lib/components/templates/TemplateEditorYaml.svelte');
 
-	const draftId = $derived(($page.params as any).id as string);
+	const draftId = $derived((page.params as any).id as string);
 
 	let draft = $state<DraftTemplateDetail | null>(null);
 	let loading = $state(true);

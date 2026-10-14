@@ -1,7 +1,7 @@
 <script module lang="ts">
 	import { defineMeta } from '@storybook/addon-svelte-csf';
 	import TestResult from './TestResult.svelte';
-	import type { ServiceTestResponse } from '$lib/types';
+	import type { ServiceTestResponse } from '#lib/types.ts';
 
 	// Every verdict the endpoint can return, side by side. The five-way
 	// status→copy mapping is the whole component, and "does a red box say

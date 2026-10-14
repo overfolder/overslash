@@ -209,7 +209,7 @@ jobs:
       - uses: ./.github/actions/seed-ort-cache
       # Pin sqlx-cli to 0.9 so the CLI's offline-cache format matches the
       # workspace sqlx 0.9 (the .sqlx/ files it verifies).
-      - uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
+      - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
         with:
           tool: sqlx-cli@0.9
 
@@ -344,8 +344,8 @@ jobs:
       # mold replaces the system linker (no RUSTFLAGS change, so cached
       # artifacts stay valid). Linking ~99 instrumented test binaries is
       # the bulk of a warm-cache "compile" phase; mold cuts it sharply.
-      - uses: rui314/setup-mold@10ca16bf91dc22e05ebdc935cad9c75ea248f621 # v1 (mutable tag)
-      - uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
+      - uses: rui314/setup-mold@da13e0b42e392e3a45d1215033a2270b849d7d36 # v1 (mutable tag)
+      - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
         with:
           tool: cargo-llvm-cov,cargo-nextest
 
@@ -416,7 +416,7 @@ jobs:
         with:
           key: sql-policy-deps
       - uses: ./.github/actions/seed-ort-cache
-      - uses: rui314/setup-mold@10ca16bf91dc22e05ebdc935cad9c75ea248f621 # v1 (mutable tag)
+      - uses: rui314/setup-mold@da13e0b42e392e3a45d1215033a2270b849d7d36 # v1 (mutable tag)
       # bindgen (pg_query's build) needs libclang; make it deterministic
       # rather than relying on the runner image's LLVM layout.
       - name: Install libclang
@@ -565,8 +565,8 @@ jobs:
       # cdn.pyke.io (ort-sys prebuilt binaries) 403s from CI runners; seed
       # its cache from a release asset so cold-cache builds don't touch it.
       - uses: ./.github/actions/seed-ort-cache
-      - uses: rui314/setup-mold@10ca16bf91dc22e05ebdc935cad9c75ea248f621 # v1 (mutable tag)
-      - uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
+      - uses: rui314/setup-mold@da13e0b42e392e3a45d1215033a2270b849d7d36 # v1 (mutable tag)
+      - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
         with:
           tool: sqlx-cli@0.9
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0

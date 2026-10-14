@@ -3,6 +3,10 @@ pub struct Config {
     pub host: String,
     pub port: u16,
     pub valkey_url: String,
+    /// Memorystore AUTH string (Secret Manager in Cloud Run). Unset locally.
+    pub valkey_password: Option<String>,
+    /// PEM bundle of the Memorystore server CAs; requires a `rediss://` URL.
+    pub valkey_ca_cert: Option<String>,
     pub api_key: String,
     pub base_url: String,
     pub min_ttl_secs: u64,
@@ -18,6 +22,8 @@ impl Config {
         let host = overslash_env::or_default("HOST", "0.0.0.0");
         let port = overslash_env::parse_opt("PORT").unwrap_or(8080);
         let valkey_url = overslash_env::required("VALKEY_URL")?;
+        let valkey_password = overslash_env::optional("VALKEY_PASSWORD");
+        let valkey_ca_cert = overslash_env::optional("VALKEY_CA_CERT");
         // `overslash_env` trims, which keeps the stored key symmetric with
         // the presented token (also trimmed in `auth::ApiKey`). Secret Manager
         // values frequently pick up trailing newlines when populated from
@@ -43,6 +49,8 @@ impl Config {
             host,
             port,
             valkey_url,
+            valkey_password,
+            valkey_ca_cert,
             api_key,
             base_url,
             min_ttl_secs,
@@ -65,6 +73,8 @@ mod tests {
         "HOST",
         "PORT",
         "VALKEY_URL",
+        "VALKEY_PASSWORD",
+        "VALKEY_CA_CERT",
         "API_KEY",
         "BASE_URL",
         "MIN_TTL_SECS",

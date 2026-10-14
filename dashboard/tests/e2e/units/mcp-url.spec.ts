@@ -6,9 +6,6 @@
 // mapping wrong and we either hand out a dead URL or — for a self-hoster — a
 // command pointing at somebody else's server. Neither is something a screenshot
 // would catch, so the mapping is pinned here, host by host.
-//
-// Imported by relative path: `$lib` is a SvelteKit alias that Playwright's
-// transform does not resolve.
 import { test, expect } from '@playwright/test';
 import { ownMcpUrlFor } from '../../../src/lib/env';
 

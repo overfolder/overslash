@@ -1,6 +1,6 @@
 <script lang="ts">
-	import SecretNamePicker from '$lib/components/SecretNamePicker.svelte';
-	import type { SecretSlot, SecretSummary } from '$lib/types';
+	import SecretNamePicker from '#lib/components/SecretNamePicker.svelte';
+	import type { SecretSlot, SecretSummary } from '#lib/types.ts';
 
 	let {
 		slots,

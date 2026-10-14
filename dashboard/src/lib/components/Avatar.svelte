@@ -16,7 +16,7 @@
 	  nothing; the image covers them opaquely the moment it decodes.
 -->
 <script lang="ts">
-	import { identityInitials } from '$lib/identityDisplay';
+	import { identityInitials } from '#lib/identityDisplay.ts';
 
 	let {
 		picture = null,

@@ -127,10 +127,11 @@ the GitHub button on `/auth/providers` only once both are populated.
 | `secret-manager` | DB password, encryption key, Google + GitHub login + Google services OAuth secrets |
 | `cloud-sql` | PostgreSQL 16 (Auth Proxy or private IP mode). TLS-only, deletion-protected, pgAudit on — see [docs/runbooks/cloud-sql-hardening.md](../docs/runbooks/cloud-sql-hardening.md) |
 | `cloud-run` | Overslash API with health checks and secret injection |
+| `api-lb` | (Optional, `enable_api_lb`) Global HTTPS LB for `<apex>` + `*.<apex>`: wildcard Certificate Manager cert, TLS 1.2+ `RESTRICTED` SSL policy, Cloud Armor (WAF in preview), optional IPv6 front door (`api_lb_enable_ipv6`) — see [docs/runbooks/lb-hardening.md](../docs/runbooks/lb-hardening.md) |
 | `cloud-build` | GitHub push trigger: build -> push -> deploy |
 | `infra-scheduler` | (Optional) Stop/start Cloud SQL on cron (Europe/Madrid) |
 | `dns` | (Optional) Cloud DNS managed zone |
-| `memorystore` | (Optional) Valkey via Memorystore |
+| `memorystore` | (Optional) Valkey via Memorystore, AUTH + TLS on; AUTH string and server CA published to Secret Manager — applying it **replaces** the instance, see [docs/runbooks/memorystore-auth-tls.md](../docs/runbooks/memorystore-auth-tls.md) |
 | `cloud-run-shortener` | (Optional) oversla.sh URL shortener |
 | `cloud-run-overfwd` | (Optional) Shared overfwd Mailbox Gateway behind `services/email.yaml` — see [docs/runbooks/mailbox-gateway.md](../docs/runbooks/mailbox-gateway.md) |
 | `audit-logging` | Data Access audit logs, a retained (and in prod **locked**) audit log bucket + sink, and an alert on unexpected secret reads — see [Audit logging](#audit-logging-casa-671) |
@@ -168,7 +169,7 @@ What each path looks like at the container, and what gets recorded:
 | Path | `X-Forwarded-For` (peer = Google frontend) | Recorded |
 |---|---|---|
 | Agent → `api.dev.overslash.com` / `*.run.app` (dev) | `<spoof…>, <client>` | `<client>` (hop 1) |
-| Agent → `api.overslash.com` (GCLB, prod) | `<spoof…>, <client>, 34.36.8.174` plus Google hops of unknown position | `<client>`, from the LB-stamped `X-Overslash-Edge-Client-Ip` |
+| Agent → `api.overslash.com` (GCLB, prod) | `<spoof…>, <client>, 34.36.8.174` (or the `api_lb_ipv6` address, for a v6 client) plus Google hops of unknown position | `<client>`, from the LB-stamped `X-Overslash-Edge-Client-Ip` |
 | Browser → `app.*` → Vercel rewrite → API | `<client>, <vercel-egress>[, <lb>, …]` | `<client>` with the secret, `<vercel-egress>` without |
 | `POST /mcp` → its own `/v1/actions/call` (loopback) | none (dials `127.0.0.1:<port>`) | the `/mcp` caller, carried in `x-overslash-loopback-client-ip` with a per-process token (`services::loopback`) |
 
@@ -198,8 +199,10 @@ process directly and carries the address `/mcp` resolved, vouched for by a
 random per-process token. Direct REST calls were never affected.
 
 The prod LB address is a literal because `module.api_lb` depends on
-`module.cloud_run`. If `tofu output` ever shows a different `lb_ip`, update
-`prod.tfvars`. Nothing here is applied by CI. Run `make tofu-plan ENV=prod`
+`module.cloud_run`. If `tofu output api_lb_ip` ever shows a different address, update
+`prod.tfvars`. The IPv6 address (`tofu output api_lb_ipv6`) is not listed there: the
+fallback still finds the client by position, and adding it is optional
+([lb-hardening.md](../docs/runbooks/lb-hardening.md#trusted-proxies-optional)). Nothing here is applied by CI. Run `make tofu-plan ENV=prod`
 before trusting that the live env matches these files:
 `OVERSLASH_TRUSTED_PROXIES` sat in `prod.tfvars` for a week without ever
 reaching Cloud Run.

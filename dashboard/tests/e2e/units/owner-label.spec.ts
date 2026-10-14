@@ -6,9 +6,6 @@
 // and what that owner is called. The rules are cheap to get subtly wrong
 // (own rows must stay bare, org-level rows have no owner at all), so they are
 // pinned here rather than left to a screenshot to notice.
-//
-// Imported by relative path: `$lib` is a SvelteKit alias that Playwright's
-// transform does not resolve.
 import { test, expect } from '@playwright/test';
 import {
 	resolveOwner,

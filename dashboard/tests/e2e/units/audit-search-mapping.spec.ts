@@ -6,9 +6,6 @@
 // bubbles. Multiple text bubbles are the subtle part — they are comma-joined
 // into `q` and AND on the server, so a space-join here would quietly ask for one
 // literal phrase and match nothing.
-//
-// Imported by relative path: `$lib` is a SvelteKit alias that Playwright's
-// transform does not resolve.
 import { test, expect } from '@playwright/test';
 import {
 	escapeQTerm,

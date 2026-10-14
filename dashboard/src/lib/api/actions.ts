@@ -2,8 +2,8 @@
  * API client wrappers for the API Explorer: calling actions and fetching
  * per-action parameter schemas.
  */
-import { session } from '$lib/session';
-import type { ActionDetail, CallRequest, CallResponse } from '$lib/types';
+import { session } from '#lib/session.ts';
+import type { ActionDetail, CallRequest, CallResponse } from '#lib/types.ts';
 
 // `?wrap=true` makes the gateway return its own auth errors
 // (needs_authentication / reauth_required) as a 200 envelope with the status

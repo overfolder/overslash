@@ -120,7 +120,7 @@ async fn test_outlook_mock() {
     assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.unwrap();
     assert_eq!(body["status"], "called");
-    let echo: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
+    let echo = common::last_received(mock_addr).await;
     assert!(
         echo["uri"].as_str().unwrap().contains("/v1.0/me"),
         "get_profile should target /v1.0/me, got: {}",
@@ -185,7 +185,7 @@ async fn test_outlook_mock() {
     assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.unwrap();
     assert_eq!(body["status"], "called");
-    let echo: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
+    let echo = common::last_received(mock_addr).await;
     assert!(
         echo["uri"].as_str().unwrap().contains("/v1.0/me/sendMail"),
         "send_mail path wrong: {}",

@@ -1,15 +1,15 @@
 <script lang="ts">
-	import { session, type MeIdentity, type SecretMetadata, type PermissionRule, type UserPreferences } from '$lib/session';
-	import { theme, timeFormat } from '$lib/stores/shell';
-	import { formatTime, ttlRemaining } from '$lib/utils/time';
+	import { session, type MeIdentity, type SecretMetadata, type PermissionRule, type UserPreferences } from '#lib/session.ts';
+	import { theme, timeFormat } from '#lib/stores/shell.ts';
+	import { formatTime, ttlRemaining } from '#lib/utils/time.ts';
 	import { goto, invalidateAll } from '$app/navigation';
-	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
-	import ReplaceByocModal from '$lib/components/services/ReplaceByocModal.svelte';
-	import { deleteByocCredential } from '$lib/api/services';
-	import { updatePermissionExpiry } from '$lib/identityApi';
-	import ExpiryControl from '$lib/components/approval/ExpiryControl.svelte';
-	import Avatar from '$lib/components/Avatar.svelte';
-	import type { ByocCredentialSummary, OAuthProviderInfo } from '$lib/types';
+	import ConfirmModal from '#lib/components/ConfirmModal.svelte';
+	import ReplaceByocModal from '#lib/components/services/ReplaceByocModal.svelte';
+	import { deleteByocCredential } from '#lib/api/services.ts';
+	import { updatePermissionExpiry } from '#lib/identityApi.ts';
+	import ExpiryControl from '#lib/components/approval/ExpiryControl.svelte';
+	import Avatar from '#lib/components/Avatar.svelte';
+	import type { ByocCredentialSummary, OAuthProviderInfo } from '#lib/types.ts';
 
 	let { data } = $props<{
 		data: {

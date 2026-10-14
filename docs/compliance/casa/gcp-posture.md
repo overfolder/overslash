@@ -141,6 +141,11 @@ describes as holding "people's names, addresses and phone numbers". Anything tha
 the VPC reads and writes it without credentials, in cleartext. `BASIC` also means no
 replica and no persistence.
 
+*Remediation in code, pending apply (2026-10-13):* AUTH + `SERVER_AUTHENTICATION` in
+`infra/modules/memorystore/main.tf`; see
+[memorystore-auth-tls.md](../../runbooks/memorystore-auth-tls.md). The table above is
+the live state until that runbook has been run.
+
 ### Audit logging — both projects
 
 ```
@@ -208,6 +213,11 @@ blocking. And the TLS posture is unpinned: an external probe on 2026-09-22 showe
 `api.overslash.com` negotiating TLS 1.2/1.3 and refusing 1.0/1.1, so the *effective* state
 is fine — but nothing in the configuration says so, there is no declared policy to cite as
 evidence, and a change to Google's default would move it silently.
+
+Both are now declared in `infra/modules/api-lb/main.tf` — an SSL policy (TLS 1.2 minimum,
+`RESTRICTED`) and a Cloud Armor policy (OWASP rules in preview). Apply steps and
+verification: [lb-hardening.md](../../runbooks/lb-hardening.md). Re-measure this table after
+the apply; until then the values above are still what is live.
 
 ### Secret Manager
 

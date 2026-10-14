@@ -417,8 +417,8 @@ async fn resolve_user_budget_from_db(
 pub async fn create_store_with_eviction(
     config: &Config,
 ) -> (Arc<dyn RateLimitStore>, Option<Arc<InMemoryRateLimitStore>>) {
-    if let Some(ref url) = config.redis_url {
-        match redis::Client::open(url.as_str()) {
+    if let Some(client) = super::valkey::client(config) {
+        match client {
             Ok(client) => match client.get_connection_manager().await {
                 Ok(mgr) => {
                     tracing::info!("Rate limiter: using Redis/Valkey");
@@ -431,7 +431,9 @@ pub async fn create_store_with_eviction(
                 }
             },
             Err(e) => {
-                tracing::warn!("Invalid REDIS_URL, falling back to in-memory rate limiter: {e}");
+                tracing::warn!(
+                    "Invalid Valkey config, falling back to in-memory rate limiter: {e}"
+                );
             }
         }
     }

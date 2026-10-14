@@ -1,8 +1,8 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
-	import { page } from '$app/stores';
-	import { ApiError } from '$lib/session';
+	import { page } from '$app/state';
+	import { ApiError } from '#lib/session.ts';
 	import {
 		groupsApi,
 		directoryGroupsApi,
@@ -11,10 +11,10 @@
 		type Group,
 		type DirectoryGroupSummary,
 		type Identity
-	} from '$lib/api/groups';
-	import { shortEmail } from '$lib/identityDisplay';
-	import ConfirmModal from '$lib/components/ConfirmModal.svelte';
-	import PillPicker from '$lib/components/PillPicker.svelte';
+	} from '#lib/api/groups.ts';
+	import { shortEmail } from '#lib/identityDisplay.ts';
+	import ConfirmModal from '#lib/components/ConfirmModal.svelte';
+	import PillPicker from '#lib/components/PillPicker.svelte';
 
 	type Row = Group & { memberCount: number; grantCount: number };
 
@@ -51,8 +51,8 @@
 		}));
 	}
 
-	const currentUserId = $derived(($page as any).data?.user?.identity_id as string | undefined);
-	const allowedDomains = $derived((($page as any).data?.allowedDomains ?? []) as string[]);
+	const currentUserId = $derived((page as any).data?.user?.identity_id as string | undefined);
+	const allowedDomains = $derived(((page as any).data?.allowedDomains ?? []) as string[]);
 	const identityById = $derived(new Map(identities.map((i) => [i.id, i])));
 	// Self rows that share an email (rare — same user re-added under different
 	// identities, or two users with the same external email per migration 043).

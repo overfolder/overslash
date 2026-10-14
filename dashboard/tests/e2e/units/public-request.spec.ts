@@ -6,9 +6,6 @@
 // see in a browser and easiest to get subtly wrong. The 410 split in
 // particular carries the whole difference between "ask for a new link" and
 // "someone already did this", and both pages branch on it.
-//
-// Imported by relative path: `$lib` is a SvelteKit alias that Playwright's
-// transform does not resolve.
 import { test, expect } from '@playwright/test';
 import {
 	fmtCountdown,
