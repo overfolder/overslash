@@ -86,6 +86,7 @@ mod identity_archive;
 mod identity_email;
 mod identity_hierarchy;
 mod identity_idle_cleanup;
+mod identity_ref;
 mod identity_remove_user;
 mod identity_repo;
 mod impersonation;

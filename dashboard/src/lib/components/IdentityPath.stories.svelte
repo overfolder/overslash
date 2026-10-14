@@ -12,10 +12,10 @@
 			path: { control: 'text' },
 			showScheme: { control: 'boolean' }
 		},
-		args: { path: 'spiffe://acme/user/alice', showScheme: false }
+		args: { path: 'spiffe://acme/user/alice@acme.com', showScheme: false }
 	});
 </script>
 
-<Story name="User" args={{ path: 'spiffe://acme/user/alice' }} />
-<Story name="Nested agent" args={{ path: 'spiffe://acme/user/alice/agent/henry/sub_agent/researcher' }} />
-<Story name="With scheme" args={{ path: 'spiffe://acme/user/alice/agent/henry', showScheme: true }} />
+<Story name="User" args={{ path: 'spiffe://acme/user/alice@acme.com' }} />
+<Story name="Nested agent" args={{ path: 'spiffe://acme/user/alice@acme.com/agent/henry/sub_agent/researcher' }} />
+<Story name="With scheme" args={{ path: 'spiffe://acme/user/alice@acme.com/agent/henry', showScheme: true }} />

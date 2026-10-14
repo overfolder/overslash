@@ -1,6 +1,8 @@
 //! Read endpoints: list approvals, get one approval, get its execution.
 
 use super::*;
+use crate::services::identity_ref;
+use overslash_core::identity_path::IdentityRef;
 
 use crate::services::approval_access::may_read_approval;
 use overslash_core::permissions::AccessLevel;
@@ -25,8 +27,8 @@ pub(super) struct ListQuery {
     /// Optional: list pending approvals requested by a specific identity (the
     /// identity hierarchy view). Rows the caller may not see are dropped, so a
     /// foreign identity yields only what is routed through the caller's
-    /// subtree — usually nothing.
-    identity_id: Option<Uuid>,
+    /// subtree — usually nothing. An identity UUID, or a user's email.
+    identity_id: Option<IdentityRef>,
     /// Optional: filter results to a specific approval status
     /// (pending | allowed | denied | expired).
     status: Option<String>,
@@ -41,7 +43,8 @@ pub(super) async fn list_approvals(
     // ?identity_id= is the identity-hierarchy detail panel filter: list
     // pending approvals **requested by** that identity. Cross-tenant ids
     // return NotFound at the scope boundary.
-    if let Some(identity_id) = q.identity_id {
+    if let Some(identity_id) = &q.identity_id {
+        let identity_id = identity_ref::resolve(&scope, identity_id).await?;
         scope
             .get_identity(identity_id)
             .await?

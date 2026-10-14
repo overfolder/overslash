@@ -2,6 +2,8 @@
 //! sub_agent.
 
 use super::*;
+use crate::services::identity_ref;
+use overslash_core::identity_path::IdentityRef;
 
 #[derive(Serialize)]
 pub(super) struct RestoreResponse {
@@ -14,8 +16,9 @@ pub(super) async fn restore_identity(
     WriteAcl(acl): WriteAcl,
     scope: OrgScope,
     ip: ClientIp,
-    Path(id): Path<Uuid>,
+    Path(id): Path<IdentityRef>,
 ) -> Result<Json<RestoreResponse>> {
+    let id = identity_ref::resolve(&scope, &id).await?;
     // Restore mints fresh state (un-archives identity, resurrects API keys),
     // so it requires write-level ACL on the overslash service — read-only
     // users must not be able to revive archived identities.
@@ -96,9 +99,10 @@ pub(super) async fn archive_identity(
     WriteAcl(acl): WriteAcl,
     scope: OrgScope,
     ip: ClientIp,
-    Path(id): Path<Uuid>,
+    Path(id): Path<IdentityRef>,
     body: Option<Json<ArchiveRequest>>,
 ) -> Result<Json<ArchiveResponse>> {
+    let id = identity_ref::resolve(&scope, &id).await?;
     // Existence + org-scope check up front for a clean 404 (cross-tenant ids
     // return None). The repo also returns None for a missing root.
     let _existing = scope
