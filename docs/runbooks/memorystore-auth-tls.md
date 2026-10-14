@@ -1,5 +1,10 @@
 # Memorystore AUTH + in-transit encryption — applying it
 
+> **Superseded.** This describes the Memorystore *for Redis* instance with an AUTH string.
+> The module now builds Memorystore for Valkey with IAM auth; the cutover is
+> [memorystore-valkey.md](memorystore-valkey.md). Kept for the history of the CASA 6.7.1
+> fix and for the old instance until it is deleted.
+
 `infra/modules/memorystore/main.tf` now sets, on `google_redis_instance.valkey`:
 
 | Setting | Value | CASA |

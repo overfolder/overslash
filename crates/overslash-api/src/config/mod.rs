@@ -209,10 +209,10 @@ pub struct Config {
     /// (`/v1/*` etc.). Default empty.
     pub mcp_extra_origins: String,
     pub redis_url: Option<String>,
-    /// Valkey AUTH string, applied on top of `redis_url` (CASA 6.7.1). Kept
-    /// separate so the URL stays non-secret; Cloud Run sources it from Secret
-    /// Manager. See `services::valkey`.
-    pub redis_password: Option<String>,
+    /// How to authenticate to `redis_url` (CASA 6.7.1): nothing, a static
+    /// AUTH string (`REDIS_PASSWORD`), or Memorystore IAM (`REDIS_AUTH=gcp-iam`).
+    /// Kept out of the URL so the URL stays non-secret. See `services::valkey`.
+    pub redis_auth: overslash_valkey::Auth,
     /// PEM bundle of the Valkey server CAs. When set, `redis_url` must be
     /// `rediss://` and the server certificate is verified against only these.
     pub redis_ca_cert: Option<String>,
@@ -891,7 +891,7 @@ pub(crate) mod tests {
             dashboard_origin: "*".into(),
             mcp_extra_origins: String::new(),
             redis_url: None,
-            redis_password: None,
+            redis_auth: Default::default(),
             redis_ca_cert: None,
             resolve_cache_ttl_secs: 300,
             resolve_cache_negative_ttl_secs: 30,

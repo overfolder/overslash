@@ -216,10 +216,10 @@ variable "redis_port" {
   default = ""
 }
 
-variable "redis_auth_secret_id" {
-  type        = string
-  default     = ""
-  description = "GSM secret ID holding the Memorystore AUTH string, surfaced as REDIS_PASSWORD. Empty = no AUTH."
+variable "redis_iam_auth" {
+  type        = bool
+  default     = false
+  description = "Set REDIS_AUTH=gcp-iam: authenticate to Memorystore with the service account's access token (IAM_AUTH)."
 }
 
 variable "redis_ca_cert_secret_id" {
@@ -460,6 +460,7 @@ locals {
     var.redis_host != "" ? {
       REDIS_URL = "${var.redis_ca_cert_secret_id != "" ? "rediss" : "redis"}://${var.redis_host}:${var.redis_port}"
     } : {},
+    var.redis_host != "" && var.redis_iam_auth ? { REDIS_AUTH = "gcp-iam" } : {},
     var.cloud_billing ? {
       CLOUD_BILLING         = "true"
       STRIPE_EUR_LOOKUP_KEY = var.stripe_eur_lookup_key
@@ -528,7 +529,6 @@ locals {
     var.enable_trusted_proxy_secret && var.trusted_proxy_secret_secret_id != "" ? {
       OVERSLASH_TRUSTED_PROXY_SECRET = var.trusted_proxy_secret_secret_id
     } : {},
-    var.redis_host != "" && var.redis_auth_secret_id != "" ? { REDIS_PASSWORD = var.redis_auth_secret_id } : {},
     var.redis_host != "" && var.redis_ca_cert_secret_id != "" ? { REDIS_CA_CERT = var.redis_ca_cert_secret_id } : {},
   )
 }

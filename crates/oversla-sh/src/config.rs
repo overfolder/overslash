@@ -3,8 +3,9 @@ pub struct Config {
     pub host: String,
     pub port: u16,
     pub valkey_url: String,
-    /// Memorystore AUTH string (Secret Manager in Cloud Run). Unset locally.
-    pub valkey_password: Option<String>,
+    /// How to authenticate to Valkey: unset locally, `VALKEY_AUTH=gcp-iam`
+    /// against Memorystore, or a static `VALKEY_PASSWORD`.
+    pub valkey_auth: overslash_valkey::Auth,
     /// PEM bundle of the Memorystore server CAs; requires a `rediss://` URL.
     pub valkey_ca_cert: Option<String>,
     pub api_key: String,
@@ -22,7 +23,8 @@ impl Config {
         let host = overslash_env::or_default("HOST", "0.0.0.0");
         let port = overslash_env::parse_opt("PORT").unwrap_or(8080);
         let valkey_url = overslash_env::required("VALKEY_URL")?;
-        let valkey_password = overslash_env::optional("VALKEY_PASSWORD");
+        let valkey_auth =
+            overslash_valkey::Auth::from_env(&crate::storage::VARS).map_err(anyhow::Error::msg)?;
         let valkey_ca_cert = overslash_env::optional("VALKEY_CA_CERT");
         // `overslash_env` trims, which keeps the stored key symmetric with
         // the presented token (also trimmed in `auth::ApiKey`). Secret Manager
@@ -49,7 +51,7 @@ impl Config {
             host,
             port,
             valkey_url,
-            valkey_password,
+            valkey_auth,
             valkey_ca_cert,
             api_key,
             base_url,
@@ -74,6 +76,7 @@ mod tests {
         "PORT",
         "VALKEY_URL",
         "VALKEY_PASSWORD",
+        "VALKEY_AUTH",
         "VALKEY_CA_CERT",
         "API_KEY",
         "BASE_URL",
@@ -126,6 +129,18 @@ mod tests {
             cfg.root_redirect_url.as_deref(),
             Some("https://overslash.com")
         );
+    }
+
+    #[test]
+    fn valkey_auth_selects_memorystore_iam() {
+        let cfg = with_env(&[("VALKEY_AUTH", "gcp-iam")]).expect("builds");
+        assert_eq!(cfg.valkey_auth, overslash_valkey::Auth::GcpIam);
+    }
+
+    #[test]
+    fn a_misspelled_valkey_auth_is_rejected_not_ignored() {
+        let err = with_env(&[("VALKEY_AUTH", "iam")]).expect_err("must not boot");
+        assert!(err.to_string().contains("VALKEY_AUTH"), "{err}");
     }
 
     #[test]

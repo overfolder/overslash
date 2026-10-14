@@ -8,7 +8,7 @@ OpenTofu (Terraform-compatible) configuration to deploy Overslash to Google Clou
 Internet -> Cloud Run (overslash-{env}-api)
                 |-- Cloud SQL Auth Proxy -> Cloud SQL (overslash-{env}-db)
                 |-- Secret Manager (overslash-{env}-*)
-                '-- Memorystore Valkey (optional, overslash-{env}-valkey)
+                '-- Memorystore for Valkey (optional, overslash-{env}-cache, via PSC)
 
 Cloud Build (overslash-{env}-deploy) -> Artifact Registry -> Cloud Run
 Cloud Scheduler (optional) -> stops/starts Cloud SQL on cron
@@ -131,7 +131,7 @@ the GitHub button on `/auth/providers` only once both are populated.
 | `cloud-build` | GitHub push trigger: build -> push -> deploy |
 | `infra-scheduler` | (Optional) Stop/start Cloud SQL on cron (Europe/Madrid) |
 | `dns` | (Optional) Cloud DNS managed zone |
-| `memorystore` | (Optional) Valkey via Memorystore, AUTH + TLS on; AUTH string and server CA published to Secret Manager — applying it **replaces** the instance, see [docs/runbooks/memorystore-auth-tls.md](../docs/runbooks/memorystore-auth-tls.md) |
+| `memorystore` | (Optional) Memorystore for Valkey 9.1 over Private Service Connect, IAM auth + TLS on; the Cloud Run SA gets `memorystore.dbConnectionUser` on the instance and the server CA is published to Secret Manager. `TF_VAR_cache_instance_name` swaps instances without downtime. See [docs/runbooks/memorystore-valkey.md](../docs/runbooks/memorystore-valkey.md) |
 | `cloud-run-shortener` | (Optional) oversla.sh URL shortener |
 | `cloud-run-overfwd` | (Optional) Shared overfwd Mailbox Gateway behind `services/email.yaml` — see [docs/runbooks/mailbox-gateway.md](../docs/runbooks/mailbox-gateway.md) |
 | `audit-logging` | Data Access audit logs, a retained (and in prod **locked**) audit log bucket + sink, and an alert on unexpected secret reads — see [Audit logging](#audit-logging-casa-671) |

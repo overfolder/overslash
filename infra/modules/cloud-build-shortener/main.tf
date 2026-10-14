@@ -62,8 +62,12 @@ resource "google_cloudbuild_trigger" "deploy" {
   # crates) from firing a shortener build + deploy — which would waste
   # Cloud Build minutes and churn Cloud Run revisions with identical
   # images tagged by new commit SHAs.
+  # Includes the path deps oversla-sh compiles in (overslash-env, and the
+  # Valkey client it shares with the API); a change there changes the binary.
   included_files = [
     "crates/oversla-sh/**",
+    "crates/overslash-env/**",
+    "crates/overslash-valkey/**",
     "Cargo.toml",
     "Cargo.lock",
     "rust-toolchain.toml",

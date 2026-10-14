@@ -25,6 +25,7 @@ sql_policy = ["overslash-core/sql_policy"]
 
 [dependencies]
 overslash-env = { path = "../overslash-env" }
+overslash-valkey = { path = "../overslash-valkey" }
 overslash-core = { path = "../overslash-core", default-features = false, features = ["yaml"] }
 overslash-db = { path = "../overslash-db" }
 overslash-metrics = { path = "../overslash-metrics" }

@@ -3245,10 +3245,10 @@ dependencies = [
  "axum",
  "dotenvy",
  "overslash-env",
+ "overslash-valkey",
  "rand 0.10.3",
  "redis",
  "reqwest 0.13.5",
- "rustls",
  "serde",
  "serde_json",
  "subtle",
@@ -3288,6 +3288,7 @@ dependencies = [
  "overslash-env",
  "overslash-fakes",
  "overslash-metrics",
+ "overslash-valkey",
  "rand 0.10.3",
  "redis",
  "regex",
@@ -3466,6 +3467,22 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "overslash-valkey"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "futures-util",
+ "overslash-env",
+ "redis",
+ "reqwest 0.13.5",
+ "rustls",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -4161,6 +4178,7 @@ dependencies = [
  "futures-channel",
  "futures-util",
  "itoa",
+ "log",
  "num-bigint 0.5.1",
  "percent-encoding",
  "pin-project-lite",

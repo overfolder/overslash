@@ -49,16 +49,6 @@ variable "max_instances" {
   default = 3
 }
 
-variable "valkey_auth_secret_id" {
-  type        = string
-  description = "GSM secret ID holding the Memorystore AUTH string (VALKEY_PASSWORD)."
-
-  validation {
-    condition     = length(var.valkey_auth_secret_id) > 0
-    error_message = "valkey_auth_secret_id is required: Memorystore runs with AUTH on (CASA 6.7.1)."
-  }
-}
-
 variable "valkey_ca_cert_secret_id" {
   type        = string
   description = "GSM secret ID holding the Memorystore server CA bundle (VALKEY_CA_CERT)."
@@ -128,8 +118,11 @@ locals {
   # rejects an explicit PORT env var. Don't set it here.
   env_vars = merge(
     {
-      HOST         = "0.0.0.0"
-      VALKEY_URL   = "rediss://${var.valkey_host}:${var.valkey_port}"
+      HOST       = "0.0.0.0"
+      VALKEY_URL = "rediss://${var.valkey_host}:${var.valkey_port}"
+      # Memorystore runs IAM_AUTH (CASA 6.7.1): connect with the service
+      # account's access token, not a stored password.
+      VALKEY_AUTH  = "gcp-iam"
       BASE_URL     = var.base_url
       MIN_TTL_SECS = tostring(var.min_ttl_secs)
       MAX_TTL_SECS = tostring(var.max_ttl_secs)
@@ -139,9 +132,8 @@ locals {
   )
 
   env_secrets = {
-    API_KEY         = var.api_key_secret_id
-    VALKEY_PASSWORD = var.valkey_auth_secret_id
-    VALKEY_CA_CERT  = var.valkey_ca_cert_secret_id
+    API_KEY        = var.api_key_secret_id
+    VALKEY_CA_CERT = var.valkey_ca_cert_secret_id
   }
 }
 
