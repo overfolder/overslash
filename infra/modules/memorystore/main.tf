@@ -148,16 +148,23 @@ resource "google_secret_manager_secret_version" "server_ca" {
   }
 }
 
+# The outputs wait on the IAM binding, so a Cloud Run revision that reads
+# them is never rolled out before its identity is allowed to connect. Without
+# this, a rename (one apply) could boot revisions that fail AUTH and stay on
+# their in-memory fallbacks until they restart.
 output "host" {
-  value = local.primary.ip_address
+  value      = local.primary.ip_address
+  depends_on = [google_project_iam_member.client]
 }
 
 output "port" {
-  value = tostring(local.primary.port)
+  value      = tostring(local.primary.port)
+  depends_on = [google_project_iam_member.client]
 }
 
 # Read through the *version* resource so a Cloud Run revision that references
 # it is never created before a version exists to resolve.
 output "server_ca_secret_id" {
-  value = element(split("/", google_secret_manager_secret_version.server_ca.secret), 3)
+  value      = element(split("/", google_secret_manager_secret_version.server_ca.secret), 3)
+  depends_on = [google_project_iam_member.client]
 }

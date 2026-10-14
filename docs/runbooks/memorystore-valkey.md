@@ -236,6 +236,13 @@ plan must set it too**, or the name reverts to the default and you swap back. Ei
 keep exporting it, or swap back to the default name at the next convenient moment.
 The new keyspace starts empty either way; step 6 is how to carry links over.
 
+The module's outputs wait on the new IAM binding, so Cloud Run only rolls once the
+binding exists. IAM still takes a few minutes to *propagate*, though, and a revision that
+boots inside that window can't authenticate. The API then serves on its in-memory
+fallbacks until it restarts, and oversla-sh retries until it succeeds. After a rename
+apply, run the fallback log query from step 7. If it matches, roll a fresh revision:
+`gcloud run services update overslash-prod-api --region=$R --project=$P --update-labels=rollout=$(date +%s)`.
+
 This path has been planned against a simulated prod state, but no rename has been
 applied yet. Read the first rename plan carefully: expect `+/-` (create before destroy)
 on the instance, the IAM member, the secret and its version, and `~` on both Cloud Run
