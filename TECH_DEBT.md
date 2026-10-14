@@ -78,7 +78,7 @@ Since 2026-07-03, `cdn.pyke.io` answers HTTP 403 (Cloudflare bot challenge) to n
 
 `services::param_resolver::resolve_display_params` fires an authenticated GET
 per `x-overslash-resolve` declaration so approvals can name an object instead
-of its id. Two gaps remain in how those GETs are made
+of its id. Three gaps remain in how those GETs are made
 (`routes/actions/resolve.rs`, at the `resolver_headers` construction):
 
 1. **`in: query` credentials do not reach them.** Header-injected credentials
@@ -100,8 +100,54 @@ of its id. Two gaps remain in how those GETs are made
    an un-guarded egress on an operator-supplied URL, and it predates any
    particular template.
 
-Both are unchanged by the D64 cache: a hit skips the GET entirely, and a miss
+3. **Their responses are not credential-scrubbed.** D127 scrubs injected
+   values out of execution responses, but a resolver GET's body is read by
+   `param_resolver` directly. An upstream that echoes the credential into the
+   field a resolver picks (an error object rendered as the display value)
+   would put it into the approval's disclosure, which approvers read. Low
+   likelihood, since a resolver keeps one field from a 2xx, but the fix is
+   cheap: build a `CredentialScrubber` from the same values and run it over
+   the body before extraction.
+
+All three are unchanged by the D64 cache: a hit skips the GET entirely, and a miss
 makes exactly the same request it always did.
+
+---
+
+## Streamed responses bypass the D127 credential scrub
+
+D127 replaces every injected credential with `[REDACTED]` in *buffered*
+upstream responses. Two paths pipe upstream bytes to the caller without
+buffering, so nothing scrubs them:
+
+- **Inline `prefer_stream`**: `routes/actions/call_stream.rs` →
+  `deferred_download::stream_through`.
+- **Download redemption that re-dials the upstream**: `GET /v1/downloads/{token}`
+  (`routes/downloads.rs`) re-injects the credential via `open_upstream` and
+  streams the reply. Tokens served from a stored D61 result are fine, because
+  those bytes were scrubbed before they were stored.
+
+An upstream that echoes the credential (`"invalid key sk-…"`, a 400 repeating
+`?api_key=`) therefore hands it to whoever reads the stream: the agent, or any
+holder of the capability URL. Audit capture is not affected, because D18 never
+captures a streamed body. `prefer_stream` is caller-chosen, so an agent that
+knows an upstream echoes its key can opt out of the scrub on purpose. Until
+this is fixed, D127 protects against accidental echoes, not deliberate ones,
+and must not be cited as a complete control (CASA).
+
+This predates D127: streaming never scrubbed anything. D127 closed the
+buffered path and left this one documented as out of scope.
+
+**Fix, in two steps.**
+1. **Error statuses (≥ 400).** On both paths, buffer the body up to
+   `max_response_body_bytes`, scrub it, and send it. Echoes live almost
+   entirely in error bodies, and those are small, so this closes the realistic
+   case at almost no cost. Bodies over the cap can be cut off with an error
+   rather than streamed raw.
+2. **Success streams.** Scrub in flight: hold back the last
+   `longest_needle − 1` bytes of each chunk, so a value split across a chunk
+   boundary still matches. Downloads need the scrubber built from the values
+   `open_upstream` resolves.
 
 ---
 
