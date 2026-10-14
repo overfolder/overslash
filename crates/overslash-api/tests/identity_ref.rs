@@ -131,6 +131,25 @@ async fn query_args_accept_email() {
     )
     .await;
     assert_eq!(s, StatusCode::NOT_FOUND, "{body}");
+
+    // The audit filter answers an unknown email like an unknown UUID: an
+    // empty page, not a 404.
+    let (s, unknown_id) = get(
+        &client,
+        &key,
+        format!("{base}/v1/audit?identity_id={}", Uuid::new_v4()),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, unknown_email) = get(
+        &client,
+        &key,
+        format!("{base}/v1/audit?identity_id=nobody%40example.com"),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{unknown_email}");
+    assert_eq!(unknown_id, unknown_email);
+    assert_eq!(unknown_email, json!([]));
 }
 
 #[tokio::test]
