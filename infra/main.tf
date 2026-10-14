@@ -351,6 +351,7 @@ module "api_lb" {
 
   ssl_profile             = var.api_lb_ssl_profile
   cloud_armor_waf_preview = var.api_lb_cloud_armor_preview
+  enable_ipv6             = var.api_lb_enable_ipv6
 
   depends_on = [
     google_project_service.apis,
