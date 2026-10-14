@@ -315,7 +315,7 @@ pub async fn create_resolve_cache(
     let timeout = Duration::from_millis(config.resolve_cache_timeout_ms);
     if let Some(client) = crate::services::valkey::client(config) {
         match client {
-            Ok(client) => match client.get_connection_manager().await {
+            Ok(client) => match client.connection_manager().await {
                 Ok(conn) => {
                     tracing::info!("Resolver cache: using Redis/Valkey");
                     return (Arc::new(RedisResolveCache { conn, timeout }), None);

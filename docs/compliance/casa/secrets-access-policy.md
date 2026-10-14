@@ -194,9 +194,11 @@ These are tracked in [TODO.md §1.6](../../../TODO.md) and are **not** closed by
   `overslash-tfstate` bucket (versioned, 90-day history, no CMEK). Reading state is a path
   to those values that no Secret Manager audit log records; it is recorded only as a GCS
   object read, and only if GCS Data Access logs are on — they are not.
-- **Memorystore** runs without AUTH or transit encryption (`overslash-prod-valkey`). Fixed
-  in code — AUTH + TLS, with the AUTH string and server CA in Secret Manager
-  (`overslash-<env>-valkey-auth`, `overslash-<env>-valkey-server-ca`), read by the runtime
-  service account like every other secret — and pending an apply that replaces the
-  instance ([memorystore-auth-tls.md](../../runbooks/memorystore-auth-tls.md)). The AUTH
-  string is provider-generated, so it also lives in Terraform state.
+- **Memorystore** ran without AUTH or transit encryption (`overslash-prod-valkey`). Fixed
+  with AUTH + TLS ([memorystore-auth-tls.md](../../runbooks/memorystore-auth-tls.md)), and
+  then moved to Memorystore for Valkey with **IAM auth**
+  ([memorystore-valkey.md](../../runbooks/memorystore-valkey.md)): there is no stored
+  password any more, in Secret Manager or in Terraform state. Clients present a
+  one-hour access token for the runtime service account, which holds
+  `memorystore.dbConnectionUser` on that instance only. Only the server CA
+  (`<instance>-server-ca`, public material) is in Secret Manager.

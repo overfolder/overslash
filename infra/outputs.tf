@@ -40,7 +40,12 @@ output "overfwd_url" {
 
 output "valkey_host" {
   description = "Valkey host (if enabled)"
-  value       = var.enable_valkey && var.use_private_vpc ? module.memorystore[0].redis_host : ""
+  value       = var.enable_valkey && var.use_private_vpc ? module.memorystore[0].host : ""
+}
+
+output "valkey_port" {
+  description = "Valkey port (if enabled)"
+  value       = var.enable_valkey && var.use_private_vpc ? module.memorystore[0].port : ""
 }
 
 output "api_lb_ip" {

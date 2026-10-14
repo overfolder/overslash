@@ -36,6 +36,8 @@ RUN cargo install cargo-watch --locked
 
 # Copy workspace manifests
 COPY Cargo.toml Cargo.lock ./
+COPY crates/overslash-env/Cargo.toml crates/overslash-env/Cargo.toml
+COPY crates/overslash-valkey/Cargo.toml crates/overslash-valkey/Cargo.toml
 COPY crates/overslash-core/Cargo.toml crates/overslash-core/Cargo.toml
 COPY crates/overslash-db/Cargo.toml crates/overslash-db/Cargo.toml
 COPY crates/overslash-api/Cargo.toml crates/overslash-api/Cargo.toml

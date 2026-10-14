@@ -192,7 +192,7 @@ variable "bi_viewers" {
 }
 
 variable "enable_valkey" {
-  description = "Enable Memorystore Valkey for webhooks/pub-sub"
+  description = "Provision Memorystore for Valkey (rate limiter, resolver and session caches, oversla.sh). Requires use_private_vpc."
   type        = bool
   default     = false
 }
@@ -287,12 +287,30 @@ variable "github_branch" {
   default     = "^master$"
 }
 
-# --- Redis ---
+# --- Valkey ---
 
-variable "valkey_memory_size_gb" {
-  description = "Redis instance memory size in GB"
-  type        = number
-  default     = 1
+variable "cache_instance_name" {
+  description = <<-EOT
+    Memorystore instance ID. Empty = "<base_prefix>-cache". Meant to be set
+    from the environment (TF_VAR_cache_instance_name), not a tfvars file, so a
+    one-off rename does not stick: a different name builds a second instance
+    next to the current one, moves Cloud Run over, then deletes the old one.
+    A -var-file value would win over the environment, so keep it out of env/.
+  EOT
+  type        = string
+  default     = ""
+}
+
+variable "valkey_engine_version" {
+  description = "Memorystore for Valkey engine version. Upgrades happen in place; downgrades are not possible."
+  type        = string
+  default     = "VALKEY_9_1"
+}
+
+variable "valkey_node_type" {
+  description = "Memorystore for Valkey node type. SHARED_CORE_NANO is 1.4 GB."
+  type        = string
+  default     = "SHARED_CORE_NANO"
 }
 
 # --- oversla.sh shortener ---

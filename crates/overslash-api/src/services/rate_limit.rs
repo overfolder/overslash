@@ -419,7 +419,7 @@ pub async fn create_store_with_eviction(
 ) -> (Arc<dyn RateLimitStore>, Option<Arc<InMemoryRateLimitStore>>) {
     if let Some(client) = super::valkey::client(config) {
         match client {
-            Ok(client) => match client.get_connection_manager().await {
+            Ok(client) => match client.connection_manager().await {
                 Ok(mgr) => {
                     tracing::info!("Rate limiter: using Redis/Valkey");
                     return (Arc::new(RedisRateLimitStore { conn: mgr }), None);

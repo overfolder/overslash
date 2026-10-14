@@ -132,7 +132,9 @@ impl Config {
             dashboard_origin: env::or_default("DASHBOARD_ORIGIN", "*localhost*"),
             mcp_extra_origins: env::or_default("MCP_EXTRA_ORIGINS", ""),
             redis_url: env::optional("REDIS_URL"),
-            redis_password: env::optional("REDIS_PASSWORD"),
+            // A typo here would silently drop AUTH; refuse to boot instead.
+            redis_auth: overslash_valkey::Auth::from_env(&crate::services::valkey::VARS)
+                .unwrap_or_else(|e| panic!("{e}")),
             redis_ca_cert: env::optional("REDIS_CA_CERT"),
             // No `.filter(|n| *n > 0)` on the TTLs: `0` is a real value that
             // turns the cache off, not a typo to fall back from.
@@ -272,6 +274,8 @@ mod tests {
         "SERVICES_DIR",
         "DASHBOARD_URL",
         "REDIS_URL",
+        "REDIS_PASSWORD",
+        "REDIS_AUTH",
         "GOOGLE_AUTH_CLIENT_ID",
         "GOOGLE_AUTH_CLIENT_SECRET",
         "DEV_AUTH",
@@ -345,6 +349,17 @@ mod tests {
         assert_eq!(cfg.dashboard_url, "/");
         assert!(!cfg.cloud_billing);
         assert!(cfg.magic_link_enabled, "default-on");
+    }
+
+    #[test]
+    fn redis_auth_selects_memorystore_iam() {
+        let cfg = with_from_env(&[("REDIS_AUTH", "gcp-iam")], Config::from_env);
+        assert_eq!(cfg.redis_auth, overslash_valkey::Auth::GcpIam);
+        let cfg = with_from_env(&[("REDIS_PASSWORD", "s3cret")], Config::from_env);
+        assert_eq!(
+            cfg.redis_auth,
+            overslash_valkey::Auth::Password("s3cret".into())
+        );
     }
 
     #[test]

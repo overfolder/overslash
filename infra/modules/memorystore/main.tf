@@ -10,87 +10,154 @@ variable "base_prefix" {
   type = string
 }
 
-variable "memory_size_gb" {
-  type    = number
-  default = 1
+variable "instance_name" {
+  type        = string
+  description = "Memorystore instance ID. Changing it builds a new instance next to the old one (create_before_destroy) and repoints Cloud Run before the old one goes."
 }
 
-variable "authorized_network" {
+variable "engine_version" {
+  type    = string
+  default = "VALKEY_9_1"
+}
+
+variable "node_type" {
+  type    = string
+  default = "SHARED_CORE_NANO"
+}
+
+variable "network_id" {
   type = string
 }
 
-resource "google_redis_instance" "valkey" {
-  name           = "${var.base_prefix}-valkey"
-  project        = var.project_id
-  region         = var.region
-  tier           = "BASIC"
-  memory_size_gb = var.memory_size_gb
-  redis_version  = "REDIS_7_2"
+variable "subnet_id" {
+  type        = string
+  description = "Subnet the PSC endpoints take their IPs from."
+}
 
-  authorized_network = var.authorized_network
+variable "client_service_account_email" {
+  type        = string
+  description = "Service account the clients connect as. Granted roles/memorystore.dbConnectionUser on this instance only."
+}
+
+# Memorystore for Valkey is reached over Private Service Connect, not VPC
+# peering. The policy lets Memorystore create the PSC endpoints in our VPC.
+# One policy per network, region and service class, so it is named after the
+# environment, not the instance, and survives an instance rename.
+resource "google_network_connectivity_service_connection_policy" "memorystore" {
+  name          = "${var.base_prefix}-memorystore"
+  project       = var.project_id
+  location      = var.region
+  service_class = "gcp-memorystore"
+  network       = var.network_id
+  psc_config {
+    subnetworks = [var.subnet_id]
+  }
+}
+
+resource "google_memorystore_instance" "cache" {
+  instance_id = var.instance_name
+  project     = var.project_id
+  location    = var.region
+
+  mode           = "CLUSTER_DISABLED"
+  shard_count    = 1
+  replica_count  = 0
+  node_type      = var.node_type
+  engine_version = var.engine_version
 
   # CASA 6.7.1. The cache holds resolver output (names, addresses, phone
   # numbers) and session-revocation state, so being on the VPC is not enough:
-  # every client presents the AUTH string and talks TLS, verifying the server
-  # against the instance's own CA. With TLS on, the endpoint moves to 6378.
-  #
-  # `transit_encryption_mode` can only be set when an instance is created, so
-  # flipping it on an existing instance REPLACES it: new IP, empty keyspace,
-  # minutes of downtime. See docs/runbooks/memorystore-auth-tls.md before
-  # applying.
-  auth_enabled            = true
+  # every client authenticates and talks TLS, verifying the server against the
+  # instance's own CA. Valkey has no static AUTH string; clients present a
+  # short-lived access token for their service account instead (IAM_AUTH).
+  # Both settings are immutable: changing either replaces the instance.
+  authorization_mode      = "IAM_AUTH"
   transit_encryption_mode = "SERVER_AUTHENTICATION"
 
-  display_name = "${var.base_prefix} Valkey"
-}
+  desired_auto_created_endpoints {
+    network    = var.network_id
+    project_id = var.project_id
+  }
 
-# The AUTH string and server CA reach Cloud Run through Secret Manager
-# (`secret_key_ref`), never as plaintext env. The Cloud Run SA already holds
-# project-level `secretAccessor` (modules/iam). Both values also sit in
-# Terraform state, as every provider-generated credential here does.
-resource "google_secret_manager_secret" "auth_string" {
-  secret_id = "${var.base_prefix}-valkey-auth"
-  project   = var.project_id
-  replication {
-    auto {}
+  deletion_protection_enabled = false
+
+  depends_on = [google_network_connectivity_service_connection_policy.memorystore]
+
+  # A rename (instance_name) builds the new instance first, so Cloud Run moves
+  # over in the same apply and the old instance is only deleted afterwards.
+  lifecycle {
+    create_before_destroy = true
   }
 }
 
-resource "google_secret_manager_secret_version" "auth_string" {
-  secret      = google_secret_manager_secret.auth_string.id
-  secret_data = google_redis_instance.valkey.auth_string
+# Scoped to this instance, so a stray instance in the project is not reachable
+# with the same identity. Replaced before destroy on a rename, so the old
+# instance keeps accepting the clients still pointed at it.
+resource "google_project_iam_member" "client" {
+  project = var.project_id
+  role    = "roles/memorystore.dbConnectionUser"
+  member  = "serviceAccount:${var.client_service_account_email}"
+
+  condition {
+    title      = "${var.instance_name} only"
+    expression = "resource.name == \"${google_memorystore_instance.cache.id}\""
+  }
+
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
+locals {
+  connections = flatten([for e in google_memorystore_instance.cache.endpoints : e.connections])
+  primary = one([
+    for c in flatten([for c in local.connections : c.psc_auto_connection]) : c
+    if c.connection_type == "CONNECTION_TYPE_PRIMARY"
+  ])
+}
+
+# The server CA reaches Cloud Run through Secret Manager (`secret_key_ref`),
+# like every other mounted value. The secret is named after the instance, so a
+# rename writes a fresh secret instead of colliding with the old instance's.
+# The Cloud Run SA already holds project-level `secretAccessor` (modules/iam).
 resource "google_secret_manager_secret" "server_ca" {
-  secret_id = "${var.base_prefix}-valkey-server-ca"
+  secret_id = "${var.instance_name}-server-ca"
   project   = var.project_id
   replication {
     auto {}
   }
+
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
-# Every CA the instance currently serves, concatenated. During a CA rotation
-# Memorystore lists the old and new CA side by side; re-applying picks the new
-# one up, and clients trust both until the old one expires.
+# Every CA chain the instance currently serves, concatenated. During a CA
+# rotation Memorystore lists the old and new side by side; re-applying picks
+# the new one up, and clients trust both until the old one expires.
 resource "google_secret_manager_secret_version" "server_ca" {
-  secret      = google_secret_manager_secret.server_ca.id
-  secret_data = join("", google_redis_instance.valkey.server_ca_certs[*].cert)
+  secret = google_secret_manager_secret.server_ca.id
+  secret_data = join("", flatten([
+    for ca in google_memorystore_instance.cache.managed_server_ca : [
+      for chain in ca.ca_certs : chain.certificates
+    ]
+  ]))
+
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
-output "redis_host" {
-  value = google_redis_instance.valkey.host
+output "host" {
+  value = local.primary.ip_address
 }
 
-output "redis_port" {
-  value = tostring(google_redis_instance.valkey.port)
+output "port" {
+  value = tostring(local.primary.port)
 }
 
-# Read through the *version* resources so a Cloud Run revision that
-# references them is never created before a version exists to resolve.
-output "auth_secret_id" {
-  value = element(split("/", google_secret_manager_secret_version.auth_string.secret), 3)
-}
-
+# Read through the *version* resource so a Cloud Run revision that references
+# it is never created before a version exists to resolve.
 output "server_ca_secret_id" {
   value = element(split("/", google_secret_manager_secret_version.server_ca.secret), 3)
 }
