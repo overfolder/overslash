@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.19.0](https://github.com/overfolder/overslash/compare/v0.18.1...v0.19.0) (2026-10-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* **webhooks:** receivers verifying X-Overslash-Signature must switch to the v1 scheme (HMAC-SHA256 over "<timestamp>.<raw body>").
+
+### Features
+
+* **audit:** record upstream response sizes to tune buffering caps ([#765](https://github.com/overfolder/overslash/issues/765)) ([cfeb6a6](https://github.com/overfolder/overslash/commit/cfeb6a66a70254cb079a6e0e2630d81fc9d775dc))
+* **dashboard:** let reauth consent rename into a new agent ([#756](https://github.com/overfolder/overslash/issues/756)) ([7b42a13](https://github.com/overfolder/overslash/commit/7b42a138a5d365972fccb273142bd41792e942ab))
+* **dashboard:** migrate to SvelteKit 3 ([#757](https://github.com/overfolder/overslash/issues/757)) ([285db69](https://github.com/overfolder/overslash/commit/285db690c1eaebd69bd209efdf136989d42fe583))
+* enable AUTH and transit encryption on Memorystore (CASA 6.7.1) ([#769](https://github.com/overfolder/overslash/issues/769)) ([777d8ac](https://github.com/overfolder/overslash/commit/777d8ac8394e515af59acb5163160536f301d136))
+* **infra:** serve the API LB over IPv6, with the /64 throttle pinned on the edge-header path ([#772](https://github.com/overfolder/overslash/issues/772)) ([dfac92c](https://github.com/overfolder/overslash/commit/dfac92cbb12b5816ada98dbc95070a1b12d997a1))
+* **infra:** TLS 1.2+ SSL policy and baseline Cloud Armor on API LB (CASA 4.1.1) ([#768](https://github.com/overfolder/overslash/issues/768)) ([4d460be](https://github.com/overfolder/overslash/commit/4d460be143039710b6ec35c7985caabbcd857452))
+* **search:** collapse instance fan-out, one catalog row per template, boost named services ([#763](https://github.com/overfolder/overslash/issues/763)) ([46c68be](https://github.com/overfolder/overslash/commit/46c68beb42d27c553d3585b9984c8fdc0aee233f))
+* **services:** holded attachments via multipart staged uploads ([#766](https://github.com/overfolder/overslash/issues/766)) ([d5ede28](https://github.com/overfolder/overslash/commit/d5ede28b369fdcecc48f9b97db60d4b447b9cc32))
+* **services:** holded bank reconciliation ([#764](https://github.com/overfolder/overslash/issues/764)) ([0757b04](https://github.com/overfolder/overslash/commit/0757b04172283a597fb49a88905388fb8455be6a))
+* **webhooks:** stop sending the replayable legacy X-Overslash-Signature ([#762](https://github.com/overfolder/overslash/issues/762)) ([250d88b](https://github.com/overfolder/overslash/commit/250d88b87ccdeee426dc28a1f8f1f8e950135f29))
+
+
+### Bug Fixes
+
+* **actions:** pass the streamed inline body as a Payload ([#773](https://github.com/overfolder/overslash/issues/773)) ([7d2852b](https://github.com/overfolder/overslash/commit/7d2852b50a387e357a763abe519658ba599f568c))
+* **actions:** scrub injected credentials out of upstream responses ([#767](https://github.com/overfolder/overslash/issues/767)) ([123319a](https://github.com/overfolder/overslash/commit/123319a3e6426fe412eee154bdb970897151ceee))
+* **deps:** bump quinn-proto to 0.11.18, time-box unsafe-libyaml ignore ([#758](https://github.com/overfolder/overslash/issues/758)) ([8034a1b](https://github.com/overfolder/overslash/commit/8034a1bb7dce0fa217bb86a6083d92e3193b6394))
+* **deps:** bump source-map-js to 1.2.2 (GHSA-68fv-2mgg-jv7q) ([#751](https://github.com/overfolder/overslash/issues/751)) ([43736c3](https://github.com/overfolder/overslash/commit/43736c3bd6a729ba20d84723094955627a573734))
+* **search:** short query tokens only match a service name exactly ([#774](https://github.com/overfolder/overslash/issues/774)) ([fdcdca7](https://github.com/overfolder/overslash/commit/fdcdca72e6d3017ccfedf4ba6f32d4a2728ce487))
+
 ## [0.18.1](https://github.com/overfolder/overslash/compare/v0.18.0...v0.18.1) (2026-10-06)
 
 
