@@ -158,7 +158,7 @@ integrity_alert_enabled = true
 # Instance-wide services OAuth clients, one GSM secret pair per provider
 # (`<prefix>-<provider>-services-client-{id,secret}`). Populate a new
 # provider's secrets before the apply that injects them — see infra/README.md.
-oauth_service_providers = ["google", "notion", "slack"]
+oauth_service_providers = ["google", "notion", "slack", "github", "hubspot"]
 
 read_oauth_credentials_from_env = true
 
