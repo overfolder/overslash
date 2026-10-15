@@ -327,7 +327,7 @@ variable "valkey_node_type" {
 # --- oversla.sh shortener ---
 
 variable "read_oauth_credentials_from_env" {
-  description = "Set OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS=1 on the API Cloud Run service (tier-4 env-var fallback for the OAUTH_{PROVIDER}_* credentials of oauth_service_providers). Enable in dev only."
+  description = "Set OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS=1 on the API Cloud Run service (tier-4 env-var fallback for the OAUTH_{PROVIDER}_* credentials of oauth_service_providers). On in dev and prod: it is how the instance-wide clients in oauth_service_providers reach the API. Orgs and users still override them via tiers 1-3."
   type        = bool
   default     = false
 }

@@ -341,7 +341,7 @@ variable "enable_metrics_sidecar" {
 variable "read_oauth_credentials_from_env" {
   type        = bool
   default     = false
-  description = "Set OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS=1, enabling the tier-4 env-var fallback in the OAuth credential cascade (OAUTH_{PROVIDER}_* picked up from Cloud Run env). Safe in dev; must be false in prod."
+  description = "Set OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS=1, enabling the tier-4 env-var fallback in the OAuth credential cascade (OAUTH_{PROVIDER}_* picked up from Cloud Run env). Supplies the instance-wide clients of oauth_service_providers; orgs/users override via tiers 1-3."
 }
 
 variable "enable_shortener_client" {

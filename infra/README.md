@@ -85,7 +85,7 @@ echo -n "your-services-client-secret" | gcloud secrets versions add overslash-pr
 Cloud Run reads the services client as `OAUTH_GOOGLE_CLIENT_ID/_SECRET` via
 the env-var tier of the OAuth cascade. That tier is only active when
 `read_oauth_credentials_from_env = true` (sets
-`OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS=1`; on in dev, off in prod).
+`OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS=1`; on in dev and prod).
 Any org can override with its own client by calling
 `POST /v1/org/oauth-credentials/google` from the dashboard.
 
