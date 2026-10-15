@@ -90,6 +90,12 @@ shortener_base_url          = "https://oversla.sh"
 shortener_domain            = "oversla.sh"
 shortener_root_redirect_url = "https://www.overslash.com"
 
+# Let the API mint oversla.sh short links (connect/authorize, approvals, secret
+# requests). Same overslash-prod-shortener-api-key secret the shortener service
+# checks callers against, so it must hold a real value, never REPLACE_ME.
+enable_shortener_client = true
+oversla_sh_base_url     = "https://oversla.sh"
+
 # Billing — Stripe lookup keys default to overslash_seat_eur / overslash_seat_usd.
 # Set the same `lookup_key` on the corresponding Price in Stripe Dashboard so the
 # server can resolve the literal price_… ID at startup. Override here only if you
