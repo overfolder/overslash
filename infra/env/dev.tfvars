@@ -101,8 +101,13 @@ overfwd_domain = "mailbox.dev.overslash.com"
 # The API key is copied from prod:
 #   gcloud secrets versions access latest --secret=overslash-prod-shortener-api-key --project=overslash | \
 #     gcloud secrets versions add overslash-dev-shortener-api-key --project=overslash-dev --data-file=-
-enable_shortener_client         = true
-oversla_sh_base_url             = "https://oversla.sh"
+enable_shortener_client = true
+oversla_sh_base_url     = "https://oversla.sh"
+# Instance-wide services OAuth clients, one GSM secret pair per provider
+# (`<prefix>-<provider>-services-client-{id,secret}`). Populate a new
+# provider's secrets before the apply that injects them — see infra/README.md.
+oauth_service_providers = ["google"]
+
 read_oauth_credentials_from_env = true
 
 # Billing — disabled in dev; enable for billing testing

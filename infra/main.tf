@@ -76,6 +76,8 @@ module "secret_manager" {
   enable_google_login = var.enable_google_login
   enable_github_login = var.enable_github_login
 
+  oauth_service_providers = var.oauth_service_providers
+
   enable_google_directory_sync = var.enable_google_directory_sync
 
   depends_on = [google_project_service.apis]
@@ -171,15 +173,14 @@ module "cloud_run" {
   cloud_sql_connection_name = module.cloud_sql.connection_name
 
   # Secret references
-  db_password_secret_id                   = module.secret_manager.db_password_secret_id
-  encryption_key_secret_id                = module.secret_manager.encryption_key_secret_id
-  signing_key_secret_id                   = module.secret_manager.signing_key_secret_id
-  oauth_client_id_secret_id               = module.secret_manager.oauth_client_id_secret_id
-  oauth_client_secret_secret_id           = module.secret_manager.oauth_client_secret_secret_id
-  github_auth_client_id_secret_id         = module.secret_manager.github_auth_client_id_secret_id
-  github_auth_client_secret_secret_id     = module.secret_manager.github_auth_client_secret_secret_id
-  google_services_client_id_secret_id     = module.secret_manager.google_services_client_id_secret_id
-  google_services_client_secret_secret_id = module.secret_manager.google_services_client_secret_secret_id
+  db_password_secret_id               = module.secret_manager.db_password_secret_id
+  encryption_key_secret_id            = module.secret_manager.encryption_key_secret_id
+  signing_key_secret_id               = module.secret_manager.signing_key_secret_id
+  oauth_client_id_secret_id           = module.secret_manager.oauth_client_id_secret_id
+  oauth_client_secret_secret_id       = module.secret_manager.oauth_client_secret_secret_id
+  github_auth_client_id_secret_id     = module.secret_manager.github_auth_client_id_secret_id
+  github_auth_client_secret_secret_id = module.secret_manager.github_auth_client_secret_secret_id
+  oauth_service_client_secret_ids     = module.secret_manager.oauth_service_client_secret_ids
 
   # Billing
   cloud_billing                   = var.cloud_billing

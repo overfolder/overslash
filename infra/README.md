@@ -83,9 +83,28 @@ echo -n "your-services-client-secret" | gcloud secrets versions add overslash-pr
 ```
 
 Cloud Run reads the services client as `OAUTH_GOOGLE_CLIENT_ID/_SECRET` via
-the env-var tier of the OAuth cascade (`OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS=1`
-is set by Terraform). Any org can override with its own client by calling
+the env-var tier of the OAuth cascade. That tier is only active when
+`read_oauth_credentials_from_env = true` (sets
+`OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS=1`; on in dev and prod).
+Any org can override with its own client by calling
 `POST /v1/org/oauth-credentials/google` from the dashboard.
+
+**Other services providers** (Notion, Slack, Microsoft, …): list the provider
+keys (the `provider:` of `services/*.yaml`) in `oauth_service_providers`
+(default `["google"]`). Each one gets the same secret pair,
+`overslash-<env>-<provider>-services-client-{id,secret}`, injected as
+`OAUTH_<PROVIDER>_CLIENT_ID/_SECRET`. The redirect URI is the same for every
+provider: `https://<your-host>/v1/oauth/callback`, where `<your-host>` is the
+API's `PUBLIC_URL`. Create and populate the secrets before the apply that
+injects them, or Cloud Run starts with `REPLACE_ME` values:
+
+```bash
+make tofu-plan ENV=prod   # with "notion" added to oauth_service_providers
+cd infra && tofu apply -target='module.secret_manager' -var-file=env/prod.tfvars
+echo -n "your-notion-client-id"     | gcloud secrets versions add overslash-prod-notion-services-client-id     --data-file=-
+echo -n "your-notion-client-secret" | gcloud secrets versions add overslash-prod-notion-services-client-secret --data-file=-
+make tofu-plan ENV=prod && make tofu-apply ENV=prod
+```
 
 **GitHub login client** (Sign-in with GitHub, `read:user user:email`):
 
