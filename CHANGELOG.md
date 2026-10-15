@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.21.1](https://github.com/overfolder/overslash/compare/v0.21.0...v0.21.1) (2026-10-15)
+
+
+### Bug Fixes
+
+* **infra:** let the prod API mint oversla.sh short links ([6026903](https://github.com/overfolder/overslash/commit/6026903f51576ab7aef214b5f4b9495ba907d4e7))
+* **infra:** let the prod API mint oversla.sh short links ([5056ab1](https://github.com/overfolder/overslash/commit/5056ab14c63b90047c45a4d824493697e6ac60f0))
+* **oauth:** use Slack's user-token OAuth flow ([993e5c4](https://github.com/overfolder/overslash/commit/993e5c46969a791227e36614c47d3f3182bba8f6))
+
 ## [0.21.0](https://github.com/overfolder/overslash/compare/v0.20.0...v0.21.0) (2026-10-15)
 
 
