@@ -495,11 +495,7 @@ pub(super) async fn dispatch_auth(
                 .get("service")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "service_status requires `service`".to_string())?;
-            (
-                Method::GET,
-                format!("/v1/services/{}", urlencoding::encode(name)),
-                None,
-            )
+            (Method::GET, service_status_path(name), None)
         }
         other => {
             return Err(format!(
@@ -508,6 +504,17 @@ pub(super) async fn dispatch_auth(
         }
     };
     forward(state, bearer, method, &path, body).await
+}
+
+/// `service_status` is introspection, so it answers for an instance that is
+/// not callable yet too. An auth-mode switch onto OAuth leaves the instance
+/// `pending_setup`, and a bare lookup would 404 on exactly the instance the
+/// connect bundle's `next` hint tells the agent to check.
+fn service_status_path(name: &str) -> String {
+    format!(
+        "/v1/services/{}?include_inactive=true",
+        urlencoding::encode(name)
+    )
 }
 
 /// Shared dispatcher for `overslash_approve` and
@@ -563,6 +570,14 @@ pub(super) async fn dispatch_approve(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn service_status_sees_instances_awaiting_setup() {
+        assert_eq!(
+            service_status_path("notion work"),
+            "/v1/services/notion%20work?include_inactive=true"
+        );
+    }
 
     #[test]
     fn stringified_empty_object_becomes_object() {
