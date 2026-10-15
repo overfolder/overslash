@@ -9,6 +9,7 @@
 		ManagedSigninSettings,
 		McpClient,
 		OAuthCredential,
+		OAuthProviderInfo,
 		OrgInfo,
 		OrgInvite,
 		SecretRequestSettings,
@@ -24,6 +25,8 @@
 	import ToggleSwitch from '#lib/components/ToggleSwitch.svelte';
 	import ChipInput from '#lib/components/ChipInput.svelte';
 	import GoogleDirectoryCard from '#lib/components/org/GoogleDirectoryCard.svelte';
+	import CopyCommand from '#lib/components/CopyCommand.svelte';
+	import { orgAppGuideUrl } from '#lib/docs.ts';
 	import { absoluteTime } from '#lib/utils/time.ts';
 	import { invalidateAllowedDomains } from '#lib/orgDomains.ts';
 	import { goto } from '$app/navigation';
@@ -269,6 +272,31 @@
 	let oauthCredSubmitting = $state(false);
 	let oauthCredSuccess = $state<string | null>(null);
 
+	// Provider rows from `/v1/oauth-providers`, fetched when the form opens.
+	// They carry the redirect URI and JS origin to show next to the form, and
+	// cover every provider the instance knows (Notion, HubSpot, …), not just
+	// the hardcoded list above, which stays as the fallback.
+	let oauthProviders = $state<OAuthProviderInfo[]>([]);
+	const oauthCredProviderOptions = $derived(
+		oauthProviders.length > 0
+			? oauthProviders.map((p) => ({ key: p.key, label: p.display_name }))
+			: KNOWN_PROVIDERS
+	);
+	const oauthCredProviderInfo = $derived(
+		oauthProviders.find((p) => p.key === oauthCredProvider)
+	);
+	// Only Google and GitHub can be sign-in providers, and org credentials
+	// also serve sign-in for them, so their app needs the IdP callback too.
+	const oauthCredSigninRedirectUri = $derived(
+		oauthCredProviderInfo && (oauthCredProvider === 'google' || oauthCredProvider === 'github')
+			? oauthCredProviderInfo.oauth_redirect_uri.replace(
+					/\/v1\/oauth\/callback$/,
+					`/auth/callback/${oauthCredProvider}`
+				)
+			: null
+	);
+	const oauthCredGuideUrl = $derived(orgAppGuideUrl(oauthCredProvider));
+
 	/** True when an org credential exists (from any source) for this provider. */
 	function hasOrgCredFor(providerKey: string): boolean {
 		return oauthCredentials.some((c) => c.provider_key === providerKey);
@@ -488,13 +516,24 @@
 
 	// ----- OAuth App Credentials -----
 
+	async function loadOauthProviders() {
+		if (oauthProviders.length > 0) return;
+		try {
+			oauthProviders = await session.get<OAuthProviderInfo[]>('/v1/oauth-providers');
+		} catch {
+			// Setup hints are a convenience; the form still works on the
+			// hardcoded provider list without them.
+		}
+	}
+
 	function openAddOauthCred() {
+		void loadOauthProviders();
 		oauthCredEditingProvider = null;
 		oauthCredOverridingEnv = false;
 		// Pick a default provider that isn't already configured, falling back
 		// to "google" if everything is already configured.
 		const taken = new Set(oauthCredentials.map((c) => c.provider_key));
-		const first = KNOWN_PROVIDERS.find((p) => !taken.has(p.key));
+		const first = oauthCredProviderOptions.find((p) => !taken.has(p.key));
 		oauthCredProvider = first?.key ?? 'google';
 		oauthCredClientId = '';
 		oauthCredClientSecret = '';
@@ -503,6 +542,7 @@
 	}
 
 	function openEditOauthCred(row: OAuthCredential) {
+		void loadOauthProviders();
 		oauthCredEditingProvider = row.provider_key;
 		oauthCredOverridingEnv = row.source === 'env';
 		oauthCredProvider = row.provider_key;
@@ -530,7 +570,7 @@
 			oauthCredClientId = '';
 			oauthCredClientSecret = '';
 			oauthCredSuccess =
-				`Saved. Existing ${provider} services keep using their current connection — new services will use this credential.`;
+				`Saved. New ${provider} connections use this app. Connections made with a different org or system app must be reconnected, since tokens only refresh with the app that issued them.`;
 			await refetchOauthCreds();
 		} catch (err) {
 			oauthCredError = asMessage(err);
@@ -1847,11 +1887,45 @@
 					<label>
 						Provider
 						<select bind:value={oauthCredProvider} disabled={oauthCredEditingProvider !== null}>
-							{#each KNOWN_PROVIDERS as p}
+							{#each oauthCredProviderOptions as p}
 								<option value={p.key}>{p.label}</option>
 							{/each}
 						</select>
 					</label>
+					{#if oauthCredProviderInfo || oauthCredGuideUrl}
+						<div class="oauth-setup">
+							<p class="muted small">
+								Register these in your {oauthCredProviderInfo?.display_name ?? oauthCredProvider}
+								OAuth app before saving.
+							</p>
+							{#if oauthCredProviderInfo}
+								<CopyCommand
+									label="Redirect URI (service connections)"
+									command={oauthCredProviderInfo.oauth_redirect_uri}
+									dense
+								/>
+							{/if}
+							{#if oauthCredSigninRedirectUri}
+								<CopyCommand
+									label="Redirect URI (sign-in)"
+									command={oauthCredSigninRedirectUri}
+									dense
+								/>
+							{/if}
+							{#if oauthCredProviderInfo}
+								<CopyCommand
+									label="JavaScript origin"
+									command={oauthCredProviderInfo.oauth_js_origin}
+									dense
+								/>
+							{/if}
+							{#if oauthCredGuideUrl}
+								<a class="oauth-setup-guide" href={oauthCredGuideUrl} target="_blank" rel="noopener noreferrer">
+									Step-by-step guide: scopes, Internal vs External, and testing →
+								</a>
+							{/if}
+						</div>
+					{/if}
 					<label>
 						Client ID
 						<input type="text" bind:value={oauthCredClientId} required />
@@ -2794,6 +2868,26 @@
 	}
 	.btn-danger:hover:not(:disabled) {
 		background: color-mix(in srgb, var(--danger-500, #ef4444) 10%, transparent);
+	}
+
+	.oauth-setup {
+		display: flex;
+		flex-direction: column;
+		gap: 0.4rem;
+		padding: 0.65rem 0.8rem;
+		border: 1px solid var(--color-border);
+		border-radius: 6px;
+	}
+	.oauth-setup p {
+		margin: 0;
+	}
+	.oauth-setup-guide {
+		font-size: 0.85rem;
+		color: var(--color-primary);
+		text-decoration: none;
+	}
+	.oauth-setup-guide:hover {
+		text-decoration: underline;
 	}
 
 	.inline-form {
