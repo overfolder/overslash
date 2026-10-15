@@ -376,7 +376,8 @@ pub struct ConnectBundle {
 
 impl ConnectBundle {
     pub const NEXT: &'static str = "after your user finishes authorizing, confirm it with \
-        overslash_auth service_status (REST: GET /v1/services/{name}) — \
+        overslash_auth service_status (REST: GET /v1/services/{name}?include_inactive=true, \
+        since an instance awaiting setup is otherwise a 404) — \
         `credentials_status: ok` means the service is ready to call. This response's \
         `credentials_status` is from before the user authorized and will not update.";
 }
