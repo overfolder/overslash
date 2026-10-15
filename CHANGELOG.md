@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.21.0](https://github.com/overfolder/overslash/compare/v0.20.0...v0.21.0) (2026-10-15)
+
+
+### Features
+
+* **dashboard:** show OAuth app setup values and link the org-wide guide ([#786](https://github.com/overfolder/overslash/issues/786)) ([0ce4b10](https://github.com/overfolder/overslash/commit/0ce4b10539a6f7fedcbed8facd8b28be73f226c6))
+* **infra:** move the cache to Memorystore for Valkey 9.1 with IAM auth ([#779](https://github.com/overfolder/overslash/issues/779)) ([1b76ac5](https://github.com/overfolder/overslash/commit/1b76ac51d5aec423a612b98f96f0cdb07c449646))
+* **infra:** provider-list services OAuth clients, read from env on prod ([#781](https://github.com/overfolder/overslash/issues/781)) ([f4720fe](https://github.com/overfolder/overslash/commit/f4720fe889a4d4af27cc95dde49f0de939bb2a40))
+
+
+### Bug Fixes
+
+* **deps:** bump rustls to 0.23.46 (RUSTSEC-2026-0346..0349) ([#787](https://github.com/overfolder/overslash/issues/787)) ([82afc62](https://github.com/overfolder/overslash/commit/82afc624ac0928256f5fd97545a4256a07c37663))
+* **mcp:** say the roster is a snapshot and hint the post-OAuth probe ([#783](https://github.com/overfolder/overslash/issues/783)) ([67ec6cc](https://github.com/overfolder/overslash/commit/67ec6ccd321a48e66ba4c6e4e505f6c5a1be2692))
+* **services:** connect hint's REST probe reaches instances awaiting setup ([#788](https://github.com/overfolder/overslash/issues/788)) ([d9ac48a](https://github.com/overfolder/overslash/commit/d9ac48a2ac2917ddeb81c5c18985c59255656356))
+
 ## [0.20.0](https://github.com/overfolder/overslash/compare/v0.19.0...v0.20.0) (2026-10-14)
 
 
