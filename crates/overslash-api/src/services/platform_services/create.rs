@@ -556,6 +556,7 @@ pub async fn kernel_create_service(
                     state: resp.state,
                     flow_id: resp.flow_id,
                     expires_at: resp.expires_at,
+                    next: ConnectBundle::NEXT,
                 });
             }
             Err(err) => {

@@ -116,6 +116,10 @@ async fn create_service_auto_initiates_oauth_for_oauth_template() {
     );
     assert!(!flow_id.is_empty(), "flow_id should not be empty");
     assert_eq!(connect["state"], Value::String(flow_id.to_string()));
+    // Nothing tells the agent when its user finishes the dance, so the bundle
+    // names the probe that does.
+    let next = connect["next"].as_str().expect("next hint present");
+    assert!(next.contains("service_status"), "next hint: {next}");
 
     // Confirm the flow row carries the new service instance's id so the
     // callback knows what to bind to.
