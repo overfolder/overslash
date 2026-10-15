@@ -18,8 +18,10 @@
 //! have no channel to push `notifications/tools/list_changed` down (`GET /mcp`
 //! is a 405 and the only SSE we emit is the one-shot elicitation stream), so a
 //! client that caches the catalog at handshake time keeps a stale roster until
-//! it reconnects. That is accepted: a stale roster costs one redundant search,
-//! which is the status quo for every caller today.
+//! it reconnects. Claude Code does exactly that, and an agent that has just
+//! walked its user through an OAuth connect then reads the stale list as
+//! "not connected". So the sentence says it is a snapshot and names the probe
+//! (`service_status`) that answers the question live.
 
 use std::collections::BTreeSet;
 
@@ -151,7 +153,11 @@ pub(super) fn roster_sentence(keys: &[String]) -> Option<String> {
     Some(format!(
         " Connected service types for this caller: {list}. Those are template \
          keys, not callable service names — search one to get the instance \
-         name before passing it to overslash_call."
+         name before passing it to overslash_call. This list is a snapshot \
+         from when your session connected: a service created or authorized \
+         since then is missing from it, so check overslash_search or \
+         overslash_auth service_status before telling your user something \
+         is not connected."
     ))
 }
 
@@ -177,6 +183,15 @@ mod tests {
     }
 
     #[test]
+    fn says_it_is_a_snapshot_and_how_to_check_freshly_connected_services() {
+        // Clients cache the roster at handshake; a service connected later in
+        // the session must not read as "not connected" without a probe.
+        let s = roster_sentence(&keys(&["shortcut"])).unwrap();
+        assert!(s.contains("snapshot"), "{s}");
+        assert!(s.contains("service_status"), "{s}");
+    }
+
+    #[test]
     fn collapses_the_tail_past_max_keys() {
         let many: Vec<String> = (0..MAX_KEYS + 5).map(|i| format!("svc{i:03}")).collect();
         let s = roster_sentence(&many).unwrap();
@@ -190,7 +205,13 @@ mod tests {
         let s = roster_sentence(&keys(&[&long, &long, &long])).unwrap();
         // Two fit (400 + 2 + 400 = 802 > 600), so only the first survives.
         assert!(s.contains("and 2 more"), "{s}");
-        assert!(s.len() < 800, "roster sentence unbounded: {}", s.len());
+        // Measure the list, not the fixed prose around it.
+        let prose = roster_sentence(&keys(&[""])).unwrap().len();
+        assert!(
+            s.len() - prose < 800,
+            "roster sentence unbounded: {}",
+            s.len()
+        );
     }
 
     #[test]

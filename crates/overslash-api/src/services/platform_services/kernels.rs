@@ -667,6 +667,7 @@ pub async fn kernel_update_service(
                             state: resp.state,
                             flow_id: resp.flow_id,
                             expires_at: resp.expires_at,
+                            next: super::types::ConnectBundle::NEXT,
                         });
                     }
                     // Best-effort, exactly as on create: the switch itself has
