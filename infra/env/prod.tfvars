@@ -155,6 +155,11 @@ upstream_error_alert_enabled = false
 # Runbook: docs/runbooks/data-integrity.md.
 integrity_alert_enabled = true
 
+# Instance-wide services OAuth clients, one GSM secret pair per provider
+# (`<prefix>-<provider>-services-client-{id,secret}`). Populate a new
+# provider's secrets before the apply that injects them — see infra/README.md.
+oauth_service_providers = ["google"]
+
 read_oauth_credentials_from_env = false
 
 # Async (non-blocking) action calls. Off until validated on dev.

@@ -101,14 +101,13 @@ variable "github_auth_client_secret_secret_id" {
   description = "GSM secret ID for the GitHub LOGIN OAuth App client secret. Feeds GITHUB_AUTH_CLIENT_SECRET."
 }
 
-variable "google_services_client_id_secret_id" {
-  type        = string
-  description = "GSM secret ID for the Google SERVICES OAuth client (Calendar/Drive/Gmail). Feeds OAUTH_GOOGLE_CLIENT_ID."
-}
-
-variable "google_services_client_secret_secret_id" {
-  type        = string
-  description = "GSM secret ID for the Google SERVICES OAuth client secret. Feeds OAUTH_GOOGLE_CLIENT_SECRET."
+variable "oauth_service_client_secret_ids" {
+  type = map(object({
+    client_id     = string
+    client_secret = string
+  }))
+  default     = {}
+  description = "Per-provider GSM secret IDs for the services OAuth clients. Each entry feeds OAUTH_{PROVIDER}_CLIENT_ID/_SECRET."
 }
 
 variable "db_user" {
@@ -342,7 +341,7 @@ variable "enable_metrics_sidecar" {
 variable "read_oauth_credentials_from_env" {
   type        = bool
   default     = false
-  description = "Set OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS=1, enabling the tier-4 env-var fallback in the OAuth credential cascade (OAUTH_GOOGLE_* picked up from Cloud Run env). Safe in dev; must be false in prod."
+  description = "Set OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS=1, enabling the tier-4 env-var fallback in the OAuth credential cascade (OAUTH_{PROVIDER}_* picked up from Cloud Run env). Safe in dev; must be false in prod."
 }
 
 variable "enable_shortener_client" {
@@ -499,12 +498,12 @@ locals {
       OVERSLASH_GOOGLE_DIRECTORY_SA_KEY = var.google_directory_sa_key_secret_id
     } : {},
     {
-      DB_PASSWORD                = var.db_password_secret_id
-      OAUTH_GOOGLE_CLIENT_ID     = var.google_services_client_id_secret_id
-      OAUTH_GOOGLE_CLIENT_SECRET = var.google_services_client_secret_secret_id
-      SECRETS_ENCRYPTION_KEY     = var.encryption_key_secret_id
-      SIGNING_KEY                = var.signing_key_secret_id
+      DB_PASSWORD            = var.db_password_secret_id
+      SECRETS_ENCRYPTION_KEY = var.encryption_key_secret_id
+      SIGNING_KEY            = var.signing_key_secret_id
     },
+    { for p, s in var.oauth_service_client_secret_ids : "OAUTH_${upper(p)}_CLIENT_ID" => s.client_id },
+    { for p, s in var.oauth_service_client_secret_ids : "OAUTH_${upper(p)}_CLIENT_SECRET" => s.client_secret },
     var.oauth_client_id_secret_id != "" ? {
       GOOGLE_AUTH_CLIENT_ID     = var.oauth_client_id_secret_id
       GOOGLE_AUTH_CLIENT_SECRET = var.oauth_client_secret_secret_id

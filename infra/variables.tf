@@ -123,6 +123,17 @@ variable "enable_github_login" {
   default     = false
 }
 
+variable "oauth_service_providers" {
+  description = "OAuth provider keys (the `provider:` of services/*.yaml, e.g. google, notion, slack) that get an instance-wide services OAuth client. Each one provisions `{prefix}-{provider}-services-client-{id,secret}` in GSM and injects OAUTH_{PROVIDER}_CLIENT_ID/_SECRET into the API; the API only reads them when read_oauth_credentials_from_env is on. Populate each secret before the apply that adds the provider — until then Cloud Run would inject REPLACE_ME."
+  type        = list(string)
+  default     = ["google"]
+
+  validation {
+    condition     = alltrue([for p in var.oauth_service_providers : can(regex("^[a-z0-9_]+$", p))])
+    error_message = "oauth_service_providers entries must be lowercase provider keys ([a-z0-9_]+), matching services/*.yaml."
+  }
+}
+
 variable "rust_log" {
   description = "RUST_LOG value for the API container. Defaults to `info`; set to `debug` in dev for verbose logging."
   type        = string
@@ -316,7 +327,7 @@ variable "valkey_node_type" {
 # --- oversla.sh shortener ---
 
 variable "read_oauth_credentials_from_env" {
-  description = "Set OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS=1 on the API Cloud Run service (tier-4 env-var fallback for OAUTH_GOOGLE_* credentials). Enable in dev only."
+  description = "Set OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS=1 on the API Cloud Run service (tier-4 env-var fallback for the OAUTH_{PROVIDER}_* credentials of oauth_service_providers). Enable in dev only."
   type        = bool
   default     = false
 }
