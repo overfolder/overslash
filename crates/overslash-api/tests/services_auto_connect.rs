@@ -120,6 +120,8 @@ async fn create_service_auto_initiates_oauth_for_oauth_template() {
     // names the probe that does.
     let next = connect["next"].as_str().expect("next hint present");
     assert!(next.contains("service_status"), "next hint: {next}");
+    // The REST spelling must reach a `pending_setup` instance too.
+    assert!(next.contains("include_inactive=true"), "next hint: {next}");
 
     // Confirm the flow row carries the new service instance's id so the
     // callback knows what to bind to.
