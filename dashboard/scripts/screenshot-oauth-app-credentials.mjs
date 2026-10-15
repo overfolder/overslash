@@ -35,6 +35,16 @@ try {
 	await card.screenshot({ path: 'screenshots/oauth-app-credentials-override-form.png' });
 	console.log('[scenarios] wrote screenshots/oauth-app-credentials-override-form.png');
 
+	// Add form for Google: the redirect URIs to register (service connections
+	// and sign-in), the JS origin, and the link to the org-wide app guide.
+	await card.getByRole('button', { name: 'Cancel' }).first().click();
+	await card.getByRole('button', { name: 'Add provider credentials' }).click();
+	await card.locator('select').selectOption('google');
+	await card.getByText('Redirect URI (sign-in)').waitFor({ timeout: 15_000 });
+	await page.waitForTimeout(300);
+	await card.screenshot({ path: 'screenshots/oauth-app-credentials-google-setup.png' });
+	console.log('[scenarios] wrote screenshots/oauth-app-credentials-google-setup.png');
+
 	await ctx.close();
 	console.log('[oauth-app-credentials] done');
 } finally {

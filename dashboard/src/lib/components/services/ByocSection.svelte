@@ -1,4 +1,6 @@
 <script lang="ts">
+	import { byocGuideUrl, orgAppGuideUrl } from '#lib/docs.ts';
+
 	/**
 	 * BYOC (Bring Your Own OAuth app) input section for the Create Service
 	 * flow. Collapsible by default; forced open and marked required when no
@@ -48,12 +50,11 @@
 
 	const label = $derived(providerDisplayName || provider);
 
-	// Per-provider how-to guide on the docs site for linking your own OAuth
-	// app, e.g. .../how-to/link-google-services.html. Provider-specific so the
-	// page matches the service the user is connecting.
-	const docsUrl = $derived(
-		`https://www.overslash.com/docs/guide/how-to/link-${provider}-services.html`
-	);
+	// Per-provider how-to guides on the docs site: one for bringing your own
+	// app, one for an admin setting up an org-wide app. Null when no page
+	// exists for the provider, so we never render a link that 404s.
+	const docsUrl = $derived(byocGuideUrl(provider));
+	const orgGuideUrl = $derived(orgAppGuideUrl(provider));
 
 	const placeholders: Record<string, string> = {
 		google: 'e.g. 1234567890-abc.apps.googleusercontent.com',
@@ -214,14 +215,20 @@
 				</div>
 			</label>
 
-			<a
-				class="help"
-				href={docsUrl}
-				target="_blank"
-				rel="noopener noreferrer"
-			>
-				How to set up your own {label} OAuth app →
-			</a>
+			{#if docsUrl}
+				<a class="help" href={docsUrl} target="_blank" rel="noopener noreferrer">
+					How to set up your own {label} OAuth app →
+				</a>
+			{/if}
+			{#if orgGuideUrl}
+				<p class="org-hint">
+					Setting this up for your whole team? An org admin can add one {label} app for
+					everyone under Org settings → OAuth App Credentials.
+					<a href={orgGuideUrl} target="_blank" rel="noopener noreferrer">
+						Org-wide {label} app guide →
+					</a>
+				</p>
+			{/if}
 		</div>
 	{/if}
 </section>
@@ -399,6 +406,18 @@
 		text-decoration: none;
 	}
 	.help:hover {
+		text-decoration: underline;
+	}
+	.org-hint {
+		margin: 0;
+		font-size: 0.78rem;
+		color: var(--color-text-muted);
+	}
+	.org-hint a {
+		color: var(--color-primary, #6366f1);
+		text-decoration: none;
+	}
+	.org-hint a:hover {
 		text-decoration: underline;
 	}
 	.byoc.configured {

@@ -158,17 +158,17 @@ phone numbers, email addresses, Drive file titles — to Valkey when `REDIS_URL`
 is set. The values are encrypted with the existing keyring, so what lands in
 the store is ciphertext, and the key hashes everything except the org id.
 
-AUTH and TLS are now in code (CASA 6.7.1): `infra/modules/memorystore/main.tf`
-sets `auth_enabled` and `transit_encryption_mode = "SERVER_AUTHENTICATION"`,
-and both clients connect `rediss://` with the AUTH string and a pinned CA from
-Secret Manager. It is **not live until an operator applies it**, and that apply
-replaces the instance — [memorystore-auth-tls.md](docs/runbooks/memorystore-auth-tls.md).
+Auth and TLS are on (CASA 6.7.1). `infra/modules/memorystore` is now
+Memorystore for Valkey with IAM auth and `SERVER_AUTHENTICATION`; both clients
+connect `rediss://` with a short-lived access token and a pinned CA from Secret
+Manager ([memorystore-valkey.md](docs/runbooks/memorystore-valkey.md)).
 
 What remains: `infra/main.tf` still points both the API's `REDIS_URL` and
-`oversla-sh`'s `VALKEY_URL` at the same `module.memorystore[0]`, and Memorystore
-has one AUTH string per instance, so the public URL shortener holds a
-credential that reads the API's keyspace. Splitting them needs either a second
-instance or Valkey ACL users (not offered on Memorystore for Redis).
+`oversla-sh`'s `VALKEY_URL` at the same `module.memorystore[0]`, and both
+services run as the same service account, so the public URL shortener holds an
+identity that reads the API's keyspace. IAM auth only knows user `default`, so
+splitting them needs either a second instance (with a second service account
+for the shortener) or Memorystore's token-auth ACL users, which are Preview.
 
 ---
 

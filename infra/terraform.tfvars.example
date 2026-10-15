@@ -34,7 +34,7 @@ enable_valkey = false
 enable_dns   = false
 
 # Valkey (if enabled)
-valkey_memory_size_gb = 1
+valkey_node_type = "SHARED_CORE_NANO"
 
 # Monitoring — set alert_email to enable the monitoring module (dashboards,
 # alerts, uptime checks, OTel sidecar). Leave empty to disable everything.

@@ -367,6 +367,19 @@ pub struct ConnectBundle {
     pub state: String,
     pub flow_id: String,
     pub expires_at: time::OffsetDateTime,
+    /// What the caller does once its user has clicked through. Nothing tells
+    /// an agent when the OAuth dance finishes, and the last word it saw is
+    /// `credentials_status: needs_authentication` — so without this it keeps
+    /// believing the service is unconnected.
+    pub next: &'static str,
+}
+
+impl ConnectBundle {
+    pub const NEXT: &'static str = "after your user finishes authorizing, confirm it with \
+        overslash_auth service_status (REST: GET /v1/services/{name}?include_inactive=true, \
+        since an instance awaiting setup is otherwise a 404) — \
+        `credentials_status: ok` means the service is ready to call. This response's \
+        `credentials_status` is from before the user authorized and will not update.";
 }
 
 /// Derived credential-health state for a service instance.

@@ -28,6 +28,12 @@ variable "enable_github_login" {
   description = "Provision the GitHub LOGIN OAuth App secrets (Sign-in with GitHub). Off by default; enable per-env via tfvars."
 }
 
+variable "oauth_service_providers" {
+  type        = list(string)
+  default     = ["google"]
+  description = "OAuth provider keys (as in services/*.yaml `provider:`) to provision a services OAuth client secret pair for."
+}
+
 # --- Database password ---
 
 resource "google_secret_manager_secret" "db_password" {
@@ -191,22 +197,26 @@ resource "google_secret_manager_secret_version" "github_auth_client_secret" {
   }
 }
 
-# --- Google SERVICES OAuth client (Calendar/Drive/Gmail, sensitive scopes).
-#     Overslash-managed default so the cloud instance is turnkey; orgs can
-#     override per-org via POST /v1/org/oauth-credentials/google. Feeds
-#     `OAUTH_GOOGLE_CLIENT_ID/_SECRET` — requires
-#     `OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS=1` on Cloud Run. ---
+# --- Services OAuth clients (one per provider in `oauth_service_providers`).
+#     Overslash-managed defaults so the cloud instance is turnkey; orgs can
+#     override per-org via POST /v1/org/oauth-credentials/{provider}. Each pair
+#     feeds `OAUTH_{PROVIDER}_CLIENT_ID/_SECRET` — read only when
+#     `OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS=1` is set on Cloud Run.
+#     Secret IDs are `{prefix}-{provider}-services-client-{id,secret}`, which
+#     keeps the original Google pair's names. ---
 
-resource "google_secret_manager_secret" "google_services_client_id" {
-  secret_id = "${var.base_prefix}-google-services-client-id"
+resource "google_secret_manager_secret" "oauth_service_client_id" {
+  for_each  = toset(var.oauth_service_providers)
+  secret_id = "${var.base_prefix}-${replace(each.key, "_", "-")}-services-client-id"
   project   = var.project_id
   replication {
     auto {}
   }
 }
 
-resource "google_secret_manager_secret_version" "google_services_client_id" {
-  secret      = google_secret_manager_secret.google_services_client_id.id
+resource "google_secret_manager_secret_version" "oauth_service_client_id" {
+  for_each    = toset(var.oauth_service_providers)
+  secret      = google_secret_manager_secret.oauth_service_client_id[each.key].id
   secret_data = "REPLACE_ME"
 
   lifecycle {
@@ -214,21 +224,43 @@ resource "google_secret_manager_secret_version" "google_services_client_id" {
   }
 }
 
-resource "google_secret_manager_secret" "google_services_client_secret" {
-  secret_id = "${var.base_prefix}-google-services-client-secret"
+resource "google_secret_manager_secret" "oauth_service_client_secret" {
+  for_each  = toset(var.oauth_service_providers)
+  secret_id = "${var.base_prefix}-${replace(each.key, "_", "-")}-services-client-secret"
   project   = var.project_id
   replication {
     auto {}
   }
 }
 
-resource "google_secret_manager_secret_version" "google_services_client_secret" {
-  secret      = google_secret_manager_secret.google_services_client_secret.id
+resource "google_secret_manager_secret_version" "oauth_service_client_secret" {
+  for_each    = toset(var.oauth_service_providers)
+  secret      = google_secret_manager_secret.oauth_service_client_secret[each.key].id
   secret_data = "REPLACE_ME"
 
   lifecycle {
     ignore_changes = [secret_data]
   }
+}
+
+moved {
+  from = google_secret_manager_secret.google_services_client_id
+  to   = google_secret_manager_secret.oauth_service_client_id["google"]
+}
+
+moved {
+  from = google_secret_manager_secret_version.google_services_client_id
+  to   = google_secret_manager_secret_version.oauth_service_client_id["google"]
+}
+
+moved {
+  from = google_secret_manager_secret.google_services_client_secret
+  to   = google_secret_manager_secret.oauth_service_client_secret["google"]
+}
+
+moved {
+  from = google_secret_manager_secret_version.google_services_client_secret
+  to   = google_secret_manager_secret_version.oauth_service_client_secret["google"]
 }
 
 # --- oversla.sh shortener API key. Clients (overslash-api) and the shortener
@@ -474,12 +506,14 @@ output "github_auth_client_secret_secret_id" {
   value = var.enable_github_login ? google_secret_manager_secret.github_auth_client_secret[0].secret_id : ""
 }
 
-output "google_services_client_id_secret_id" {
-  value = google_secret_manager_secret.google_services_client_id.secret_id
-}
-
-output "google_services_client_secret_secret_id" {
-  value = google_secret_manager_secret.google_services_client_secret.secret_id
+output "oauth_service_client_secret_ids" {
+  description = "Per-provider GSM secret IDs for the services OAuth clients: { provider => { client_id, client_secret } }."
+  value = {
+    for p in var.oauth_service_providers : p => {
+      client_id     = google_secret_manager_secret.oauth_service_client_id[p].secret_id
+      client_secret = google_secret_manager_secret.oauth_service_client_secret[p].secret_id
+    }
+  }
 }
 
 output "pagerduty_integration_key_secret_id" {

@@ -123,6 +123,17 @@ variable "enable_github_login" {
   default     = false
 }
 
+variable "oauth_service_providers" {
+  description = "OAuth provider keys (the `provider:` of services/*.yaml, e.g. google, notion, slack) that get an instance-wide services OAuth client. Each one provisions `{prefix}-{provider}-services-client-{id,secret}` in GSM and injects OAUTH_{PROVIDER}_CLIENT_ID/_SECRET into the API; the API only reads them when read_oauth_credentials_from_env is on. Populate each secret before the apply that adds the provider — until then Cloud Run would inject REPLACE_ME."
+  type        = list(string)
+  default     = ["google"]
+
+  validation {
+    condition     = alltrue([for p in var.oauth_service_providers : can(regex("^[a-z0-9_]+$", p))])
+    error_message = "oauth_service_providers entries must be lowercase provider keys ([a-z0-9_]+), matching services/*.yaml."
+  }
+}
+
 variable "rust_log" {
   description = "RUST_LOG value for the API container. Defaults to `info`; set to `debug` in dev for verbose logging."
   type        = string
@@ -192,7 +203,7 @@ variable "bi_viewers" {
 }
 
 variable "enable_valkey" {
-  description = "Enable Memorystore Valkey for webhooks/pub-sub"
+  description = "Provision Memorystore for Valkey (rate limiter, resolver and session caches, oversla.sh). Requires use_private_vpc."
   type        = bool
   default     = false
 }
@@ -287,18 +298,36 @@ variable "github_branch" {
   default     = "^master$"
 }
 
-# --- Redis ---
+# --- Valkey ---
 
-variable "valkey_memory_size_gb" {
-  description = "Redis instance memory size in GB"
-  type        = number
-  default     = 1
+variable "cache_instance_name" {
+  description = <<-EOT
+    Memorystore instance ID. Empty = "<base_prefix>-cache". Meant to be set
+    from the environment (TF_VAR_cache_instance_name), not a tfvars file, so a
+    one-off rename does not stick: a different name builds a second instance
+    next to the current one, moves Cloud Run over, then deletes the old one.
+    A -var-file value would win over the environment, so keep it out of env/.
+  EOT
+  type        = string
+  default     = ""
+}
+
+variable "valkey_engine_version" {
+  description = "Memorystore for Valkey engine version. Upgrades happen in place; downgrades are not possible."
+  type        = string
+  default     = "VALKEY_9_1"
+}
+
+variable "valkey_node_type" {
+  description = "Memorystore for Valkey node type. SHARED_CORE_NANO is 1.4 GB."
+  type        = string
+  default     = "SHARED_CORE_NANO"
 }
 
 # --- oversla.sh shortener ---
 
 variable "read_oauth_credentials_from_env" {
-  description = "Set OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS=1 on the API Cloud Run service (tier-4 env-var fallback for OAUTH_GOOGLE_* credentials). Enable in dev only."
+  description = "Set OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS=1 on the API Cloud Run service (tier-4 env-var fallback for the OAUTH_{PROVIDER}_* credentials of oauth_service_providers). On in dev and prod: it is how the instance-wide clients in oauth_service_providers reach the API. Orgs and users still override them via tiers 1-3."
   type        = bool
   default     = false
 }

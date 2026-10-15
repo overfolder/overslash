@@ -19,7 +19,7 @@ resource "google_project_service" "apis" {
     ] : [],
     var.enable_dns ? ["dns.googleapis.com"] : [],
     var.enable_api_lb ? ["certificatemanager.googleapis.com"] : [],
-    var.enable_valkey ? ["redis.googleapis.com"] : [],
+    var.enable_valkey ? ["memorystore.googleapis.com", "networkconnectivity.googleapis.com"] : [],
     var.enable_bi ? ["bigquery.googleapis.com", "bigqueryconnection.googleapis.com"] : [],
     # The directory service account's project must have the Admin SDK on, or
     # every Workspace read 403s with "Admin SDK API has not been used".
@@ -75,6 +75,8 @@ module "secret_manager" {
 
   enable_google_login = var.enable_google_login
   enable_github_login = var.enable_github_login
+
+  oauth_service_providers = var.oauth_service_providers
 
   enable_google_directory_sync = var.enable_google_directory_sync
 
@@ -171,15 +173,14 @@ module "cloud_run" {
   cloud_sql_connection_name = module.cloud_sql.connection_name
 
   # Secret references
-  db_password_secret_id                   = module.secret_manager.db_password_secret_id
-  encryption_key_secret_id                = module.secret_manager.encryption_key_secret_id
-  signing_key_secret_id                   = module.secret_manager.signing_key_secret_id
-  oauth_client_id_secret_id               = module.secret_manager.oauth_client_id_secret_id
-  oauth_client_secret_secret_id           = module.secret_manager.oauth_client_secret_secret_id
-  github_auth_client_id_secret_id         = module.secret_manager.github_auth_client_id_secret_id
-  github_auth_client_secret_secret_id     = module.secret_manager.github_auth_client_secret_secret_id
-  google_services_client_id_secret_id     = module.secret_manager.google_services_client_id_secret_id
-  google_services_client_secret_secret_id = module.secret_manager.google_services_client_secret_secret_id
+  db_password_secret_id               = module.secret_manager.db_password_secret_id
+  encryption_key_secret_id            = module.secret_manager.encryption_key_secret_id
+  signing_key_secret_id               = module.secret_manager.signing_key_secret_id
+  oauth_client_id_secret_id           = module.secret_manager.oauth_client_id_secret_id
+  oauth_client_secret_secret_id       = module.secret_manager.oauth_client_secret_secret_id
+  github_auth_client_id_secret_id     = module.secret_manager.github_auth_client_id_secret_id
+  github_auth_client_secret_secret_id = module.secret_manager.github_auth_client_secret_secret_id
+  oauth_service_client_secret_ids     = module.secret_manager.oauth_service_client_secret_ids
 
   # Billing
   cloud_billing                   = var.cloud_billing
@@ -228,11 +229,11 @@ module "cloud_run" {
 
   google_directory_sa_key_secret_id = module.secret_manager.google_directory_sa_key_secret_id
 
-  redis_host = var.enable_valkey && var.use_private_vpc ? module.memorystore[0].redis_host : ""
-  redis_port = var.enable_valkey && var.use_private_vpc ? module.memorystore[0].redis_port : ""
+  redis_host = var.enable_valkey && var.use_private_vpc ? module.memorystore[0].host : ""
+  redis_port = var.enable_valkey && var.use_private_vpc ? module.memorystore[0].port : ""
 
-  redis_auth_secret_id    = var.enable_valkey && var.use_private_vpc ? module.memorystore[0].auth_secret_id : ""
   redis_ca_cert_secret_id = var.enable_valkey && var.use_private_vpc ? module.memorystore[0].server_ca_secret_id : ""
+  redis_iam_auth          = var.enable_valkey && var.use_private_vpc
 
   enable_metrics_sidecar = var.enable_metrics_sidecar
   rust_log               = var.rust_log
@@ -462,7 +463,7 @@ module "dns" {
   depends_on = [google_project_service.apis]
 }
 
-# --- Memorystore Redis (optional) ---
+# --- Memorystore for Valkey (optional) ---
 module "memorystore" {
   count = var.enable_valkey && var.use_private_vpc ? 1 : 0
 
@@ -471,8 +472,13 @@ module "memorystore" {
   region      = var.region
   base_prefix = local.base_prefix
 
-  memory_size_gb     = var.valkey_memory_size_gb
-  authorized_network = module.networking[0].vpc_id
+  instance_name  = coalesce(var.cache_instance_name, "${local.base_prefix}-cache")
+  engine_version = var.valkey_engine_version
+  node_type      = var.valkey_node_type
+  network_id     = module.networking[0].vpc_id
+  subnet_id      = module.networking[0].subnet_id
+
+  client_service_account_email = module.iam.cloud_run_sa_email
 
   depends_on = [google_project_service.apis]
 }
@@ -499,10 +505,9 @@ module "cloud_run_shortener" {
 
   api_key_secret_id = module.secret_manager.shortener_api_key_secret_id
 
-  valkey_host = var.enable_valkey && var.use_private_vpc ? module.memorystore[0].redis_host : ""
-  valkey_port = var.enable_valkey && var.use_private_vpc ? module.memorystore[0].redis_port : ""
+  valkey_host = var.enable_valkey && var.use_private_vpc ? module.memorystore[0].host : ""
+  valkey_port = var.enable_valkey && var.use_private_vpc ? module.memorystore[0].port : ""
 
-  valkey_auth_secret_id    = var.enable_valkey && var.use_private_vpc ? module.memorystore[0].auth_secret_id : ""
   valkey_ca_cert_secret_id = var.enable_valkey && var.use_private_vpc ? module.memorystore[0].server_ca_secret_id : ""
 
   base_url          = var.shortener_base_url

@@ -176,11 +176,13 @@ pub fn disabled() -> Arc<dyn SessionCache> {
 
 /// A Valkey-backed cache, or why not.
 pub async fn redis(url: &str) -> Result<Arc<dyn SessionCache>, redis::RedisError> {
-    from_client(redis::Client::open(url)?).await
+    from_client(overslash_valkey::Valkey::open(url)?).await
 }
 
-async fn from_client(client: redis::Client) -> Result<Arc<dyn SessionCache>, redis::RedisError> {
-    let conn = client.get_connection_manager().await?;
+async fn from_client(
+    client: overslash_valkey::Valkey,
+) -> Result<Arc<dyn SessionCache>, redis::RedisError> {
+    let conn = client.connection_manager().await?;
     Ok(Arc::new(RedisSessionCache { conn }))
 }
 

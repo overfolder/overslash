@@ -18,7 +18,7 @@ async fn main() -> anyhow::Result<()> {
     let config = Config::from_env()?;
     let storage = Storage::connect_with(
         &config.valkey_url,
-        config.valkey_password.as_deref(),
+        &config.valkey_auth,
         config.valkey_ca_cert.as_deref(),
     )
     .await?;

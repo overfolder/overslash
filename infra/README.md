@@ -8,7 +8,7 @@ OpenTofu (Terraform-compatible) configuration to deploy Overslash to Google Clou
 Internet -> Cloud Run (overslash-{env}-api)
                 |-- Cloud SQL Auth Proxy -> Cloud SQL (overslash-{env}-db)
                 |-- Secret Manager (overslash-{env}-*)
-                '-- Memorystore Valkey (optional, overslash-{env}-valkey)
+                '-- Memorystore for Valkey (optional, overslash-{env}-cache, via PSC)
 
 Cloud Build (overslash-{env}-deploy) -> Artifact Registry -> Cloud Run
 Cloud Scheduler (optional) -> stops/starts Cloud SQL on cron
@@ -83,9 +83,28 @@ echo -n "your-services-client-secret" | gcloud secrets versions add overslash-pr
 ```
 
 Cloud Run reads the services client as `OAUTH_GOOGLE_CLIENT_ID/_SECRET` via
-the env-var tier of the OAuth cascade (`OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS=1`
-is set by Terraform). Any org can override with its own client by calling
+the env-var tier of the OAuth cascade. That tier is only active when
+`read_oauth_credentials_from_env = true` (sets
+`OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS=1`; on in dev and prod).
+Any org can override with its own client by calling
 `POST /v1/org/oauth-credentials/google` from the dashboard.
+
+**Other services providers** (Notion, Slack, Microsoft, …): list the provider
+keys (the `provider:` of `services/*.yaml`) in `oauth_service_providers`
+(default `["google"]`). Each one gets the same secret pair,
+`overslash-<env>-<provider>-services-client-{id,secret}`, injected as
+`OAUTH_<PROVIDER>_CLIENT_ID/_SECRET`. The redirect URI is the same for every
+provider: `https://<your-host>/v1/oauth/callback`, where `<your-host>` is the
+API's `PUBLIC_URL`. Create and populate the secrets before the apply that
+injects them, or Cloud Run starts with `REPLACE_ME` values:
+
+```bash
+make tofu-plan ENV=prod   # with "notion" added to oauth_service_providers
+cd infra && tofu apply -target='module.secret_manager' -var-file=env/prod.tfvars
+echo -n "your-notion-client-id"     | gcloud secrets versions add overslash-prod-notion-services-client-id     --data-file=-
+echo -n "your-notion-client-secret" | gcloud secrets versions add overslash-prod-notion-services-client-secret --data-file=-
+make tofu-plan ENV=prod && make tofu-apply ENV=prod
+```
 
 **GitHub login client** (Sign-in with GitHub, `read:user user:email`):
 
@@ -131,7 +150,7 @@ the GitHub button on `/auth/providers` only once both are populated.
 | `cloud-build` | GitHub push trigger: build -> push -> deploy |
 | `infra-scheduler` | (Optional) Stop/start Cloud SQL on cron (Europe/Madrid) |
 | `dns` | (Optional) Cloud DNS managed zone |
-| `memorystore` | (Optional) Valkey via Memorystore, AUTH + TLS on; AUTH string and server CA published to Secret Manager — applying it **replaces** the instance, see [docs/runbooks/memorystore-auth-tls.md](../docs/runbooks/memorystore-auth-tls.md) |
+| `memorystore` | (Optional) Memorystore for Valkey 9.1 over Private Service Connect, IAM auth + TLS on; the Cloud Run SA gets `memorystore.dbConnectionUser` on the instance and the server CA is published to Secret Manager. `TF_VAR_cache_instance_name` swaps instances without downtime. See [docs/runbooks/memorystore-valkey.md](../docs/runbooks/memorystore-valkey.md) |
 | `cloud-run-shortener` | (Optional) oversla.sh URL shortener |
 | `cloud-run-overfwd` | (Optional) Shared overfwd Mailbox Gateway behind `services/email.yaml` — see [docs/runbooks/mailbox-gateway.md](../docs/runbooks/mailbox-gateway.md) |
 | `audit-logging` | Data Access audit logs, a retained (and in prod **locked**) audit log bucket + sink, and an alert on unexpected secret reads — see [Audit logging](#audit-logging-casa-671) |

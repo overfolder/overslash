@@ -155,7 +155,12 @@ upstream_error_alert_enabled = false
 # Runbook: docs/runbooks/data-integrity.md.
 integrity_alert_enabled = true
 
-read_oauth_credentials_from_env = false
+# Instance-wide services OAuth clients, one GSM secret pair per provider
+# (`<prefix>-<provider>-services-client-{id,secret}`). Populate a new
+# provider's secrets before the apply that injects them — see infra/README.md.
+oauth_service_providers = ["google", "notion", "slack", "github", "hubspot"]
+
+read_oauth_credentials_from_env = true
 
 # Async (non-blocking) action calls. Off until validated on dev.
 enable_async_execution = false
