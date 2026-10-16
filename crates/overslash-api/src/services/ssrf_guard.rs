@@ -413,6 +413,23 @@ where
     })
 }
 
+/// `Overslash/<version>` — the `User-Agent` every outbound client sends when
+/// the request carries none of its own. reqwest sends no `User-Agent` at all
+/// by default, and some upstreams (GitHub) refuse a request without one.
+///
+/// It is a client *default*: a `User-Agent` set on the request itself — a
+/// Mode A header, a template's, or the inline caller's forwarded one (see
+/// `extractors::CallerUserAgent`) — replaces it rather than doubling it.
+pub fn default_user_agent() -> &'static str {
+    static UA: OnceLock<String> = OnceLock::new();
+    UA.get_or_init(|| {
+        format!(
+            "Overslash/{}",
+            overslash_core::build_info::build_info().version
+        )
+    })
+}
+
 /// A client that can only ever dial `v.ip`, and will not follow a redirect
 /// away from it.
 fn pinned_client(
@@ -421,6 +438,7 @@ fn pinned_client(
     total_timeout: Option<Duration>,
 ) -> Result<reqwest::Client, AppError> {
     let mut builder = reqwest::Client::builder()
+        .user_agent(default_user_agent())
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(connect_timeout)
         .resolve(&v.host, SocketAddr::new(v.ip, v.port));

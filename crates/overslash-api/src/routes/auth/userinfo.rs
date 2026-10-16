@@ -176,7 +176,6 @@ async fn fetch_github_userinfo(
     let user: GitHubUser = http_client
         .get("https://api.github.com/user")
         .bearer_auth(access_token)
-        .header("User-Agent", "Overslash")
         .header("Accept", "application/vnd.github+json")
         .send()
         .await?
@@ -188,7 +187,6 @@ async fn fetch_github_userinfo(
     let emails: Vec<GitHubEmail> = http_client
         .get("https://api.github.com/user/emails")
         .bearer_auth(access_token)
-        .header("User-Agent", "Overslash")
         .header("Accept", "application/vnd.github+json")
         .send()
         .await?

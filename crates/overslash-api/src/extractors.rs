@@ -88,6 +88,58 @@ impl FromRequestParts<AppState> for CallerTransport {
     }
 }
 
+/// The inline caller's own `User-Agent`, forwarded upstream ahead of ours as
+/// `<caller> Overslash/<version>` (RFC 9110 §10.1.5: product tokens, most
+/// significant first). `POST /mcp` carries its client's value onto the
+/// loopback, so an MCP tool call forwards the MCP client's.
+///
+/// `None` when the header is absent, empty or not visible ASCII, and when it
+/// is our own [`default_user_agent`] — an MCP client that sent none still
+/// reaches here through a loopback client stamping ours, and forwarding that
+/// would read `Overslash/x Overslash/x`. Capped at [`CallerUserAgent::MAX_LEN`]
+/// so a caller cannot use us to send an upstream an arbitrarily long header.
+///
+/// [`default_user_agent`]: crate::services::ssrf_guard::default_user_agent
+#[derive(Debug, Clone, Default)]
+pub struct CallerUserAgent(pub Option<String>);
+
+impl CallerUserAgent {
+    pub const MAX_LEN: usize = 512;
+
+    pub fn from_headers(headers: &axum::http::HeaderMap) -> Self {
+        let ua = headers
+            .get(axum::http::header::USER_AGENT)
+            .and_then(|v| v.to_str().ok())
+            .map(str::trim)
+            .filter(|v| !v.is_empty() && *v != crate::services::ssrf_guard::default_user_agent())
+            .map(|v| {
+                v[..v.floor_char_boundary(Self::MAX_LEN)]
+                    .trim_end()
+                    .to_owned()
+            });
+        Self(ua)
+    }
+
+    /// The value to send upstream: the caller's token(s) followed by ours, or
+    /// `None` to leave the client default (`Overslash/<version>`) in place.
+    pub fn upstream_value(&self) -> Option<String> {
+        self.0
+            .as_ref()
+            .map(|ua| format!("{ua} {}", crate::services::ssrf_guard::default_user_agent()))
+    }
+}
+
+impl<S: Send + Sync> FromRequestParts<S> for CallerUserAgent {
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        _state: &S,
+    ) -> std::result::Result<Self, Self::Rejection> {
+        Ok(Self::from_headers(&parts.headers))
+    }
+}
+
 /// The client's IP address. On `POST /mcp`'s own loopback, the client that
 /// request resolved (`services::loopback`). Otherwise resolved against the
 /// configured trusted proxies (`Config::trusted_proxies`): the address a

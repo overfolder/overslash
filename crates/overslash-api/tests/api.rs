@@ -190,6 +190,7 @@ mod trial;
 mod uploads;
 mod upstream_credential_echo;
 mod upstream_metrics;
+mod user_agent_forwarding;
 mod user_sessions;
 mod version;
 mod wait_mode;
