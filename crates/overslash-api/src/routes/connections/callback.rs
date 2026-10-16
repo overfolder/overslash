@@ -1,6 +1,7 @@
 //! `GET /v1/oauth/callback` — the OAuth redirect landing endpoint, its
 //! JSON/redirect response shapes and the token-exchange inner routine.
 
+use super::callback_page::{Failure, error_page, success_page, wants_html};
 use super::*;
 
 #[derive(Deserialize)]
@@ -28,13 +29,16 @@ fn provider_error_code(raw: &str) -> &str {
 }
 
 /// Successful-path payload of [`oauth_callback`]. Wrapped here so the
-/// outer handler can decide between returning JSON (the legacy default)
-/// and a 303 redirect to a tenant-supplied `return_url`. Field shape is identical
-/// to the historical `Json(serde_json::json!{...})` body so existing
-/// callers keep working without an opt-in.
+/// outer handler can decide between a 303 redirect to a tenant-supplied
+/// `return_url`, the "you're connected" page for a browser, and JSON (the
+/// legacy default for HTTP clients). The JSON field shape is identical to the
+/// historical `Json(serde_json::json!{...})` body so existing callers keep
+/// working without an opt-in.
 struct CallbackSuccess {
     connection_id: Uuid,
     provider_key: String,
+    /// The provider's human name, for the browser page only.
+    provider_display_name: String,
     account_email: Option<String>,
     scopes: Vec<String>,
     /// When `POST /v1/services` orchestrated this flow AND the callback
@@ -71,20 +75,34 @@ pub(super) async fn oauth_callback(
     State(state): State<AppState>,
     ReqExt(ext): ReqExt,
     ip: ClientIp,
+    headers: HeaderMap,
     Query(params): Query<OAuthCallbackParams>,
 ) -> Response {
+    // A browser landing here with no `return_url` to go to gets a page, not
+    // the JSON body HTTP clients get.
+    let html = wants_html(&headers);
+
     // `state` is the opaque base62 flow-row id. Every field the callback
     // needs (org/identity/provider/byoc/PKCE/actor/upgrade) is read from
     // the row — no other segments to parse, no cross-check to forge.
     let flow_id = params.state.trim();
+    let unknown_link = |msg: &str| {
+        if html {
+            error_page(
+                axum::http::StatusCode::BAD_REQUEST,
+                Failure::UnknownLink,
+                None,
+            )
+        } else {
+            AppError::BadRequest(msg.into()).into_response()
+        }
+    };
     if flow_id.is_empty() {
-        return AppError::BadRequest("missing state parameter".into()).into_response();
+        return unknown_link("missing state parameter");
     }
     let flow = match oauth_connection_flow::get_by_id(state.db(&ext), flow_id).await {
         Ok(Some(row)) => row,
-        Ok(None) => {
-            return AppError::BadRequest("invalid state parameter".into()).into_response();
-        }
+        Ok(None) => return unknown_link("invalid state parameter"),
         Err(e) => return AppError::from(e).into_response(),
     };
 
@@ -106,6 +124,10 @@ pub(super) async fn oauth_callback(
             let err = AppError::BadRequest(format!("authorization was not granted: {reason}"));
             return match redirect_target {
                 Some(redir) => error_redirect(redir, &err),
+                None if html => {
+                    let name = provider_display_name(&state, &ext, &flow.provider_key).await;
+                    error_page(err.status_code(), Failure::Provider(reason), Some(&name))
+                }
                 None => err.into_response(),
             };
         }
@@ -160,9 +182,36 @@ pub(super) async fn oauth_callback(
 
     match (outcome, redirect_target) {
         (Ok(payload), Some(redir)) => success_redirect(redir, &payload),
+        (Ok(payload), None) if html => success_page(
+            &payload.provider_display_name,
+            payload.account_email.as_deref(),
+            payload.service_instance_bind_error.is_some(),
+            &state.config.dashboard_url_for("/connections"),
+        ),
         (Ok(payload), None) => Json(callback_success_json(&payload)).into_response(),
         (Err(err), Some(redir)) => error_redirect(redir, &err),
+        (Err(err), None) if html => {
+            let name = provider_display_name(&state, &ext, &flow.provider_key).await;
+            error_page(
+                err.status_code(),
+                Failure::Exchange(redirect_reason_token(&err)),
+                Some(&name),
+            )
+        }
         (Err(err), None) => err.into_response(),
+    }
+}
+
+/// The provider's display name for the browser pages, falling back to its
+/// key when the row can't be read (deleted provider, DB hiccup).
+async fn provider_display_name(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    provider_key: &str,
+) -> String {
+    match overslash_db::repos::oauth_provider::get_by_key(state.db(ext), provider_key).await {
+        Ok(Some(p)) => p.display_name,
+        _ => provider_key.to_string(),
     }
 }
 
@@ -579,6 +628,7 @@ async fn oauth_callback_inner(
     Ok(CallbackSuccess {
         connection_id,
         provider_key: provider_key.to_string(),
+        provider_display_name: provider.display_name,
         account_email: account.email,
         scopes: granted_scopes,
         // Back-compat: surface the first bound id in the singular field the
