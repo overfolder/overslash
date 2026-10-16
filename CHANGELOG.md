@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.22.0](https://github.com/overfolder/overslash/compare/v0.21.1...v0.22.0) (2026-10-16)
+
+
+### Features
+
+* **api:** friendly "you're connected" page at the end of OAuth ([#795](https://github.com/overfolder/overslash/issues/795)) ([055c20e](https://github.com/overfolder/overslash/commit/055c20ee7023fca6e74815a21e3d9816de35fc4e))
+* **oversla-sh:** only redirect to Overslash domains ([#792](https://github.com/overfolder/overslash/issues/792)) ([e95c6f5](https://github.com/overfolder/overslash/commit/e95c6f5ccf19168aabd5cebcd5c0651d892ab80d))
+
+
+### Bug Fixes
+
+* **api:** always send a User-Agent upstream ([#793](https://github.com/overfolder/overslash/issues/793)) ([71239df](https://github.com/overfolder/overslash/commit/71239dfd6daf4258d927caf6ad63c04242006414))
+
 ## [0.21.1](https://github.com/overfolder/overslash/compare/v0.21.0...v0.21.1) (2026-10-15)
 
 
