@@ -237,6 +237,7 @@ async fn post_mcp(
     let bearer = token.map(|token| Bearer {
         token,
         client_ip: client_ip.clone(),
+        user_agent: crate::extractors::CallerUserAgent::from_headers(&headers).0,
     });
 
     // Per Streamable HTTP, clients echo the `Mcp-Session-Id` they received
@@ -493,11 +494,14 @@ impl ForwardOutcome {
 
 /// The credential `POST /mcp` forwards with, and the client address it
 /// resolved for the caller — carried onto the loopback so the REST side
-/// audits and throttles the real client, not this process.
+/// audits and throttles the real client, not this process. Its `User-Agent`
+/// rides along for the same reason: an upstream sees the MCP client's, not ours
+/// twice (`extractors::CallerUserAgent`).
 #[derive(Clone, Debug)]
 pub(super) struct Bearer {
     pub(super) token: String,
     pub(super) client_ip: Option<String>,
+    pub(super) user_agent: Option<String>,
 }
 
 async fn forward(
@@ -518,6 +522,10 @@ async fn forward(
         .request(method, &url)
         .header(crate::extractors::TRANSPORT_HEADER, "mcp")
         .bearer_auth(&bearer.token);
+    let req = match &bearer.user_agent {
+        Some(ua) => req.header(axum::http::header::USER_AGENT, ua),
+        None => req,
+    };
     let mut req = state
         .config
         .loopback

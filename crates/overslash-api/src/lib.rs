@@ -203,7 +203,10 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
     // hears about it before it wonders why nothing happened.
     services::ssrf_guard::log_egress_configuration();
 
-    let http_client = reqwest::Client::new();
+    let http_client = reqwest::Client::builder()
+        .user_agent(services::ssrf_guard::default_user_agent())
+        .build()
+        .expect("default reqwest client builds");
     let mailer = services::email::build_mailer(&config, http_client.clone());
 
     let event_bus = services::events::EventBus::new();

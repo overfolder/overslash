@@ -13,7 +13,7 @@ use overslash_db::scopes::OrgScope;
 use crate::{
     AppState,
     error::AppError,
-    extractors::{AuthContext, CallerTransport, ClientIp, ReqExt},
+    extractors::{AuthContext, CallerTransport, CallerUserAgent, ClientIp, ReqExt},
     services::{
         audit_capture::{self, AuditResponseBodyMode},
         call_timeout, credential_scrub, group_ceiling, http_caller,
@@ -51,6 +51,7 @@ pub(super) async fn call_action_impl(
     scope: OrgScope,
     ip: ClientIp,
     transport: CallerTransport,
+    caller_ua: CallerUserAgent,
     Json(mut req): Json<CallRequest>,
 ) -> Result<Response, AppError> {
     // Reject filter + streaming up front — silently dropping the filter
@@ -679,6 +680,15 @@ pub(super) async fn call_action_impl(
     // the token and the outgoing request meet.
     if let Some(ah) = &auth_header {
         resolved_headers.insert(ah.name.clone(), ah.value.clone());
+    }
+    // The inline caller's User-Agent, ahead of ours. One already on the request
+    // (a Mode A header, a template's) is deliberate and stays as it is.
+    if let Some(ua) = caller_ua.upstream_value()
+        && !resolved_headers
+            .keys()
+            .any(|k| k.eq_ignore_ascii_case("user-agent"))
+    {
+        resolved_headers.insert("User-Agent".into(), ua);
     }
     let resolved_url = state.config.apply_base_overrides(&resolved_url);
     // Staged uploads meet the body here, as credentials meet the headers above.
