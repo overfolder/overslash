@@ -4,6 +4,9 @@ pub mod error;
 pub mod routes;
 pub mod slug;
 pub mod storage;
+pub mod target;
+
+use std::sync::Arc;
 
 use axum::Router;
 use tower_http::trace::TraceLayer;
@@ -20,6 +23,7 @@ pub struct AppState {
     pub min_ttl_secs: u64,
     pub max_ttl_secs: u64,
     pub root_redirect_url: Option<String>,
+    pub allowed_domains: Arc<[String]>,
 }
 
 impl AppState {
@@ -31,6 +35,7 @@ impl AppState {
             min_ttl_secs: config.min_ttl_secs,
             max_ttl_secs: config.max_ttl_secs,
             root_redirect_url: config.root_redirect_url.clone(),
+            allowed_domains: config.allowed_domains.clone().into(),
         }
     }
 }

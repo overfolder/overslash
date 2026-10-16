@@ -98,6 +98,12 @@ variable "root_redirect_url" {
   default     = ""
 }
 
+variable "allowed_redirect_domains" {
+  type        = string
+  description = "Comma-separated domains a short link may point at (each plus its subdomains). Empty = the binary's default, overslash.com."
+  default     = ""
+}
+
 variable "domain" {
   type    = string
   default = ""
@@ -129,6 +135,7 @@ locals {
       RUST_LOG     = "info,oversla_sh=info"
     },
     var.root_redirect_url != "" ? { ROOT_REDIRECT_URL = var.root_redirect_url } : {},
+    var.allowed_redirect_domains != "" ? { ALLOWED_REDIRECT_DOMAINS = var.allowed_redirect_domains } : {},
   )
 
   env_secrets = {

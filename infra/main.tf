@@ -514,6 +514,8 @@ module "cloud_run_shortener" {
   domain            = var.shortener_domain
   root_redirect_url = var.shortener_root_redirect_url
 
+  allowed_redirect_domains = var.shortener_allowed_redirect_domains
+
   depends_on = [
     module.memorystore,
     module.secret_manager,
