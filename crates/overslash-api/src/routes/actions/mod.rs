@@ -38,7 +38,7 @@ use overslash_db::scopes::OrgScope;
 use crate::{
     AppState,
     error::AppError,
-    extractors::{AuthContext, CallerTransport, ClientIp, ReqExt},
+    extractors::{AuthContext, CallerTransport, CallerUserAgent, ClientIp, ReqExt},
     services::{disclosure, events::EventType, response_filter::ResponseFilter},
 };
 use overslash_core::{
@@ -284,6 +284,7 @@ async fn call_action(
     scope: OrgScope,
     ip: ClientIp,
     transport: CallerTransport,
+    caller_ua: CallerUserAgent,
     Query(q): Query<CallQuery>,
     Json(req): Json<CallRequest>,
 ) -> Result<Response, AppError> {
@@ -334,6 +335,7 @@ async fn call_action(
         scope,
         ip,
         transport,
+        caller_ua,
         Json(req),
     )
     .await;

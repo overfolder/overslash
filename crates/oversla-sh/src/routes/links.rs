@@ -13,6 +13,7 @@ use crate::{
     AppState,
     auth::ApiKey,
     error::{AppError, Result},
+    target,
 };
 
 pub fn router() -> Router<AppState> {
@@ -49,17 +50,12 @@ async fn create(
         });
     }
 
-    // Validate URL: must parse and must be http/https. Don't log the value —
-    // approval URLs carry tokens.
+    // Validate URL: must parse and must land on an allowed domain (see
+    // `crate::target`). Don't log the value — approval URLs carry tokens.
     let parsed =
         Url::parse(&req.url).map_err(|e| AppError::BadRequest(format!("invalid url: {e}")))?;
-    match parsed.scheme() {
-        "http" | "https" => {}
-        other => {
-            return Err(AppError::BadRequest(format!(
-                "unsupported scheme: {other} (only http/https)"
-            )));
-        }
+    if !target::is_allowed(&parsed, &state.allowed_domains) {
+        return Err(AppError::DisallowedTarget(state.allowed_domains.join(", ")));
     }
 
     let slug = state.storage.put(&req.url, req.ttl_seconds).await?;
@@ -97,15 +93,21 @@ async fn root(State(state): State<AppState>) -> Result<Response> {
 }
 
 async fn redirect(State(state): State<AppState>, Path(slug): Path<String>) -> Result<Response> {
-    match state.storage.get(&slug).await? {
-        Some(target) => Ok((
-            StatusCode::FOUND,
-            [(header::LOCATION, target)],
-            // Cache-Control: prevent intermediaries from caching a short link
-            // whose TTL can be as low as MIN_TTL_SECS.
-            [(header::CACHE_CONTROL, "no-store, max-age=0")],
-        )
-            .into_response()),
-        None => Err(AppError::NotFound),
+    let Some(stored) = state.storage.get(&slug).await? else {
+        return Err(AppError::NotFound);
+    };
+    // Re-check on read: links minted before the allow-list existed, or before
+    // it was narrowed, must not keep redirecting off-domain.
+    if !Url::parse(&stored).is_ok_and(|u| target::is_allowed(&u, &state.allowed_domains)) {
+        tracing::warn!(slug = %slug, "stored target outside allowed domains");
+        return Err(AppError::NotFound);
     }
+    Ok((
+        StatusCode::FOUND,
+        [(header::LOCATION, stored)],
+        // Cache-Control: prevent intermediaries from caching a short link
+        // whose TTL can be as low as MIN_TTL_SECS.
+        [(header::CACHE_CONTROL, "no-store, max-age=0")],
+    )
+        .into_response())
 }

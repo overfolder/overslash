@@ -386,6 +386,12 @@ variable "shortener_root_redirect_url" {
   default     = ""
 }
 
+variable "shortener_allowed_redirect_domains" {
+  description = "Comma-separated domains a short link may point at (each plus its subdomains). Empty = the binary's default, overslash.com."
+  type        = string
+  default     = ""
+}
+
 # --- overfwd (shared Mailbox Gateway) ---
 
 variable "enable_overfwd" {

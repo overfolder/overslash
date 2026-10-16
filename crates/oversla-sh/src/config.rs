@@ -16,6 +16,10 @@ pub struct Config {
     /// oversla.sh send curious visitors to the marketing site without
     /// baking any brand in the code.
     pub root_redirect_url: Option<String>,
+    /// Hosts a short link may point at: each entry and its subdomains
+    /// (`ALLOWED_REDIRECT_DOMAINS`, comma-separated; default `overslash.com`).
+    /// See `crate::target`.
+    pub allowed_domains: Vec<String>,
 }
 
 impl Config {
@@ -45,7 +49,36 @@ impl Config {
             );
         }
 
+        // Defaulted rather than required: infra is applied by hand, so a
+        // required var would crash-loop the next image before the tfvars land.
+        let mut allowed_domains = Vec::new();
+        if let Some(raw) = overslash_env::optional("ALLOWED_REDIRECT_DOMAINS") {
+            for entry in raw.split(',') {
+                match crate::target::parse_domain(entry) {
+                    Ok(Some(d)) => allowed_domains.push(d),
+                    Ok(None) => {}
+                    Err(e) => anyhow::bail!("invalid ALLOWED_REDIRECT_DOMAINS: {e}"),
+                }
+            }
+        }
+        if allowed_domains.is_empty() {
+            allowed_domains = crate::target::DEFAULT_ALLOWED_DOMAINS
+                .iter()
+                .map(|d| d.to_string())
+                .collect();
+        }
+
         let root_redirect_url = overslash_env::optional("ROOT_REDIRECT_URL");
+        if let Some(root) = &root_redirect_url {
+            let ok = url::Url::parse(root)
+                .is_ok_and(|u| crate::target::is_allowed(&u, &allowed_domains));
+            if !ok {
+                anyhow::bail!(
+                    "ROOT_REDIRECT_URL must be an https URL on one of ALLOWED_REDIRECT_DOMAINS ({})",
+                    allowed_domains.join(", ")
+                );
+            }
+        }
 
         Ok(Self {
             host,
@@ -58,6 +91,7 @@ impl Config {
             min_ttl_secs,
             max_ttl_secs,
             root_redirect_url,
+            allowed_domains,
         })
     }
 }
@@ -83,6 +117,7 @@ mod tests {
         "MIN_TTL_SECS",
         "MAX_TTL_SECS",
         "ROOT_REDIRECT_URL",
+        "ALLOWED_REDIRECT_DOMAINS",
     ];
 
     /// Clear the slate, apply `overrides`, build a config, then restore and
@@ -185,6 +220,42 @@ mod tests {
             cfg.root_redirect_url, None,
             "empty must not become Some(\"\")"
         );
+    }
+
+    #[test]
+    fn allowed_domains_default_to_overslash() {
+        for raw in [None, Some(""), Some(" , ")] {
+            let overrides: Vec<_> = raw
+                .map(|v| ("ALLOWED_REDIRECT_DOMAINS", v))
+                .into_iter()
+                .collect();
+            let cfg = with_env(&overrides).expect("builds");
+            assert_eq!(cfg.allowed_domains, ["overslash.com"], "{raw:?}");
+        }
+    }
+
+    #[test]
+    fn allowed_domains_are_parsed_and_normalised() {
+        let cfg = with_env(&[("ALLOWED_REDIRECT_DOMAINS", " .Overslash.com , example.org,")])
+            .expect("builds");
+        assert_eq!(cfg.allowed_domains, ["overslash.com", "example.org"]);
+    }
+
+    #[test]
+    fn a_malformed_allowed_domain_is_rejected() {
+        let err = with_env(&[("ALLOWED_REDIRECT_DOMAINS", "*.overslash.com")])
+            .expect_err("must not boot");
+        assert!(
+            err.to_string().contains("ALLOWED_REDIRECT_DOMAINS"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_root_redirect_outside_the_allowed_domains_is_rejected() {
+        let err =
+            with_env(&[("ROOT_REDIRECT_URL", "https://example.com")]).expect_err("must not boot");
+        assert!(err.to_string().contains("ROOT_REDIRECT_URL"), "{err}");
     }
 
     #[test]

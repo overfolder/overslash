@@ -172,6 +172,8 @@ pub(crate) async fn run(
         scope,
         ip,
         transport,
+        // Overslash's own check, not the caller's call: our User-Agent alone.
+        crate::extractors::CallerUserAgent::default(),
         axum::Json(req),
     )
     .await;

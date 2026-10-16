@@ -21,6 +21,11 @@ pub enum AppError {
     #[error("ttl out of range (min={min}, max={max}, got={got})")]
     TtlOutOfRange { min: u64, max: u64, got: u64 },
 
+    /// The URL is not `https` on an allowed domain. Carries the allow-list,
+    /// never the URL — approval links carry tokens.
+    #[error("disallowed target (allowed: {0})")]
+    DisallowedTarget(String),
+
     #[error("storage unavailable")]
     StorageUnavailable(#[from] redis::RedisError),
 
@@ -38,6 +43,11 @@ impl IntoResponse for AppError {
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "ttl_out_of_range",
                 Some(format!("ttl_seconds must be in [{min}, {max}] (got {got})")),
+            ),
+            Self::DisallowedTarget(allowed) => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "disallowed_target",
+                Some(format!("url must be https on one of: {allowed}")),
             ),
             Self::StorageUnavailable(e) => {
                 // Don't leak Redis internals to the client, but log them server-side.

@@ -40,6 +40,7 @@ use crate::{
 use overslash_core::crypto;
 
 mod callback;
+mod callback_page;
 mod crud;
 mod gate;
 mod initiate;

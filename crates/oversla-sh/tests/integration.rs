@@ -46,6 +46,7 @@ async fn start() -> (SocketAddr, Client) {
         min_ttl_secs: 1, // relaxed for tests (production default: 60)
         max_ttl_secs: 3600,
         root_redirect_url: std::env::var("TEST_ROOT_REDIRECT_URL").ok(),
+        allowed_domains: vec!["overslash.com".into()],
     };
     let state = AppState::from_config(&config, storage);
     let app = create_app(state);
@@ -101,7 +102,7 @@ async fn create_and_redirect_roundtrip() {
     let resp = client
         .post(format!("http://{addr}/api/links"))
         .header(hdr_name, hdr_val)
-        .json(&json!({ "url": "https://example.com/roundtrip", "ttl_seconds": 60 }))
+        .json(&json!({ "url": "https://app.overslash.com/roundtrip", "ttl_seconds": 60 }))
         .send()
         .await
         .unwrap();
@@ -120,7 +121,7 @@ async fn create_and_redirect_roundtrip() {
     assert_eq!(resp.status(), StatusCode::FOUND);
     assert_eq!(
         resp.headers().get("location").unwrap(),
-        "https://example.com/roundtrip"
+        "https://app.overslash.com/roundtrip"
     );
     assert_eq!(
         resp.headers().get("cache-control").unwrap(),
@@ -136,7 +137,7 @@ async fn redirect_returns_404_after_ttl_expiry() {
     let resp = client
         .post(format!("http://{addr}/api/links"))
         .header(hdr_name, hdr_val)
-        .json(&json!({ "url": "https://example.com/ephemeral", "ttl_seconds": 1 }))
+        .json(&json!({ "url": "https://app.overslash.com/ephemeral", "ttl_seconds": 1 }))
         .send()
         .await
         .unwrap();
@@ -161,7 +162,7 @@ async fn missing_auth_is_401() {
     let (addr, client) = start().await;
     let resp = client
         .post(format!("http://{addr}/api/links"))
-        .json(&json!({ "url": "https://example.com", "ttl_seconds": 60 }))
+        .json(&json!({ "url": "https://app.overslash.com", "ttl_seconds": 60 }))
         .send()
         .await
         .unwrap();
@@ -174,7 +175,7 @@ async fn bad_api_key_is_401() {
     let resp = client
         .post(format!("http://{addr}/api/links"))
         .header("Authorization", "Bearer wrong-key")
-        .json(&json!({ "url": "https://example.com", "ttl_seconds": 60 }))
+        .json(&json!({ "url": "https://app.overslash.com", "ttl_seconds": 60 }))
         .send()
         .await
         .unwrap();
@@ -188,7 +189,7 @@ async fn ttl_below_min_is_422() {
     let resp = client
         .post(format!("http://{addr}/api/links"))
         .header(hdr_name, hdr_val)
-        .json(&json!({ "url": "https://example.com", "ttl_seconds": 0 }))
+        .json(&json!({ "url": "https://app.overslash.com", "ttl_seconds": 0 }))
         .send()
         .await
         .unwrap();
@@ -202,7 +203,7 @@ async fn ttl_above_max_is_422() {
     let resp = client
         .post(format!("http://{addr}/api/links"))
         .header(hdr_name, hdr_val)
-        .json(&json!({ "url": "https://example.com", "ttl_seconds": 1_000_000 }))
+        .json(&json!({ "url": "https://app.overslash.com", "ttl_seconds": 1_000_000 }))
         .send()
         .await
         .unwrap();
@@ -224,17 +225,77 @@ async fn invalid_url_is_400() {
 }
 
 #[tokio::test]
-async fn unsupported_scheme_is_400() {
+async fn targets_off_the_allowed_domains_are_422() {
     let (addr, client) = start().await;
     let (hdr_name, hdr_val) = auth_header();
+    for url in [
+        "ftp://app.overslash.com/file",
+        "http://app.overslash.com/x",
+        "https://example.com/x",
+        "https://evil-overslash.com/x",
+        "https://overslash.com.evil.net/x",
+        "https://app.overslash.com@evil.net/x",
+    ] {
+        let resp = client
+            .post(format!("http://{addr}/api/links"))
+            .header(hdr_name, hdr_val.clone())
+            .json(&json!({ "url": url, "ttl_seconds": 60 }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY, "{url}");
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["error"], "disallowed_target", "{url}");
+        assert!(
+            !body.to_string().contains("/x"),
+            "the rejected url must not be echoed: {body}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn subdomains_of_an_allowed_domain_round_trip() {
+    let (addr, client) = start().await;
+    let (hdr_name, hdr_val) = auth_header();
+    let target = "https://acme.api.dev.overslash.com/oauth/capture?state=s";
     let resp = client
         .post(format!("http://{addr}/api/links"))
         .header(hdr_name, hdr_val)
-        .json(&json!({ "url": "ftp://example.com/file", "ttl_seconds": 60 }))
+        .json(&json!({ "url": target, "ttl_seconds": 60 }))
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let slug = resp.json::<serde_json::Value>().await.unwrap()["slug"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let resp = client
+        .get(format!("http://{addr}/{slug}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FOUND);
+    assert_eq!(resp.headers().get("location").unwrap(), target);
+}
+
+#[tokio::test]
+async fn a_stored_off_domain_target_is_not_redirected() {
+    // A link minted before the allow-list existed (or before it narrowed)
+    // is still in Valkey; the redirect must refuse it rather than 302.
+    let (addr, client) = start().await;
+    let storage = Storage::connect(&valkey_url()).await.expect("valkey");
+    let slug = storage
+        .put("https://example.com/legacy", 60)
+        .await
+        .expect("put");
+    let resp = client
+        .get(format!("http://{addr}/{slug}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    assert!(resp.headers().get("location").is_none());
 }
 
 #[tokio::test]
@@ -289,6 +350,7 @@ async fn root_redirects_when_configured() {
         min_ttl_secs: 1,
         max_ttl_secs: 3600,
         root_redirect_url: Some("https://www.overslash.com".into()),
+        allowed_domains: vec!["overslash.com".into()],
     };
     let state = AppState::from_config(&config, storage);
     let app = create_app(state);
