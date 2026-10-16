@@ -52,12 +52,12 @@
     "human-in-the-loop"
   ],
   "devDependencies": {
-    "@types/node": "^26.6.4",
-    "happy-dom": "^20.14.5",
-    "playwright": "^1.63.0",
+    "@types/node": "^26.6.5",
+    "happy-dom": "^20.14.6",
+    "playwright": "^1.64.0",
     "tsup": "^8.5.0",
     "typescript": "^6.0.3",
-    "vite": "^8.3.3",
+    "vite": "^8.3.4",
     "vitest": "^5.0.3"
   },
   "overrides": {
