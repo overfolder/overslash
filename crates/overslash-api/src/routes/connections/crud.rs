@@ -2,37 +2,7 @@
 //! keep, scope upgrade and delete (plus the shared deletion side effects).
 
 use super::*;
-
-#[derive(Serialize)]
-pub(super) struct ConnectionSummary {
-    id: Uuid,
-    /// Owner identity of the connection. Connections are bound to the user
-    /// identity (D22), so this is the user who owns the linked account. The
-    /// dashboard resolves it to a name in the admin "all users" view.
-    owner_identity_id: Uuid,
-    provider_key: String,
-    account_email: Option<String>,
-    /// Provider-hosted avatar for the linked account, when the provider named
-    /// one at connect time. The dashboard hotlinks it beside the label and
-    /// falls back to initials when it is absent or the URL has rotted.
-    account_picture: Option<String>,
-    /// Scopes the provider actually granted at the last OAuth flow. The
-    /// dashboard renders these as chips and compares them to a template's
-    /// required scopes when deciding whether to offer the "upgrade" prompt.
-    scopes: Vec<String>,
-    /// Template keys of active service instances currently bound to this
-    /// connection. The dashboard's new-service wizard uses this to prefer a
-    /// connection that *isn't* already in use for the template being created.
-    used_by_service_templates: Vec<String>,
-    is_default: bool,
-    /// When true, this connection is preserved from the service-deletion
-    /// auto-cleanup — the dashboard renders it as a "kept" toggle.
-    keep: bool,
-    /// When true, the connection must be re-authorized before use (e.g. its
-    /// pinned BYOC client was replaced) — the dashboard renders a warning badge.
-    reauth_required: bool,
-    created_at: String,
-}
+use crate::services::platform_connections::{ConnectionSummary, summarize_connections};
 
 /// Query params for `GET /v1/connections`. Mirrors `ListServicesQuery`.
 #[derive(Deserialize, Default)]
@@ -90,32 +60,8 @@ pub(super) async fn list_connections(
     } else {
         scope.list_my_connections().await?
     };
-    let ids: Vec<Uuid> = rows.iter().map(|r| r.id).collect();
-    // Usage lookup is org-scoped; downgrade the UserScope to an OrgScope so
-    // the service_instances query doesn't need a user bound.
-    let usage_rows = scope.org().connection_usage_by_template(&ids).await?;
-    let mut usage: HashMap<Uuid, Vec<String>> = HashMap::new();
-    for (conn_id, tpl) in usage_rows {
-        usage.entry(conn_id).or_default().push(tpl);
-    }
-
-    Ok(Json(
-        rows.into_iter()
-            .map(|r| ConnectionSummary {
-                used_by_service_templates: usage.remove(&r.id).unwrap_or_default(),
-                id: r.id,
-                owner_identity_id: r.identity_id,
-                provider_key: r.provider_key,
-                account_email: r.account_email,
-                account_picture: r.account_picture,
-                scopes: r.scopes.unwrap_or_default(),
-                is_default: r.is_default,
-                keep: r.keep,
-                reauth_required: r.reauth_required,
-                created_at: fmt_time(r.created_at),
-            })
-            .collect(),
-    ))
+    // Usage lookup is org-scoped, so the summary takes the OrgScope.
+    Ok(Json(summarize_connections(&scope.org(), rows).await?))
 }
 
 /// A service instance bound to a connection, for the detail page's "Used by"
@@ -450,6 +396,7 @@ pub(super) async fn upgrade_connection_scopes(
         existing.identity_id,
         caller_identity_id,
         CreateConnectionInput {
+            service: None,
             provider: existing.provider_key.clone(),
             scopes: merged.clone(),
             // Pin the same BYOC credential the original connection used so

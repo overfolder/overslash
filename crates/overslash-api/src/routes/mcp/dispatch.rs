@@ -387,7 +387,7 @@ async fn dispatch_overslash_platform(
         // risk gate.
         "list_services" | "get_service" | "create_service" | "update_service"
         | "list_templates" | "get_template" | "create_template" | "import_template"
-        | "delete_template" | "create_connection" | "request_secret" => {
+        | "delete_template" | "create_connection" | "list_connections" | "request_secret" => {
             forward_overslash_action(state, bearer, action, params, require_risk, verbose).await
         }
         other => Err(format!(

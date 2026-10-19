@@ -271,20 +271,49 @@ platform_actions:
       delivery pitfalls catalogued in the Obsidian "MCP meets OAuth"
       writeup. The raw provider URL is intentionally not surfaced over MCP;
       REST callers can opt-in via `include_raw` for white-label
-      integrations. The actual connection row is minted in the OAuth
-      callback after the user clicks; poll `overslash_auth(action:
-      "service_status")` to see it land. A result carrying `url_elicitation`
-      means your client already showed the link — do not repeat it on your
-      own; follow the note's `next`. When it completed, it names the
-      connection and the services bound to it.
+      integrations.
+      To fix an existing service (missing scopes, expired or revoked
+      access), pass `service` (its name or id) instead of `provider`. If the
+      service already has a connection, that same connection is
+      re-authorized in place: the `scopes` you pass are added to the ones it
+      already has, its id does not change, and every service using it stays
+      bound. If it has none yet, the new connection is bound to the service
+      when the user finishes. `upgrade_connection_id` does the same for a
+      connection you name directly.
+      Without either, a NEW connection is created for the provider. It only
+      becomes the default if you have none for that provider yet, so a
+      service already using another connection keeps using it. Reconnecting
+      the same account usually updates its existing connection instead of
+      adding a second one, except on providers where one email spans several
+      workspaces or tenants (Slack, Microsoft, HubSpot, Notion).
+      The connection is written when the user completes the provider's
+      consent screen. Check the result with `list_connections` (scopes,
+      `updated_at`) or `overslash_auth(action: "service_status")`.
+      A result carrying `url_elicitation` means your client already showed
+      the link — do not repeat it on your own; follow the note's `next`.
+      When it completed, it names the connection and the services bound to
+      it.
     risk: write
     permission: manage_connections_own
     params:
-      provider: { type: string, required: true }
+      provider: { type: string, required: false }
+      service: { type: string, required: false }
+      upgrade_connection_id: { type: string, required: false }
       scopes: { type: array, required: false }
       byoc_credential_id: { type: string, required: false }
       on_behalf_of: { type: string, required: false }
       login_hint: { type: string, required: false }
+
+  list_connections:
+    description: >
+      List your OAuth connections (shared by every agent under your user):
+      id, provider_key, account_email, granted scopes, is_default,
+      reauth_required, the service templates bound to each, and updated_at,
+      which moves whenever a connection is re-authorized in place.
+    risk: read
+    permission: manage_connections_own
+    params:
+      provider: { type: string, required: false }
 
   request_secret:
     description: >

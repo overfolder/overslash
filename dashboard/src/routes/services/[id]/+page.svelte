@@ -52,7 +52,7 @@
 	import { resolveOwner, ownerLabel, ownerTitle } from '#lib/ownerLabel.ts';
 	import { probeRejected } from '#lib/public-request.ts';
 	import { failureKind } from '#lib/setup-outcome.ts';
-	import { connectViaPopup, PopupBlockedError } from '#lib/oauth-connect.ts';
+	import { connectViaPopup, OAuthFlowFailedError, PopupBlockedError } from '#lib/oauth-connect.ts';
 	import ServiceEndpointField from '#lib/components/services/ServiceEndpointField.svelte';
 	import MoreOptions from '#lib/components/services/MoreOptions.svelte';
 	import {
@@ -100,6 +100,7 @@
 	let secretsLoaded = false;
 	let saving = $state(false);
 	let connecting = $state(false);
+	let connectingAnother = $state(false);
 	let reconnectAbort: AbortController | null = null;
 	let resyncing = $state(false);
 	let resyncError = $state<string | null>(null);
@@ -152,13 +153,11 @@
 			editCredentials = seedCredentials(template, updated);
 
 			if (updated.connect?.auth_url) {
-				const before = new Set(connections.map((c) => c.id));
 				const controller = new AbortController();
 				try {
 					await connectViaPopup({
 						authUrl: updated.connect.auth_url,
-						provider: oauthProvider ?? '',
-						beforeIds: before,
+						flowId: updated.connect.flow_id,
 						signal: controller.signal,
 						onPoll: (rows) => (connections = rows)
 					});
@@ -487,6 +486,21 @@
 		const cid = svc?.connection_id;
 		return cid ? (connections.find((c) => c.id === cid) ?? null) : null;
 	});
+	// The connection calls through this service authenticate with: its pin,
+	// else (unless it opted out) the provider's default. Reconnect
+	// re-authorizes this one in place.
+	// Connections belong to the service's owner (D22): an admin viewing
+	// someone else's service can neither re-authorize their connection
+	// (`upgrade_scopes` is owner-only) nor bind one of their own to it.
+	const ownedByOther = $derived(
+		!!svc?.owner_identity_id && !!currentUserId && svc.owner_identity_id !== currentUserId
+	);
+	const reauthTarget = $derived.by(() => {
+		if (ownedByOther) return null;
+		if (currentConnection) return currentConnection;
+		if (!svc?.use_default_connection) return null;
+		return matchingConnections.find((c) => c.is_default) ?? null;
+	});
 
 	function connectionLabel(c: ConnectionSummary): string {
 		if (c.account_email) return c.account_email;
@@ -706,63 +720,71 @@
 		}
 	}
 
-	async function reconnect() {
-		if (!oauthProvider) return;
+	/**
+	 * Re-authorize the connection this service uses, in place: the row keeps
+	 * its id, so this binding and every other service on it survive, and the
+	 * template's scopes are added to what it already has. With no connection
+	 * yet, connect one instead and let the callback bind it here.
+	 */
+	function reconnect() {
+		return runConnect(reauthTarget, false);
+	}
+
+	/** Link a different account and bind it to this service. */
+	function connectAnother() {
+		return runConnect(null, true);
+	}
+
+	async function runConnect(target: ConnectionSummary | null, another: boolean) {
+		if (!oauthProvider || !svc) return;
+		if (ownedByOther) {
+			error = 'Only the owner of this service can connect or reconnect it.';
+			return;
+		}
 		// Cancel any prior in-flight polling loop.
 		reconnectAbort?.abort();
 		const ctrl = new AbortController();
 		reconnectAbort = ctrl;
 		connecting = true;
+		connectingAnother = another;
 		error = null;
 		try {
-			const beforeIds = new Set(connections.map((c) => c.id));
-			const resp = await initiateOAuth(
-				{ provider: oauthProvider, scopes: oauthScopes },
-				ctrl.signal
-			);
+			// The upgrade response names its flow `state`; initiate calls it
+			// `flow_id`. Same opaque id either way.
+			const flow = target
+				? await upgradeConnectionScopes(target.id, oauthScopes, ctrl.signal).then((r) => ({
+						authUrl: r.auth_url,
+						flowId: r.state
+					}))
+				: await initiateOAuth(
+						{ provider: oauthProvider, scopes: oauthScopes, pin_service_ids: [svc.id] },
+						ctrl.signal
+					).then((r) => ({ authUrl: r.auth_url, flowId: r.flow_id }));
 			if (ctrl.signal.aborted) return;
-			const popup = window.open(resp.auth_url, 'oss_oauth', 'width=520,height=680');
-			if (!popup) {
-				error = 'Pop-up blocked. Allow pop-ups and try again.';
+			let landed: ConnectionSummary | null;
+			try {
+				landed = await connectViaPopup({
+					...flow,
+					signal: ctrl.signal,
+					ownerIdentityId: svc.owner_identity_id ?? undefined,
+					onPoll: (rows) => (connections = rows)
+				});
+			} catch (e) {
+				if (e instanceof PopupBlockedError || e instanceof OAuthFlowFailedError) {
+					error = e.message;
+					return;
+				}
+				throw e;
+			}
+			if (ctrl.signal.aborted) return;
+			if (!landed) {
+				error = 'OAuth did not complete in time.';
 				return;
 			}
-			const deadline = Date.now() + 90_000;
-			while (Date.now() < deadline) {
-				if (ctrl.signal.aborted) {
-					try {
-						popup.close();
-					} catch {
-						/* ignore */
-					}
-					return;
-				}
-				await new Promise((r) => setTimeout(r, 1500));
-				if (ctrl.signal.aborted) return;
-				try {
-					connections = await listConnections(
-							{ ownerIdentityId: svc?.owner_identity_id },
-							ctrl.signal
-						);
-				} catch {
-					if (ctrl.signal.aborted) return;
-				}
-				const fresh = connections.find(
-					(c) => !beforeIds.has(c.id) && c.provider_key === oauthProvider
-				);
-				if (fresh) {
-					editConnection = fresh.id;
-					try {
-						popup.close();
-					} catch {
-						/* ignore */
-					}
-					return;
-				}
-				if (popup.closed) break;
-			}
-			if (!ctrl.signal.aborted) {
-				error = 'OAuth did not complete in time.';
-			}
+			// The callback already bound the connection — reload rather than
+			// leave a pick that only takes effect on Save.
+			svc = await getService(svc.id);
+			editConnection = svc.connection_id ?? '';
 		} catch (e) {
 			if (ctrl.signal.aborted) return;
 			error = e instanceof ApiError ? `OAuth failed (${e.status})` : 'OAuth failed';
@@ -1462,9 +1484,28 @@
 						{/if}
 					{/if}
 					<div class="actions">
-						<button type="button" class="btn" onclick={reconnect} disabled={connecting}>
-							{connecting ? 'Waiting…' : 'Connect new'}
-						</button>
+						{#if ownedByOther}
+							<small class="hint">
+								Only the service's owner can connect or reconnect its account.
+							</small>
+						{:else if reauthTarget}
+							<button
+								type="button"
+								class="btn"
+								onclick={reconnect}
+								disabled={connecting}
+								title="Re-authorize {connectionLabel(reauthTarget)} in place"
+							>
+								{connecting && !connectingAnother ? 'Waiting…' : 'Reconnect'}
+							</button>
+							<button type="button" class="btn" onclick={connectAnother} disabled={connecting}>
+								{connecting && connectingAnother ? 'Waiting…' : 'Connect another account'}
+							</button>
+						{:else}
+							<button type="button" class="btn" onclick={reconnect} disabled={connecting}>
+								{connecting ? 'Waiting…' : 'Connect'}
+							</button>
+						{/if}
 						<button type="button" class="btn primary" onclick={save} disabled={saving}>
 							{saving ? 'Saving…' : 'Save'}
 						</button>

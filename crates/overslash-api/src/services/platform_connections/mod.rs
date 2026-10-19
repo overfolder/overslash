@@ -67,7 +67,9 @@ use crate::error::AppError;
 
 mod create;
 mod import;
+mod list;
 mod mint;
+mod reauth;
 mod scopes;
 mod url;
 
@@ -78,5 +80,9 @@ pub use create::{
     dispatch_create_connection, kernel_create_connection,
 };
 pub use import::{ImportConnectionInput, ImportConnectionResponse, kernel_import_connection};
+pub use list::{
+    ConnectionSummary, ListConnectionsInput, dispatch_list_connections, kernel_list_connections,
+    summarize_connections,
+};
 pub use mint::{mint_initial_auth_url, mint_upgrade_auth_url};
 pub use scopes::merge_scopes;

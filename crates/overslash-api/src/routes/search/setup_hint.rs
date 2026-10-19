@@ -153,7 +153,7 @@ fn build_setup_steps(def: &ServiceDefinition) -> Vec<SetupStep> {
             "pick any `name`; it becomes the `service` you call afterwards. \
              Hand the returned `connect.auth_url` to your user verbatim. If \
              the response carries no `connect`, start the flow with \
-             `create_connection` passing the new `service_id`"
+             `create_connection` passing `service` (the new instance's name or id)"
         }
         Some(ServiceAuth::Secret { .. }) => {
             // Hedged on purpose. `create_service` attaches `setup` only for an
