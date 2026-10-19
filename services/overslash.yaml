@@ -208,7 +208,7 @@ platform_actions:
       hand over, and `setup.setup_url` is the first of them. Pass
       skip_credentials: true to suppress all of it and wire the credentials
       yourself. A result carrying `url_elicitation` means your client already
-      showed the link and the user finished (or refused) it — never repeat it.
+      showed the link — do not repeat it on your own; follow the note's `next`.
       A slot's vault name comes from the template, so a second instance of the
       same template would aim its setup link at the first one's secret. That is
       refused with secret_name_conflict (409). To share one credential across
@@ -274,8 +274,9 @@ platform_actions:
       integrations. The actual connection row is minted in the OAuth
       callback after the user clicks; poll `overslash_auth(action:
       "service_status")` to see it land. A result carrying `url_elicitation`
-      means your client already showed the link — never repeat it; when it
-      completed, it names the connection and the services bound to it.
+      means your client already showed the link — do not repeat it on your
+      own; follow the note's `next`. When it completed, it names the
+      connection and the services bound to it.
     risk: write
     permission: manage_connections_own
     params:
