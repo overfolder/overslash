@@ -375,6 +375,29 @@ pub(crate) async fn usage_instances_by_connection(
         .collect())
 }
 
+/// Every live instance bound to a connection, whatever its setup state:
+/// (name, status), `archived` excluded. Unlike
+/// [`usage_instances_by_connection`] this keeps `pending_setup` and `draft`
+/// rows — an instance whose OAuth link just completed is often still waiting
+/// on its probe, and is bound all the same.
+pub(crate) async fn bound_instances_by_connection(
+    pool: &PgPool,
+    org_id: Uuid,
+    connection_id: Uuid,
+) -> Result<Vec<(String, String)>, sqlx::Error> {
+    let rows = sqlx::query!(
+        "SELECT name, status
+         FROM service_instances
+         WHERE org_id = $1 AND connection_id = $2 AND status <> 'archived'
+         ORDER BY name",
+        org_id,
+        connection_id,
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(|r| (r.name, r.status)).collect())
+}
+
 /// Promote one connection to be the default for its (identity, provider),
 /// demoting any sibling that held the flag. Scoped to both org and identity so
 /// a forged id from another tenant or another user is a no-op. Returns `false`

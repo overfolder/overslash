@@ -95,7 +95,11 @@ pub(super) async fn server_instructions(
          yourself rather than asking the user to: one create_service call \
          from a template returns the URL your user needs — `connect.auth_url` \
          for an OAuth template, `setup.setup_url` for one that takes an API \
-         key. Hand it over verbatim; you never see the credential.{}",
+         key. Hand it over verbatim; you never see the credential. If a \
+         result carries `url_elicitation`, your client already showed that \
+         link to the user: do not repeat it on your own. Follow that note's \
+         `next` instead — it says whether the link may be offered again, and \
+         only after re-checking with overslash_auth service_status.{}",
         roster::roster_sentence(&roster).unwrap_or_default()
     )
 }
