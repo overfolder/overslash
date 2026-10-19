@@ -548,7 +548,7 @@ pub(super) async fn stop(ctx: &Ctx, plan: &Plan, stopped: Stopped) -> Reply {
     {
         return match redispatch(ctx).await {
             Ok(ForwardOutcome::TypedError(envelope)) => {
-                Reply::Result(tool_error_result(&noted(&envelope, &stopped)))
+                Reply::Result(tool_error_result(&noted(&envelope, &stopped, plan.then)))
             }
             // Recovered some other way meanwhile: the result is the answer.
             Ok(ok @ ForwardOutcome::Ok(_)) => render(Ok(ok)),
@@ -566,7 +566,7 @@ pub(super) async fn stop(ctx: &Ctx, plan: &Plan, stopped: Stopped) -> Reply {
 }
 
 pub(super) fn fallback(plan: &Plan, stopped: &Stopped) -> Reply {
-    let body = noted(&plan.fallback, stopped);
+    let body = noted(&plan.fallback, stopped, plan.then);
     if plan.fallback_is_error {
         Reply::Result(tool_error_result(&body))
     } else {

@@ -15,12 +15,32 @@ const NOTE_FIELD: &str = "url_elicitation";
 const COMPLETED_NEXT: &str = "The user already finished this in their client. Do not share \
      the link again. Continue with the original task.";
 
-const UNBOUND_NEXT: &str = " No service uses this connection yet: bind it to one before \
-     expecting that service's calls to use it.";
+const UNBOUND_NEXT: &str = " No service is pinned to this connection, and it is not the \
+     default for its provider: bind it to a service before expecting that service's calls \
+     to use it.";
 
 impl Stopped {
-    /// What the agent should do about it.
-    fn next(&self) -> &'static str {
+    /// What the agent should do about it. An approval link is its own case:
+    /// dismissing it decides nothing, and no service is waiting on a
+    /// connection.
+    fn next(&self, then: Then) -> &'static str {
+        if then == Then::CallApproval {
+            return match self {
+                Stopped::Declined(_) | Stopped::Cancelled => {
+                    "The user dismissed the approval link without deciding: the approval is \
+                     still pending, not denied. Ask before offering the link again."
+                }
+                Stopped::TimedOut => {
+                    "The approval is still pending at this link. Do not re-share it on your \
+                     own; resume it later with overslash_call and its approval_id to see \
+                     whether it was decided."
+                }
+                Stopped::Failed(_) => {
+                    "The approval could not be read back. Call the original action again if \
+                     it is still needed."
+                }
+            };
+        }
         match self {
             Stopped::Declined(_) | Stopped::Cancelled => {
                 "The user saw this link and refused it. Ask before offering it again."
@@ -39,8 +59,8 @@ impl Stopped {
 }
 
 /// The original body, with a note saying how the hand-off ended.
-pub(super) fn noted(body: &Value, stopped: &Stopped) -> Value {
-    let mut note = json!({ "status": stopped.note(), "next": stopped.next() });
+pub(super) fn noted(body: &Value, stopped: &Stopped, then: Then) -> Value {
+    let mut note = json!({ "status": stopped.note(), "next": stopped.next(then) });
     if let Some(reason) = stopped.reason() {
         note["reason"] = json!(reason);
     }
@@ -71,14 +91,19 @@ pub(super) async fn completed(ctx: &Ctx, plan: &Plan) -> Value {
             }
             Watch::SecretRequest { id } => {
                 let mut s = json!({ "request_id": id });
-                // `request_secret` does not echo the name; its params carry it.
-                let name = secret_name(&plan.fallback, id).or_else(|| {
+                // `request_secret` does not echo the vault name; its params
+                // carry it. A slot's `credential_key` is a different thing —
+                // the template's slot, not the vault name — reported apart.
+                let name = request_field(&plan.fallback, id, "secret_name").or_else(|| {
                     ctx.args
                         .pointer("/params/secret_name")
                         .and_then(Value::as_str)
                 });
                 if let Some(name) = name {
                     s["secret_name"] = json!(name);
+                }
+                if let Some(key) = request_field(&plan.fallback, id, "credential_key") {
+                    s["credential_key"] = json!(key);
                 }
                 secrets.push(s);
             }
@@ -87,10 +112,11 @@ pub(super) async fn completed(ctx: &Ctx, plan: &Plan) -> Value {
     }
 
     let mut next = COMPLETED_NEXT.to_string();
-    if connections
-        .iter()
-        .any(|c| c["bound_services"].as_array().is_some_and(Vec::is_empty))
-    {
+    // An unpinned instance on `use_default_connection` follows the default,
+    // so a default connection is in use even with nothing pinned to it.
+    if connections.iter().any(|c| {
+        c["bound_services"].as_array().is_some_and(Vec::is_empty) && c["is_default"] != true
+    }) {
         next.push_str(UNBOUND_NEXT);
     }
     let mut note = json!({ "status": "completed" });
@@ -127,6 +153,7 @@ async fn connection(ctx: &Ctx, flow_id: &str) -> Option<Value> {
     match owner.get_my_connection(id).await {
         Ok(Some(conn)) => {
             out["provider_key"] = json!(conn.provider_key);
+            out["is_default"] = json!(conn.is_default);
             if let Some(email) = conn.account_email {
                 out["account_email"] = json!(email);
             }
@@ -194,22 +221,22 @@ async fn service_after(ctx: &Ctx, plan: &Plan) -> Option<Value> {
     }
 }
 
-/// The name of the secret a request asked for, from wherever the original
-/// result mentions that request.
-fn secret_name<'a>(value: &'a Value, request_id: &str) -> Option<&'a str> {
+/// A string field beside a request's id, from wherever the original result
+/// mentions that request.
+fn request_field<'a>(value: &'a Value, request_id: &str, field: &str) -> Option<&'a str> {
     match value {
         Value::Object(map) => {
             if map.get("request_id").and_then(Value::as_str) == Some(request_id)
-                && let Some(name) = map
-                    .get("secret_name")
-                    .or_else(|| map.get("credential_key"))
-                    .and_then(Value::as_str)
+                && let Some(v) = map.get(field).and_then(Value::as_str)
             {
-                return Some(name);
+                return Some(v);
             }
-            map.values().find_map(|v| secret_name(v, request_id))
+            map.values()
+                .find_map(|v| request_field(v, request_id, field))
         }
-        Value::Array(items) => items.iter().find_map(|v| secret_name(v, request_id)),
+        Value::Array(items) => items
+            .iter()
+            .find_map(|v| request_field(v, request_id, field)),
         _ => None,
     }
 }
@@ -218,40 +245,64 @@ fn secret_name<'a>(value: &'a Value, request_id: &str) -> Option<&'a str> {
 mod tests {
     use super::*;
 
+    fn next_of(n: &Value) -> &str {
+        n["url_elicitation"]["next"].as_str().unwrap()
+    }
+
     #[test]
     fn a_note_is_added_without_disturbing_the_body() {
         let body = json!({ "error": "needs_authentication", "auth_url": "https://x" });
-        let n = noted(&body, &Stopped::Declined(Some("access_denied".into())));
+        let n = noted(
+            &body,
+            &Stopped::Declined(Some("access_denied".into())),
+            Then::Replay,
+        );
         assert_eq!(n["url_elicitation"]["status"], "declined");
         assert_eq!(n["url_elicitation"]["reason"], "access_denied");
-        assert!(
-            n["url_elicitation"]["next"]
-                .as_str()
-                .unwrap()
-                .contains("refused")
-        );
+        assert!(next_of(&n).contains("refused"));
         assert_eq!(n["auth_url"], "https://x");
-        let timed_out = noted(&body, &Stopped::TimedOut);
+        let timed_out = noted(&body, &Stopped::TimedOut, Then::Replay);
         assert!(timed_out["url_elicitation"].get("reason").is_none());
-        assert!(
-            timed_out["url_elicitation"]["next"]
-                .as_str()
-                .unwrap()
-                .contains("service_status")
-        );
-        let wrapped = noted(&json!([1]), &Stopped::Failed(None));
+        assert!(next_of(&timed_out).contains("service_status"));
+        let wrapped = noted(&json!([1]), &Stopped::Failed(None), Then::Report);
         assert_eq!(wrapped["result"], json!([1]));
         assert_eq!(wrapped["url_elicitation"]["status"], "failed");
     }
 
+    /// Dismissing an approval link decides nothing, and an approval has no
+    /// service connection to check: its notes say so, not the setup ones.
     #[test]
-    fn a_secret_name_is_found_beside_its_request_id() {
+    fn an_approval_note_speaks_about_the_approval() {
+        let body = json!({ "status": "pending_approval", "approval_id": "a1" });
+        for stopped in [Stopped::Declined(None), Stopped::Cancelled] {
+            let n = noted(&body, &stopped, Then::CallApproval);
+            assert!(next_of(&n).contains("still pending, not denied"), "{n}");
+            assert!(!next_of(&n).contains("refused"), "{n}");
+        }
+        let n = noted(&body, &Stopped::TimedOut, Then::CallApproval);
+        assert!(next_of(&n).contains("approval_id"), "{n}");
+        assert!(!next_of(&n).contains("service_status"), "{n}");
+        let n = noted(&body, &Stopped::Failed(None), Then::CallApproval);
+        assert!(!next_of(&n).contains("service_status"), "{n}");
+    }
+
+    /// The vault name and a template slot's key are different things: one is
+    /// never reported as the other.
+    #[test]
+    fn request_fields_are_read_beside_their_request_id() {
         let body = json!({ "result": { "body": { "setup": { "requests": [
             { "request_id": "r1", "credential_key": "api_key", "setup_url": "u1" },
             { "request_id": "r2", "secret_name": "acme_token", "setup_url": "u2" },
         ] } } } });
-        assert_eq!(secret_name(&body, "r1"), Some("api_key"));
-        assert_eq!(secret_name(&body, "r2"), Some("acme_token"));
-        assert_eq!(secret_name(&body, "r3"), None);
+        assert_eq!(request_field(&body, "r1", "secret_name"), None);
+        assert_eq!(
+            request_field(&body, "r1", "credential_key"),
+            Some("api_key")
+        );
+        assert_eq!(
+            request_field(&body, "r2", "secret_name"),
+            Some("acme_token")
+        );
+        assert_eq!(request_field(&body, "r3", "secret_name"), None);
     }
 }

@@ -498,7 +498,18 @@ async fn seed_connection(fx: &XFx) -> Uuid {
 /// `create_connection` through URL mode, completed in the browser: the agent
 /// gets the connection it produced, and none of the original result — whose
 /// `auth_url` and "hand it to the user" description got the link re-shared.
-async fn completed_create_connection(fx: &XFx, bind_to_x: bool) -> (Value, Uuid, String) {
+/// What the callback left behind besides the connection itself.
+#[derive(Clone, Copy, PartialEq)]
+enum After {
+    /// Nothing pins it, and it is not the default.
+    Unbound,
+    /// The `x` instance is pinned to it.
+    PinnedToX,
+    /// Nothing pins it, but it is the default for its provider.
+    Default,
+}
+
+async fn completed_create_connection(fx: &XFx, after: After) -> (Value, Uuid, String) {
     let call = json!({ "arguments": {
         "service": "overslash",
         "action": "create_connection",
@@ -525,7 +536,14 @@ async fn completed_create_connection(fx: &XFx, bind_to_x: bool) -> (Value, Uuid,
     };
     tokio::time::sleep(Duration::from_millis(1500)).await;
     let conn = seed_connection(fx).await;
-    if bind_to_x {
+    // The column defaults to true; only `Default` keeps it.
+    sqlx::query("UPDATE connections SET is_default = $2 WHERE id = $1")
+        .bind(conn)
+        .bind(after == After::Default)
+        .execute(&fx.pool)
+        .await
+        .unwrap();
+    if after == After::PinnedToX {
         // Still `pending_setup` (awaiting its probe), as an instance whose
         // link just completed often is: bound all the same.
         sqlx::query(
@@ -552,7 +570,7 @@ async fn completed_create_connection(fx: &XFx, bind_to_x: bool) -> (Value, Uuid,
 #[tokio::test]
 async fn a_completed_connect_link_reports_the_connection_not_the_link() {
     let fx = x_setup().await;
-    let (out, conn, link) = completed_create_connection(&fx, false).await;
+    let (out, conn, link) = completed_create_connection(&fx, After::Unbound).await;
 
     let text = out.to_string();
     assert!(!text.contains(&link), "the link is gone: {out}");
@@ -572,7 +590,7 @@ async fn a_completed_connect_link_reports_the_connection_not_the_link() {
     let next = note["next"].as_str().unwrap();
     assert!(next.contains("Do not share the link again"), "{next}");
     assert!(
-        next.contains("No service uses this connection"),
+        next.contains("No service is pinned to this connection"),
         "an unbound connection is called out: {next}"
     );
 }
@@ -580,7 +598,7 @@ async fn a_completed_connect_link_reports_the_connection_not_the_link() {
 #[tokio::test]
 async fn a_completed_connect_link_names_the_services_bound_to_it() {
     let fx = x_setup().await;
-    let (out, _, _) = completed_create_connection(&fx, true).await;
+    let (out, _, _) = completed_create_connection(&fx, After::PinnedToX).await;
     let note = &out["url_elicitation"];
     assert_eq!(
         note["connections"][0]["bound_services"],
@@ -588,7 +606,28 @@ async fn a_completed_connect_link_names_the_services_bound_to_it() {
         "{out}"
     );
     assert!(
-        !note["next"].as_str().unwrap().contains("No service uses"),
+        !note["next"]
+            .as_str()
+            .unwrap()
+            .contains("No service is pinned"),
+        "{out}"
+    );
+}
+
+/// An instance on `use_default_connection` follows the provider's default
+/// without pinning it: a default connection is in use with nothing pinned.
+#[tokio::test]
+async fn a_completed_default_connection_is_not_called_unbound() {
+    let fx = x_setup().await;
+    let (out, _, _) = completed_create_connection(&fx, After::Default).await;
+    let c = &out["url_elicitation"]["connections"][0];
+    assert_eq!(c["is_default"], true, "{out}");
+    assert_eq!(c["bound_services"], json!([]), "{out}");
+    assert!(
+        !out["url_elicitation"]["next"]
+            .as_str()
+            .unwrap()
+            .contains("No service is pinned"),
         "{out}"
     );
 }
