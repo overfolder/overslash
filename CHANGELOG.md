@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.23.0](https://github.com/overfolder/overslash/compare/v0.22.0...v0.23.0) (2026-10-19)
+
+
+### Features
+
+* **services:** GitHub template requests classic OAuth scopes, works with either client ([#802](https://github.com/overfolder/overslash/issues/802)) ([b300be0](https://github.com/overfolder/overslash/commit/b300be0f6518e5e4e4666d3633ece3217e236f68))
+
+
+### Bug Fixes
+
+* **connections:** an account-matched reconnect never shrinks the existing connection ([#806](https://github.com/overfolder/overslash/issues/806)) ([697b6db](https://github.com/overfolder/overslash/commit/697b6db1416ca8dbce1e69e0274e5644e401fd1b))
+* **connections:** never account-match a connection whose scopes are unknown ([#808](https://github.com/overfolder/overslash/issues/808)) ([f230d4a](https://github.com/overfolder/overslash/commit/f230d4aa0b5be9de3b880b14d1f666109d1497de))
+* **connections:** reconnect updates the existing connection instead of duplicating it ([#804](https://github.com/overfolder/overslash/issues/804)) ([b03fade](https://github.com/overfolder/overslash/commit/b03fade58b906aec3e40679c1d8b0be55552d665))
+* **mcp:** answer a completed URL elicitation with its outcome, not the link ([#803](https://github.com/overfolder/overslash/issues/803)) ([16e3979](https://github.com/overfolder/overslash/commit/16e39796442340b85cbb8b775099d0aea8487f89))
+
 ## [0.22.0](https://github.com/overfolder/overslash/compare/v0.21.1...v0.22.0) (2026-10-16)
 
 
