@@ -427,8 +427,15 @@ async fn oauth_callback_inner(
     // the same account through the same OAuth client again is a reconnect, not
     // a second connection. Updating in place keeps every service bound to the
     // row, where a duplicate would sit unused beside it (the old row stays the
-    // default). Without an account email there is nothing to match on.
-    let upgrade_connection_id = match (upgrade_connection_id, account.email.as_deref()) {
+    // default). Without an account email there is nothing to match on, and on
+    // a provider where one email spans several separately-granted tenants
+    // (Slack workspaces, Microsoft tenants) matching on it would overwrite one
+    // tenant's tokens with another's — those always get a new row.
+    let match_email = account
+        .email
+        .as_deref()
+        .filter(|_| provider.email_identifies_account);
+    let upgrade_connection_id = match (upgrade_connection_id, match_email) {
         (Some(id), _) => Some(id),
         (None, Some(email)) => scope
             .find_connection_for_same_account(identity_id, provider_key, email, effective_byoc_id)

@@ -43,6 +43,13 @@ pub struct OAuthProviderRow {
     /// sent, so we never push an unknown parameter at a strict authorization
     /// server. Seeded in migration 106.
     pub login_hint_param: Option<String>,
+    /// Whether `account_email` names exactly one grantable account, so the
+    /// OAuth callback may treat a second connect of the same email as a
+    /// reconnect of the existing row. False for providers where one login
+    /// spans separately-authorized tenants (Microsoft, Slack workspaces,
+    /// HubSpot portals, Notion workspaces) and for every custom provider.
+    /// Seeded in migration 135.
+    pub email_identifies_account: bool,
     pub created_at: OffsetDateTime,
 }
 
@@ -53,7 +60,7 @@ pub async fn get_by_key(pool: &PgPool, key: &str) -> Result<Option<OAuthProvider
                 revocation_endpoint,
                 userinfo_endpoint, client_id_pattern, supports_pkce, supports_refresh,
                 extra_auth_params, token_auth_method, is_builtin, issuer_url, jwks_uri,
-                default_identity_scopes, login_hint_param, created_at
+                default_identity_scopes, login_hint_param, email_identifies_account, created_at
          FROM oauth_providers WHERE key = $1",
         key,
     )
@@ -68,7 +75,7 @@ pub async fn list_all(pool: &PgPool) -> Result<Vec<OAuthProviderRow>, sqlx::Erro
                 revocation_endpoint,
                 userinfo_endpoint, client_id_pattern, supports_pkce, supports_refresh,
                 extra_auth_params, token_auth_method, is_builtin, issuer_url, jwks_uri,
-                default_identity_scopes, login_hint_param, created_at
+                default_identity_scopes, login_hint_param, email_identifies_account, created_at
          FROM oauth_providers ORDER BY display_name",
     )
     .fetch_all(pool)
@@ -113,7 +120,7 @@ pub async fn create_custom(
                    revocation_endpoint,
                    userinfo_endpoint, client_id_pattern, supports_pkce, supports_refresh,
                    extra_auth_params, token_auth_method, is_builtin, issuer_url, jwks_uri,
-                   default_identity_scopes, login_hint_param, created_at",
+                   default_identity_scopes, login_hint_param, email_identifies_account, created_at",
         key,
         display_name,
         authorization_endpoint,

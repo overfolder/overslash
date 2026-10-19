@@ -361,6 +361,21 @@ async fn connecting_the_same_account_again_updates_the_existing_connection() {
     assert_eq!(conns[0]["is_default"], true);
 }
 
+/// Slack, Microsoft and the like: one email, several separately-granted
+/// workspaces or tenants. A second connect must never overwrite the first.
+#[tokio::test]
+async fn a_tenant_scoped_provider_is_never_merged_by_email() {
+    let e = setup().await;
+    sqlx::query!("UPDATE oauth_providers SET email_identifies_account = false WHERE key = 'x'")
+        .execute(&e.pool)
+        .await
+        .unwrap();
+    let (_, first) = e.connect(json!({"provider": "x"})).await;
+    let (_, second) = e.connect(json!({"provider": "x"})).await;
+    assert_ne!(first["connection_id"], second["connection_id"]);
+    assert_eq!(e.x_connections().await.len(), 2);
+}
+
 #[tokio::test]
 async fn an_unknown_account_is_never_merged() {
     let e = setup().await;
