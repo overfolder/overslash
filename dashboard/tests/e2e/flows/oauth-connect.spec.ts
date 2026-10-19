@@ -46,13 +46,15 @@ test('admin can complete the GitHub Connect flow against the fake AS', async ({
 	const statusRow = page.locator('.row', { has: page.locator('.label', { hasText: 'Status' }) });
 	await expect(statusRow.getByText('needs setup')).toBeVisible();
 
-	// Clicking "Connect" opens a popup at the fake AS. The fake auto-
+	// Clicking Connect opens a popup at the fake AS. The fake auto-
 	// approves with a 307 to /v1/oauth/callback, which exchanges the code,
 	// encrypts the token, and inserts a row into `connections`. The parent
 	// page's poll loop (1.5s cadence, 90s deadline) then closes the popup.
 	const [popup] = await Promise.all([
 		page.waitForEvent('popup'),
-		page.getByRole('button', { name: 'Connect', exact: true }).click()
+		// "Connect another account" when the user already has a default GitHub
+		// connection (left by another spec or run); either binds this service.
+		page.getByRole('button', { name: /^(Connect|Connect another account)$/ }).click()
 	]);
 	await popup.waitForEvent('close', { timeout: 15_000 });
 

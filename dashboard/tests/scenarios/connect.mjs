@@ -49,7 +49,11 @@ export async function connectGithubService(session, page, opts = {}) {
 
 	const [popup] = await Promise.all([
 		page.waitForEvent('popup'),
-		page.getByRole('button', { name: 'Connect', exact: true }).click()
+		// "Connect" when the user has no GitHub connection yet; once one exists
+		// it is the default this service falls back to, and the page offers
+		// "Connect another account" (bound to this service on callback) next to
+		// Reconnect instead.
+		page.getByRole('button', { name: /^(Connect|Connect another account)$/ }).click()
 	]);
 	await popup.waitForEvent('close', { timeout: 15_000 });
 
@@ -62,7 +66,7 @@ export async function connectGithubService(session, page, opts = {}) {
 		`/v1/services/${encodeURIComponent(name)}?include_inactive=true`
 	);
 	if (!detail.connection_id) {
-		throw new Error(`connectGithubService: ${name} has no connection_id after save`);
+		throw new Error(`connectGithubService: ${name} has no connection_id after connect`);
 	}
 	return detail;
 }
