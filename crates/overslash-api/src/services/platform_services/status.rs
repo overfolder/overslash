@@ -506,6 +506,41 @@ mod tests {
         );
     }
 
+    /// A GitHub App ignores the shipped template's `repo` / `read:org` and its
+    /// token records an explicitly empty scope list. That must read as a
+    /// healthy connection, not "needs setup" or "needs reconnection".
+    #[test]
+    fn github_app_token_with_no_scopes_is_ok() {
+        let services_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("services");
+        let reg = overslash_core::registry::ServiceRegistry::load_from_dir(
+            &services_dir,
+            overslash_core::template_vars::Vars::for_tests(),
+        )
+        .unwrap();
+        let gh = reg.get("github").expect("github template");
+        assert_eq!(
+            derive_credentials_status(
+                gh,
+                Some("oauth"),
+                ScopeKnowledge::Known(&[]),
+                &CredentialsMap::new(),
+                None
+            ),
+            Some(CredentialsStatus::Ok)
+        );
+        for action in gh.actions.values() {
+            assert_eq!(
+                action_scope_coverage(action, ScopeKnowledge::Known(&[])).0,
+                ScopeCoverage::Covered
+            );
+        }
+    }
+
     #[test]
     fn needs_authentication_when_oauth_template_has_no_connection() {
         let tpl = oauth_template(vec![("a", vec!["s1"])]);
