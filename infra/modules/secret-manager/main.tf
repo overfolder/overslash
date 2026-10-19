@@ -203,7 +203,12 @@ resource "google_secret_manager_secret_version" "github_auth_client_secret" {
 #     feeds `OAUTH_{PROVIDER}_CLIENT_ID/_SECRET` — read only when
 #     `OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS=1` is set on Cloud Run.
 #     Secret IDs are `{prefix}-{provider}-services-client-{id,secret}`, which
-#     keeps the original Google pair's names. ---
+#     keeps the original Google pair's names.
+#     `github` may be a classic OAuth App (it is granted the template's `repo`
+#     and `read:org` scopes) or a GitHub App (scopes ignored; access is the
+#     app's permissions on its installations). Reusing the login OAuth App
+#     below works, but a dedicated client keeps the consent wording and secret
+#     rotation separate from sign-in. ---
 
 resource "google_secret_manager_secret" "oauth_service_client_id" {
   for_each  = toset(var.oauth_service_providers)
