@@ -499,6 +499,11 @@
 	const templateScopes = $derived<string[]>(oauthScopes);
 	const missingScopes = $derived.by<string[]>(() => {
 		if (!currentConnection || templateScopes.length === 0) return [];
+		// A GitHub App ignores `scope` and its token comes back with an empty
+		// scope list: access is the app's permissions on its installations, so
+		// there is nothing an upgrade could add. A classic OAuth App always
+		// echoes what it granted, so a non-empty list is still compared.
+		if (oauthProvider === 'github' && currentConnection.scopes.length === 0) return [];
 		const granted = new Set(currentConnection.scopes);
 		return templateScopes.filter((s: string) => !granted.has(s));
 	});

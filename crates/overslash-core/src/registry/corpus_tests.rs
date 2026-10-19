@@ -289,9 +289,10 @@ fn shipped_github_templates_auth() {
         ServiceRegistry::load_from_dir(&services_dir, crate::template_vars::Vars::for_tests())
             .unwrap();
 
-    // `github` targets GitHub App user-to-server tokens: no OAuth scopes
-    // (the app's permissions + installations govern access) plus an
-    // installation diagnostic action.
+    // `github` serves a classic OAuth App *and* a GitHub App client: it
+    // declares the classic scopes (a GitHub App ignores them), no action
+    // gates on `required_scopes` (a GitHub App token's scope list is empty),
+    // and it keeps the installation diagnostic action.
     let gh = reg.get("github").expect("github template missing");
     match gh
         .auth
@@ -302,12 +303,17 @@ fn shipped_github_templates_auth() {
             provider, scopes, ..
         }) => {
             assert_eq!(provider, "github");
-            assert!(
-                scopes.is_empty(),
-                "GitHub App template must not declare OAuth scopes, got {scopes:?}"
-            );
+            let mut scopes = scopes.clone();
+            scopes.sort();
+            assert_eq!(scopes, ["read:org", "repo"]);
         }
         _ => panic!("github template must declare OAuth auth"),
+    }
+    for (key, action) in &gh.actions {
+        assert!(
+            action.required_scopes.is_empty(),
+            "github action `{key}` must not gate on scopes: a GitHub App token has none"
+        );
     }
     assert!(gh.actions.contains_key("list_installations"));
     assert!(!gh.hidden, "github template must not be hidden");
