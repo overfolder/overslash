@@ -112,12 +112,7 @@ pub(super) async fn completed(ctx: &Ctx, plan: &Plan) -> Value {
     }
 
     let mut next = COMPLETED_NEXT.to_string();
-    // An unpinned instance on `use_default_connection` follows the default,
-    // so a default connection is in use even with nothing pinned to it. An
-    // unread `is_default` (the lookup failed) is not evidence of either.
-    if connections.iter().any(|c| {
-        c["bound_services"].as_array().is_some_and(Vec::is_empty) && c["is_default"] == false
-    }) {
+    if connections.iter().any(known_unused) {
         next.push_str(UNBOUND_NEXT);
     }
     let mut note = json!({ "status": "completed" });
@@ -132,6 +127,15 @@ pub(super) async fn completed(ctx: &Ctx, plan: &Plan) -> Value {
     }
     note["next"] = json!(next);
     json!({ NOTE_FIELD: note })
+}
+
+/// A reported connection nothing will use: no service pinned to it, and not
+/// the default (an unpinned instance on `use_default_connection` follows the
+/// default, so a default is in use with nothing pinned). Both facts must have
+/// been read — a failed lookup leaves its field out, and an unread field is
+/// not evidence of either.
+fn known_unused(c: &Value) -> bool {
+    c["bound_services"].as_array().is_some_and(Vec::is_empty) && c["is_default"] == false
 }
 
 /// The connection a completed flow produced. Only for the caller that
@@ -285,6 +289,22 @@ mod tests {
         assert!(!next_of(&n).contains("service_status"), "{n}");
         let n = noted(&body, &Stopped::Failed(None), Then::CallApproval);
         assert!(!next_of(&n).contains("service_status"), "{n}");
+    }
+
+    #[test]
+    fn the_unbound_hint_needs_both_facts_read() {
+        let unused = json!({ "is_default": false, "bound_services": [] });
+        assert!(known_unused(&unused));
+        // The default is in use by every unpinned instance.
+        assert!(!known_unused(
+            &json!({ "is_default": true, "bound_services": [] })
+        ));
+        // A failed connection read leaves `is_default` out: unknown, not false.
+        assert!(!known_unused(&json!({ "bound_services": [] })));
+        // A failed binding read leaves `bound_services` out.
+        assert!(!known_unused(&json!({ "is_default": false })));
+        let bound = json!({ "is_default": false, "bound_services": [{ "name": "gh" }] });
+        assert!(!known_unused(&bound));
     }
 
     /// The vault name and a template slot's key are different things: one is
