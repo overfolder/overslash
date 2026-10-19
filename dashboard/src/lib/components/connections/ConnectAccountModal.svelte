@@ -13,7 +13,7 @@
 	import { onDestroy } from 'svelte';
 	import { ApiError } from '#lib/session.ts';
 	import { createByocCredential, initiateOAuth } from '#lib/api/services.ts';
-	import { connectViaPopup, PopupBlockedError } from '#lib/oauth-connect.ts';
+	import { connectViaPopup, OAuthFlowFailedError, PopupBlockedError } from '#lib/oauth-connect.ts';
 	import type { ConnectionSummary, OAuthProviderInfo } from '#lib/types.ts';
 	import ByocSection from '#lib/components/services/ByocSection.svelte';
 	import ProviderTile from './ProviderTile.svelte';
@@ -85,7 +85,6 @@
 
 			// 2. Start the OAuth flow and complete it in a popup, polling for the
 			//    new connection row (shared mechanics — see #lib/oauth-connect).
-			const beforeIds = new Set(existing.map((c) => c.id));
 			const resp = await initiateOAuth(
 				{ provider, scopes: defaultScopesFor(pickedProvider), byoc_credential_id: byocCredentialId },
 				ctrl.signal
@@ -95,12 +94,11 @@
 			try {
 				fresh = await connectViaPopup({
 					authUrl: resp.auth_url,
-					provider,
-					beforeIds,
+					flowId: resp.flow_id,
 					signal: ctrl.signal
 				});
 			} catch (e) {
-				if (e instanceof PopupBlockedError) {
+				if (e instanceof PopupBlockedError || e instanceof OAuthFlowFailedError) {
 					error = e.message;
 					return;
 				}

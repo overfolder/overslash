@@ -144,6 +144,57 @@ pub(crate) async fn find_for_import(
     .await
 }
 
+/// The connection an OAuth callback should re-authorize in place rather than
+/// duplicate: the same identity, provider, account and OAuth client. Unlike
+/// [`find_for_import`], the account is required and matched exactly — a NULL
+/// `account_email` on either side never matches — and the BYOC client must
+/// agree, since the row's refresh flow runs against its own client.
+///
+/// Only rows whose scopes `granted_scopes` covers are candidates. A provider
+/// that does not accumulate grants (GitHub OAuth Apps) issues a token with
+/// just the new flow's scopes, and swapping it into a broader row would strip
+/// what that row's services rely on. Filtering here, before the `LIMIT`, lets
+/// a repeated narrow connect find the narrow row it made last time instead of
+/// being turned away by the broader default and adding another one.
+///
+/// A row with unknown scopes (`NULL`: a white-label import that named none,
+/// migration 083) is never a candidate. The scope gate gives it the benefit of
+/// the doubt, so it may carry more than any grant here proves; the connect
+/// gets a new row with known scopes, which later reconnects then match.
+pub(crate) async fn find_same_account(
+    pool: &PgPool,
+    org_id: Uuid,
+    identity_id: Uuid,
+    provider_key: &str,
+    account_email: &str,
+    byoc_credential_id: Option<Uuid>,
+    granted_scopes: &[String],
+) -> Result<Option<ConnectionRow>, sqlx::Error> {
+    sqlx::query_as!(
+        ConnectionRow,
+        // `scopes AS "scopes?"`: see `find_for_import`.
+        "SELECT id, org_id, identity_id, provider_key, encrypted_access_token,
+                encrypted_refresh_token, token_expires_at, scopes AS \"scopes?: Vec<String>\",
+                account_email, account_picture, byoc_credential_id, is_default, keep, reauth_required,
+                created_at, updated_at
+         FROM connections
+         WHERE org_id = $1 AND identity_id = $2 AND provider_key = $3
+           AND account_email = $4
+           AND byoc_credential_id IS NOT DISTINCT FROM $5
+           AND scopes IS NOT NULL AND scopes <@ $6::text[]
+         ORDER BY is_default DESC, created_at DESC
+         LIMIT 1",
+        org_id,
+        identity_id,
+        provider_key,
+        account_email,
+        byoc_credential_id,
+        granted_scopes,
+    )
+    .fetch_optional(pool)
+    .await
+}
+
 /// Org-bounded `get_by_id`. The `(id, org_id)` double-key turns a forged
 /// id from another tenant into a `None` at the SQL boundary.
 pub(crate) async fn get_by_id(
@@ -373,6 +424,29 @@ pub(crate) async fn usage_instances_by_connection(
         .into_iter()
         .map(|r| (r.id, r.name, r.template_key))
         .collect())
+}
+
+/// Every live instance bound to a connection, whatever its setup state:
+/// (name, status), `archived` excluded. Unlike
+/// [`usage_instances_by_connection`] this keeps `pending_setup` and `draft`
+/// rows — an instance whose OAuth link just completed is often still waiting
+/// on its probe, and is bound all the same.
+pub(crate) async fn bound_instances_by_connection(
+    pool: &PgPool,
+    org_id: Uuid,
+    connection_id: Uuid,
+) -> Result<Vec<(String, String)>, sqlx::Error> {
+    let rows = sqlx::query!(
+        "SELECT name, status
+         FROM service_instances
+         WHERE org_id = $1 AND connection_id = $2 AND status <> 'archived'
+         ORDER BY name",
+        org_id,
+        connection_id,
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(|r| (r.name, r.status)).collect())
 }
 
 /// Promote one connection to be the default for its (identity, provider),

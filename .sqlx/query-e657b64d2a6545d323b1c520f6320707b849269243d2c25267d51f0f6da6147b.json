@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT org_id, expires_at, consumed_at, completed_at, failed_at, failure\n           FROM oauth_connection_flows WHERE id = $1",
+  "query": "SELECT org_id, identity_id, actor_identity_id, expires_at, consumed_at, completed_at,\n                failed_at, failure, connection_id\n           FROM oauth_connection_flows WHERE id = $1",
   "describe": {
     "columns": [
       {
@@ -16,6 +16,28 @@
       },
       {
         "ordinal": 1,
+        "name": "identity_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "oauth_connection_flows",
+            "name": "identity_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "actor_identity_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "oauth_connection_flows",
+            "name": "actor_identity_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
         "name": "expires_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -26,7 +48,7 @@
         }
       },
       {
-        "ordinal": 2,
+        "ordinal": 4,
         "name": "consumed_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -37,7 +59,7 @@
         }
       },
       {
-        "ordinal": 3,
+        "ordinal": 5,
         "name": "completed_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -48,7 +70,7 @@
         }
       },
       {
-        "ordinal": 4,
+        "ordinal": 6,
         "name": "failed_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -59,13 +81,24 @@
         }
       },
       {
-        "ordinal": 5,
+        "ordinal": 7,
         "name": "failure",
         "type_info": "Text",
         "origin": {
           "Table": {
             "table": "oauth_connection_flows",
             "name": "failure"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "connection_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "oauth_connection_flows",
+            "name": "connection_id"
           }
         }
       }
@@ -78,11 +111,14 @@
     "nullable": [
       false,
       false,
+      false,
+      false,
+      true,
       true,
       true,
       true,
       true
     ]
   },
-  "hash": "c6b418a7622ef80f6d631b7f2220a6ffa5c5f8f42d249ed0b5874fdb8f1b055f"
+  "hash": "e657b64d2a6545d323b1c520f6320707b849269243d2c25267d51f0f6da6147b"
 }

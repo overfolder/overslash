@@ -1,14 +1,17 @@
 /**
  * Shared OAuth "link an account" popup + poll mechanics.
  *
- * Every connect flow (Create Service wizard, Connections view) opens the gated
- * authorize URL in a popup, then polls `GET /v1/connections` until a row that
- * wasn't there before shows up — the e2e fake-AS harness drives exactly this,
- * so it works without depending on a `return_url` host allow-list. Keeping the
- * loop in one place avoids the near-verbatim copies these call sites used to
- * carry.
+ * Every connect flow (Create Service wizard, Connections view, service page)
+ * opens the gated authorize URL in a popup, then polls the flow itself
+ * (`GET /v1/oauth/flows/{id}`) until the callback stamps it completed or
+ * failed — the e2e fake-AS harness drives exactly this, so it works without
+ * depending on a `return_url` host allow-list. The flow is the only reliable
+ * signal: a reconnect keeps the connection's id, and a background token
+ * refresh moves `updated_at` just as a reconnect does, so diffing the
+ * connections list cannot tell them apart. Keeping the loop in one place
+ * avoids the near-verbatim copies these call sites used to carry.
  */
-import { listConnections } from '#lib/api/services.ts';
+import { getOAuthFlow, listConnections } from '#lib/api/services.ts';
 import type { ConnectionSummary } from '#lib/types.ts';
 
 /** Thrown when the browser blocks the OAuth popup (window.open returns null). */
@@ -19,26 +22,38 @@ export class PopupBlockedError extends Error {
 	}
 }
 
+/** Thrown when the provider or the callback refused the flow. */
+export class OAuthFlowFailedError extends Error {
+	constructor(reason: string | undefined) {
+		super(reason ? `OAuth failed: ${reason}` : 'OAuth failed');
+		this.name = 'OAuthFlowFailedError';
+	}
+}
+
 /**
- * Open `authUrl` in a popup and poll until a connection for `provider` whose id
- * isn't in `beforeIds` appears, then close the popup and return it. Returns
- * `null` when the deadline passes, the popup is closed first, or the flow is
- * aborted (callers check `signal.aborted` to decide whether to surface a
- * timeout message). Throws {@link PopupBlockedError} when the popup is blocked.
+ * Open `authUrl` in a popup and poll flow `flowId` until it completes, then
+ * close the popup and return the connection it produced. Returns `null` when
+ * the deadline passes, the flow expires, the popup is closed first, or the flow
+ * is aborted (callers check `signal.aborted` to decide whether to surface a
+ * timeout message). Throws {@link PopupBlockedError} when the popup is blocked
+ * and {@link OAuthFlowFailedError} when the flow failed.
  *
- * @param onPoll called with the latest rows each poll, so a caller can refresh
- *   its own connection-list state (e.g. the Create Service reuse picker).
+ * @param ownerIdentityId whose connections to list once it lands (an admin on
+ *   another user's service); defaults to the caller's own.
+ * @param onPoll called with the connections once the flow lands, so a caller
+ *   can refresh its own connection-list state (e.g. the Create Service reuse
+ *   picker).
  */
 export async function connectViaPopup(opts: {
 	authUrl: string;
-	provider: string;
-	beforeIds: Set<string>;
+	flowId: string;
 	signal: AbortSignal;
+	ownerIdentityId?: string;
 	onPoll?: (rows: ConnectionSummary[]) => void;
 	timeoutMs?: number;
 	pollMs?: number;
 }): Promise<ConnectionSummary | null> {
-	const { authUrl, provider, beforeIds, signal, onPoll } = opts;
+	const { authUrl, flowId, signal, onPoll } = opts;
 	const timeoutMs = opts.timeoutMs ?? 90_000;
 	const pollMs = opts.pollMs ?? 1500;
 
@@ -64,9 +79,12 @@ export async function connectViaPopup(opts: {
 			closePopup();
 			return null;
 		}
-		let rows: ConnectionSummary[];
+		// Read before checking `closed`: the callback page may close itself
+		// the moment it has stamped the flow.
+		const wasClosed = popup.closed;
+		let flow;
 		try {
-			rows = await listConnections({}, signal);
+			flow = await getOAuthFlow(flowId, signal);
 		} catch {
 			if (signal.aborted) {
 				closePopup();
@@ -74,13 +92,18 @@ export async function connectViaPopup(opts: {
 			}
 			continue;
 		}
-		onPoll?.(rows);
-		const fresh = rows.find((c) => !beforeIds.has(c.id) && c.provider_key === provider);
-		if (fresh) {
+		if (flow.status === 'completed' && flow.connection_id) {
 			closePopup();
-			return fresh;
+			const rows = await listConnections({ ownerIdentityId: opts.ownerIdentityId }, signal);
+			onPoll?.(rows);
+			return rows.find((c) => c.id === flow.connection_id) ?? null;
 		}
-		if (popup.closed) break;
+		if (flow.status === 'failed') {
+			closePopup();
+			throw new OAuthFlowFailedError(flow.failure);
+		}
+		if (flow.status === 'expired' || wasClosed) break;
 	}
+	closePopup();
 	return null;
 }

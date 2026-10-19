@@ -46,20 +46,21 @@ test('admin can complete the GitHub Connect flow against the fake AS', async ({
 	const statusRow = page.locator('.row', { has: page.locator('.label', { hasText: 'Status' }) });
 	await expect(statusRow.getByText('needs setup')).toBeVisible();
 
-	// Clicking "Connect new" opens a popup at the fake AS. The fake auto-
+	// Clicking Connect opens a popup at the fake AS. The fake auto-
 	// approves with a 307 to /v1/oauth/callback, which exchanges the code,
 	// encrypts the token, and inserts a row into `connections`. The parent
 	// page's poll loop (1.5s cadence, 90s deadline) then closes the popup.
 	const [popup] = await Promise.all([
 		page.waitForEvent('popup'),
-		page.getByRole('button', { name: 'Connect new' }).click()
+		// "Connect another account" when the user already has a default GitHub
+		// connection (left by another spec or run); either binds this service.
+		page.getByRole('button', { name: /^(Connect|Connect another account)$/ }).click()
 	]);
 	await popup.waitForEvent('close', { timeout: 15_000 });
 
-	// The new connection auto-fills the connection select on the page; click
-	// Save to bind it to the service. After save, `currentConnection` becomes
-	// truthy and the "Connected" badge replaces "Needs setup".
-	await page.getByRole('button', { name: 'Save', exact: true }).click();
+	// The flow carried this service's id, so the callback bound the new
+	// connection to it — no Save. The page reloads the service, so
+	// `currentConnection` becomes truthy and "Connected" replaces "Needs setup".
 	await expect(page.getByText('connected')).toBeVisible({ timeout: 10_000 });
 
 	// Save a screenshot of the Connected state so reviewers can see the UI

@@ -140,6 +140,29 @@ impl OrgScope {
         .await
     }
 
+    /// Find the connection an OAuth callback for this (identity, provider,
+    /// account, OAuth client) should update in place, scoped to this org: one
+    /// whose scopes `granted_scopes` covers. See [`connection::find_same_account`].
+    pub async fn find_connection_for_same_account(
+        &self,
+        identity_id: Uuid,
+        provider_key: &str,
+        account_email: &str,
+        byoc_credential_id: Option<Uuid>,
+        granted_scopes: &[String],
+    ) -> Result<Option<ConnectionRow>, sqlx::Error> {
+        connection::find_same_account(
+            self.db(),
+            self.org_id(),
+            identity_id,
+            provider_key,
+            account_email,
+            byoc_credential_id,
+            granted_scopes,
+        )
+        .await
+    }
+
     /// Batch fetch connections by ids, indexed by id — **any owner**. Returns
     /// only connections that belong to this org — foreign ids are silently
     /// dropped — but does not check who owns them; filter through
@@ -223,6 +246,15 @@ impl OrgScope {
         connection_id: Uuid,
     ) -> Result<Vec<(Uuid, String, String)>, sqlx::Error> {
         connection::usage_instances_by_connection(self.db(), self.org_id(), connection_id).await
+    }
+
+    /// Instances bound to a connection in any non-archived state, as
+    /// (name, status). See [`connection::bound_instances_by_connection`].
+    pub async fn connection_bound_instances(
+        &self,
+        connection_id: Uuid,
+    ) -> Result<Vec<(String, String)>, sqlx::Error> {
+        connection::bound_instances_by_connection(self.db(), self.org_id(), connection_id).await
     }
 
     /// Delete a connection by id, scoped to this org. Returns `false` if the

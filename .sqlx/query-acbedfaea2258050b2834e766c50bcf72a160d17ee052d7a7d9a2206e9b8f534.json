@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT parent_id AS \"parent_id!\" FROM identities WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "parent_id!",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "identities",
+            "name": "parent_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "acbedfaea2258050b2834e766c50bcf72a160d17ee052d7a7d9a2206e9b8f534"
+}

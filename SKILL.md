@@ -164,14 +164,22 @@ destroys the current value of a credential other services may be using.
 overslash_call {
   "service": "overslash",
   "action": "create_connection",
-  "params": { "service_id": "<id from step 2>", "provider": "google" }
+  "params": { "service": "<name or id from step 2>" }
 }
 ```
 
 Returns `{ auth_url, state }`. Surface `auth_url` to the user verbatim
 (it arrives pre-shortened when the shortener is configured):
-*"Click here to authorize Google Calendar."* Overslash binds the resulting
-token to the service on its OAuth callback. If instead this returns a `400`
+*"Click here to authorize Google Calendar."* `service` fixes the provider, and
+Overslash binds the resulting token to the service on its OAuth callback.
+
+The same call **fixes** a service that is already connected — missing scopes,
+revoked or expired access. Pass `scopes` for anything extra it needs; the
+connection the service uses is re-authorized **in place** (scopes are added,
+the connection id and every binding stay). Do not call `create_connection`
+with only a `provider` to fix a service: that makes a separate connection the
+service does not use. `list_connections` shows each connection's granted
+`scopes` and `updated_at`, so you can confirm the reconnect landed. If instead this returns a `400`
 about *"no OAuth client credentials configured"*, the org has no OAuth client —
 see [When the OAuth client itself is missing](#when-the-oauth-client-itself-is-missing).
 

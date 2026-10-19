@@ -173,7 +173,7 @@ pub(super) async fn oauth_callback(
     // connection itself is already written, and a missed stamp only means
     // that caller waits out its timeout and falls back to the link.
     let finished = match &outcome {
-        Ok(_) => Ok(()),
+        Ok(payload) => Ok(payload.connection_id),
         Err(err) => Err(redirect_reason_token(err)),
     };
     if let Err(e) = oauth_connection_flow::mark_finished(state.db(&ext), flow_id, finished).await {
@@ -423,6 +423,37 @@ async fn oauth_callback_inner(
     // would have to forge.
     let scope = OrgScope::new(org_id, state.db_pool(ext));
 
+    // Backstop for flows that did not name a target: the same user connecting
+    // the same account through the same OAuth client again is a reconnect, not
+    // a second connection. Updating in place keeps every service bound to the
+    // row, where a duplicate would sit unused beside it (the old row stays the
+    // default). Without an account email there is nothing to match on, and on
+    // a provider where one email spans several separately-granted tenants
+    // (Slack workspaces, Microsoft tenants) matching on it would overwrite one
+    // tenant's tokens with another's — those always get a new row.
+    let match_email = account
+        .email
+        .as_deref()
+        .filter(|_| provider.email_identifies_account);
+    // Whether the target came from the account match rather than the flow.
+    let matched_by_account = upgrade_connection_id.is_none() && match_email.is_some();
+    let upgrade_connection_id = match (upgrade_connection_id, match_email) {
+        (Some(id), _) => Some(id),
+        // Only a row this token's scopes cover: swapping a narrower token into
+        // a broader row would strip what its services use (see the repo fn).
+        (None, Some(email)) => scope
+            .find_connection_for_same_account(
+                identity_id,
+                provider_key,
+                email,
+                effective_byoc_id,
+                &granted_scopes,
+            )
+            .await?
+            .map(|c| c.id),
+        (None, None) => None,
+    };
+
     let (connection_id, event_type, effective_scopes) =
         if let Some(existing_id) = upgrade_connection_id {
             // Incremental upgrade: union the granted scope set with what was on
@@ -437,8 +468,15 @@ async fn oauth_callback_inner(
                     "state mismatch: upgrade connection does not match identity/provider".into(),
                 ));
             }
-            let merged: Vec<String> =
-                merge_scopes(existing.scopes.as_deref().unwrap_or(&[]), &granted_scopes);
+            // An upgrade flow requested the union already (every minter merges
+            // the row's scopes in), so the token covers it. A flow matched by
+            // account was only matched because its grant covers the row's
+            // scopes (see above); record what this token actually carries.
+            let merged: Vec<String> = if matched_by_account {
+                granted_scopes.clone()
+            } else {
+                merge_scopes(existing.scopes.as_deref().unwrap_or(&[]), &granted_scopes)
+            };
             let updated = scope
                 .update_connection_tokens_and_scopes(
                     existing_id,

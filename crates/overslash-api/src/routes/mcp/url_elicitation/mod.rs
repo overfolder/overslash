@@ -12,12 +12,13 @@
 //! the original call finishes on its own:
 //!
 //! - an auth envelope **replays** the call once the flow completes;
-//! - a setup / secret link **reports** the original result, marked completed;
+//! - a setup / secret link **reports** what it produced — never the original
+//!   result, whose link the agent would otherwise hand over again;
 //! - an approval link **calls** the approved action.
 //!
 //! When the link is declined, dismissed, fails or times out, the agent gets
-//! the original envelope with a `url_elicitation` note saying which, so it
-//! knows the user already saw the prompt. A URL elicitation never denies or
+//! the original envelope with a `url_elicitation` note saying which and what
+//! to do next, so it knows the user already saw the prompt. A URL elicitation never denies or
 //! resolves anything by itself.
 //!
 //! On by default wherever the client declares `elicitation.url` — it is not
@@ -42,9 +43,11 @@ use super::dispatch::{dispatch_call, dispatch_read};
 use super::modern::{STEP_URL, mint_url_state};
 
 mod legacy;
+mod outcome;
 use super::tools_call::{Reply, text_result};
 use super::*;
 pub(super) use legacy::{legacy_stream, record_legacy_answer};
+use outcome::noted;
 
 /// How long one browser hand-off may take before the call gives up on it —
 /// the same ceiling the form dialogs and the sweeper already work to.
@@ -55,12 +58,6 @@ const POLL_INTERVAL: Duration = Duration::from_secs(1);
 /// JSON-RPC ids of legacy URL elicitations. Still `elicit_`-prefixed, so
 /// `post_mcp` recognises the client's answer as an elicitation answer.
 pub(super) const URL_ID_PREFIX: &str = "elicit_url_";
-
-/// The field added to a fallback body saying how the hand-off ended.
-const NOTE_FIELD: &str = "url_elicitation";
-/// Beside the note, when the browser side said why: the provider's OAuth
-/// error code, `cancelled_by_user`, `declined_on_page`, `expired`, …
-const REASON_FIELD: &str = "url_elicitation_error";
 
 /// Browser-side reasons that mean the user said no, as opposed to something
 /// going wrong: reported as `declined`, not `failed`.
@@ -91,7 +88,7 @@ pub(super) struct Handoff {
 pub(super) enum Then {
     /// Run the original call again: the credential it lacked now exists.
     Replay,
-    /// Return the original result, marked completed: it *was* the setup.
+    /// Report what the setup produced: the original result *was* the setup.
     Report,
     /// Trigger the approved action (the plan's `Approval` hand-off).
     CallApproval,
@@ -528,7 +525,7 @@ where
 pub(super) async fn finish(ctx: &Ctx, plan: &Plan) -> Reply {
     let reply = match plan.then {
         Then::Replay => render(redispatch(ctx).await),
-        Then::Report => Reply::Result(text_result(&with_note(&plan.fallback, "completed", None))),
+        Then::Report => Reply::Result(text_result(&outcome::completed(ctx, plan).await)),
         Then::CallApproval => call_approval(ctx, plan).await,
     };
     retire_approval_row(ctx, plan, true).await;
@@ -551,7 +548,7 @@ pub(super) async fn stop(ctx: &Ctx, plan: &Plan, stopped: Stopped) -> Reply {
     {
         return match redispatch(ctx).await {
             Ok(ForwardOutcome::TypedError(envelope)) => {
-                Reply::Result(tool_error_result(&noted(&envelope, &stopped)))
+                Reply::Result(tool_error_result(&noted(&envelope, &stopped, plan.then)))
             }
             // Recovered some other way meanwhile: the result is the answer.
             Ok(ok @ ForwardOutcome::Ok(_)) => render(Ok(ok)),
@@ -569,7 +566,7 @@ pub(super) async fn stop(ctx: &Ctx, plan: &Plan, stopped: Stopped) -> Reply {
 }
 
 pub(super) fn fallback(plan: &Plan, stopped: &Stopped) -> Reply {
-    let body = noted(&plan.fallback, stopped);
+    let body = noted(&plan.fallback, stopped, plan.then);
     if plan.fallback_is_error {
         Reply::Result(tool_error_result(&body))
     } else {
@@ -601,10 +598,6 @@ async fn redispatch(ctx: &Ctx) -> Result<ForwardOutcome, String> {
         "overslash_read" => dispatch_read(&ctx.state, &ctx.bearer, &ctx.args).await,
         _ => dispatch_call(&ctx.state, &ctx.bearer, &ctx.args).await,
     }
-}
-
-fn noted(body: &Value, stopped: &Stopped) -> Value {
-    with_note(body, stopped.note(), stopped.reason())
 }
 
 async fn call_approval(ctx: &Ctx, plan: &Plan) -> Reply {
@@ -655,22 +648,6 @@ async fn retire_approval_row(ctx: &Ctx, plan: &Plan, completed: bool) {
     if let Err(e) = r {
         tracing::warn!(row, "retire url elicitation approval row failed: {e}");
     }
-}
-
-fn with_note(body: &Value, note: &str, reason: Option<&str>) -> Value {
-    let mut map = match body {
-        Value::Object(map) => map.clone(),
-        other => {
-            let mut m = serde_json::Map::new();
-            m.insert("result".into(), other.clone());
-            m
-        }
-    };
-    map.insert(NOTE_FIELD.into(), json!(note));
-    if let Some(reason) = reason {
-        map.insert(REASON_FIELD.into(), json!(reason));
-    }
-    Value::Object(map)
 }
 
 /// The `elicitation/create` params for one hand-off. The legacy era adds its
@@ -811,24 +788,6 @@ mod tests {
             &json!({ "elicitation": { "form": {} } })
         ));
         assert!(!supports_url_elicitation(&json!({})));
-    }
-
-    #[test]
-    fn a_note_is_added_without_disturbing_the_body() {
-        let body = json!({ "error": "needs_authentication", "auth_url": "https://x" });
-        let n = noted(&body, &Stopped::Declined(Some("access_denied".into())));
-        assert_eq!(n["url_elicitation"], "declined");
-        assert_eq!(n["url_elicitation_error"], "access_denied");
-        assert_eq!(n["auth_url"], "https://x");
-        assert!(
-            noted(&body, &Stopped::TimedOut)
-                .get("url_elicitation_error")
-                .is_none()
-        );
-        assert_eq!(
-            noted(&json!([1]), &Stopped::Failed(None)),
-            json!({ "result": [1], "url_elicitation": "failed" })
-        );
     }
 
     /// A refusal in the browser reads as `declined`, anything else as

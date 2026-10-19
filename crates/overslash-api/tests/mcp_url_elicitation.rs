@@ -5,7 +5,7 @@
 //! written, and checks what the tool call answers:
 //!
 //! - an auth envelope replays the call once the OAuth flow completes;
-//! - a credential link reports the original result, marked `completed`;
+//! - a credential or connect link reports what it produced, never the link;
 //! - an approval (form dialog unavailable) calls the approved action;
 //! - declined / failed hand-offs return the original body with a
 //!   `url_elicitation` note.
@@ -193,9 +193,9 @@ fn assert_fresh_link(done: &Value, old_flow: &str, note: &str, reason: Option<&s
     assert_eq!(r["isError"], true, "{done}");
     let env = text_of(r);
     assert_eq!(env["error"], "needs_authentication", "{env}");
-    assert_eq!(env["url_elicitation"], note, "{env}");
+    assert_eq!(env["url_elicitation"]["status"], note, "{env}");
     assert_eq!(
-        env.get("url_elicitation_error").and_then(Value::as_str),
+        env["url_elicitation"].get("reason").and_then(Value::as_str),
         reason,
         "{env}"
     );
@@ -239,7 +239,7 @@ async fn an_auth_link_replays_the_call_once_the_flow_completes() {
     assert!(!pending.is_finished(), "the retry must wait for the flow");
 
     // What the OAuth callback writes when the provider sends the user back.
-    db::oauth_connection_flow::mark_finished(&fx.pool, &flow_id, Ok(()))
+    db::oauth_connection_flow::mark_finished(&fx.pool, &flow_id, Ok(Uuid::new_v4()))
         .await
         .unwrap();
     let done = tokio::time::timeout(Duration::from_secs(20), pending)
@@ -269,8 +269,8 @@ async fn declining_in_the_client_keeps_the_unopened_link() {
     assert_eq!(r["isError"], true, "{done}");
     let env = text_of(r);
     assert_eq!(env["error"], "needs_authentication");
-    assert_eq!(env["url_elicitation"], "declined");
-    assert!(env.get("url_elicitation_error").is_none(), "{env}");
+    assert_eq!(env["url_elicitation"]["status"], "declined");
+    assert!(env["url_elicitation"].get("reason").is_none(), "{env}");
     assert_eq!(
         env["auth_url"],
         json!(link),
@@ -428,7 +428,7 @@ async fn a_late_retry_gets_the_fallback_not_an_error() {
     let done = fx.retry(&late, "accept").await;
     assert!(done.get("error").is_none(), "{done}");
     let env = text_of(&done["result"]);
-    assert_eq!(env["url_elicitation"], "timed_out", "{env}");
+    assert_eq!(env["url_elicitation"]["status"], "timed_out", "{env}");
     assert_eq!(env["auth_url"], json!(link), "unopened, so still usable");
 }
 
@@ -474,7 +474,225 @@ async fn a_client_without_url_mode_gets_the_plain_envelope() {
     }
 }
 
-// ── Credential entry: report the original result once fulfilled ─────────────
+// ── Connect links: report the connection, never the link ───────────────────
+
+/// What the OAuth callback writes: a connection for the owner user.
+async fn seed_connection(fx: &XFx) -> Uuid {
+    let owner = common::owner_user_id(&fx.pool, fx.org_id).await;
+    let access =
+        overslash_core::crypto::encrypt(&overslash_core::crypto::Keyring::test(), b"tok").unwrap();
+    sqlx::query_scalar(
+        "INSERT INTO connections (org_id, identity_id, provider_key, encrypted_access_token,
+                                  scopes, account_email)
+         VALUES ($1, $2, 'x', $3, $4, 'mock@x') RETURNING id",
+    )
+    .bind(fx.org_id)
+    .bind(owner)
+    .bind(&access)
+    .bind::<Vec<String>>(vec!["users.read".into()])
+    .fetch_one(&fx.pool)
+    .await
+    .unwrap()
+}
+
+/// `create_connection` through URL mode, completed in the browser: the agent
+/// gets the connection it produced, and none of the original result — whose
+/// `auth_url` and "hand it to the user" description got the link re-shared.
+/// What the callback left behind besides the connection itself.
+#[derive(Clone, Copy, PartialEq)]
+enum After {
+    /// Nothing pins it, and it is not the default.
+    Unbound,
+    /// The `x` instance is pinned to it.
+    PinnedToX,
+    /// Nothing pins it, but it is the default for its provider.
+    Default,
+}
+
+async fn completed_create_connection(fx: &XFx, after: After) -> (Value, Uuid, String) {
+    let call = json!({ "arguments": {
+        "service": "overslash",
+        "action": "create_connection",
+        "params": { "provider": "x" },
+    }});
+    let first = modern_call(
+        &fx.client,
+        &fx.base,
+        &fx.agent_key,
+        call.clone(),
+        url_caps(),
+    )
+    .await["result"]
+        .clone();
+    let link = asked_url(&first);
+    let flow_id = flow_id_of(&link);
+
+    let pending = {
+        let mut body = call.clone();
+        body["inputResponses"] = json!({ "url": { "action": "accept" } });
+        body["requestState"] = first["requestState"].clone();
+        let (client, base, key) = (fx.client.clone(), fx.base.clone(), fx.agent_key.clone());
+        tokio::spawn(async move { modern_call(&client, &base, &key, body, url_caps()).await })
+    };
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let conn = seed_connection(fx).await;
+    // The column defaults to true; only `Default` keeps it.
+    sqlx::query("UPDATE connections SET is_default = $2 WHERE id = $1")
+        .bind(conn)
+        .bind(after == After::Default)
+        .execute(&fx.pool)
+        .await
+        .unwrap();
+    if after == After::PinnedToX {
+        // Still `pending_setup` (awaiting its probe), as an instance whose
+        // link just completed often is: bound all the same.
+        sqlx::query(
+            "UPDATE service_instances SET connection_id = $1, status = 'pending_setup'
+              WHERE org_id = $2 AND name = 'x'",
+        )
+        .bind(conn)
+        .bind(fx.org_id)
+        .execute(&fx.pool)
+        .await
+        .unwrap();
+    }
+    db::oauth_connection_flow::mark_finished(&fx.pool, &flow_id, Ok(conn))
+        .await
+        .unwrap();
+    let done = tokio::time::timeout(Duration::from_secs(20), pending)
+        .await
+        .expect("the retry answers once the flow completes")
+        .unwrap();
+    assert_eq!(done["result"]["resultType"], "complete", "{done}");
+    (text_of(&done["result"]), conn, link)
+}
+
+#[tokio::test]
+async fn a_completed_connect_link_reports_the_connection_not_the_link() {
+    let fx = x_setup().await;
+    let (out, conn, link) = completed_create_connection(&fx, After::Unbound).await;
+
+    let text = out.to_string();
+    assert!(!text.contains(&link), "the link is gone: {out}");
+    for gone in ["auth_url", "setup_url", "connect", "action_description"] {
+        assert!(
+            !text.contains(&format!("\"{gone}\"")),
+            "{gone} leaked: {out}"
+        );
+    }
+    let note = &out["url_elicitation"];
+    assert_eq!(note["status"], "completed", "{out}");
+    let c = &note["connections"][0];
+    assert_eq!(c["connection_id"], json!(conn), "{out}");
+    assert_eq!(c["provider_key"], "x", "{out}");
+    assert_eq!(c["account_email"], "mock@x", "{out}");
+    assert_eq!(c["bound_services"], json!([]), "{out}");
+    let next = note["next"].as_str().unwrap();
+    assert!(next.contains("Do not share the link again"), "{next}");
+    assert!(
+        next.contains("No service is pinned to this connection"),
+        "an unbound connection is called out: {next}"
+    );
+}
+
+#[tokio::test]
+async fn a_completed_connect_link_names_the_services_bound_to_it() {
+    let fx = x_setup().await;
+    let (out, _, _) = completed_create_connection(&fx, After::PinnedToX).await;
+    let note = &out["url_elicitation"];
+    assert_eq!(
+        note["connections"][0]["bound_services"],
+        json!([{ "name": "x", "status": "pending_setup" }]),
+        "{out}"
+    );
+    assert!(
+        !note["next"]
+            .as_str()
+            .unwrap()
+            .contains("No service is pinned"),
+        "{out}"
+    );
+}
+
+/// An instance on `use_default_connection` follows the provider's default
+/// without pinning it: a default connection is in use with nothing pinned.
+#[tokio::test]
+async fn a_completed_default_connection_is_not_called_unbound() {
+    let fx = x_setup().await;
+    let (out, _, _) = completed_create_connection(&fx, After::Default).await;
+    let c = &out["url_elicitation"]["connections"][0];
+    assert_eq!(c["is_default"], true, "{out}");
+    assert_eq!(c["bound_services"], json!([]), "{out}");
+    assert!(
+        !out["url_elicitation"]["next"]
+            .as_str()
+            .unwrap()
+            .contains("No service is pinned"),
+        "{out}"
+    );
+}
+
+/// `create_service` for an OAuth template: once the connect link completes,
+/// the agent gets the instance re-read — the `credentials_status` in the
+/// original result predates the user's click.
+#[tokio::test]
+async fn a_completed_create_service_reports_the_fresh_service_status() {
+    let fx = x_setup().await;
+    let call = json!({ "arguments": {
+        "service": "overslash",
+        "action": "create_service",
+        "params": { "template_key": "x", "name": "x_mine" },
+    }});
+    let first = modern_call(
+        &fx.client,
+        &fx.base,
+        &fx.agent_key,
+        call.clone(),
+        url_caps(),
+    )
+    .await["result"]
+        .clone();
+    let link = asked_url(&first);
+    let flow_id = flow_id_of(&link);
+    let pending = {
+        let mut body = call.clone();
+        body["inputResponses"] = json!({ "url": { "action": "accept" } });
+        body["requestState"] = first["requestState"].clone();
+        let (client, base, key) = (fx.client.clone(), fx.base.clone(), fx.agent_key.clone());
+        tokio::spawn(async move { modern_call(&client, &base, &key, body, url_caps()).await })
+    };
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let conn = seed_connection(&fx).await;
+    sqlx::query(
+        "UPDATE service_instances SET connection_id = $1 WHERE org_id = $2 AND name = 'x_mine'",
+    )
+    .bind(conn)
+    .bind(fx.org_id)
+    .execute(&fx.pool)
+    .await
+    .unwrap();
+    db::oauth_connection_flow::mark_finished(&fx.pool, &flow_id, Ok(conn))
+        .await
+        .unwrap();
+    let done = tokio::time::timeout(Duration::from_secs(20), pending)
+        .await
+        .unwrap()
+        .unwrap();
+    let out = text_of(&done["result"]);
+    assert!(!out.to_string().contains(&link), "the link is gone: {out}");
+    let note = &out["url_elicitation"];
+    assert_eq!(note["status"], "completed", "{out}");
+    assert_eq!(note["service"]["name"], "x_mine", "{out}");
+    assert_eq!(note["service"]["connection_id"], json!(conn), "{out}");
+    assert!(note["service"]["credentials_status"].is_string(), "{out}");
+    assert_eq!(
+        note["connections"][0]["bound_services"],
+        json!([{ "name": "x_mine", "status": "active" }]),
+        "{out}"
+    );
+}
+
+// ── Credential entry: report what was entered once fulfilled ─────────────
 
 #[tokio::test]
 async fn a_secret_request_reports_completed_once_the_user_enters_it() {
@@ -523,13 +741,19 @@ async fn a_secret_request_reports_completed_once_the_user_enters_it() {
         .unwrap()
         .unwrap();
     let out = text_of(&done["result"]);
-    assert_eq!(out["url_elicitation"], "completed", "{out}");
-    // The platform result wraps the action's own body; the note sits on the
-    // outside, and the original result is carried through untouched.
+    // What it produced, not the original result: the link and the
+    // "hand it to your user" description would get it shared again.
+    let note = &out["url_elicitation"];
+    assert_eq!(note["status"], "completed", "{out}");
+    assert_eq!(note["secrets"][0]["request_id"], json!(request_id), "{out}");
+    assert_eq!(note["secrets"][0]["secret_name"], "acme_token", "{out}");
     assert!(
-        out.to_string().contains(&request_id),
-        "the original result is what comes back: {out}"
+        note["next"]
+            .as_str()
+            .is_some_and(|n| n.contains("Do not share"))
     );
+    assert!(!out.to_string().contains(&link), "the link is gone: {out}");
+    assert!(out.get("action_description").is_none(), "{out}");
 }
 
 /// Deny on the provide page records the refusal; the waiting call ends now
@@ -598,8 +822,11 @@ async fn deny_on_the_provide_page_ends_the_wait_as_declined() {
         .expect("the Deny ends the wait now")
         .unwrap();
     let out = text_of(&done["result"]);
-    assert_eq!(out["url_elicitation"], "declined", "{out}");
-    assert_eq!(out["url_elicitation_error"], "declined_on_page", "{out}");
+    assert_eq!(out["url_elicitation"]["status"], "declined", "{out}");
+    assert_eq!(
+        out["url_elicitation"]["reason"], "declined_on_page",
+        "{out}"
+    );
 }
 
 // ── Approvals, with the in-client form unavailable ──────────────────────────
@@ -707,7 +934,7 @@ async fn declining_an_approval_link_is_not_a_denial() {
     .await;
     let env = envelope_of(&done["result"]);
     assert_eq!(env["status"], "pending_approval");
-    assert_eq!(env["url_elicitation"], "declined");
+    assert_eq!(env["url_elicitation"]["status"], "declined");
     assert_eq!(fx.approval_status(&approval_id).await, "pending");
 }
 
@@ -887,5 +1114,5 @@ async fn legacy_decline_ends_the_stream_with_the_noted_envelope() {
     let result = events.next().await;
     let env = envelope_of(&result["result"]);
     assert_eq!(env["status"], "pending_approval");
-    assert_eq!(env["url_elicitation"], "declined");
+    assert_eq!(env["url_elicitation"]["status"], "declined");
 }

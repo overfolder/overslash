@@ -130,6 +130,7 @@ mod oauth_dcr_redirect_uris;
 mod oauth_default_identity_scopes;
 mod oauth_mcp_org_scoping;
 mod oauth_preview_handoff;
+mod oauth_reauth;
 mod oauth_return_url;
 mod oauth_upstream;
 mod oauth_upstream_tls;

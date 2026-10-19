@@ -16,6 +16,7 @@ import type {
 	ImportTemplateRequest,
 	InitiateConnectionRequest,
 	InitiateConnectionResponse,
+	OAuthFlowStatus,
 	OAuthProviderInfo,
 	ServiceGroupRef,
 	ServiceInstanceDetail,
@@ -409,6 +410,10 @@ export const getConnection = (id: string, signal?: AbortSignal) =>
 
 export const initiateOAuth = (req: InitiateConnectionRequest, signal?: AbortSignal) =>
 	session.post<InitiateConnectionResponse>('/v1/connections', req, signal);
+
+/** How a connect flow ended — what the popup poll waits on. */
+export const getOAuthFlow = (flowId: string, signal?: AbortSignal) =>
+	session.get<OAuthFlowStatus>(`/v1/oauth/flows/${encodeURIComponent(flowId)}`, signal);
 
 export const deleteConnection = (id: string) => session.delete<void>(`/v1/connections/${id}`);
 

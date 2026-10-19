@@ -85,6 +85,7 @@ pub(super) async fn initiate_connection(
         pin_service_ids.push(sid);
     }
     let input = CreateConnectionInput {
+        service: None,
         provider: req.provider,
         scopes: req.scopes,
         byoc_credential_id: req.byoc_credential_id,

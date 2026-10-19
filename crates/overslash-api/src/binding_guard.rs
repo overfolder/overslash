@@ -79,6 +79,11 @@ const ALLOWED: &[(&str, &str, &str)] = &[
         "login_hint only from the flow identity's own connection",
     ),
     (
+        ".get_connection_any_owner(",
+        "services/platform_connections/reauth.rs",
+        "upgrade target refused unless it belongs to the caller's ceiling user",
+    ),
+    (
         ".get_byoc_credential_any_owner(",
         "routes/byoc_credentials.rs",
         "BYOC CRUD: self or org admin",

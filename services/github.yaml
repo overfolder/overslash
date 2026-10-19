@@ -1,23 +1,29 @@
-# GitHub via a GitHub App (user-to-server tokens). The org's OAuth client
-# credentials (`OAUTH_GITHUB_CLIENT_ID` / `OAUTH_GITHUB_CLIENT_SECRET` or a
-# BYOC credential) must belong to a GitHub App, and the app must be installed
-# on the target repos/orgs. The authorize/token endpoints are identical to the
-# classic OAuth App flow; user access tokens expire (~8h) and refresh via the
-# standard refresh grant, which the gateway already performs automatically.
-# An org that would rather not run a GitHub App at all can instead pick this
-# template's `token` auth mode at creation and paste a personal access token;
-# the two are alternatives on the same host and the same paths.
+# GitHub over OAuth. The configured client (`OAUTH_GITHUB_CLIENT_ID` /
+# `OAUTH_GITHUB_CLIENT_SECRET` or a BYOC credential) may be either kind of
+# GitHub app, and the same template serves both:
+# - a classic OAuth App honours the `scopes` below, so the user grants `repo`
+#   (private repos, issues, pull requests) and `read:org` on consent, and
+#   approves each org under "Organization access";
+# - a GitHub App ignores `scope` entirely: the token reaches the intersection of
+#   the app's fine-grained permissions and its installations, and comes back
+#   with an empty scope list. No action declares `required_scopes`, so that
+#   empty list never gates a call.
+# GitHub App user tokens expire (~8h) and refresh via the standard refresh
+# grant; OAuth App tokens never expire. The authorize/token endpoints are the
+# same for both. An org that would rather use neither can pick this template's
+# `token` auth mode at creation and paste a personal access token; the modes
+# are alternatives on the same host and the same paths.
 openapi: 3.1.0
 info:
   title: GitHub
   key: github
   category: Development
   description: >-
-    GitHub via a GitHub App. The configured OAuth client must be a GitHub App
-    (not a classic OAuth App), and the app must be installed on the
-    repositories or organizations you want to act on. Access is governed by
-    the app's fine-grained permissions and its installations, not OAuth
-    scopes.
+    GitHub over OAuth. With a classic OAuth App client, access is what the
+    `repo` and `read:org` scopes grant, plus each organization's approval of
+    the app. With a GitHub App client, the scopes are ignored and access is
+    the app's permissions on the repositories or organizations it is
+    installed on.
 servers:
   - url: https://api.github.com
 components:
@@ -29,11 +35,11 @@ components:
   # granted.
   x-overslash-auth-modes:
     oauth:
-      label: GitHub App
+      label: Sign in with GitHub
       description: >-
-        Sign in through the configured GitHub App. Access is the intersection
-        of the app's permissions and the installations you can reach, and the
-        token refreshes itself.
+        Authorize through the configured GitHub client. With an OAuth App that
+        grants the repo and read:org scopes; with a GitHub App, access is the
+        app's permissions on the installations you can reach.
       default: true
       schemes: [oauth]
     token:
@@ -58,10 +64,13 @@ components:
         authorizationCode:
           authorizationUrl: https://github.com/login/oauth/authorize
           tokenUrl: https://github.com/login/oauth/access_token
-          # GitHub Apps ignore the `scope` parameter: what a user-to-server
-          # token can do is the intersection of the app's permissions and the
-          # installation the user has access to. Declared empty on purpose.
-          scopes: {}
+          # Honoured by a classic OAuth App, ignored by a GitHub App (see the
+          # header). `repo` is the only scope that reaches private
+          # repositories, and it is read/write; Overslash's permission rules
+          # and approvals are what narrow it per action.
+          scopes:
+            repo: Read and write repositories, issues and pull requests, public and private
+            read:org: Read organization membership
 paths:
   /user:
     get:
@@ -88,7 +97,11 @@ paths:
       description: >-
         Diagnostic for "app not installed" failures: lists the installations
         of this GitHub App that the user can access. Repositories outside
-        these installations are invisible to the token.
+        these installations are invisible to the token. Only works when the
+        configured client is a GitHub App; with a classic OAuth App GitHub
+        answers 403 "You must authenticate with an access token authorized to
+        a GitHub App", and org access is granted per org on the consent screen
+        instead.
       risk: read
       parameters:
         - name: per_page

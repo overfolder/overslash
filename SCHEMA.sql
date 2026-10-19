@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict ucgw40mCIPlPgV5GqW8GKWP8CHVzpEgVOckGaAcWQqXjRgTefZmau7iSCU6Bnfd
+\restrict nxtGIrFIHxU1sgaFQM2BLJGUoJk6qcNKlcysbGVOTwgT1JC3IIfGOyr3uWRemuT
 
 -- Dumped from database version 16.14 (Debian 16.14-1.pgdg12+1)
 -- Dumped by pg_dump version 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1)
@@ -824,7 +824,8 @@ CREATE TABLE public.oauth_connection_flows (
     pin_service_instance_ids uuid[] DEFAULT '{}'::uuid[] NOT NULL,
     completed_at timestamp with time zone,
     failed_at timestamp with time zone,
-    failure text
+    failure text,
+    connection_id uuid
 );
 
 
@@ -847,6 +848,13 @@ COMMENT ON COLUMN public.oauth_connection_flows.failed_at IS 'Set by the OAuth c
 --
 
 COMMENT ON COLUMN public.oauth_connection_flows.failure IS 'Short reason the flow failed (provider OAuth error code, cancelled_by_user, or a coarse callback token). Set with failed_at.';
+
+
+--
+-- Name: COLUMN oauth_connection_flows.connection_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.oauth_connection_flows.connection_id IS 'The connection the OAuth callback created or upgraded. Set with completed_at.';
 
 
 --
@@ -933,7 +941,8 @@ CREATE TABLE public.oauth_providers (
     jwks_uri text,
     default_identity_scopes text[] DEFAULT '{}'::text[] NOT NULL,
     login_hint_param text,
-    refresh_endpoint text
+    refresh_endpoint text,
+    email_identifies_account boolean DEFAULT false NOT NULL
 );
 
 
@@ -3995,5 +4004,5 @@ ALTER TABLE ONLY public.webhook_subscriptions
 -- PostgreSQL database dump complete
 --
 
-\unrestrict ucgw40mCIPlPgV5GqW8GKWP8CHVzpEgVOckGaAcWQqXjRgTefZmau7iSCU6Bnfd
+\unrestrict nxtGIrFIHxU1sgaFQM2BLJGUoJk6qcNKlcysbGVOTwgT1JC3IIfGOyr3uWRemuT
 
