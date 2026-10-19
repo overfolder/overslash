@@ -113,9 +113,10 @@ pub(super) async fn completed(ctx: &Ctx, plan: &Plan) -> Value {
 
     let mut next = COMPLETED_NEXT.to_string();
     // An unpinned instance on `use_default_connection` follows the default,
-    // so a default connection is in use even with nothing pinned to it.
+    // so a default connection is in use even with nothing pinned to it. An
+    // unread `is_default` (the lookup failed) is not evidence of either.
     if connections.iter().any(|c| {
-        c["bound_services"].as_array().is_some_and(Vec::is_empty) && c["is_default"] != true
+        c["bound_services"].as_array().is_some_and(Vec::is_empty) && c["is_default"] == false
     }) {
         next.push_str(UNBOUND_NEXT);
     }

@@ -348,21 +348,44 @@ async fn connecting_the_same_account_again_updates_the_existing_connection() {
         .connect(json!({"provider": "x", "scopes": ["tweet.read"]}))
         .await;
     let (_, second) = e
-        .connect(json!({"provider": "x", "scopes": ["tweet.write"]}))
+        .connect(json!({"provider": "x", "scopes": ["tweet.read", "tweet.write"]}))
         .await;
     assert_eq!(
         first["connection_id"], second["connection_id"],
-        "same user, provider, account and client ⇒ same row"
+        "same user, provider, account and client, and a grant covering the row ⇒ same row"
     );
 
     let conns = e.x_connections().await;
     assert_eq!(conns.len(), 1, "{conns:?}");
-    // The second flow asked only for tweet.write, and a provider that does not
-    // accumulate grants issues a token with just that — so the row records
-    // what the token carries, not the union.
+    assert!(has_scope(&conns[0], "tweet.read"), "{conns:?}");
     assert!(has_scope(&conns[0], "tweet.write"), "{conns:?}");
-    assert!(!has_scope(&conns[0], "tweet.read"), "{conns:?}");
     assert_eq!(conns[0]["is_default"], true);
+}
+
+/// A provider that does not accumulate grants (GitHub OAuth Apps) issues a
+/// token carrying only what this flow asked for. Swapping it into the row
+/// would strip the broader token its services rely on, so the narrower grant
+/// gets a row of its own and the original is left untouched.
+#[tokio::test]
+async fn a_narrower_grant_for_the_same_account_never_shrinks_the_existing_connection() {
+    let e = setup().await;
+    let (_, first) = e
+        .connect(json!({"provider": "x", "scopes": ["tweet.read", "tweet.write"]}))
+        .await;
+    let (_, second) = e
+        .connect(json!({"provider": "x", "scopes": ["tweet.write"]}))
+        .await;
+    assert_ne!(first["connection_id"], second["connection_id"]);
+
+    let conns = e.x_connections().await;
+    assert_eq!(conns.len(), 2, "{conns:?}");
+    let original = conns
+        .iter()
+        .find(|c| c["id"] == first["connection_id"])
+        .unwrap_or_else(|| panic!("original row gone: {conns:?}"));
+    assert!(has_scope(original, "tweet.read"), "{original}");
+    assert!(has_scope(original, "tweet.write"), "{original}");
+    assert_eq!(original["is_default"], true);
 }
 
 /// Slack, Microsoft and the like: one email, several separately-granted
