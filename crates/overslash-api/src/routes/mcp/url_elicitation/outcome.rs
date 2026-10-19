@@ -100,7 +100,7 @@ pub(super) async fn completed(ctx: &Ctx, plan: &Plan) -> Value {
     if !secrets.is_empty() {
         note["secrets"] = json!(secrets);
     }
-    if let Some(service) = created_service(ctx, plan).await {
+    if let Some(service) = service_after(ctx, plan).await {
         note["service"] = service;
     }
     note["next"] = json!(next);
@@ -138,20 +138,25 @@ async fn connection(ctx: &Ctx, flow_id: &str) -> Option<Value> {
         Err(e) => tracing::warn!(%id, "read produced connection failed: {e}"),
     }
     let org = overslash_db::OrgScope::new(flow.org_id, pool);
-    match org.connection_usage_instances(id).await {
-        Ok(used) => {
-            let names: Vec<String> = used.into_iter().map(|(_, name, _)| name).collect();
-            out["bound_services"] = json!(names);
+    match org.connection_bound_instances(id).await {
+        Ok(bound) => {
+            let bound: Vec<Value> = bound
+                .into_iter()
+                .map(|(name, status)| json!({ "name": name, "status": status }))
+                .collect();
+            out["bound_services"] = json!(bound);
         }
         Err(e) => tracing::warn!(%id, "read services bound to connection failed: {e}"),
     }
     Some(out)
 }
 
-/// For `create_service`, the instance it made, re-read now that its setup is
+/// For `create_service`, or an `update_service` that switched auth mode and
+/// so minted a fresh handshake, the instance, re-read now that its setup is
 /// done: the `credentials_status` in the original result predates it.
-async fn created_service(ctx: &Ctx, plan: &Plan) -> Option<Value> {
-    if ctx.args.get("action").and_then(Value::as_str) != Some("create_service") {
+async fn service_after(ctx: &Ctx, plan: &Plan) -> Option<Value> {
+    let action = ctx.args.get("action").and_then(Value::as_str);
+    if !matches!(action, Some("create_service" | "update_service")) {
         return None;
     }
     let name = plan
@@ -169,7 +174,13 @@ async fn created_service(ctx: &Ctx, plan: &Plan) -> Option<Value> {
     {
         Ok(ForwardOutcome::Ok(svc)) => {
             let mut out = json!({ "name": name });
-            for key in ["id", "status", "credentials_status", "connection_id"] {
+            for key in [
+                "id",
+                "status",
+                "auth_mode",
+                "credentials_status",
+                "connection_id",
+            ] {
                 if let Some(v) = svc.get(key).filter(|v| !v.is_null()) {
                     out[key] = v.clone();
                 }

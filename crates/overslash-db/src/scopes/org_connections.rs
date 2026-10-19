@@ -225,6 +225,15 @@ impl OrgScope {
         connection::usage_instances_by_connection(self.db(), self.org_id(), connection_id).await
     }
 
+    /// Instances bound to a connection in any non-archived state, as
+    /// (name, status). See [`connection::bound_instances_by_connection`].
+    pub async fn connection_bound_instances(
+        &self,
+        connection_id: Uuid,
+    ) -> Result<Vec<(String, String)>, sqlx::Error> {
+        connection::bound_instances_by_connection(self.db(), self.org_id(), connection_id).await
+    }
+
     /// Delete a connection by id, scoped to this org. Returns `false` if the
     /// id belongs to another tenant. Used by org-admin connection deletion.
     pub async fn delete_connection(&self, id: Uuid) -> Result<bool, sqlx::Error> {

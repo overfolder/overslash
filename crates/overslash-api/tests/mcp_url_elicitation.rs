@@ -526,8 +526,11 @@ async fn completed_create_connection(fx: &XFx, bind_to_x: bool) -> (Value, Uuid,
     tokio::time::sleep(Duration::from_millis(1500)).await;
     let conn = seed_connection(fx).await;
     if bind_to_x {
+        // Still `pending_setup` (awaiting its probe), as an instance whose
+        // link just completed often is: bound all the same.
         sqlx::query(
-            "UPDATE service_instances SET connection_id = $1 WHERE org_id = $2 AND name = 'x'",
+            "UPDATE service_instances SET connection_id = $1, status = 'pending_setup'
+              WHERE org_id = $2 AND name = 'x'",
         )
         .bind(conn)
         .bind(fx.org_id)
@@ -581,7 +584,7 @@ async fn a_completed_connect_link_names_the_services_bound_to_it() {
     let note = &out["url_elicitation"];
     assert_eq!(
         note["connections"][0]["bound_services"],
-        json!(["x"]),
+        json!([{ "name": "x", "status": "pending_setup" }]),
         "{out}"
     );
     assert!(
@@ -645,7 +648,7 @@ async fn a_completed_create_service_reports_the_fresh_service_status() {
     assert!(note["service"]["credentials_status"].is_string(), "{out}");
     assert_eq!(
         note["connections"][0]["bound_services"],
-        json!(["x_mine"]),
+        json!([{ "name": "x_mine", "status": "active" }]),
         "{out}"
     );
 }
