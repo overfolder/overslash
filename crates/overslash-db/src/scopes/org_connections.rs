@@ -141,14 +141,15 @@ impl OrgScope {
     }
 
     /// Find the connection an OAuth callback for this (identity, provider,
-    /// account, OAuth client) should update in place, scoped to this org. See
-    /// [`connection::find_same_account`].
+    /// account, OAuth client) should update in place, scoped to this org: one
+    /// whose scopes `granted_scopes` covers. See [`connection::find_same_account`].
     pub async fn find_connection_for_same_account(
         &self,
         identity_id: Uuid,
         provider_key: &str,
         account_email: &str,
         byoc_credential_id: Option<Uuid>,
+        granted_scopes: &[String],
     ) -> Result<Option<ConnectionRow>, sqlx::Error> {
         connection::find_same_account(
             self.db(),
@@ -157,6 +158,7 @@ impl OrgScope {
             provider_key,
             account_email,
             byoc_credential_id,
+            granted_scopes,
         )
         .await
     }

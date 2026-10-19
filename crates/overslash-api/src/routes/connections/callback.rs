@@ -439,21 +439,17 @@ async fn oauth_callback_inner(
     let matched_by_account = upgrade_connection_id.is_none() && match_email.is_some();
     let upgrade_connection_id = match (upgrade_connection_id, match_email) {
         (Some(id), _) => Some(id),
-        // Only when this token covers every scope the row already has. A
-        // provider that does not accumulate grants (GitHub OAuth Apps) issues
-        // a token with just this flow's scopes; swapping it in would strip the
-        // broader token the row's services rely on. A second row is the
-        // recoverable outcome.
+        // Only a row this token's scopes cover: swapping a narrower token into
+        // a broader row would strip what its services use (see the repo fn).
         (None, Some(email)) => scope
-            .find_connection_for_same_account(identity_id, provider_key, email, effective_byoc_id)
+            .find_connection_for_same_account(
+                identity_id,
+                provider_key,
+                email,
+                effective_byoc_id,
+                &granted_scopes,
+            )
             .await?
-            .filter(|c| {
-                c.scopes
-                    .as_deref()
-                    .unwrap_or(&[])
-                    .iter()
-                    .all(|s| granted_scopes.contains(s))
-            })
             .map(|c| c.id),
         (None, None) => None,
     };

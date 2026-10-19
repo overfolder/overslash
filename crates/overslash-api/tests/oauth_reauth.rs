@@ -386,6 +386,14 @@ async fn a_narrower_grant_for_the_same_account_never_shrinks_the_existing_connec
     assert!(has_scope(original, "tweet.read"), "{original}");
     assert!(has_scope(original, "tweet.write"), "{original}");
     assert_eq!(original["is_default"], true);
+
+    // The same narrow connect again finds the narrow row it made last time,
+    // not just the broader default that turned it away.
+    let (_, third) = e
+        .connect(json!({"provider": "x", "scopes": ["tweet.write"]}))
+        .await;
+    assert_eq!(third["connection_id"], second["connection_id"]);
+    assert_eq!(e.x_connections().await.len(), 2);
 }
 
 /// Slack, Microsoft and the like: one email, several separately-granted

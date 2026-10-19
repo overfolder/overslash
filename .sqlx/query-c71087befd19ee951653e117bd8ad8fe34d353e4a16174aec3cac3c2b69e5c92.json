@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, org_id, identity_id, provider_key, encrypted_access_token,\n                encrypted_refresh_token, token_expires_at, scopes AS \"scopes?: Vec<String>\",\n                account_email, account_picture, byoc_credential_id, is_default, keep, reauth_required,\n                created_at, updated_at\n         FROM connections\n         WHERE org_id = $1 AND identity_id = $2 AND provider_key = $3\n           AND account_email = $4\n           AND byoc_credential_id IS NOT DISTINCT FROM $5\n         ORDER BY is_default DESC, created_at DESC\n         LIMIT 1",
+  "query": "SELECT id, org_id, identity_id, provider_key, encrypted_access_token,\n                encrypted_refresh_token, token_expires_at, scopes AS \"scopes?: Vec<String>\",\n                account_email, account_picture, byoc_credential_id, is_default, keep, reauth_required,\n                created_at, updated_at\n         FROM connections\n         WHERE org_id = $1 AND identity_id = $2 AND provider_key = $3\n           AND account_email = $4\n           AND byoc_credential_id IS NOT DISTINCT FROM $5\n           AND COALESCE(scopes, '{}') <@ $6::text[]\n         ORDER BY is_default DESC, created_at DESC\n         LIMIT 1",
   "describe": {
     "columns": [
       {
@@ -186,7 +186,8 @@
         "Uuid",
         "Text",
         "Text",
-        "Uuid"
+        "Uuid",
+        "TextArray"
       ]
     },
     "nullable": [
@@ -208,5 +209,5 @@
       false
     ]
   },
-  "hash": "301c9b119bf476aecaea4bff6d007c2783e87992cc3fbd366e469f45cd2f36ac"
+  "hash": "c71087befd19ee951653e117bd8ad8fe34d353e4a16174aec3cac3c2b69e5c92"
 }
