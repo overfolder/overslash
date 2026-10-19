@@ -48,7 +48,7 @@ pub struct OAuthProviderRow {
     /// reconnect of the existing row. False for providers where one login
     /// spans separately-authorized tenants (Microsoft, Slack workspaces,
     /// HubSpot portals, Notion workspaces) and for every custom provider.
-    /// Seeded in migration 135.
+    /// Seeded in migration 136.
     pub email_identifies_account: bool,
     pub created_at: OffsetDateTime,
 }
