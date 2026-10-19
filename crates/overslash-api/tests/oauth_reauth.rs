@@ -396,6 +396,45 @@ async fn a_narrower_grant_for_the_same_account_never_shrinks_the_existing_connec
     assert_eq!(e.x_connections().await.len(), 2);
 }
 
+/// An imported connection that named no scopes stores `NULL` ("unknown"),
+/// which the scope gate treats as possibly broad. No grant can prove it covers
+/// that, so a connect for the same account leaves the row and its token alone.
+#[tokio::test]
+async fn a_connection_with_unknown_scopes_is_never_overwritten_by_account() {
+    let e = setup().await;
+    let (_, first) = e
+        .connect(json!({"provider": "x", "scopes": ["tweet.read"]}))
+        .await;
+    let first_id: Uuid = first["connection_id"].as_str().unwrap().parse().unwrap();
+    sqlx::query!(
+        "UPDATE connections SET scopes = NULL WHERE id = $1",
+        first_id
+    )
+    .execute(&e.pool)
+    .await
+    .unwrap();
+
+    let (_, second) = e
+        .connect(json!({"provider": "x", "scopes": ["tweet.read", "tweet.write"]}))
+        .await;
+    assert_ne!(first["connection_id"], second["connection_id"]);
+    let conns = e.x_connections().await;
+    assert_eq!(conns.len(), 2, "{conns:?}");
+    let original = conns
+        .iter()
+        .find(|c| c["id"] == first["connection_id"])
+        .unwrap_or_else(|| panic!("original row gone: {conns:?}"));
+    // The API renders unknown scopes as `[]`; what matters is that the
+    // callback never wrote to the row.
+    assert_eq!(original["updated_at"], original["created_at"], "{original}");
+
+    // The new row has known scopes, so the next connect lands on it.
+    let (_, third) = e
+        .connect(json!({"provider": "x", "scopes": ["tweet.read", "tweet.write"]}))
+        .await;
+    assert_eq!(third["connection_id"], second["connection_id"]);
+}
+
 /// Slack, Microsoft and the like: one email, several separately-granted
 /// workspaces or tenants. A second connect must never overwrite the first.
 #[tokio::test]
