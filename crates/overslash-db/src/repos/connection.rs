@@ -149,6 +149,13 @@ pub(crate) async fn find_for_import(
 /// [`find_for_import`], the account is required and matched exactly — a NULL
 /// `account_email` on either side never matches — and the BYOC client must
 /// agree, since the row's refresh flow runs against its own client.
+///
+/// Only rows whose scopes `granted_scopes` covers are candidates. A provider
+/// that does not accumulate grants (GitHub OAuth Apps) issues a token with
+/// just the new flow's scopes, and swapping it into a broader row would strip
+/// what that row's services rely on. Filtering here, before the `LIMIT`, lets
+/// a repeated narrow connect find the narrow row it made last time instead of
+/// being turned away by the broader default and adding another one.
 pub(crate) async fn find_same_account(
     pool: &PgPool,
     org_id: Uuid,
@@ -156,6 +163,7 @@ pub(crate) async fn find_same_account(
     provider_key: &str,
     account_email: &str,
     byoc_credential_id: Option<Uuid>,
+    granted_scopes: &[String],
 ) -> Result<Option<ConnectionRow>, sqlx::Error> {
     sqlx::query_as!(
         ConnectionRow,
@@ -168,6 +176,7 @@ pub(crate) async fn find_same_account(
          WHERE org_id = $1 AND identity_id = $2 AND provider_key = $3
            AND account_email = $4
            AND byoc_credential_id IS NOT DISTINCT FROM $5
+           AND COALESCE(scopes, '{}') <@ $6::text[]
          ORDER BY is_default DESC, created_at DESC
          LIMIT 1",
         org_id,
@@ -175,6 +184,7 @@ pub(crate) async fn find_same_account(
         provider_key,
         account_email,
         byoc_credential_id,
+        granted_scopes,
     )
     .fetch_optional(pool)
     .await
