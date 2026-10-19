@@ -156,6 +156,11 @@ pub(crate) async fn find_for_import(
 /// what that row's services rely on. Filtering here, before the `LIMIT`, lets
 /// a repeated narrow connect find the narrow row it made last time instead of
 /// being turned away by the broader default and adding another one.
+///
+/// A row with unknown scopes (`NULL`: a white-label import that named none,
+/// migration 083) is never a candidate. The scope gate gives it the benefit of
+/// the doubt, so it may carry more than any grant here proves; the connect
+/// gets a new row with known scopes, which later reconnects then match.
 pub(crate) async fn find_same_account(
     pool: &PgPool,
     org_id: Uuid,
@@ -176,7 +181,7 @@ pub(crate) async fn find_same_account(
          WHERE org_id = $1 AND identity_id = $2 AND provider_key = $3
            AND account_email = $4
            AND byoc_credential_id IS NOT DISTINCT FROM $5
-           AND COALESCE(scopes, '{}') <@ $6::text[]
+           AND scopes IS NOT NULL AND scopes <@ $6::text[]
          ORDER BY is_default DESC, created_at DESC
          LIMIT 1",
         org_id,
