@@ -435,6 +435,8 @@ async fn oauth_callback_inner(
         .email
         .as_deref()
         .filter(|_| provider.email_identifies_account);
+    // Whether the target came from the account match rather than the flow.
+    let matched_by_account = upgrade_connection_id.is_none() && match_email.is_some();
     let upgrade_connection_id = match (upgrade_connection_id, match_email) {
         (Some(id), _) => Some(id),
         (None, Some(email)) => scope
@@ -458,8 +460,17 @@ async fn oauth_callback_inner(
                     "state mismatch: upgrade connection does not match identity/provider".into(),
                 ));
             }
-            let merged: Vec<String> =
-                merge_scopes(existing.scopes.as_deref().unwrap_or(&[]), &granted_scopes);
+            // An upgrade flow requested the union already (every minter merges
+            // the row's scopes in), so the token covers it. A flow matched by
+            // account asked only for its own scopes, and a provider that does
+            // not accumulate grants (GitHub OAuth Apps) issues a token with
+            // just those — record what this token actually carries, never a
+            // superset it lacks. Under-reporting only prompts a later upgrade.
+            let merged: Vec<String> = if matched_by_account {
+                granted_scopes.clone()
+            } else {
+                merge_scopes(existing.scopes.as_deref().unwrap_or(&[]), &granted_scopes)
+            };
             let updated = scope
                 .update_connection_tokens_and_scopes(
                     existing_id,

@@ -357,7 +357,11 @@ async fn connecting_the_same_account_again_updates_the_existing_connection() {
 
     let conns = e.x_connections().await;
     assert_eq!(conns.len(), 1, "{conns:?}");
-    assert!(has_scope(&conns[0], "tweet.read") && has_scope(&conns[0], "tweet.write"));
+    // The second flow asked only for tweet.write, and a provider that does not
+    // accumulate grants issues a token with just that — so the row records
+    // what the token carries, not the union.
+    assert!(has_scope(&conns[0], "tweet.write"), "{conns:?}");
+    assert!(!has_scope(&conns[0], "tweet.read"), "{conns:?}");
     assert_eq!(conns[0]["is_default"], true);
 }
 
