@@ -451,3 +451,49 @@ async fn a_flow_reports_its_outcome_to_its_starter_only() {
     let (s, v) = status(e.admin_key.clone()).await;
     assert_eq!(s, 404, "{v}");
 }
+
+/// Another user's instance — here opened by id as an org admin — is not the
+/// caller's to reconnect: its connection is the owner's, and a new one of the
+/// caller's could not be bound to it. Refused up front instead of minting an
+/// unbound connection.
+#[tokio::test]
+async fn reconnecting_another_users_service_is_refused() {
+    let e = setup().await;
+    let instance = e.create_x_service("my-x", None).await;
+    let r = e
+        .client
+        .post(format!("{}/v1/actions/call", e.base))
+        .header(common::auth(&e.admin_key).0, common::auth(&e.admin_key).1)
+        .json(
+            &json!({"service": "overslash", "action": "create_connection",
+                      "params": {"service": instance.to_string()}}),
+        )
+        .send()
+        .await
+        .unwrap();
+    let status = r.status().as_u16();
+    let body = r.text().await.unwrap();
+    assert_eq!(status, 403, "{body}");
+    assert!(body.contains("only its owner can reconnect"), "{body}");
+}
+
+#[tokio::test]
+async fn reconnecting_an_archived_service_is_refused() {
+    let e = setup().await;
+    let instance = e.create_x_service("my-x", None).await;
+    let r = e
+        .client
+        .patch(format!("{}/v1/services/{instance}/status", e.base))
+        // Archiving is an admin act.
+        .header(common::auth(&e.admin_key).0, common::auth(&e.admin_key).1)
+        .json(&json!({"status": "archived"}))
+        .send()
+        .await
+        .unwrap();
+    assert!(r.status().is_success(), "{:?}", r.text().await);
+    let (s, v) = e
+        .call("create_connection", json!({"service": "my-x"}))
+        .await;
+    assert_eq!(s, 400, "{v}");
+    assert!(v.to_string().contains("archived"), "{v}");
+}

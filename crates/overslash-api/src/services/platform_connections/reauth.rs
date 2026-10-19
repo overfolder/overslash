@@ -33,7 +33,32 @@ pub(super) async fn resolve_reauth_target(
 ) -> Result<Uuid, AppError> {
     if let Some(name) = input.service.take() {
         let caller = ctx.identity_id.unwrap_or(owner);
-        let instance = resolve_readable_instance(scope, caller, &name, true).await?;
+        // Active instances first, as calls resolve them: an archived row of
+        // the same name must not shadow the one the agent actually uses. Fall
+        // back to any status only for one still being set up (`pending_setup`,
+        // `draft`) — reconnecting an archived service is refused.
+        let instance = match resolve_readable_instance(scope, caller, &name, false).await {
+            Err(AppError::NotFound(_)) => {
+                resolve_readable_instance(scope, caller, &name, true).await?
+            }
+            other => other?,
+        };
+        if instance.status == "archived" {
+            return Err(AppError::BadRequest(format!(
+                "service '{name}' is archived; restore it before reconnecting"
+            )));
+        }
+        // Connections belong to the instance's owner (D22). Another user's
+        // instance — readable through a group grant or as an admin — can only
+        // be reconnected by that owner: its connection is not ours to
+        // re-authorize, and a new one of ours could not be bound to it.
+        // An org-level instance (no owner) authenticates with the caller's own
+        // default connection, so that one is ours to fix.
+        if instance.owner_identity_id.is_some_and(|o| o != owner) {
+            return Err(AppError::Forbidden(format!(
+                "service '{name}' belongs to another user; only its owner can reconnect it"
+            )));
+        }
         let def = instance_template(&ctx.db, &ctx.registry, &instance).await?;
         let provider = template_oauth_provider(&def)
             .ok_or_else(|| {
@@ -59,8 +84,7 @@ pub(super) async fn resolve_reauth_target(
                 // caller's own default at call time, so the owner fallback
                 // covers it too.
                 None if instance.use_default_connection => {
-                    let who = instance.owner_identity_id.unwrap_or(owner);
-                    UserScope::new(ctx.org_id, who, ctx.db.clone())
+                    UserScope::new(ctx.org_id, owner, ctx.db.clone())
                         .find_my_connection_by_provider(&input.provider)
                         .await?
                 }
