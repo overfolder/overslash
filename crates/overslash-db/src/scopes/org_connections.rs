@@ -140,6 +140,27 @@ impl OrgScope {
         .await
     }
 
+    /// Find the connection an OAuth callback for this (identity, provider,
+    /// account, OAuth client) should update in place, scoped to this org. See
+    /// [`connection::find_same_account`].
+    pub async fn find_connection_for_same_account(
+        &self,
+        identity_id: Uuid,
+        provider_key: &str,
+        account_email: &str,
+        byoc_credential_id: Option<Uuid>,
+    ) -> Result<Option<ConnectionRow>, sqlx::Error> {
+        connection::find_same_account(
+            self.db(),
+            self.org_id(),
+            identity_id,
+            provider_key,
+            account_email,
+            byoc_credential_id,
+        )
+        .await
+    }
+
     /// Batch fetch connections by ids, indexed by id — **any owner**. Returns
     /// only connections that belong to this org — foreign ids are silently
     /// dropped — but does not check who owns them; filter through

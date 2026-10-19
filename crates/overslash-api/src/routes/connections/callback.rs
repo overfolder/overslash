@@ -423,6 +423,20 @@ async fn oauth_callback_inner(
     // would have to forge.
     let scope = OrgScope::new(org_id, state.db_pool(ext));
 
+    // Backstop for flows that did not name a target: the same user connecting
+    // the same account through the same OAuth client again is a reconnect, not
+    // a second connection. Updating in place keeps every service bound to the
+    // row, where a duplicate would sit unused beside it (the old row stays the
+    // default). Without an account email there is nothing to match on.
+    let upgrade_connection_id = match (upgrade_connection_id, account.email.as_deref()) {
+        (Some(id), _) => Some(id),
+        (None, Some(email)) => scope
+            .find_connection_for_same_account(identity_id, provider_key, email, effective_byoc_id)
+            .await?
+            .map(|c| c.id),
+        (None, None) => None,
+    };
+
     let (connection_id, event_type, effective_scopes) =
         if let Some(existing_id) = upgrade_connection_id {
             // Incremental upgrade: union the granted scope set with what was on

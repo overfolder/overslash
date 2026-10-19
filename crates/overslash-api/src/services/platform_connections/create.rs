@@ -1,13 +1,23 @@
 //! Connection-create kernel: typed input/response, the identity-resolving
 //! entry points, and the platform-registry dispatch adapter.
 
+use super::reauth::resolve_reauth_target;
 use super::scopes::*;
 use super::url::*;
 use super::*;
 
 #[derive(Debug, Default, Deserialize)]
 pub struct CreateConnectionInput {
+    /// OAuth provider key. May be omitted when `service` or
+    /// `upgrade_connection_id` is set — the target fixes the provider.
+    #[serde(default)]
     pub provider: String,
+    /// Re-authorize the service instance with this name or id: upgrade the
+    /// connection it already authenticates with in place, or — when it has
+    /// none — bind the new connection to it on callback. See
+    /// [`super::reauth::resolve_reauth_target`].
+    #[serde(default)]
+    pub service: Option<String>,
     #[serde(default)]
     pub scopes: Vec<String>,
     /// Pin a specific BYOC credential. If omitted, the cascade resolver
@@ -120,7 +130,14 @@ pub async fn kernel_create_connection(
     if let Some(target) = input.on_behalf_of {
         group_ceiling::validate_on_behalf_of(&scope, caller_identity_id, target).await?;
     }
-    let identity_id = group_ceiling::resolve_ceiling_user_id(&scope, caller_identity_id).await?;
+    let owner = group_ceiling::resolve_ceiling_user_id(&scope, caller_identity_id).await?;
+    let mut input = input;
+    let identity_id = resolve_reauth_target(&ctx, &scope, owner, &mut input).await?;
+    if input.provider.is_empty() {
+        return Err(AppError::BadRequest(
+            "'provider' is required (or pass 'service' to reconnect one)".into(),
+        ));
+    }
 
     kernel_create_connection_for_identity(ctx, identity_id, caller_identity_id, input, request_meta)
         .await
@@ -299,9 +316,6 @@ pub async fn dispatch_create_connection(
     let value = serde_json::Value::Object(params.into_iter().collect());
     let mut input: CreateConnectionInput = serde_json::from_value(value)
         .map_err(|e| AppError::BadRequest(format!("invalid params: {e}")))?;
-    if input.provider.is_empty() {
-        return Err(AppError::BadRequest("'provider' is required".into()));
-    }
     // `service_instance_id` is an internal handshake field set by
     // `kernel_create_service` when it orchestrates an OAuth flow on behalf
     // of `POST /v1/services`. Letting an MCP-using agent pass it directly

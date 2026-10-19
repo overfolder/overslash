@@ -2,8 +2,6 @@
 //! import, the `/connect-authorize` browser gate, the OAuth callback, and
 //! connection CRUD.
 
-use std::collections::HashMap;
-
 use axum::{
     Json, Router,
     extract::{Form, Path, Query, State},

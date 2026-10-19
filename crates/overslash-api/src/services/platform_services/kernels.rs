@@ -303,6 +303,42 @@ pub async fn kernel_list_services(
     Ok(summaries)
 }
 
+/// The instance `name_or_id` names, as `GET /v1/services/{name}` reaches it:
+/// by id under [`require_readable_by_caller`], by name through the
+/// ceiling-scoped resolvers. Missing and unreachable both read as 404.
+pub(crate) async fn resolve_readable_instance(
+    scope: &OrgScope,
+    auth_identity: Uuid,
+    name_or_id: &str,
+    include_inactive: bool,
+) -> Result<ServiceInstanceRow, AppError> {
+    let row = if let Ok(uuid) = name_or_id.parse::<Uuid>() {
+        // The by-id branch skips the ceiling-scoped resolvers the name branch
+        // uses below, so it has to re-impose the same reach itself.
+        let row = scope.get_service_instance(uuid).await?;
+        if let Some(ref row) = row {
+            require_readable_by_caller(scope, row, auth_identity).await?;
+        }
+        row
+    } else {
+        let ceiling = Some(group_ceiling::resolve_ceiling_user_id(scope, auth_identity).await?);
+        if include_inactive {
+            scope
+                .resolve_service_instance_by_name_any_status(
+                    Some(auth_identity),
+                    ceiling,
+                    name_or_id,
+                )
+                .await?
+        } else {
+            scope
+                .resolve_service_instance_by_name(Some(auth_identity), ceiling, name_or_id)
+                .await?
+        }
+    };
+    row.ok_or_else(|| AppError::NotFound(format!("service '{name_or_id}' not found")))
+}
+
 pub async fn kernel_get_service(
     ctx: PlatformCallContext,
     input: GetServiceInput,
@@ -312,31 +348,8 @@ pub async fn kernel_get_service(
         AppError::BadRequest("getting a service requires an identity-bound API key".into())
     })?;
 
-    let row = if let Ok(uuid) = input.name.parse::<Uuid>() {
-        // The by-id branch skips the ceiling-scoped resolvers the name branch
-        // uses below, so it has to re-impose the same reach itself.
-        let row = scope.get_service_instance(uuid).await?;
-        if let Some(ref row) = row {
-            require_readable_by_caller(&scope, row, auth_identity).await?;
-        }
-        row
-    } else {
-        let ceiling = Some(group_ceiling::resolve_ceiling_user_id(&scope, auth_identity).await?);
-        if input.include_inactive {
-            scope
-                .resolve_service_instance_by_name_any_status(
-                    Some(auth_identity),
-                    ceiling,
-                    &input.name,
-                )
-                .await?
-        } else {
-            scope
-                .resolve_service_instance_by_name(Some(auth_identity), ceiling, &input.name)
-                .await?
-        }
-    }
-    .ok_or_else(|| AppError::NotFound(format!("service '{}' not found", input.name)))?;
+    let row = resolve_readable_instance(&scope, auth_identity, &input.name, input.include_inactive)
+        .await?;
 
     let credentials_status = compute_credentials_status(&ctx.db, &ctx.registry, &scope, &row).await;
     let tv = template_view(&ctx.db, &ctx.registry, &row, &ctx.config.public_url).await;
@@ -644,6 +657,7 @@ pub async fn kernel_update_service(
                     http_client: ctx.http_client.clone(),
                 };
                 let connect_input = crate::services::platform_connections::CreateConnectionInput {
+                    service: None,
                     provider,
                     scopes: template_action_scopes(template_def),
                     byoc_credential_id: None,

@@ -526,7 +526,7 @@
 					}
 				}
 			}
-			const beforeIds = new Set(connections.map((c) => c.id));
+			const before = connections;
 			const resp = await initiateOAuth(
 				{
 					provider: oauthProvider.provider,
@@ -541,7 +541,7 @@
 				fresh = await connectViaPopup({
 					authUrl: resp.auth_url,
 					provider: oauthProvider.provider,
-					beforeIds,
+					before,
 					signal: ctrl.signal,
 					// Keep the reuse picker fresh as rows arrive.
 					onPoll: (rows) => {

@@ -144,6 +144,42 @@ pub(crate) async fn find_for_import(
     .await
 }
 
+/// The connection an OAuth callback should re-authorize in place rather than
+/// duplicate: the same identity, provider, account and OAuth client. Unlike
+/// [`find_for_import`], the account is required and matched exactly — a NULL
+/// `account_email` on either side never matches — and the BYOC client must
+/// agree, since the row's refresh flow runs against its own client.
+pub(crate) async fn find_same_account(
+    pool: &PgPool,
+    org_id: Uuid,
+    identity_id: Uuid,
+    provider_key: &str,
+    account_email: &str,
+    byoc_credential_id: Option<Uuid>,
+) -> Result<Option<ConnectionRow>, sqlx::Error> {
+    sqlx::query_as!(
+        ConnectionRow,
+        // `scopes AS "scopes?"`: see `find_for_import`.
+        "SELECT id, org_id, identity_id, provider_key, encrypted_access_token,
+                encrypted_refresh_token, token_expires_at, scopes AS \"scopes?: Vec<String>\",
+                account_email, account_picture, byoc_credential_id, is_default, keep, reauth_required,
+                created_at, updated_at
+         FROM connections
+         WHERE org_id = $1 AND identity_id = $2 AND provider_key = $3
+           AND account_email = $4
+           AND byoc_credential_id IS NOT DISTINCT FROM $5
+         ORDER BY is_default DESC, created_at DESC
+         LIMIT 1",
+        org_id,
+        identity_id,
+        provider_key,
+        account_email,
+        byoc_credential_id,
+    )
+    .fetch_optional(pool)
+    .await
+}
+
 /// Org-bounded `get_by_id`. The `(id, org_id)` double-key turns a forged
 /// id from another tenant into a `None` at the SQL boundary.
 pub(crate) async fn get_by_id(

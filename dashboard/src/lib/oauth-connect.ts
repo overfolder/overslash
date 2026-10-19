@@ -3,7 +3,9 @@
  *
  * Every connect flow (Create Service wizard, Connections view) opens the gated
  * authorize URL in a popup, then polls `GET /v1/connections` until a row that
- * wasn't there before shows up — the e2e fake-AS harness drives exactly this,
+ * wasn't there before shows up, or an existing one is re-authorized in place
+ * (its `updated_at` moves: a reconnect, or the callback recognising an account
+ * that is already connected) — the e2e fake-AS harness drives exactly this,
  * so it works without depending on a `return_url` host allow-list. Keeping the
  * loop in one place avoids the near-verbatim copies these call sites used to
  * carry.
@@ -20,25 +22,31 @@ export class PopupBlockedError extends Error {
 }
 
 /**
- * Open `authUrl` in a popup and poll until a connection for `provider` whose id
- * isn't in `beforeIds` appears, then close the popup and return it. Returns
+ * Open `authUrl` in a popup and poll until a connection for `provider` that is
+ * not in `before`, or whose `updated_at` has moved since, shows up; then close
+ * the popup and return it. Returns
  * `null` when the deadline passes, the popup is closed first, or the flow is
  * aborted (callers check `signal.aborted` to decide whether to surface a
  * timeout message). Throws {@link PopupBlockedError} when the popup is blocked.
  *
+ * @param before the connections as they were before the flow started.
+ * @param ownerIdentityId whose connections to poll (an admin on another
+ *   user's service); defaults to the caller's own.
  * @param onPoll called with the latest rows each poll, so a caller can refresh
  *   its own connection-list state (e.g. the Create Service reuse picker).
  */
 export async function connectViaPopup(opts: {
 	authUrl: string;
 	provider: string;
-	beforeIds: Set<string>;
+	before: ConnectionSummary[];
 	signal: AbortSignal;
+	ownerIdentityId?: string;
 	onPoll?: (rows: ConnectionSummary[]) => void;
 	timeoutMs?: number;
 	pollMs?: number;
 }): Promise<ConnectionSummary | null> {
-	const { authUrl, provider, beforeIds, signal, onPoll } = opts;
+	const { authUrl, provider, signal, onPoll } = opts;
+	const seen = new Map(opts.before.map((c) => [c.id, c.updated_at]));
 	const timeoutMs = opts.timeoutMs ?? 90_000;
 	const pollMs = opts.pollMs ?? 1500;
 
@@ -66,7 +74,7 @@ export async function connectViaPopup(opts: {
 		}
 		let rows: ConnectionSummary[];
 		try {
-			rows = await listConnections({}, signal);
+			rows = await listConnections({ ownerIdentityId: opts.ownerIdentityId }, signal);
 		} catch {
 			if (signal.aborted) {
 				closePopup();
@@ -75,7 +83,9 @@ export async function connectViaPopup(opts: {
 			continue;
 		}
 		onPoll?.(rows);
-		const fresh = rows.find((c) => !beforeIds.has(c.id) && c.provider_key === provider);
+		const fresh = rows.find(
+			(c) => c.provider_key === provider && seen.get(c.id) !== c.updated_at
+		);
 		if (fresh) {
 			closePopup();
 			return fresh;

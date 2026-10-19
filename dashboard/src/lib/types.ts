@@ -975,6 +975,8 @@ export interface InitiateConnectionRequest {
   provider: string;
   scopes?: string[];
   byoc_credential_id?: string;
+  /** Service instances the callback binds the resulting connection to. */
+  pin_service_ids?: string[];
 }
 
 /**
@@ -1189,6 +1191,9 @@ export interface ConnectionSummary {
    *  pinned BYOC client was replaced). Cleared on the next successful reconnect. */
   reauth_required: boolean;
   created_at: string;
+  /** Moves on every in-place reconnect — the only sign one landed, since the
+   *  id stays the same. */
+  updated_at: string;
 }
 
 /** A service instance bound to a connection, for the detail "Used by" list. */

@@ -85,7 +85,7 @@
 
 			// 2. Start the OAuth flow and complete it in a popup, polling for the
 			//    new connection row (shared mechanics — see #lib/oauth-connect).
-			const beforeIds = new Set(existing.map((c) => c.id));
+			const before = existing;
 			const resp = await initiateOAuth(
 				{ provider, scopes: defaultScopesFor(pickedProvider), byoc_credential_id: byocCredentialId },
 				ctrl.signal
@@ -96,7 +96,7 @@
 				fresh = await connectViaPopup({
 					authUrl: resp.auth_url,
 					provider,
-					beforeIds,
+					before,
 					signal: ctrl.signal
 				});
 			} catch (e) {

@@ -49,6 +49,7 @@ pub async fn mint_initial_auth_url(
     let response = kernel_create_connection(
         ctx,
         CreateConnectionInput {
+            service: None,
             provider: provider.to_string(),
             scopes: scopes.to_vec(),
             byoc_credential_id: None,
@@ -135,6 +136,7 @@ pub async fn mint_upgrade_auth_url(
             conn.identity_id,
             caller_identity_id,
             CreateConnectionInput {
+                service: None,
                 provider: conn.provider_key.clone(),
                 scopes,
                 byoc_credential_id: conn.byoc_credential_id,
@@ -169,6 +171,7 @@ pub async fn mint_upgrade_auth_url(
             conn.identity_id,
             caller_identity_id,
             CreateConnectionInput {
+                service: None,
                 provider: conn.provider_key.clone(),
                 scopes,
                 byoc_credential_id: conn.byoc_credential_id,
@@ -199,6 +202,7 @@ pub async fn mint_upgrade_auth_url(
     let response = kernel_create_connection(
         ctx,
         CreateConnectionInput {
+            service: None,
             provider: conn.provider_key.clone(),
             scopes,
             byoc_credential_id: conn.byoc_credential_id,

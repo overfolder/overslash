@@ -49,11 +49,11 @@ export async function connectGithubService(session, page, opts = {}) {
 
 	const [popup] = await Promise.all([
 		page.waitForEvent('popup'),
-		page.getByRole('button', { name: 'Connect new' }).click()
+		page.getByRole('button', { name: 'Connect', exact: true }).click()
 	]);
 	await popup.waitForEvent('close', { timeout: 15_000 });
 
-	await page.getByRole('button', { name: 'Save', exact: true }).click();
+	// The callback binds the connection to the service itself — no Save.
 	await expect(page.getByText('connected')).toBeVisible({ timeout: 10_000 });
 
 	/** @type {ConnectedGithubService} */

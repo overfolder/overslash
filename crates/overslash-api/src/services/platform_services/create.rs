@@ -530,6 +530,7 @@ pub async fn kernel_create_service(
             http_client: ctx.http_client.clone(),
         };
         let connect_input = crate::services::platform_connections::CreateConnectionInput {
+            service: None,
             provider,
             scopes,
             byoc_credential_id: None,
