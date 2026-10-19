@@ -173,7 +173,7 @@ pub(super) async fn oauth_callback(
     // connection itself is already written, and a missed stamp only means
     // that caller waits out its timeout and falls back to the link.
     let finished = match &outcome {
-        Ok(_) => Ok(()),
+        Ok(payload) => Ok(payload.connection_id),
         Err(err) => Err(redirect_reason_token(err)),
     };
     if let Err(e) = oauth_connection_flow::mark_finished(state.db(&ext), flow_id, finished).await {

@@ -824,7 +824,8 @@ CREATE TABLE public.oauth_connection_flows (
     pin_service_instance_ids uuid[] DEFAULT '{}'::uuid[] NOT NULL,
     completed_at timestamp with time zone,
     failed_at timestamp with time zone,
-    failure text
+    failure text,
+    connection_id uuid
 );
 
 
@@ -847,6 +848,13 @@ COMMENT ON COLUMN public.oauth_connection_flows.failed_at IS 'Set by the OAuth c
 --
 
 COMMENT ON COLUMN public.oauth_connection_flows.failure IS 'Short reason the flow failed (provider OAuth error code, cancelled_by_user, or a coarse callback token). Set with failed_at.';
+
+
+--
+-- Name: COLUMN oauth_connection_flows.connection_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.oauth_connection_flows.connection_id IS 'The connection the OAuth callback created or upgraded. Set with completed_at.';
 
 
 --
