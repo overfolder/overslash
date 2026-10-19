@@ -40,6 +40,7 @@ use overslash_core::crypto;
 mod callback;
 mod callback_page;
 mod crud;
+mod flow_status;
 mod gate;
 mod initiate;
 
@@ -48,6 +49,7 @@ use crud::{
     delete_connection, get_connection, list_connections, set_connection_default,
     set_connection_keep, upgrade_connection_scopes,
 };
+use flow_status::get_flow_status;
 use gate::{connect_authorize, connect_authorize_cancel, connect_authorize_confirm};
 use initiate::{import_connection, initiate_connection};
 
@@ -75,6 +77,7 @@ pub fn router() -> Router<AppState> {
             post(upgrade_connection_scopes),
         )
         .route("/v1/oauth/callback", get(oauth_callback))
+        .route("/v1/oauth/flows/{flow_id}", get(get_flow_status))
         .route("/connect-authorize", get(connect_authorize))
         .route(
             "/connect-authorize/confirm",

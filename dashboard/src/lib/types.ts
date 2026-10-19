@@ -971,6 +971,14 @@ export interface UpdateServiceRequest {
 
 // -- OAuth --
 
+/** `GET /v1/oauth/flows/{id}`: how a connect flow ended, as far as the
+ *  callback got. */
+export interface OAuthFlowStatus {
+  status: 'pending' | 'completed' | 'failed' | 'expired';
+  connection_id?: string;
+  failure?: string;
+}
+
 export interface InitiateConnectionRequest {
   provider: string;
   scopes?: string[];

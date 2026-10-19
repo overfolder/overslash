@@ -414,3 +414,40 @@ async fn list_connections_shows_the_owners_connections() {
         .await;
     assert_eq!(google, json!([]));
 }
+
+/// The dashboard learns a popup flow finished from the flow itself — a
+/// background token refresh moves `updated_at` too, so the connections list
+/// can't tell. Only the flow's actor (or the user it connects for) may read it.
+#[tokio::test]
+async fn a_flow_reports_its_outcome_to_its_starter_only() {
+    let e = setup().await;
+    let (s, flow) = e.call("create_connection", json!({"provider": "x"})).await;
+    assert_eq!(s, 200, "{flow}");
+    let flow_id = flow["flow_id"].as_str().unwrap();
+    let status = |key: String| {
+        let client = e.client.clone();
+        let url = format!("{}/v1/oauth/flows/{flow_id}", e.base);
+        async move {
+            let r = client
+                .get(url)
+                .header(common::auth(&key).0, common::auth(&key).1)
+                .send()
+                .await
+                .unwrap();
+            (r.status().as_u16(), r.json::<Value>().await.unwrap())
+        }
+    };
+
+    let (s, v) = status(e.agent_key.clone()).await;
+    assert_eq!((s, v["status"].as_str()), (200, Some("pending")), "{v}");
+
+    let callback = e.callback(flow_id).await;
+    let (s, v) = status(e.agent_key.clone()).await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["status"], "completed");
+    assert_eq!(v["connection_id"], callback["connection_id"]);
+
+    // The org's admin neither started this flow nor owns its connection.
+    let (s, v) = status(e.admin_key.clone()).await;
+    assert_eq!(s, 404, "{v}");
+}

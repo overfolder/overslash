@@ -1027,13 +1027,13 @@ Empty state: "No connections yet" with a `[+ Connect your first account]` button
 
 Scope upgrade is deliberately absent from this view — it lives in the service-instance Manage flow, where the required scopes are computed from the service's actions.
 
-Connecting an account that is already connected (same user, provider, account email and OAuth client, on a provider whose email identifies one grant — not Microsoft/Slack/HubSpot/Notion tenants) never adds a second row: the callback re-authorizes the existing connection in place, unioning its scopes, so every service bound to it stays bound. The popup poll therefore treats a moved `updated_at` on an existing row as "landed", not only a new id.
+Connecting an account that is already connected (same user, provider, account email and OAuth client, on a provider whose email identifies one grant — not Microsoft/Slack/HubSpot/Notion tenants) never adds a second row: the callback re-authorizes the existing connection in place, unioning its scopes, so every service bound to it stays bound. Since a reconnect keeps the id — and a background token refresh moves `updated_at` too — the popup poll never diffs the connections list: it polls the flow itself (`GET /v1/oauth/flows/{flow_id}`, readable by the flow's starter or the user it connects for) until the callback stamps it `completed` (with the connection id) or `failed`.
 
 **Service detail → Credentials tab (OAuth).** When the service authenticates with a connection (its pin, or the provider default it falls back to), two buttons sit beside Save:
 - **`[Reconnect]`** — re-authorizes *that* connection in place via `POST /v1/connections/{id}/upgrade_scopes` with the template's scopes; the id, and therefore the binding, is unchanged.
 - **`[Connect another account]`** — `POST /v1/connections` with `pin_service_ids: [service]`, so the callback binds the new connection to this service; no Save needed.
 
-With no connection at all, a single **`[Connect]`** does the latter. Both reload the service when the popup lands.
+With no connection at all, a single **`[Connect]`** does the latter. Both reload the service when the popup lands. On a service owned by someone else (an admin's view) neither is offered — the connection is the owner's to re-authorize — and a hint says so.
 
 ## Services view
 

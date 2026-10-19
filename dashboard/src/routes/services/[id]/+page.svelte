@@ -52,7 +52,7 @@
 	import { resolveOwner, ownerLabel, ownerTitle } from '#lib/ownerLabel.ts';
 	import { probeRejected } from '#lib/public-request.ts';
 	import { failureKind } from '#lib/setup-outcome.ts';
-	import { connectViaPopup, PopupBlockedError } from '#lib/oauth-connect.ts';
+	import { connectViaPopup, OAuthFlowFailedError, PopupBlockedError } from '#lib/oauth-connect.ts';
 	import ServiceEndpointField from '#lib/components/services/ServiceEndpointField.svelte';
 	import MoreOptions from '#lib/components/services/MoreOptions.svelte';
 	import {
@@ -157,8 +157,7 @@
 				try {
 					await connectViaPopup({
 						authUrl: updated.connect.auth_url,
-						provider: oauthProvider ?? '',
-						before: connections,
+						flowId: updated.connect.flow_id,
 						signal: controller.signal,
 						onPoll: (rows) => (connections = rows)
 					});
@@ -490,7 +489,14 @@
 	// The connection calls through this service authenticate with: its pin,
 	// else (unless it opted out) the provider's default. Reconnect
 	// re-authorizes this one in place.
+	// Connections belong to the service's owner (D22): an admin viewing
+	// someone else's service can neither re-authorize their connection
+	// (`upgrade_scopes` is owner-only) nor bind one of their own to it.
+	const ownedByOther = $derived(
+		!!svc?.owner_identity_id && !!currentUserId && svc.owner_identity_id !== currentUserId
+	);
 	const reauthTarget = $derived.by(() => {
+		if (ownedByOther) return null;
 		if (currentConnection) return currentConnection;
 		if (!svc?.use_default_connection) return null;
 		return matchingConnections.find((c) => c.is_default) ?? null;
@@ -731,6 +737,10 @@
 
 	async function runConnect(target: ConnectionSummary | null, another: boolean) {
 		if (!oauthProvider || !svc) return;
+		if (ownedByOther) {
+			error = 'Only the owner of this service can connect or reconnect it.';
+			return;
+		}
 		// Cancel any prior in-flight polling loop.
 		reconnectAbort?.abort();
 		const ctrl = new AbortController();
@@ -739,26 +749,28 @@
 		connectingAnother = another;
 		error = null;
 		try {
-			const before = connections;
-			const resp = target
-				? await upgradeConnectionScopes(target.id, oauthScopes, ctrl.signal)
+			// The upgrade response names its flow `state`; initiate calls it
+			// `flow_id`. Same opaque id either way.
+			const flow = target
+				? await upgradeConnectionScopes(target.id, oauthScopes, ctrl.signal).then((r) => ({
+						authUrl: r.auth_url,
+						flowId: r.state
+					}))
 				: await initiateOAuth(
 						{ provider: oauthProvider, scopes: oauthScopes, pin_service_ids: [svc.id] },
 						ctrl.signal
-					);
+					).then((r) => ({ authUrl: r.auth_url, flowId: r.flow_id }));
 			if (ctrl.signal.aborted) return;
 			let landed: ConnectionSummary | null;
 			try {
 				landed = await connectViaPopup({
-					authUrl: resp.auth_url,
-					provider: oauthProvider,
-					before,
+					...flow,
 					signal: ctrl.signal,
 					ownerIdentityId: svc.owner_identity_id ?? undefined,
 					onPoll: (rows) => (connections = rows)
 				});
 			} catch (e) {
-				if (e instanceof PopupBlockedError) {
+				if (e instanceof PopupBlockedError || e instanceof OAuthFlowFailedError) {
 					error = e.message;
 					return;
 				}
@@ -1472,7 +1484,11 @@
 						{/if}
 					{/if}
 					<div class="actions">
-						{#if reauthTarget}
+						{#if ownedByOther}
+							<small class="hint">
+								Only the service's owner can connect or reconnect its account.
+							</small>
+						{:else if reauthTarget}
 							<button
 								type="button"
 								class="btn"

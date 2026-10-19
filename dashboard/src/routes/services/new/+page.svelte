@@ -28,7 +28,7 @@
 		SecretNameConflictBody
 	} from '#lib/types.ts';
 	import { listSecrets, putSecret } from '#lib/api/secrets.ts';
-	import { connectViaPopup, PopupBlockedError } from '#lib/oauth-connect.ts';
+	import { connectViaPopup, OAuthFlowFailedError, PopupBlockedError } from '#lib/oauth-connect.ts';
 	import ServiceIcon from '#lib/components/ServiceIcon.svelte';
 	import TemplateCard from '#lib/components/services/TemplateCard.svelte';
 	import StatusBadge from '#lib/components/services/StatusBadge.svelte';
@@ -526,7 +526,6 @@
 					}
 				}
 			}
-			const before = connections;
 			const resp = await initiateOAuth(
 				{
 					provider: oauthProvider.provider,
@@ -540,16 +539,15 @@
 			try {
 				fresh = await connectViaPopup({
 					authUrl: resp.auth_url,
-					provider: oauthProvider.provider,
-					before,
+					flowId: resp.flow_id,
 					signal: ctrl.signal,
-					// Keep the reuse picker fresh as rows arrive.
+					// Refresh the reuse picker with the row that landed.
 					onPoll: (rows) => {
 						connections = rows;
 					}
 				});
 			} catch (e) {
-				if (e instanceof PopupBlockedError) {
+				if (e instanceof PopupBlockedError || e instanceof OAuthFlowFailedError) {
 					error = e.message;
 					return;
 				}
