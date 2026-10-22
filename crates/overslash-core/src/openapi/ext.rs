@@ -59,10 +59,12 @@ pub enum Ext {
     Hidden,
     Icon,
     DefaultTimeoutMs,
-    // `info` (a service-wide default) *and* operations / MCP tools. The only
-    // key read at both a template-level and an action-level position; the
-    // compiler folds the two into one `ServiceAction` field.
+    // `info` (a service-wide default) *and* operations / MCP tools, folded by
+    // the compiler into one `ServiceAction` field. `Success` below is the
+    // other key read at both levels.
     AdditionalProperties,
+    // `info` and HTTP operations only — a jq predicate on the response body.
+    Success,
     // Operations, MCP tools, platform actions
     Risk,
     ScopeParam,
@@ -111,6 +113,7 @@ impl Ext {
             Ext::Icon => "x-overslash-icon",
             Ext::DefaultTimeoutMs => "x-overslash-default_timeout_ms",
             Ext::AdditionalProperties => "x-overslash-additional-properties",
+            Ext::Success => "x-overslash-success",
             Ext::Risk => "x-overslash-risk",
             Ext::ScopeParam => "x-overslash-scope_param",
             Ext::Disclose => "x-overslash-disclose",
@@ -171,6 +174,7 @@ pub(super) const ALL: &[Ext] = &[
     Ext::Icon,
     Ext::DefaultTimeoutMs,
     Ext::AdditionalProperties,
+    Ext::Success,
     Ext::Risk,
     Ext::ScopeParam,
     Ext::Disclose,
@@ -331,6 +335,11 @@ pub(super) const READS: &[(Ext, &[Pos])] = &[
             Pos::McpToolDiscovered,
         ],
     ),
+    // compile/mod.rs (the `info` default, folded onto each HTTP operation that
+    // leaves it unset) · actions.rs (the per-operation override). HTTP only: an
+    // MCP tool already reports failure in-band through `isError`, and a
+    // platform action answers from this process with a status it chose.
+    (Ext::Success, &[Pos::Info, Pos::Operation]),
     // actions.rs:85,184 · mcp.rs:268
     (
         Ext::Risk,
@@ -548,7 +557,7 @@ mod tests {
     fn every_variant_is_in_all() {
         // `ALL` drives name resolution and did-you-mean suggestions, so a
         // variant missing from it is invisible to the lint.
-        assert_eq!(ALL.len(), 37, "ALL has drifted from the enum");
+        assert_eq!(ALL.len(), 38, "ALL has drifted from the enum");
         let mut keys: Vec<&str> = ALL.iter().map(|e| e.key()).collect();
         keys.sort_unstable();
         let before = keys.len();
@@ -626,10 +635,14 @@ mod tests {
         // A platform action owns its param set, so relaxing the gate there
         // would accept an argument the handler then ignores.
         assert!(!reads_at(Ext::AdditionalProperties, Pos::PlatformAction));
-        // The one key that is read at both a template-level and an
-        // action-level position.
+        // The keys read at both a template-level and an action-level position.
         assert!(reads_at(Ext::AdditionalProperties, Pos::Info));
         assert!(reads_at(Ext::AdditionalProperties, Pos::Operation));
+        assert!(reads_at(Ext::Success, Pos::Info));
+        assert!(reads_at(Ext::Success, Pos::Operation));
+        // MCP reports failure in-band already; there is no body to judge.
+        assert!(!reads_at(Ext::Success, Pos::McpTool));
+        assert!(!reads_at(Ext::Success, Pos::PlatformAction));
     }
 
     #[test]

@@ -1,20 +1,21 @@
-//! Slack E2E tests — Overslash wrapping Slack's official MCP server.
+//! Slack over its Web API (`services/slack.yaml`).
 //!
-//! Slack ships a first-party MCP server (https://mcp.slack.com/mcp). Overslash
-//! is the MCP *client*: it wraps Slack's tools, resolves a Slack OAuth
-//! connection into the outbound bearer, and layers permission chain + approvals
-//! + audit on top. These tests cover:
-//!   * `slack_mcp_yaml_parses` — the shipped global template loads as an
-//!     mcp-runtime service with `auth.kind: oauth` and the decorated tools.
-//!   * `slack_mcp_oauth_forwards_connection_token` — a full connection-based
-//!     (Mode B/C) MCP call: the owner's Slack OAuth token is auto-resolved and
-//!     forwarded as `Authorization: Bearer …` to the upstream MCP server.
-//!   * `slack_mcp_missing_connection_is_reported` — no connection → a clear
-//!     error before any upstream call, proving OAuth resolution is wired.
+//! The shipped template is a plain HTTP template on the `slack` OAuth provider
+//! (user tokens, migration 134). These tests boot the bundled registry, route
+//! `slack.com` at an in-process fake via `service_base_overrides`, and cover:
+//!   * the template loads as HTTP with the full action set, and every action
+//!     carries the template-wide `x-overslash-success` predicate;
+//!   * a call forwards the owner's connection token as a bearer and the
+//!     arguments as a JSON body;
+//!   * Slack's in-band failure (`200 {"ok": false}`) comes back as `is_error`
+//!     and is audited as one, with the status left at 200;
+//!   * a paged read offers the next cursor, and stops on an in-band failure;
+//!   * a gated write discloses the channel by name, through the resolver;
+//!   * no connection → a clean error before any upstream call.
 //!
-//! Everything runs against an in-process MCP stub; nothing reaches the network.
+//! Nothing reaches the network.
 
-// Test setup requires dynamic SQL for DB seeding.
+// Test setup requires dynamic SQL for DB seeding and audit reads.
 #![allow(clippy::disallowed_methods)]
 
 use crate::common;
@@ -22,155 +23,20 @@ use crate::common;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
-use axum::{Json, Router, extract::State, http::HeaderMap, routing::post};
+use axum::{Router, extract::State, response::IntoResponse, routing::any};
 use overslash_core::registry::ServiceRegistry;
-use overslash_core::types::{McpAuth, Runtime};
+use overslash_core::types::{Risk, Runtime};
 use serde_json::{Value, json};
-use std::path::Path;
-use tokio::net::TcpListener;
 
-// ── MCP stub: records the Authorization header, echoes tool arguments ──────
-
-#[derive(Default)]
-struct StubInner {
-    last_auth: Option<String>,
-}
-
-#[derive(Clone, Default)]
-struct Stub {
-    inner: Arc<Mutex<StubInner>>,
-}
-
-impl Stub {
-    fn last_auth(&self) -> Option<String> {
-        self.inner.lock().unwrap().last_auth.clone()
-    }
-}
-
-async fn stub_handler(
-    State(stub): State<Stub>,
-    headers: HeaderMap,
-    Json(req): Json<Value>,
-) -> Json<Value> {
-    let id = req.get("id").cloned().unwrap_or(Value::Null);
-    let method = req.get("method").and_then(Value::as_str).unwrap_or("");
-
-    stub.inner.lock().unwrap().last_auth = headers
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_string);
-
-    let result = match method {
-        "initialize" => json!({
-            "protocolVersion": "2025-06-18",
-            "serverInfo": { "name": "slack-mcp-stub", "version": "0" },
-            "capabilities": {}
-        }),
-        "tools/call" => {
-            let args = req
-                .get("params")
-                .and_then(|p| p.get("arguments"))
-                .cloned()
-                .unwrap_or(Value::Null);
-            json!({
-                "content": [{ "type": "text", "text": "ok" }],
-                "structuredContent": { "echo": args },
-                "isError": false
-            })
-        }
-        _ => json!({}),
-    };
-
-    Json(json!({ "jsonrpc": "2.0", "id": id, "result": result }))
-}
-
-async fn start_stub() -> (SocketAddr, Stub) {
-    common::allow_loopback_ssrf();
-    let stub = Stub::default();
-    let app = Router::new()
-        .route("/mcp", post(stub_handler))
-        .with_state(stub.clone());
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        axum::serve(listener, app).await.unwrap();
-    });
-    (addr, stub)
-}
-
-// ── An org-tier Slack-MCP template pointed at the stub. Mirrors the shipped
-//    global's shape (runtime mcp, auth oauth provider slack) so the OAuth path
-//    is what's under test, but with a distinct key + stub URL. ───────────────
-fn slack_mcp_template_yaml(key: &str, url: &str) -> String {
-    format!(
-        r#"openapi: 3.1.0
-info:
-  title: Slack (MCP test)
-  x-overslash-key: {key}
-x-overslash-runtime: mcp
-paths: {{}}
-x-overslash-mcp:
-  url: {url}
-  auth:
-    kind: oauth
-    provider: slack
-    scopes: [channels:read, chat:write]
-  autodiscover: true
-  tools:
-    - name: list_channels
-      risk: read
-      description: List channels
-      input_schema:
-        type: object
-        properties:
-          limit: {{ type: integer }}
-        required: []
-"#
-    )
-}
-
-/// Seed a Slack OAuth connection (+ BYOC so client-credential resolution
-/// succeeds) on `owner_id`, mirroring the HTTP-runtime OAuth seeding. Returns
-/// the new connection's id.
-async fn seed_slack_connection(
-    pool: &sqlx::PgPool,
-    org_id: uuid::Uuid,
-    owner_id: uuid::Uuid,
-) -> uuid::Uuid {
-    let enc_key = overslash_core::crypto::Keyring::test();
-    let token = overslash_core::crypto::encrypt(&enc_key, b"slack-mcp-user-token").unwrap();
-    let cid = overslash_core::crypto::encrypt(&enc_key, b"mock_client_id").unwrap();
-    let csec = overslash_core::crypto::encrypt(&enc_key, b"mock_client_secret").unwrap();
-    let future = time::OffsetDateTime::now_utc() + time::Duration::hours(1);
-    let byoc = overslash_db::scopes::OrgScope::new(org_id, pool.clone())
-        .create_byoc_credential(owner_id, "slack", &cid, &csec, &serde_json::json!({}))
-        .await
-        .unwrap();
-    overslash_db::scopes::OrgScope::new(org_id, pool.clone())
-        .create_connection(overslash_db::repos::connection::CreateConnection {
-            org_id,
-            identity_id: owner_id,
-            provider_key: "slack",
-            encrypted_access_token: &token,
-            encrypted_refresh_token: None,
-            token_expires_at: Some(future),
-            scopes: None,
-            account_email: None,
-            account_picture: None,
-            byoc_credential_id: Some(byoc.id),
-        })
-        .await
-        .unwrap()
-        .id
-}
+const TOKEN: &str = "xoxp-slack-user-token";
 
 // ============================================================================
-// Parse smoke test — the shipped global loads as an oauth mcp-runtime service
+// Parse smoke test
 // ============================================================================
 
 #[test]
-fn slack_mcp_yaml_parses() {
-    let ws_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+fn slack_yaml_parses_as_a_web_api_template() {
+    let ws_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
         .parent()
@@ -183,253 +49,379 @@ fn slack_mcp_yaml_parses() {
     .expect("services/ should load cleanly");
     let svc = reg.get("slack").expect("slack should be registered");
 
-    // Runtime + upstream MCP endpoint.
-    assert_eq!(svc.runtime, Runtime::Mcp);
-    let mcp = svc.mcp.as_ref().expect("slack should carry an mcp block");
-    assert_eq!(mcp.url.as_deref(), Some("https://mcp.slack.com/mcp"));
+    assert_eq!(svc.runtime, Runtime::Http);
+    assert!(svc.mcp.is_none());
+    assert_eq!(svc.hosts, vec!["slack.com".to_string()]);
+    assert_eq!(
+        svc.oauth_provider_for_mode(None),
+        Some("slack"),
+        "slack authenticates through the slack OAuth provider"
+    );
 
-    // OAuth auth wired to the slack provider (not a static bearer secret).
-    match &mcp.auth {
-        McpAuth::OAuth { provider, .. } => assert_eq!(provider, "slack"),
-        other => panic!("expected oauth auth, got {other:?}"),
-    }
-
-    // Tools present.
-    for tool in [
+    // The operationIds the MCP tools had, plus four more. Keeping the old names
+    // is what keeps existing `slack:<action>` grants matching.
+    for action in [
         "send_message",
+        "update_message",
+        "add_reaction",
         "list_channels",
         "read_channel_history",
+        "get_thread_replies",
         "get_user",
+        "list_users",
         "search_messages",
     ] {
-        assert!(svc.actions.contains_key(tool), "missing tool '{tool}'");
+        let a = svc
+            .actions
+            .get(action)
+            .unwrap_or_else(|| panic!("slack.yaml should declare {action}"));
+        assert_eq!(
+            a.success.as_deref(),
+            Some(".ok == true"),
+            "{action} should inherit the info-level success predicate"
+        );
+        assert!(
+            !a.required_scopes.is_empty(),
+            "{action} should declare the user scopes it needs"
+        );
+    }
+    assert_eq!(svc.actions.len(), 9);
+
+    // The predicate is valid jq, so the register gate would accept it.
+    overslash_api::services::response_filter::validate_syntax(
+        &overslash_api::services::response_filter::ResponseFilter::Jq {
+            expr: ".ok == true".into(),
+        },
+    )
+    .unwrap();
+
+    let send = &svc.actions["send_message"];
+    assert_eq!(send.risk, Risk::Write);
+    assert_eq!(send.scope_param, "channel".into());
+    assert_eq!(send.required_scopes, vec!["chat:write".to_string()]);
+    assert!(!send.disclose.is_empty());
+    assert_eq!(svc.actions["get_user"].scope_param, "user".into());
+    assert_eq!(svc.test_action().map(|(k, _)| k), Some("list_channels"));
+}
+
+// ============================================================================
+// Fake slack.com
+// ============================================================================
+
+#[derive(Clone, Debug)]
+struct Seen {
+    path: String,
+    query: String,
+    authorization: Option<String>,
+    body: Value,
+}
+
+type SeenLog = Arc<Mutex<Vec<Seen>>>;
+
+/// Answers in Slack's own envelope: HTTP 200 always, `ok` saying the rest.
+async fn start_fake_slack() -> (String, SeenLog) {
+    common::allow_loopback_ssrf();
+    let seen: SeenLog = Arc::new(Mutex::new(Vec::new()));
+
+    async fn handler(
+        State(seen): State<SeenLog>,
+        req: axum::extract::Request,
+    ) -> impl IntoResponse {
+        let (parts, body) = req.into_parts();
+        let bytes = axum::body::to_bytes(body, 1 << 20)
+            .await
+            .unwrap_or_default();
+        let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+        let path = parts.uri.path().to_string();
+        let query = parts.uri.query().unwrap_or_default().to_string();
+        seen.lock().unwrap().push(Seen {
+            path: path.clone(),
+            query: query.clone(),
+            authorization: parts
+                .headers
+                .get("authorization")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string),
+            body: body.clone(),
+        });
+
+        let payload = match path.as_str() {
+            "/api/chat.postMessage" if body["channel"] == "C_GONE" => {
+                json!({ "ok": false, "error": "channel_not_found" })
+            }
+            "/api/chat.postMessage" => {
+                json!({ "ok": true, "channel": body["channel"], "ts": "1700000000.000100" })
+            }
+            "/api/conversations.info" => json!({ "ok": true, "channel": { "name": "general" } }),
+            // Page one offers a cursor. Following it hits an in-band failure,
+            // which must end the walk rather than offer the cursor again.
+            "/api/conversations.list" if query.contains("cursor=") => {
+                json!({ "ok": false, "error": "invalid_cursor" })
+            }
+            "/api/conversations.list" => json!({
+                "ok": true,
+                "channels": [{ "id": "C1", "name": "general" }],
+                "response_metadata": { "next_cursor": "dXNlcjpVMDYxTkZUVDI=" }
+            }),
+            _ => json!({ "ok": false, "error": "unknown_method" }),
+        };
+        axum::Json(payload).into_response()
     }
 
-    // Decorations applied only where they help: the write tool carries a
-    // disclosure projection + channel scope; the ID-scoped reads carry scopes.
-    let send = &svc.actions["send_message"];
-    assert_eq!(send.risk, overslash_core::types::Risk::Write);
-    assert_eq!(send.scope_param, "channel".into());
-    assert!(
-        !send.disclose.is_empty(),
-        "send_message should disclose channel + text for approval review"
-    );
-    assert_eq!(
-        svc.actions["read_channel_history"].scope_param,
-        "channel".into()
-    );
-    assert_eq!(svc.actions["get_user"].scope_param, "user".into());
-    // Undecorated reads stay plain.
-    assert!(svc.actions["list_channels"].scope_param.is_empty());
-    assert_eq!(
-        svc.actions["list_channels"].risk,
-        overslash_core::types::Risk::Read
-    );
+    let app = Router::new()
+        .route("/{*path}", any(handler))
+        .with_state(seen.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr: SocketAddr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (format!("http://{addr}"), seen)
 }
 
-// ============================================================================
-// OAuth MCP execution — the connection token is forwarded to the MCP server
-// ============================================================================
+struct Harness {
+    pool: sqlx::PgPool,
+    base: String,
+    client: reqwest::Client,
+    org_id: uuid::Uuid,
+    agent_key: String,
+    seen: SeenLog,
+}
 
-#[tokio::test]
-async fn slack_mcp_oauth_forwards_connection_token() {
-    let pool = common::test_pool().await;
-    let (addr, stub) = start_stub().await;
-    let stub_url = format!("http://{addr}/mcp");
-
-    let (base, client) = common::start_api(pool.clone()).await;
-    let base = format!("http://{base}");
-    let (org_id, ident_id, key, admin_key) = common::bootstrap_org_identity(&base, &client).await;
-    let owner_id = common::owner_user_id(&pool, org_id).await;
-
-    // Upload the org-tier Slack-MCP template (oauth / provider slack).
-    let key_name = "slack_mcp_test";
-    let resp = client
-        .post(format!("{base}/v1/templates"))
-        .header(common::auth(&admin_key).0, common::auth(&admin_key).1)
-        .json(&json!({"openapi": slack_mcp_template_yaml(key_name, &stub_url)}))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(
-        resp.status(),
-        200,
-        "template create: {:?}",
-        resp.text().await
-    );
-
-    // The template-detail DTO must surface the oauth provider + scopes so the
-    // dashboard connect flow requests the right scope set (not an empty one).
-    let detail: Value = client
-        .get(format!("{base}/v1/templates/{key_name}"))
-        .header(common::auth(&admin_key).0, common::auth(&admin_key).1)
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(detail["mcp"]["auth_kind"], "oauth");
-    assert_eq!(detail["mcp"]["provider"], "slack");
-    let dto_scopes: Vec<String> = detail["mcp"]["scopes"]
-        .as_array()
-        .expect("mcp.scopes should be present for oauth")
-        .iter()
-        .map(|v| v.as_str().unwrap().to_string())
-        .collect();
-    assert!(
-        dto_scopes.contains(&"chat:write".to_string())
-            && dto_scopes.contains(&"channels:read".to_string()),
-        "mcp.scopes should round-trip through McpDetail, got {dto_scopes:?}"
-    );
-    // The top-level `scopes` (for white-label/token-vault consumers) must also
-    // include the mcp oauth scopes — MCP tools carry no per-action scopes.
-    let top_scopes: Vec<String> = detail["scopes"]
-        .as_array()
-        .map(|a| {
-            a.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
+/// Bundled registry with `slack.com` routed at the fake, an org-level `slack`
+/// instance, and — when `permit` — a rule covering every Slack action so calls
+/// execute instead of gating.
+async fn setup(pool: sqlx::PgPool, permit: bool) -> Harness {
+    let (fake, seen) = start_fake_slack().await;
+    let (base, client) =
+        common::start_api_with_registry_customized(pool.clone(), None, move |cfg| {
+            cfg.service_base_overrides
+                .insert("slack.com".to_string(), fake);
         })
-        .unwrap_or_default();
+        .await;
+    let (org_id, ident_id, agent_key, admin_key) =
+        common::bootstrap_org_identity(&base, &client).await;
+    common::grant_service_to_everyone(&base, &client, &admin_key, "slack").await;
+    if permit {
+        client
+            .post(format!("{base}/v1/permissions"))
+            .header(common::auth(&admin_key).0, common::auth(&admin_key).1)
+            .json(&json!({"identity_id": ident_id, "action_pattern": "slack:*:*"}))
+            .send()
+            .await
+            .unwrap();
+    }
+    Harness {
+        pool,
+        base,
+        client,
+        org_id,
+        agent_key,
+        seen,
+    }
+}
+
+/// A future-dated `slack` connection (+ BYOC) on the org's owner user, which
+/// is where an agent's call resolves its credential (D22).
+async fn seed_slack_connection(h: &Harness) {
+    let owner_id = common::owner_user_id(&h.pool, h.org_id).await;
+    let enc_key = overslash_core::crypto::Keyring::test();
+    let token = overslash_core::crypto::encrypt(&enc_key, TOKEN.as_bytes()).unwrap();
+    let cid = overslash_core::crypto::encrypt(&enc_key, b"mock_client_id").unwrap();
+    let csec = overslash_core::crypto::encrypt(&enc_key, b"mock_client_secret").unwrap();
+    let future = time::OffsetDateTime::now_utc() + time::Duration::hours(1);
+    let org = overslash_db::scopes::OrgScope::new(h.org_id, h.pool.clone());
+    let byoc = org
+        .create_byoc_credential(owner_id, "slack", &cid, &csec, &json!({}))
+        .await
+        .unwrap();
+    org.create_connection(overslash_db::repos::connection::CreateConnection {
+        org_id: h.org_id,
+        identity_id: owner_id,
+        provider_key: "slack",
+        encrypted_access_token: &token,
+        encrypted_refresh_token: None,
+        token_expires_at: Some(future),
+        scopes: None,
+        account_email: None,
+        account_picture: None,
+        byoc_credential_id: Some(byoc.id),
+    })
+    .await
+    .unwrap();
+}
+
+async fn call(h: &Harness, action: &str, params: Value) -> (u16, Value) {
+    let resp = h
+        .client
+        .post(format!("{}/v1/actions/call", h.base))
+        .header(common::auth(&h.agent_key).0, common::auth(&h.agent_key).1)
+        .json(&json!({ "service": "slack", "action": action, "params": params }))
+        .send()
+        .await
+        .unwrap();
+    let status = resp.status().as_u16();
+    (status, resp.json().await.unwrap_or(Value::Null))
+}
+
+fn calls_to(seen: &SeenLog, path: &str) -> Vec<Seen> {
+    seen.lock()
+        .unwrap()
+        .iter()
+        .filter(|s| s.path == path)
+        .cloned()
+        .collect()
+}
+
+// ============================================================================
+// Execution
+// ============================================================================
+
+#[tokio::test]
+async fn send_message_forwards_the_user_token_and_a_json_body() {
+    let h = setup(common::test_pool().await, true).await;
+    seed_slack_connection(&h).await;
+
+    let (status, body) = call(
+        &h,
+        "send_message",
+        json!({ "channel": "C1", "text": "hello from overslash" }),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["status"], "called", "{body}");
+    assert_eq!(body["is_error"], false, "{body}");
+
+    let sent = calls_to(&h.seen, "/api/chat.postMessage");
+    assert_eq!(sent.len(), 1);
+    assert_eq!(
+        sent[0].authorization.as_deref(),
+        Some(format!("Bearer {TOKEN}").as_str())
+    );
+    assert_eq!(
+        sent[0].body,
+        json!({ "channel": "C1", "text": "hello from overslash" })
+    );
+}
+
+/// Slack says "failed" with a 200. The predicate turns that into an upstream
+/// error everywhere the gateway reports one, and leaves the status alone.
+#[tokio::test]
+async fn an_ok_false_answer_is_an_upstream_error_and_audited_as_one() {
+    let h = setup(common::test_pool().await, true).await;
+    seed_slack_connection(&h).await;
+
+    let (status, body) = call(
+        &h,
+        "send_message",
+        json!({ "channel": "C_GONE", "text": "hi" }),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["status"], "called", "{body}");
+    assert_eq!(body["is_error"], true, "{body}");
+    assert_eq!(body["result"]["status_code"], 200, "{body}");
     assert!(
-        top_scopes.contains(&"chat:write".to_string()),
-        "template-level scopes should include mcp oauth scopes, got {top_scopes:?}"
+        body["result"]["body"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("channel_not_found"),
+        "Slack's error code must reach the agent: {body}"
     );
 
-    // Permission (`**` covers 2- and 3-segment MCP action keys) + Layer-1 access.
-    client
-        .post(format!("{base}/v1/permissions"))
-        .header(common::auth(&admin_key).0, common::auth(&admin_key).1)
-        .json(&json!({"identity_id": ident_id, "action_pattern": format!("{key_name}:**")}))
-        .send()
-        .await
-        .unwrap();
-    common::grant_service_to_everyone(&base, &client, &admin_key, key_name).await;
+    let detail: Value = sqlx::query_scalar(
+        "SELECT detail FROM audit_log
+          WHERE org_id = $1 AND action = 'action.executed'
+          ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(h.org_id)
+    .fetch_one(&h.pool)
+    .await
+    .expect("the call must write an audit row");
+    assert_eq!(detail["is_error"], true, "{detail}");
+    assert_eq!(detail["status_code"], 200, "{detail}");
+}
 
-    // Seed the owner's Slack connection (D22 owner-resolve).
-    seed_slack_connection(&pool, org_id, owner_id).await;
+#[tokio::test]
+async fn list_channels_offers_the_next_cursor_and_stops_on_an_in_band_failure() {
+    let h = setup(common::test_pool().await, true).await;
+    seed_slack_connection(&h).await;
 
-    let resp = client
-        .post(format!("{base}/v1/actions/call"))
-        .header(common::auth(&key).0, common::auth(&key).1)
-        .json(&json!({
-            "service": key_name,
-            "action": "list_channels",
-            "params": { "limit": 5 }
-        }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 200, "{:?}", resp.text().await);
-    let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["status"], "called");
-    let envelope: Value = serde_json::from_str(body["result"]["body"].as_str().unwrap()).unwrap();
-    assert_eq!(envelope["runtime"], "mcp");
-    assert_eq!(envelope["tool"], "list_channels");
-    assert_eq!(envelope["structured"]["echo"]["limit"], 5);
-
-    // The owner's Slack OAuth token was resolved and forwarded to the MCP server.
+    let (_, page_one) = call(&h, "list_channels", json!({})).await;
+    assert_eq!(page_one["is_error"], false, "{page_one}");
+    let pagination = &page_one["result"]["_pagination"];
+    assert_eq!(pagination["has_more"], true, "{page_one}");
     assert_eq!(
-        stub.last_auth().as_deref(),
-        Some("Bearer slack-mcp-user-token"),
-        "MCP call should carry the auto-resolved Slack connection token"
+        pagination["next"]["params"]["cursor"], "dXNlcjpVMDYxTkZUVDI=",
+        "{page_one}"
+    );
+    // The declared default page size reached the wire.
+    let first = calls_to(&h.seen, "/api/conversations.list");
+    assert!(first[0].query.contains("limit=100"), "{}", first[0].query);
+
+    let (_, page_two) = call(&h, "list_channels", pagination["next"]["params"].clone()).await;
+    assert_eq!(page_two["is_error"], true, "{page_two}");
+    assert_eq!(
+        page_two["result"]["_pagination"]["has_more"], false,
+        "an in-band failure has no page two: {page_two}"
     );
 }
 
 // ============================================================================
-// Pinning a Slack connection at service-create time must be accepted — the
-// provider-match validation has to see the MCP `auth.kind: oauth` provider,
-// not just an HTTP oauth scheme (regression: connection_provider_mismatch).
+// Approval disclosure
 // ============================================================================
 
+/// With no rule covering it, a write gates. The reviewer sees the channel by
+/// name, looked up through `conversations.info`, rather than an opaque ID.
 #[tokio::test]
-async fn slack_mcp_pinned_connection_accepted() {
-    let pool = common::test_pool().await;
-    let (addr, _stub) = start_stub().await;
-    let stub_url = format!("http://{addr}/mcp");
+async fn a_gated_send_discloses_the_channel_by_name() {
+    let h = setup(common::test_pool().await, false).await;
+    seed_slack_connection(&h).await;
 
-    let (base, client) = common::start_api(pool.clone()).await;
-    let base = format!("http://{base}");
-    let (org_id, _ident_id, key, admin_key) = common::bootstrap_org_identity(&base, &client).await;
-    let owner_id = common::owner_user_id(&pool, org_id).await;
-
-    let key_name = "slack_mcp_pin";
-    client
-        .post(format!("{base}/v1/templates"))
-        .header(common::auth(&admin_key).0, common::auth(&admin_key).1)
-        .json(&json!({"openapi": slack_mcp_template_yaml(key_name, &stub_url)}))
-        .send()
-        .await
-        .unwrap();
-
-    // Seed the connection and pin it explicitly on the new service instance.
-    let conn_id = seed_slack_connection(&pool, org_id, owner_id).await;
-    let resp = client
-        .post(format!("{base}/v1/services"))
-        .header(common::auth(&key).0, common::auth(&key).1)
-        .json(&json!({
-            "name": key_name,
-            "template_key": key_name,
-            "connection_id": conn_id,
-        }))
-        .send()
-        .await
-        .unwrap();
+    let (_, body) = call(
+        &h,
+        "send_message",
+        json!({ "channel": "C1", "text": "ship it" }),
+    )
+    .await;
+    assert_eq!(body["status"], "pending_approval", "{body}");
+    let disclosed: std::collections::HashMap<String, String> = body["disclosed_fields"]
+        .as_array()
+        .expect("disclosed_fields present")
+        .iter()
+        .map(|f| {
+            (
+                f["label"].as_str().unwrap().to_string(),
+                f["value"].as_str().unwrap_or("").to_string(),
+            )
+        })
+        .collect();
     assert_eq!(
-        resp.status(),
-        200,
-        "pinning a slack connection on the mcp-oauth template should be accepted: {:?}",
-        resp.text().await
+        disclosed.get("Channel").map(String::as_str),
+        Some("general")
+    );
+    assert_eq!(
+        disclosed.get("Message").map(String::as_str),
+        Some("ship it")
+    );
+    assert!(
+        calls_to(&h.seen, "/api/chat.postMessage").is_empty(),
+        "a gated write must not reach Slack"
     );
 }
 
 // ============================================================================
-// OAuth MCP with no connection — clean error, no upstream call
+// No connection
 // ============================================================================
 
 #[tokio::test]
-async fn slack_mcp_missing_connection_is_reported() {
-    let pool = common::test_pool().await;
-    let (addr, stub) = start_stub().await;
-    let stub_url = format!("http://{addr}/mcp");
+async fn a_call_without_a_connection_never_reaches_slack() {
+    let h = setup(common::test_pool().await, true).await;
 
-    let (base, client) = common::start_api(pool.clone()).await;
-    let base = format!("http://{base}");
-    let (_org_id, ident_id, key, admin_key) = common::bootstrap_org_identity(&base, &client).await;
-
-    let key_name = "slack_mcp_noconn";
-    client
-        .post(format!("{base}/v1/templates"))
-        .header(common::auth(&admin_key).0, common::auth(&admin_key).1)
-        .json(&json!({"openapi": slack_mcp_template_yaml(key_name, &stub_url)}))
-        .send()
-        .await
-        .unwrap();
-    client
-        .post(format!("{base}/v1/permissions"))
-        .header(common::auth(&admin_key).0, common::auth(&admin_key).1)
-        .json(&json!({"identity_id": ident_id, "action_pattern": format!("{key_name}:**")}))
-        .send()
-        .await
-        .unwrap();
-    common::grant_service_to_everyone(&base, &client, &admin_key, key_name).await;
-
-    // No connection seeded → resolution fails before any upstream call.
-    let resp = client
-        .post(format!("{base}/v1/actions/call"))
-        .header(common::auth(&key).0, common::auth(&key).1)
-        .json(&json!({
-            "service": key_name,
-            "action": "list_channels",
-            "params": {}
-        }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 400, "{:?}", resp.text().await);
+    let (status, body) = call(&h, "list_channels", json!({})).await;
+    assert_ne!(status, 200, "{body}");
     assert!(
-        stub.last_auth().is_none(),
-        "upstream MCP server must not be contacted when no connection exists"
+        h.seen.lock().unwrap().is_empty(),
+        "slack.com must not be contacted without a connection"
     );
 }

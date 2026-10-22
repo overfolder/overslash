@@ -421,6 +421,31 @@ pub(in crate::openapi) fn parse_additional_properties(
     }
 }
 
+/// `x-overslash-success` → the jq predicate's source text.
+///
+/// Sink-agnostic for the same reason as [`parse_additional_properties`]: a
+/// warning at `info`, an error on an operation. Only the shape is checked here.
+/// Whether the text is valid jq is checked in `overslash-api`, which is the only
+/// crate that compiles jq programs.
+pub(in crate::openapi) fn parse_success(
+    v: Option<&Value>,
+    base: &str,
+    issues: &mut Vec<ValidationIssue>,
+) -> Option<String> {
+    let key = Ext::Success.key();
+    match v? {
+        Value::String(s) if !s.trim().is_empty() => Some(s.clone()),
+        other => {
+            issues.push(ValidationIssue::new(
+                "openapi_invalid",
+                format!("{key} must be a non-empty jq expression string (got {other})"),
+                format!("{base}.{key}"),
+            ));
+            None
+        }
+    }
+}
+
 /// `x-overslash-wait-mode` → [`ExecutionMode`].
 ///
 /// Shaped like [`parse_timeout_ms`] deliberately: an unrecognized value is a

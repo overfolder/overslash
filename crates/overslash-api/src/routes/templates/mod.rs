@@ -112,11 +112,11 @@ fn with_errors(mut report: ValidationReport, errors: Vec<ValidationIssue>) -> Va
 }
 
 /// Run `parse_normalize_compile_yaml` and then validate that every
-/// `x-overslash-disclose` filter and `x-overslash-sql-database` expression is
-/// a syntactically valid jq expression. jq syntax validation lives in
-/// `overslash-api` (jq isn't compiled into `overslash-core` to keep it
-/// WASM-friendly), so this is the single gate any register / update /
-/// import / promote path must go through.
+/// `x-overslash-success` predicate, `x-overslash-disclose` filter and
+/// `x-overslash-sql-database` expression is a syntactically valid jq
+/// expression. jq syntax validation lives in `overslash-api` (jq isn't
+/// compiled into `overslash-core` to keep it WASM-friendly), so this is the
+/// single gate any register / update / import / promote path must go through.
 fn parse_normalize_compile_and_check_disclose(
     yaml: &str,
     vars: &overslash_core::template_vars::Vars,
@@ -124,6 +124,18 @@ fn parse_normalize_compile_and_check_disclose(
     let (doc, def) = parse_normalize_compile_yaml(yaml, vars)?;
     let mut extra = Vec::new();
     for (action_key, action) in &def.actions {
+        if let Some(expr) = &action.success
+            && let Err(msg) =
+                response_filter::validate_syntax(&response_filter::ResponseFilter::Jq {
+                    expr: expr.clone(),
+                })
+        {
+            extra.push(ValidationIssue::new(
+                "success_invalid_jq",
+                format!("x-overslash-success is not a valid jq expression: {msg}"),
+                format!("actions.{action_key}.x-overslash-success"),
+            ));
+        }
         for (i, f) in action.disclose.iter().enumerate() {
             if let Err(msg) =
                 response_filter::validate_syntax(&response_filter::ResponseFilter::Jq {

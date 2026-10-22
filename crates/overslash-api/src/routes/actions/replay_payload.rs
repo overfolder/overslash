@@ -76,6 +76,7 @@ pub(super) fn build(
         instance_id,
         Some(call_timeout.ms()),
         stored_pagination(meta, req),
+        meta.action_success.clone(),
     ))
     .ok()
 }
@@ -114,6 +115,7 @@ mod tests {
             action_wait_mode: None,
             action_handoff_after_ms: None,
             action_pagination: pagination,
+            action_success: None,
             service_timeout_ms: None,
             description: None,
             service_scope: None,

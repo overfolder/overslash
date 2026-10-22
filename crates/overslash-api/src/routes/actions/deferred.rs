@@ -210,6 +210,7 @@ pub(super) async fn mint_http_download(
         duration_ms: 0,
         filtered_body: None,
         wire_bytes: None,
+        body_failed: false,
     };
     Ok((
         StatusCode::OK,

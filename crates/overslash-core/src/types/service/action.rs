@@ -176,6 +176,21 @@ pub struct ServiceAction {
     /// document has no `info`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub additional_properties: bool,
+    /// `x-overslash-success` — a jq predicate over the parsed response body
+    /// that says whether a non-error HTTP status actually succeeded.
+    ///
+    /// For upstreams that report failure in-band (Slack answers `200
+    /// {"ok": false, "error": …}`). Anything but `true` marks the result
+    /// [`body_failed`](crate::types::ActionResult::body_failed), which makes it
+    /// an upstream error for audit, `is_error` and paging. The predicate only
+    /// runs on a status below 400 and a body that parses as JSON. A status of
+    /// 400 or more is already an error, and a body that is not JSON has nothing
+    /// to judge.
+    ///
+    /// HTTP actions only. Folded at compile time from the `info`-level default,
+    /// and an operation's own value wins.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub success: Option<String>,
     /// The operation's declared `requestBody`, parsed at template-load time.
     /// `None` means the operation takes no body at all (e.g. a POST whose only
     /// inputs are path params) — routing then sends neither a body nor a

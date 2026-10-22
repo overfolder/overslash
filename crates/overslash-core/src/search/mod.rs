@@ -267,6 +267,7 @@ mod tests {
     fn mk_action(desc: &str, risk: Risk) -> ServiceAction {
         ServiceAction {
             additional_properties: false,
+            success: None,
             wait_mode: None,
             handoff_after_ms: None,
             pagination: None,

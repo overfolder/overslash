@@ -181,6 +181,7 @@ async fn run_http(ctx: StoredCallCtx<'_>, stored: StoredCallRequest) -> StoredOu
         audit_source: ctx.audit_source,
         audit_body_mode: ctx.audit_body_mode,
         timeout,
+        success: stored.success.as_deref(),
     };
 
     let outcome = tokio::time::timeout(
@@ -220,7 +221,7 @@ async fn run_http(ctx: StoredCallCtx<'_>, stored: StoredCallRequest) -> StoredOu
             }
             StoredOutcome::Executed {
                 upstream_errored: result.status_code >= 500,
-                is_error: result.status_code >= 400,
+                is_error: result.is_upstream_error(),
                 summary: serde_json::json!({
                     "status_code": result.status_code,
                     "duration_ms": result.duration_ms,
@@ -538,6 +539,7 @@ async fn run_platform(ctx: StoredCallCtx<'_>, call: StoredPlatformCall) -> Store
                 duration_ms: 0,
                 filtered_body: None,
                 wire_bytes: None,
+                body_failed: false,
             };
             let mut result_json = serde_json::to_value(&result)
                 .unwrap_or_else(|_| serde_json::json!({"note": "result not serializable"}));

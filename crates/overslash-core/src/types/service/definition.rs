@@ -624,6 +624,7 @@ mod tests {
             "search_issues".into(),
             ServiceAction {
                 additional_properties: false,
+                success: None,
                 wait_mode: None,
                 handoff_after_ms: None,
                 pagination: None,
@@ -699,6 +700,7 @@ mod tests {
     fn service_action_disabled_elided_when_false() {
         let a = ServiceAction {
             additional_properties: false,
+            success: None,
             wait_mode: None,
             handoff_after_ms: None,
             pagination: None,

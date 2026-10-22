@@ -113,6 +113,10 @@ pub(super) const INFO_ALIASES: &[Alias] = &[
         alias: "additional-properties",
         canonical: "x-overslash-additional-properties",
     },
+    Alias {
+        alias: "success",
+        canonical: "x-overslash-success",
+    },
 ];
 
 pub(super) const OPERATION_ALIASES: &[Alias] = &[
@@ -155,6 +159,10 @@ pub(super) const OPERATION_ALIASES: &[Alias] = &[
     Alias {
         alias: "additional-properties",
         canonical: "x-overslash-additional-properties",
+    },
+    Alias {
+        alias: "success",
+        canonical: "x-overslash-success",
     },
 ];
 
