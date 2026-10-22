@@ -25,18 +25,6 @@ unmaintained = "all"
 # knowing; `cargo update -p <crate>` is almost always enough.
 yanked = "deny"
 ignore = [
-    # rustls-webpki 0.103.15 / webpki-roots 1.0.7 / webpki-root-certs 1.0.6 —
-    # verification may accept paths through the distrusted emSign
-    # intermediates, whose private keys are public. Unscored. Reaches every
-    # outbound TLS client (reqwest/rustls). Not an exception for lack of a
-    # fix: the only fixed releases (0.103.16, 1.0.10) are 2-3 days old, and
-    # D30's 7-day cooldown waives only a Critical. This holds the scan green
-    # until the fixes are old enough; on the review date, `cargo update -p`
-    # all three to the fixed versions and delete these entries.
-    { id = "RUSTSEC-2026-0382", reason = "rustls-webpki: emSign distrusted intermediates; fix 0.103.16 is under the D30 cooldown until 2026-10-27, bump then. review-by: 2026-10-27" },
-    { id = "RUSTSEC-2026-0381", reason = "webpki-roots: emSign root; fix 1.0.10 is under the D30 cooldown until 2026-10-26, bump then. review-by: 2026-10-27" },
-    { id = "RUSTSEC-2026-0383", reason = "webpki-root-certs: emSign root; fix 1.0.10 is under the D30 cooldown until 2026-10-26, bump then. review-by: 2026-10-27" },
-
     # rsa 0.9.10 — Marvin Attack, a timing side channel in PKCS#1 v1.5
     # *decryption / signing with a private key* (CVSS 5.9). No fixed release.
     # Reaches us only through jsonwebtoken's `rust_crypto` backend, which
