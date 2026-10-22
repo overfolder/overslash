@@ -17,9 +17,9 @@
 # every unrelated merge — it gets the SLA from the policy, tracked in the
 # issue, not a repo-wide freeze.
 #
-# Everything here reads lockfiles (plus security.txt); nothing compiles, and
-# nothing runs an npm install script. The jobs run in parallel and each
-# finishes well under a minute.
+# Everything here reads lockfiles (plus security.txt, and live DNS for the
+# subdomain inventory); nothing compiles, and nothing runs an npm install
+# script. The jobs run in parallel and each finishes well under a minute.
 name: Dependency audit
 
 on:
@@ -80,6 +80,24 @@ jobs:
           ref: ${{ matrix.ref }}
       - name: security.txt fields and Expires
         run: bash scripts/check-security-txt.sh
+
+  # CASA 6.4.1. Live DNS for overslash.com / oversla.sh against
+  # docs/compliance/casa/subdomain-inventory.md: a dangling CNAME, an
+  # unclaimed target or an unlisted hostname appears at the registrar, never
+  # in a diff, so only the schedule catches it. Scheduled against `dev` alone:
+  # DNS is one live state, the inventory is edited on dev first, and master's
+  # copy would fail on every record change until the next release.
+  subdomains:
+    name: Subdomain inventory
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'schedule' && 'dev' || '' }}
+      - name: Install dig
+        run: command -v dig >/dev/null || (sudo apt-get update -qq && sudo apt-get install -y -qq dnsutils)
+      - name: DNS records, targets and coverage
+        run: bash scripts/check-subdomains.sh
 
   npm-audit:
     name: npm audit (${{ matrix.dir }})

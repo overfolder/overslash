@@ -322,6 +322,17 @@ command or a console click moves the project outside it without failing anything
 
 ---
 
+### DNS — not in either project
+
+Neither project has a Cloud DNS zone: `enable_dns = false` in both tfvars, and both zones are
+on Namecheap BasicDNS, unsigned. The records GCP depends on — the Certificate Manager ACME
+CNAME for the prod wildcard cert (`_acme-challenge.api`), the `ghs.googlehosted.com` CNAMEs
+for every Cloud Run domain mapping, the GCLB A/AAAA — are therefore created by hand from
+Terraform outputs. They are listed with their owning project in
+[subdomain-inventory.md](subdomain-inventory.md) and checked daily against live DNS
+(CASA 6.4.1). One finding: a `*.api.dev` wildcard CNAME to `ghs.googlehosted.com` with
+only four names mapped in `overslash-dev`, pending removal.
+
 ## How this scan was run
 
 `roles/viewer` on both projects is sufficient and is the right grant: it carries all 297

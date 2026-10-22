@@ -93,6 +93,8 @@ jobs:
               - 'scripts/check-deny-reviews.sh'
               - 'scripts/check-security-txt.sh'
               - 'dashboard/static/.well-known/security.txt'
+              - 'scripts/check-subdomains.sh'
+              - 'docs/compliance/casa/subdomain-inventory.md'
               - '.github/workflows/deps-audit.yml'
               - '.github/workflows/ci.yml'
             # CI and release plumbing no other job exercises: the other

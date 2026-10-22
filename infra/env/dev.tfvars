@@ -16,6 +16,10 @@ session_cookie_domain = ".app.dev.overslash.com"
 # `extra_api_domain_mappings` below, which keeps cost at zero and avoids
 # provisioning a global LB just to host a couple of dogfood orgs.
 enable_api_lb = false
+#
+# Each entry also needs a CNAME at the registrar and a row in
+# docs/compliance/casa/subdomain-inventory.md, or the daily subdomain check
+# fails (docs/runbooks/subdomain-inventory.md).
 extra_api_domain_mappings = [
   "overfolder.api.dev.overslash.com",
   "overfolder-dev.api.dev.overslash.com",
