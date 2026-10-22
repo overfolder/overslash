@@ -19,16 +19,20 @@ It needs `dig`, `curl` and `jq`, and takes about half a minute.
 ## Adding a hostname
 
 1. Add the row(s) to the inventory in the PR that needs the hostname — a new
-   `extra_api_domain_mappings` entry in `dev.tfvars`, a Vercel domain, a Better Stack page.
+   `extra_api_domain_mappings` entry in `dev.tfvars`, a Vercel domain, a Better Stack page —
+   with Check **`pending`**. The PR runs the check, and the record does not exist yet;
+   `pending` lets a missing record pass while still rejecting a wrong one.
 2. Merge, then create the target first (apply the Terraform, attach the domain in Vercel),
    and only then the record at Namecheap. The other order leaves a record pointing at an
    unclaimed target, which is the thing this check exists to catch.
-3. Run the script. A `tls` row can take a few minutes after the record appears while the
-   provider issues the certificate.
+3. Once the provider has issued the certificate (a few minutes), switch the row from
+   `pending` to `tls` (or `dns`) in a follow-up PR, which now checks it in full. Don't leave
+   a row `pending`: it never checks the certificate, so it cannot see an unclaimed target.
 
 ## Removing a hostname
 
-The reverse order: **delete the Namecheap record first**, wait for its TTL (30 min), then
+The reverse order. Switch the row to `pending` in a PR first, so the daily check tolerates
+the record's absence. Then **delete the Namecheap record**, wait for its TTL (30 min), then
 release the target — destroy the Cloud Run domain mapping, remove the Vercel domain, delete
 the status page, release the GCLB address — and then delete the inventory row. A record
 whose target is gone is a dangling record anyone who can claim that target may serve.
@@ -43,6 +47,7 @@ whose target is gone is a dangling record anyone who can claim that target may s
 | `… resolves but is not in the inventory` / `unlisted … record` | A record exists that nobody wrote down | Add the row with its owner, or delete the record |
 | `listed as absent but resolves` | One of the `absent` names started resolving | As above |
 | `registration expires …` | Under 60 days to the RDAP expiry | Renew at Namecheap; confirm auto-renew is on |
+| `resolver … failed N queries` | dig timed out or got SERVFAIL/REFUSED; those names were not checked, so the run is not trusted | Rerun. If it persists, try `DNS_RESOLVER=8.8.8.8` — a broken zone (e.g. bad DNSSEC) shows up as SERVFAIL everywhere |
 | warning `Certificate Transparency lookup … failed` | CertSpotter was unreachable | Nothing; the other checks still ran. It fails nothing on purpose |
 
 The `_acme-challenge.api` row is expected to point at an NXDOMAIN target between certificate
@@ -71,7 +76,8 @@ explicitly; the wildcard row is the only thing left.
    ```
 
 4. Delete the `*.api.dev.overslash.com` row from the inventory and run the script; it must
-   pass. From then on a new dev org mapping needs its own CNAME *and* row (see the comment on
+   pass. (The row is already `pending`, so the daily check stays green between step 2 and
+   this PR.) From then on a new dev org mapping needs its own CNAME *and* row (see the comment on
    `extra_api_domain_mappings` in `infra/env/dev.tfvars`).
 
 ### Optional hardening

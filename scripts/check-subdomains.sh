@@ -68,8 +68,8 @@ while IFS=$'\t' read -r name type expect check; do
         absent)
             [ "$check" = - ] || fail "$name: an absent row takes check '-', not '$check'"
             continue ;;
-        A | AAAA | CNAME) ok_checks="tls dns delegated" ;;
-        MX | TXT) ok_checks="dns" ;;
+        A | AAAA | CNAME) ok_checks="tls dns delegated pending" ;;
+        MX | TXT) ok_checks="dns pending" ;;
         *) fail "$name: unknown type '$type'"; continue ;;
     esac
     [ "$expect" != - ] || fail "$name $type: empty Expect"
@@ -88,9 +88,25 @@ fi
 
 # --- helpers ----------------------------------------------------------------
 
+# A query whose answer cannot be trusted — dig timed out, or the resolver said
+# SERVFAIL/REFUSED — is recorded here instead of read as "no record", which
+# would pass an absent row or hide an unlisted name. Any entry fails the run.
+dns_errors=$(mktemp)
+trap 'rm -f "$dns_errors"' EXIT
+
+q() {
+    local out
+    if ! out=$(dig @"$resolver" +noall +comments +answer +tries=3 +time=5 "$@" 2>&1) \
+        || ! grep -qE 'status: (NOERROR|NXDOMAIN)' <<<"$out"; then
+        echo "$*" >>"$dns_errors"
+        return 0
+    fi
+    printf '%s\n' "$out"
+}
+
 # Records of `type` owned by `name` itself — not the CNAME chain dig follows.
 rr() {
-    dig @"$resolver" +noall +answer +tries=3 +time=5 "$2" "$1" | awk -v n="${1%.}." -v t="$2" '
+    q "$2" "$1" | awk -v n="${1%.}." -v t="$2" '
         tolower($1) == tolower(n) && $4 == t {
             $1 = $2 = $3 = $4 = ""; sub(/^ +/, "")
             if (t == "MX") $0 = $NF
@@ -100,8 +116,7 @@ rr() {
 }
 
 rcode() {
-    dig @"$resolver" +noall +comments +tries=3 +time=5 A "$1" \
-        | sed -nE 's/.*status: ([A-Z]+).*/\1/p' | head -1
+    q A "$1" | sed -nE 's/.*status: ([A-Z]+).*/\1/p' | head -1
 }
 
 resolves() { [ -n "$(rr "$1" A)$(rr "$1" AAAA)$(rr "$1" CNAME)" ]; }
@@ -120,7 +135,11 @@ matches() {
     local type=$1 expect=$2 value=${3%.} e
     if [ "$expect" = vercel ]; then
         case $type in
-            A) [[ $value =~ ^(216\.150\.|76\.76\.21\.) ]] ;;
+            # The anycast pool Vercel answers with today (216.150.x) and the
+            # two addresses its docs tell you to configure: legacy 76.76.21.21
+            # and the current 216.198.79.1. A Vercel address outside these
+            # fails the row; the tls check still decides whether it is ours.
+            A) [[ $value =~ ^(216\.150\.|216\.198\.79\.|76\.76\.21\.) ]] ;;
             CNAME) [[ $value =~ \.vercel-dns(-[0-9]+)?\.com$ ]] ;;
             *) false ;;
         esac
@@ -156,13 +175,20 @@ probe_tls() {
 while IFS=$'\t' read -r name type expect check; do
     host=$(concrete "$name")
     if [ "$type" = absent ]; then
-        resolves "$host" && fail "$name: listed as absent but resolves ($(dig @"$resolver" +short A "$host" | tr '\n' ' '))"
+        resolves "$host" && fail "$name: listed as absent but resolves ($(rr "$host" A)$(rr "$host" CNAME))"
         continue
     fi
 
     answers=$(rr "$host" "$type")
     if [ -z "$answers" ]; then
-        fail "$name: no $type record (inventory expects $expect)"
+        # `pending`: listed before the record exists (or after it is gone),
+        # so the PR adding or removing a hostname can pass before the
+        # registrar change. Present values are still checked below.
+        if [ "$check" = pending ]; then
+            echo "note: $name $type is pending and not live"
+        else
+            fail "$name: no $type record (inventory expects $expect)"
+        fi
         continue
     fi
     if [ "$type" = TXT ]; then
@@ -264,7 +290,7 @@ for c in "${candidates[@]}"; do
     case $checked in *" $c "*) continue ;; esac
     checked+="$c "
     covered_by "$c" >/dev/null && continue
-    resolves "$c" && fail "$c resolves but is not in the inventory ($(dig @"$resolver" +short A "$c" | head -2 | tr '\n' ' '))"
+    resolves "$c" && fail "$c resolves but is not in the inventory ($(rr "$c" CNAME)$(rr "$c" A | head -2 | tr '\n' ' '))"
 done
 
 # --- registration expiry -----------------------------------------------------
@@ -284,6 +310,10 @@ for a in $apexes; do
         fail "$a registration expires $exp — less than $expiry_warn_days days; renew it"
     fi
 done
+
+if [ -s "$dns_errors" ]; then
+    fail "resolver $resolver failed $(wc -l <"$dns_errors") queries — those names are unchecked, so the run cannot pass: $(sort -u "$dns_errors" | head -5 | tr '\n' ';')"
+fi
 
 [ "$status" = 0 ] && echo "ok: $(wc -l <<<"$rows") inventory rows match live DNS; ${#candidates[@]} discovered names covered"
 exit "$status"

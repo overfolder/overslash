@@ -43,7 +43,8 @@ the script that checks it.
 This is the property subdomain takeover depends on: whether a record pointing at a provider
 can be served by *someone else's* account once ours lets go.
 
-- **Vercel** — a domain already attached to a team can only be added by another team after a
+- **Vercel** — the `vercel` expectation accepts Vercel's anycast pool (`216.150.x`) and the
+  two addresses its docs tell you to configure (`76.76.21.21`, `216.198.79.1`). A domain already attached to a team can only be added by another team after a
   `_vercel` TXT verification on our zone. While attached, an unclaimed name answers with
   `x-vercel-error: DEPLOYMENT_NOT_FOUND`; the script treats that header as unclaimed.
 - **Cloud Run domain mappings (`ghs.googlehosted.com`, 216.239.32-38.21)** — a mapping can only
@@ -70,8 +71,9 @@ label), **Type** (`A`, `AAAA`, `CNAME`, `MX`, `TXT`, or `absent` for a name that
 resolve), **Expect** (comma-separated values; `vercel` = any Vercel edge address or
 `*.vercel-dns*.com` target; a TXT value is a prefix), **Check** (`tls` — HTTPS must present a
 valid certificate for the name and no provider "unclaimed" marker; `dns` — the record and its
-CNAME/MX target must resolve; `delegated` — record must match, target may be NXDOMAIN; `-` for
-`absent`). The other columns are for people.
+CNAME/MX target must resolve; `delegated` — record must match, target may be NXDOMAIN; `pending` — the record may be
+missing, because the row was merged before the registrar change or is about to be deleted
+after it, but a value that is present must still match; `-` for `absent`). The other columns are for people.
 
 <!-- inventory:begin -->
 | Name | Type | Expect | Check | Provider | Notes |
@@ -99,7 +101,7 @@ CNAME/MX target must resolve; `delegated` — record must match, target may be N
 | `overfolder.api.dev.overslash.com` | CNAME | `ghs.googlehosted.com` | tls | GCP `overslash-dev` Cloud Run | `extra_api_domain_mappings` |
 | `overfolder-dev.api.dev.overslash.com` | CNAME | `ghs.googlehosted.com` | tls | GCP `overslash-dev` Cloud Run | `extra_api_domain_mappings` |
 | `reveni-dev.api.dev.overslash.com` | CNAME | `ghs.googlehosted.com` | tls | GCP `overslash-dev` Cloud Run | `extra_api_domain_mappings` |
-| `*.api.dev.overslash.com` | CNAME | `ghs.googlehosted.com` | dns | GCP `overslash-dev` Cloud Run | **Finding** — see below; pending removal |
+| `*.api.dev.overslash.com` | CNAME | `ghs.googlehosted.com` | pending | GCP `overslash-dev` Cloud Run | **Finding** — see below; pending removal |
 | `mailbox.overslash.com` | CNAME | `ghs.googlehosted.com` | tls | GCP `overslash` Cloud Run | overfwd Mailbox Gateway |
 | `mailbox.dev.overslash.com` | CNAME | `ghs.googlehosted.com` | tls | GCP `overslash-dev` Cloud Run | overfwd Mailbox Gateway |
 | `status.overslash.com` | CNAME | `statuspage.betteruptime.com` | tls | Better Stack | |
