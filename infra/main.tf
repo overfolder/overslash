@@ -383,6 +383,19 @@ module "cloud_build" {
   ]
 }
 
+# --- Cloud Build source staging bucket ---
+module "cloud_build_source" {
+  source     = "./modules/cloud-build-source"
+  project_id = var.project_id
+}
+
+# Adopt the bucket Cloud Build auto-created. A no-op once imported; a brand-new
+# project has no such bucket, so drop this block for its first apply.
+import {
+  to = module.cloud_build_source.google_storage_bucket.source
+  id = "${var.project_id}_cloudbuild"
+}
+
 # --- Metrics exporter Cloud Run Job + Scheduler trigger ---
 module "metrics_exporter_job" {
   source      = "./modules/metrics-exporter-job"

@@ -258,9 +258,19 @@ gap is CMEK, which matters because versioning retains every historical value of 
 generated `encryption-key` for 90 days.
 
 `overslash_cloudbuild` is auto-created by Cloud Build, **not managed by Terraform**, and
-holds source archives of the repository uploaded for each build — under legacy ACLs rather
-than uniform bucket-level access, with public-access prevention merely inherited rather
-than enforced. Same finding in dev.
+holds a source archive of the repository — under legacy ACLs rather than uniform
+bucket-level access, with public-access prevention merely inherited rather than enforced.
+Same finding in dev.
+
+Followed up 2026-10-21. Both buckets are in the `US` multi-region and each holds exactly one
+archive, from a manual `gcloud builds submit` on 2026-04-29. No trigger writes there: all
+three are GitHub-connected and clone from GitHub. The archive is a working-directory dump.
+With no `.gcloudignore`, gcloud honoured `.gitignore` but not `.git/info/exclude`, so it
+uploaded a local-only `.claude/settings.local.json`. Project viewers could read it through
+the legacy `READER` ACL. **In code, pending apply:** `infra/modules/cloud-build-source/`
+imports both buckets with UBLA on, public-access prevention `enforced` and a 30-day delete
+rule, and a root `.gcloudignore` closes the upload path. Apply, archive deletion and
+evidence commands: [cloud-build-bucket.md](../../runbooks/cloud-build-bucket.md).
 
 ### Supply chain and organization policy
 
@@ -315,7 +325,8 @@ No verdict is overturned. It does three things:
    reading the module.
 3. **Adds three findings the IaC could not show**: `roles/editor` on two GCP-default
    service accounts; the unmanaged `_cloudbuild` bucket holding repository source archives
-   without uniform bucket-level access; and the confirmation that production runs 8 alert
+   without uniform bucket-level access (in code, pending apply —
+   [cloud-build-bucket.md](../../runbooks/cloud-build-bucket.md)); and the confirmation that production runs 8 alert
    policies and **zero** uptime checks, so the `[P0] API Down` page does not exist.
 
 And it supplies better evidence than prose: "Google's own Recommender rates this P2, with a

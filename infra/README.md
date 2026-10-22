@@ -148,6 +148,7 @@ the GitHub button on `/auth/providers` only once both are populated.
 | `cloud-run` | Overslash API with health checks and secret injection |
 | `api-lb` | (Optional, `enable_api_lb`) Global HTTPS LB for `<apex>` + `*.<apex>`: wildcard Certificate Manager cert, TLS 1.2+ `RESTRICTED` SSL policy, Cloud Armor (WAF in preview), optional IPv6 front door (`api_lb_enable_ipv6`) — see [docs/runbooks/lb-hardening.md](../docs/runbooks/lb-hardening.md) |
 | `cloud-build` | GitHub push trigger: build -> push -> deploy |
+| `cloud-build-source` | Adopts (via `import`) the auto-created `<project>_cloudbuild` bucket: UBLA on, public access prevention enforced, 30-day object expiry. No trigger uses it — see [docs/runbooks/cloud-build-bucket.md](../docs/runbooks/cloud-build-bucket.md) |
 | `infra-scheduler` | (Optional) Stop/start Cloud SQL on cron (Europe/Madrid) |
 | `dns` | (Optional) Cloud DNS managed zone |
 | `memorystore` | (Optional) Memorystore for Valkey 9.1 over Private Service Connect, IAM auth + TLS on; the Cloud Run SA gets `memorystore.dbConnectionUser` on the instance and the server CA is published to Secret Manager. `TF_VAR_cache_instance_name` swaps instances without downtime. See [docs/runbooks/memorystore-valkey.md](../docs/runbooks/memorystore-valkey.md) |

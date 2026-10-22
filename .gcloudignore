@@ -1,0 +1,9 @@
+# Read by `gcloud builds submit` / `gcloud run deploy --source`. Without this
+# file gcloud honours .gitignore but not .git/info/exclude, so local-only files
+# got uploaded to <project>_cloudbuild. See docs/runbooks/cloud-build-bucket.md.
+#!include:.gitignore
+.git/
+.claude/settings.local.json
+**/.venv/
+target/
+node_modules/
