@@ -87,4 +87,5 @@ what the product actually renders.
 | For | Artifact | Status |
 |-----|----------|--------|
 | 6.1.1 | Dependency scan output: the *Dependency audit* jobs (`cargo-deny`, `npm audit`, OSV). Take a recent scheduled run against `master`, which shows the two justified ignores filtered with their reasons | `have`: GitHub Actions, `.github/workflows/deps-audit.yml` |
+| 3.1.1 | `gcloud storage buckets describe` for `overslash_cloudbuild` and `overslash-dev_cloudbuild`: UBLA `true`, public-access prevention `enforced`, the 30-day delete rule, an empty `acl`, and no objects | `need` — in code (`infra/modules/cloud-build-source/`), pending apply; produced by the verify step of [cloud-build-bucket.md](../../runbooks/cloud-build-bucket.md) |
 | The 18 DAST-validated requirements | An authenticated Burp Suite scan run with the ADA Burp Audit Scan Configuration. Developer-run at AL1; lab-run at AL2 | `need` — see [dast-readiness.md](dast-readiness.md) |
