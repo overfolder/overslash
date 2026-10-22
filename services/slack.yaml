@@ -4,84 +4,172 @@ info:
   key: slack
   category: Communication
   description: >
-    Slack via its official first-party MCP server (https://mcp.slack.com/mcp,
-    GA Feb 2026). Overslash acts as the MCP *client*: it wraps Slack's tools,
-    resolves a Slack OAuth connection into the outbound bearer, and layers its
-    permission chain + human approvals + audit on top. Slack's MCP auth server
-    does not support Dynamic Client Registration, so the DCR-based
-    nested-upstream-OAuth path can't be used — this template instead reuses the
-    standard `oauth_providers` + `connections` machinery via `auth.kind: oauth`.
-x-overslash-runtime: mcp
-servers: []
-paths: {}
-x-overslash-mcp:
-  url: https://mcp.slack.com/mcp
-  # OAuth: inject `Authorization: Bearer <token>` from the caller's owner
-  # `slack` connection (D22), refreshed as needed — the same provider row the
-  # dashboard/`create_connection` flow populates. `scopes` is the superset
-  # requested at connect time (Slack ultimately gates by the user's own
-  # permissions + what the app exposes).
-  auth:
-    kind: oauth
-    provider: slack
-    scopes:
-      - chat:write
-      - channels:read
-      - groups:read
-      - channels:history
-      - groups:history
-      - users:read
-      - search:read
-  # Tool list is authored inline (from Slack's published MCP capability docs,
-  # Feb–May 2026 changelogs) and is authoritative. `autodiscover: false`
-  # because `tools/list` resync isn't supported for oauth-auth MCP servers
-  # (the admin resync path carries no per-user token) — matching hubspot.yaml.
-  # Every tool therefore declares `input_schema`.
-  autodiscover: false
-  tools:
-    # ── messaging (write — the tool that most benefits from disclosure) ──
-    - name: send_message
+    Slack's Web API (https://api.slack.com/methods), called with a user token
+    from the caller's owner `slack` connection, so messages go out as that
+    user and reads see what that user sees. Slack's own MCP server is not used:
+    it only admits Marketplace-listed or internal apps.
+  # Slack reports almost every failure as HTTP 200 with `{"ok": false,
+  # "error": "<code>"}`. Without this, a `channel_not_found` would be audited as
+  # a success and a paged read would keep walking. The body still reaches the
+  # agent unchanged, `error` code included.
+  success: ".ok == true"
+servers:
+  - url: https://slack.com
+components:
+  securitySchemes:
+    oauth:
+      type: oauth2
+      provider: slack
+      flows:
+        authorizationCode:
+          # The user-token pair (migration 134). On `oauth/v2/authorize`,
+          # `scope=` means *bot* scopes, and the token would come back nested
+          # under `authed_user`.
+          authorizationUrl: https://slack.com/oauth/v2_user/authorize
+          tokenUrl: https://slack.com/api/oauth.v2.user.access
+          scopes:
+            chat:write: Send and edit messages as the user
+            channels:read: List public channels
+            groups:read: List private channels the user is in
+            channels:history: Read public channel messages
+            groups:history: Read private channel messages
+            users:read: Look up workspace members
+            search:read: Search messages
+            reactions:write: Add emoji reactions
+paths:
+  # ── messaging ──────────────────────────────────────────────────────────────
+  /api/chat.postMessage:
+    post:
+      operationId: send_message
+      summary: 'Post Slack message "{text}" to {channel}'
+      description: >-
+        Post a message to a channel, a DM (pass a user ID as `channel`), or a
+        thread (pass the parent's `thread_ts`). Text is Slack mrkdwn.
       risk: write
       scope_param: channel
-      description: 'Post Slack message "{text}" to {channel}'
-      input_schema:
-        type: object
-        properties:
-          channel:
-            type: string
-            description: "Channel ID (e.g. C0123456789) or name (#general), or a user ID for a DM"
-          text:
-            type: string
-            minLength: 1
-            description: "Message text (Slack mrkdwn)."
-          thread_ts:
-            type: string
-            description: "Parent message ts to reply in-thread."
-        required: [channel, text]
-      # MCP-runtime disclosure projects {runtime, tool, arguments, resolved,
-      # service, action}, so filters address `.arguments.*` (not the HTTP
-      # `.body.*` shape), and `.resolved.*` when a param declares a resolver.
-      # Surfaces the target + message in the approval UI and audit log.
+      security:
+        - oauth: [chat:write]
       disclose:
-        - label: "Channel"
-          filter: ".arguments.channel"
-        - label: "Message"
+        - label: Channel
+          filter: .resolved.channel // .body.channel
+        - label: Message
           primary: true
-          filter: ".arguments.text"
+          filter: .body.text
           max_chars: 2000
-        - label: "Thread"
-          filter: ".arguments.thread_ts // empty"
+        - label: Thread
+          filter: .body.thread_ts // empty
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [channel, text]
+              properties:
+                channel:
+                  type: string
+                  description: Channel ID (e.g. C0123456789), or a user ID for a DM.
+                  resolve:
+                    get: /api/conversations.info?channel={channel}
+                    pick: channel.name
+                text:
+                  type: string
+                  minLength: 1
+                  description: Message text (Slack mrkdwn).
+                thread_ts:
+                  type: string
+                  description: Parent message `ts`, to reply in its thread.
+  /api/chat.update:
+    post:
+      operationId: update_message
+      summary: 'Edit Slack message {ts} in {channel} to "{text}"'
+      description: Replace the text of a message the user posted.
+      risk: write
+      scope_param: channel
+      security:
+        - oauth: [chat:write]
+      disclose:
+        - label: Channel
+          filter: .resolved.channel // .body.channel
+        - label: Message
+          filter: .body.ts
+        - label: New text
+          primary: true
+          filter: .body.text
+          max_chars: 2000
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [channel, ts, text]
+              properties:
+                channel:
+                  type: string
+                  description: Channel ID the message is in.
+                  resolve:
+                    get: /api/conversations.info?channel={channel}
+                    pick: channel.name
+                ts:
+                  type: string
+                  description: The message's `ts`.
+                text:
+                  type: string
+                  minLength: 1
+                  description: Replacement text (Slack mrkdwn).
+  /api/reactions.add:
+    post:
+      operationId: add_reaction
+      summary: "React :{name}: to Slack message {timestamp} in {channel}"
+      description: Add an emoji reaction to a message.
+      risk: write
+      scope_param: channel
+      security:
+        - oauth: [reactions:write]
+      disclose:
+        - label: Reaction
+          primary: true
+          filter: '":" + .body.name + ":"'
+        - label: Channel
+          filter: .resolved.channel // .body.channel
+        - label: Message
+          filter: .body.timestamp
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [channel, timestamp, name]
+              properties:
+                channel:
+                  type: string
+                  description: Channel ID the message is in.
+                  resolve:
+                    get: /api/conversations.info?channel={channel}
+                    pick: channel.name
+                timestamp:
+                  type: string
+                  description: The message's `ts`.
+                name:
+                  type: string
+                  description: Emoji name without colons (e.g. `thumbsup`).
 
-    # ── channels (read) ──
-    - name: list_channels
+  # ── channels ───────────────────────────────────────────────────────────────
+  /api/conversations.list:
+    get:
+      operationId: list_channels
+      summary: List Slack channels
+      description: >-
+        List channels in the workspace. Public channels by default; pass
+        `types: public_channel,private_channel` to include private ones.
       risk: read
       test:
         params:
           limit: 1
-      # `limit` already declares `default: 100`, so the block names it and
-      # restates nothing. `from` addresses the tool's own payload, not the
-      # gateway's MCP envelope — the projection is D55's, the same one
-      # `resolve:` paths use.
+      security:
+        - oauth: [channels:read, groups:read]
       pagination:
         page_size:
           param: limit
@@ -91,29 +179,40 @@ x-overslash-mcp:
           param: cursor
           from: response_metadata.next_cursor
         items: channels
-      description: "List channels in the Slack workspace"
-      input_schema:
-        type: object
-        properties:
-          types:
+      parameters:
+        - name: types
+          in: query
+          description: Comma-separated channel types (public_channel, private_channel).
+          schema:
             type: string
-            description: "Comma-separated channel types (public_channel, private_channel, mpim, im)."
-          limit:
+        - name: exclude_archived
+          in: query
+          schema:
+            type: boolean
+            default: true
+        - name: limit
+          in: query
+          schema:
             type: integer
             minimum: 1
             maximum: 1000
             default: 100
-          cursor:
+        - name: cursor
+          in: query
+          description: Continuation cursor from `response_metadata.next_cursor`.
+          schema:
             type: string
-            description: "Pagination cursor from a previous response."
-        required: []
-
-    # ── conversation history (read, scoped to the channel it reads) ──
-    - name: read_channel_history
+  /api/conversations.history:
+    get:
+      operationId: read_channel_history
+      summary: Read recent messages in {channel}
+      description: Read a channel's messages, newest first.
       risk: read
       scope_param: channel
-      # Same shape as list_channels; conversations.history also sends its own
-      # `has_more`, which outranks any inference from the row count.
+      security:
+        - oauth: [channels:history, groups:history]
+      # conversations.history sends its own `has_more`, which outranks any
+      # inference from the row count.
       pagination:
         page_size:
           param: limit
@@ -124,50 +223,141 @@ x-overslash-mcp:
           from: response_metadata.next_cursor
         items: messages
         has_more: has_more
-      description: "Read recent message history for {channel}"
-      input_schema:
-        type: object
-        properties:
-          channel:
+      parameters:
+        - name: channel
+          in: query
+          required: true
+          description: Channel ID.
+          schema:
             type: string
             minLength: 1
-            description: "Channel ID to read history for."
-          limit:
+          resolve:
+            get: /api/conversations.info?channel={channel}
+            pick: channel.name
+        - name: limit
+          in: query
+          schema:
             type: integer
             minimum: 1
             maximum: 1000
             default: 50
-          cursor:
+        - name: cursor
+          in: query
+          schema:
             type: string
-          oldest:
+        - name: oldest
+          in: query
+          description: Only messages after this Unix `ts`.
+          schema:
             type: string
-            description: "Only include messages after this Unix ts."
-          latest:
+        - name: latest
+          in: query
+          description: Only messages before this Unix `ts`.
+          schema:
             type: string
-            description: "Only include messages before this Unix ts."
-        required: [channel]
-
-    # ── users (read, scoped to the user it looks up) ──
-    - name: get_user
+  /api/conversations.replies:
+    get:
+      operationId: get_thread_replies
+      summary: Read the thread {ts} in {channel}
+      description: Read a thread. The parent message comes first.
       risk: read
-      scope_param: user
-      description: "Look up the Slack user {user}"
-      input_schema:
-        type: object
-        properties:
-          user:
+      scope_param: channel
+      security:
+        - oauth: [channels:history, groups:history]
+      pagination:
+        page_size:
+          param: limit
+          max: 1000
+        next:
+          style: cursor
+          param: cursor
+          from: response_metadata.next_cursor
+        items: messages
+        has_more: has_more
+      parameters:
+        - name: channel
+          in: query
+          required: true
+          description: Channel ID.
+          schema:
             type: string
             minLength: 1
-            description: "User ID (e.g. U0123456789)."
-        required: [user]
+        - name: ts
+          in: query
+          required: true
+          description: The parent message's `ts`.
+          schema:
+            type: string
+            minLength: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 50
+        - name: cursor
+          in: query
+          schema:
+            type: string
 
-    # ── search (read) — Slack MCP's headline capability ──
-    - name: search_messages
+  # ── users ──────────────────────────────────────────────────────────────────
+  /api/users.info:
+    get:
+      operationId: get_user
+      summary: Look up the Slack user {user}
       risk: read
-      # Search is the one Slack surface that pages by ordinal rather than
-      # cursor, and it spells the page size `count`. `page` is declared with
-      # `default: 1` because that default is the only place this template can
-      # say Slack counts pages from one rather than zero.
+      scope_param: user
+      security:
+        - oauth: [users:read]
+      parameters:
+        - name: user
+          in: query
+          required: true
+          description: User ID (e.g. U0123456789).
+          schema:
+            type: string
+            minLength: 1
+  /api/users.list:
+    get:
+      operationId: list_users
+      summary: List Slack workspace members
+      risk: read
+      security:
+        - oauth: [users:read]
+      pagination:
+        page_size:
+          param: limit
+          max: 1000
+        next:
+          style: cursor
+          param: cursor
+          from: response_metadata.next_cursor
+        items: members
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 100
+        - name: cursor
+          in: query
+          schema:
+            type: string
+
+  # ── search ─────────────────────────────────────────────────────────────────
+  /api/search.messages:
+    get:
+      operationId: search_messages
+      summary: Search Slack messages matching {query}
+      risk: read
+      security:
+        - oauth: [search:read]
+      # The one Slack method that pages by ordinal rather than cursor, and it
+      # spells the page size `count`. `page` declares `default: 1` because that
+      # default is the only place to say Slack counts pages from one.
       pagination:
         page_size:
           param: count
@@ -176,22 +366,25 @@ x-overslash-mcp:
           style: page
           param: page
         items: messages.matches
-      description: "Search Slack messages matching {query}"
-      input_schema:
-        type: object
-        properties:
-          query:
+      parameters:
+        - name: query
+          in: query
+          required: true
+          description: Search query. Slack operators work (e.g. `in:#general from:@me`).
+          schema:
             type: string
             minLength: 1
-            description: "Search query (Slack search operators supported, e.g. `in:#general from:@me`)."
-          count:
+        - name: count
+          in: query
+          schema:
             type: integer
             minimum: 1
             maximum: 100
             default: 20
-          page:
+        - name: page
+          in: query
+          description: 1-based page of results.
+          schema:
             type: integer
             minimum: 1
             default: 1
-            description: "1-based page of search results."
-        required: [query]

@@ -652,6 +652,7 @@ mod tests {
     ) -> ServiceAction {
         ServiceAction {
             additional_properties: false,
+            success: None,
             wait_mode: None,
             handoff_after_ms: None,
             pagination: None,

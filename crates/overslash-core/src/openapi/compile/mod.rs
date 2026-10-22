@@ -17,7 +17,8 @@ use super::ext::{self, Ext, Pos};
 use super::extract;
 use super::extract::{
     extract_auth, extract_hosts, extract_http_action, extract_mcp_actions, extract_mcp_spec,
-    extract_platform_action, parse_additional_properties, parse_promoted, parse_timeout_ms,
+    extract_platform_action, parse_additional_properties, parse_promoted, parse_success,
+    parse_timeout_ms,
 };
 
 /// Lower a normalized OpenAPI document into a [`ServiceDefinition`].
@@ -136,6 +137,16 @@ pub fn compile_service(
     )
     .unwrap_or(false);
 
+    // Service-wide success predicate, folded below onto the HTTP operations
+    // that do not declare their own. A warning, like the other `info` keys. A
+    // malformed one falls back to judging by status alone, which is what every
+    // template did before the key existed.
+    let default_success = parse_success(
+        info.and_then(|i| ext::get(i, Pos::Info, Ext::Success)),
+        "info",
+        &mut warnings,
+    );
+
     let hosts = extract_hosts(root.get("servers"));
     // Read off `servers[0]` only: that is the entry `default_base_url` shows,
     // so it is the one whose prominence the flag describes.
@@ -194,6 +205,13 @@ pub fn compile_service(
                     Err(mut es) => errors.append(&mut es),
                 }
             }
+        }
+    }
+    // Only `paths` actions exist at this point, so the fold cannot reach a
+    // platform action or an MCP tool. Neither has a body for it to judge.
+    if let Some(default) = &default_success {
+        for action in actions.values_mut() {
+            action.success.get_or_insert_with(|| default.clone());
         }
     }
 
@@ -351,3 +369,5 @@ pub fn compile_service(
 mod tests;
 #[cfg(test)]
 mod tests_relaxed_args;
+#[cfg(test)]
+mod tests_success;

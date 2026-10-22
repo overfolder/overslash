@@ -440,6 +440,7 @@ async fn call_inner(
         duration_ms,
         filtered_body: None,
         wire_bytes: Some(wire_bytes),
+        body_failed: false,
     })
 }
 

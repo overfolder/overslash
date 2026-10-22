@@ -88,6 +88,10 @@ pub struct StoredCallRequest {
     /// marker is computed from. See [`StoredPagination`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pagination: Option<crate::services::pagination::StoredPagination>,
+    /// The action's `x-overslash-success` predicate, stored for the reason
+    /// `pagination` is: replay has a URL, not an action to look it up on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub success: Option<String>,
 }
 
 impl StoredCallRequest {
@@ -100,6 +104,7 @@ impl StoredCallRequest {
         instance_id: Option<Uuid>,
         timeout_ms: Option<u64>,
         pagination: Option<crate::services::pagination::StoredPagination>,
+        success: Option<String>,
     ) -> Self {
         Self {
             action,
@@ -109,6 +114,7 @@ impl StoredCallRequest {
             instance_id,
             timeout_ms,
             pagination,
+            success,
         }
     }
 
@@ -131,6 +137,7 @@ impl StoredCallRequest {
             // Likewise: a row from before the declaration existed replays with
             // no `next`, exactly as it did when it was written.
             pagination: None,
+            success: None,
         })
     }
 }
@@ -288,6 +295,8 @@ pub struct CallContext<'a> {
     /// for the same reason as `audit_body_mode`: it needs the org row, and
     /// this pipeline stays query-free.
     pub timeout: CallTimeout,
+    /// The stored `x-overslash-success` predicate, judged on the buffered body.
+    pub success: Option<&'a str>,
 }
 
 pub enum CallOutcome {
@@ -586,6 +595,8 @@ pub async fn call_action_request(
         }
     };
 
+    let filter_ms = std::time::Duration::from_millis(ctx.state.config.filter_timeout_ms);
+    super::success_predicate::judge(&mut result, ctx.success, filter_ms).await;
     let filter_audit = if let Some(filter) = ctx.filter.clone() {
         let lang = filter.lang().to_string();
         let expr = filter.expr().to_string();
@@ -604,7 +615,7 @@ pub async fn call_action_request(
         "status_code": result.status_code,
         // Normalized upstream-failure flag, same field MCP audit details
         // carry — keeps replay rows consistent with inline executions.
-        "is_error": result.status_code >= 400,
+        "is_error": result.is_upstream_error(),
         "duration_ms": result.duration_ms,
         "service": ctx.service_key,
         "action": ctx.action_key,
@@ -615,7 +626,7 @@ pub async fn call_action_request(
         .stamp(&mut audit_detail);
     // Org-gated response capture (off / errors_only / all), truncated at
     // AUDIT_RESPONSE_BODY_MAX_BYTES.
-    if audit_capture::should_capture(ctx.audit_body_mode, result.status_code >= 400) {
+    if audit_capture::should_capture(ctx.audit_body_mode, result.is_upstream_error()) {
         audit_detail
             .as_object_mut()
             .expect("audit_detail is a json object")

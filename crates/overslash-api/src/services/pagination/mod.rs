@@ -125,7 +125,7 @@ pub fn next_page(
     // A failed call has no page two, and whatever sits in an error body is not
     // a cursor. Offering one here would send the caller round again for the
     // same error.
-    if result.status_code >= 400 {
+    if result.is_upstream_error() {
         return json!({ "has_more": false });
     }
 
