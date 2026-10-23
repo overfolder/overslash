@@ -17,13 +17,18 @@
 # every unrelated merge — it gets the SLA from the policy, tracked in the
 # issue, not a repo-wide freeze.
 #
-# Everything here reads lockfiles (plus security.txt); nothing compiles, and
-# nothing runs an npm install script. The jobs run in parallel and each
-# finishes well under a minute.
+# Everything here reads lockfiles (plus security.txt, and live DNS for the
+# subdomain inventory); nothing compiles, and nothing runs an npm install
+# script. The jobs run in parallel and each finishes well under a minute.
 name: Dependency audit
 
 on:
   workflow_call:
+    inputs:
+      subdomains-live:
+        description: Run the subdomain check against live DNS (else table parse only)
+        type: boolean
+        default: false
   schedule:
     # 06:17 UTC — off the top of the hour, when scheduled runs queue longest.
     - cron: "17 6 * * *"
@@ -80,6 +85,36 @@ jobs:
           ref: ${{ matrix.ref }}
       - name: security.txt fields and Expires
         run: bash scripts/check-security-txt.sh
+
+  # CASA 6.4.1. Live DNS for overslash.com / oversla.sh against
+  # docs/compliance/casa/subdomain-inventory.md: a dangling CNAME, an
+  # unclaimed target or an unlisted hostname appears at the registrar, never
+  # in a diff, so only the schedule catches it. Scheduled against `dev` alone:
+  # DNS is one live state, the inventory is edited on dev first, and master's
+  # copy would fail on every record change until the next release. From
+  # ci.yml it goes live only when the PR edits the inventory or the script
+  # (`subdomains-live`); any other dependency PR gets the offline parse, so
+  # live DNS drift lands in the triage issue, not on an unrelated merge.
+  subdomains:
+    name: Subdomain inventory
+    runs-on: ubuntu-latest
+    env:
+      # A called workflow sees the caller's event (pull_request, push,
+      # merge_group), so only its own triggers default to live.
+      LIVE: ${{ contains(fromJSON('["schedule","workflow_dispatch"]'), github.event_name) || inputs.subdomains-live }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'schedule' && 'dev' || '' }}
+      - name: Install dig
+        if: env.LIVE == 'true'
+        run: command -v dig >/dev/null || (sudo apt-get update -qq && sudo apt-get install -y -qq dnsutils)
+      - name: DNS records, targets and coverage
+        if: env.LIVE == 'true'
+        run: bash scripts/check-subdomains.sh
+      - name: Inventory table parses
+        if: env.LIVE != 'true'
+        run: bash scripts/check-subdomains.sh --offline
 
   npm-audit:
     name: npm audit (${{ matrix.dir }})

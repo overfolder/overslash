@@ -34,6 +34,7 @@ jobs:
       dashboard: ${{ steps.filter.outputs.dashboard }}
       sdk: ${{ steps.filter.outputs.sdk }}
       deps: ${{ steps.filter.outputs.deps }}
+      subdomains: ${{ steps.filter.outputs.subdomains }}
       tooling: ${{ steps.filter.outputs.tooling }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -93,8 +94,16 @@ jobs:
               - 'scripts/check-deny-reviews.sh'
               - 'scripts/check-security-txt.sh'
               - 'dashboard/static/.well-known/security.txt'
+              - 'scripts/check-subdomains.sh'
+              - 'docs/compliance/casa/subdomain-inventory.md'
               - '.github/workflows/deps-audit.yml'
               - '.github/workflows/ci.yml'
+            # The subset that runs the subdomain check against live DNS. Any
+            # other `deps` change gets the offline table parse only, so DNS
+            # drift or a resolver hiccup cannot block a lockfile PR.
+            subdomains:
+              - 'scripts/check-subdomains.sh'
+              - 'docs/compliance/casa/subdomain-inventory.md'
             # CI and release plumbing no other job exercises: the other
             # workflows (release, release-please, sync-dev, allocate-decision,
             # deps-audit-report), dependabot and release-please config, the
@@ -611,6 +620,8 @@ jobs:
     needs: changes
     if: needs.changes.outputs.deps == 'true'
     uses: ./.github/workflows/deps-audit.yml
+    with:
+      subdomains-live: ${{ needs.changes.outputs.subdomains == 'true' }}
 
   # Static checks for the files no other job reads: actionlint over every
   # workflow (expression typos, unknown `needs`, bad action inputs — the
