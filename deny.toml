@@ -52,6 +52,15 @@ ignore = [
     # change, not a version bump. Re-check on review: has that migration
     # landed, and is there a RUSTSEC *vulnerability* against unsafe-libyaml?
     { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml: unmaintained, not vulnerable; parses service templates via serde_yaml. No maintained release; fix is migrating off serde_yaml. review-by: 2026-12-22" },
+
+    # ctutils 0.4.2 — RUSTSEC-2026-0385 (unscored): `Choice` mask generation
+    # could compile to a branch, and u128 comparisons branch on 32-bit
+    # targets. Reaches us through aes-gcm 0.11 (secret encryption). The only
+    # fixed releases (0.4.4, 0.4.5) were published 2026-10-23, under D30's
+    # 7-day cooldown, which only a Critical (or a TLS-trust fix) may skip.
+    # On review: `cargo update -p ctutils --precise 0.4.4` (or later) and
+    # delete this entry and its osv-scanner.toml twin.
+    { id = "RUSTSEC-2026-0385", reason = "ctutils: non-constant-time mask generation, via aes-gcm. Fix 0.4.4 published 2026-10-23, inside the D30 cooldown; bump then delete. review-by: 2026-10-30" },
 ]
 
 [licenses]

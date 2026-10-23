@@ -25,3 +25,8 @@ reason = "paste is unmaintained, not vulnerable; build-time proc-macro via faste
 id = "RUSTSEC-2024-0449"
 ignoreUntil = 2026-12-22
 reason = "unsafe-libyaml is unmaintained, not vulnerable; template parsing via serde_yaml. No maintained release; fix is migrating off serde_yaml. See deny.toml."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0385"
+ignoreUntil = 2026-10-30
+reason = "ctutils non-constant-time mask generation, via aes-gcm. Fix 0.4.4 is from 2026-10-23, inside the D30 cooldown; bump then delete. See deny.toml."
