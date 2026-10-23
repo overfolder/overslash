@@ -7,7 +7,9 @@
 #     still naming a released GCLB address, a CNAME repointed by hand);
 #   * a dangling CNAME or MX — its target is NXDOMAIN;
 #   * an unclaimed target — a `tls` row whose HTTPS does not present a valid
-#     certificate for its own name, or that Vercel answers DEPLOYMENT_NOT_FOUND;
+#     certificate for its own name, or that Vercel answers DEPLOYMENT_NOT_FOUND.
+#     An A/AAAA row is probed at every address it resolves to (AAAA only
+#     where the host has an IPv6 route);
 #   * a hostname or record the inventory does not list. The zones live at the
 #     registrar with no API to list them, so names are discovered three ways:
 #     a random label under every parent in the inventory (catches a new
@@ -170,16 +172,35 @@ matches() {
     return 1
 }
 
+# GitHub's runners have no IPv6 route; an AAAA address is then noted, not
+# probed, rather than failed for a connect error that says nothing about it.
+ipv6=0
+ip -6 route show default 2>/dev/null | grep -q . && ipv6=1
+
 probed_tls=" "
+# HTTPS to `host`, pinned to `addr` when given (an A/AAAA row: every address
+# is probed, not just the one curl would pick), else via normal resolution.
 probe_tls() {
-    local name=$1 host=$2 out
-    case $probed_tls in *" $host "*) return ;; esac
-    probed_tls+="$host "
+    local name=$1 host=$2 addr=${3:-} out pin=() via=""
+    case $probed_tls in *" $host@$addr "*) return ;; esac
+    probed_tls+="$host@$addr "
+    if [ -n "$addr" ]; then
+        if [[ $addr == *:* ]]; then
+            if [ "$ipv6" = 0 ]; then
+                echo "note: $name $addr not probed (no IPv6 route here)"
+                return
+            fi
+            pin=(--resolve "$host:443:[$addr]")
+        else
+            pin=(--resolve "$host:443:$addr")
+        fi
+        via=" via $addr"
+    fi
     # curl verifies the certificate against the hostname by default.
-    if ! out=$(curl -sS --max-time 20 --retry 2 -o /dev/null -D - "https://$host/" 2>&1); then
-        fail "$name: unclaimed target — HTTPS to $host has no valid certificate for it ($(tail -1 <<<"$out"))"
+    if ! out=$(curl -sS --max-time 20 --retry 2 "${pin[@]}" -o /dev/null -D - "https://$host/" 2>&1); then
+        fail "$name: unclaimed target — HTTPS to $host$via has no valid certificate for it ($(tail -1 <<<"$out"))"
     elif grep -qi '^x-vercel-error: *DEPLOYMENT_NOT_FOUND' <<<"$out"; then
-        fail "$name: unclaimed target — Vercel has no deployment for $host"
+        fail "$name: unclaimed target — Vercel has no deployment for $host$via"
     fi
 }
 
@@ -219,8 +240,10 @@ while IFS=$'\t' read -r name type expect check; do
                 fail "$name: dangling $type — target ${v%.} is ${code:-unreachable}"
             fi
         fi
+        if [ "$check" = tls ]; then
+            case $type in A | AAAA) probe_tls "$name" "$host" "$v" ;; *) probe_tls "$name" "$host" ;; esac
+        fi
     done <<<"$answers"
-    [ "$check" != tls ] || probe_tls "$name" "$host"
 done <<<"$rows"
 
 # --- nothing live that the inventory does not list ---------------------------

@@ -70,7 +70,7 @@ Columns the script reads: **Name** (`*.` = a single-label wildcard, probed with 
 label), **Type** (`A`, `AAAA`, `CNAME`, `MX`, `TXT`, or `absent` for a name that must not
 resolve), **Expect** (comma-separated values; `vercel` = any Vercel edge address or
 `*.vercel-dns*.com` target; a TXT value is a prefix), **Check** (`tls` — HTTPS must present a
-valid certificate for the name and no provider "unclaimed" marker; `dns` — the record and its
+valid certificate for the name, at every A/AAAA address the row resolves to, and no provider "unclaimed" marker; `dns` — the record and its
 CNAME/MX target must resolve; `delegated` — record must match, target may be NXDOMAIN; `pending` — the record may be
 missing, because the row was merged before the registrar change or is about to be deleted
 after it, but a value that is present must still match; `-` for `absent`). The other columns are for people.
