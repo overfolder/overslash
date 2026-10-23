@@ -155,6 +155,11 @@ pub struct Config {
     /// mandates SSO). Surfaced on the root login page and gates both
     /// `/auth/magic-link/*` endpoints.
     pub magic_link_enabled: bool,
+    /// How old a dashboard sign-in may be and still perform an admin-class
+    /// mutation in a shared org (`ADMIN_STEP_UP_MAX_AGE_SECS`, default 1 h).
+    /// Older, and the dashboard asks for a step-up sign-in through the org's
+    /// IdP. See `services::admin_step_up`.
+    pub admin_step_up_max_age_secs: i64,
     pub max_response_body_bytes: usize,
     /// Truncation cap for upstream response bodies persisted on
     /// `action.executed` audit rows (when the org's
@@ -880,6 +885,7 @@ pub(crate) mod tests {
             dev_auth_enabled: false,
             live_map_enabled: false,
             magic_link_enabled: true,
+            admin_step_up_max_age_secs: 3600,
             max_response_body_bytes: 0,
             audit_response_body_max_bytes: 0,
             filter_timeout_ms: 0,

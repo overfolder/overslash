@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict nxtGIrFIHxU1sgaFQM2BLJGUoJk6qcNKlcysbGVOTwgT1JC3IIfGOyr3uWRemuT
+\restrict IU7gGYzzNTd60ELJcMnX68xk6MwIMaSwIk56fgOPGg3Phe56vVK1sb2CM7pgn1c
 
 -- Dumped from database version 16.14 (Debian 16.14-1.pgdg12+1)
 -- Dumped by pg_dump version 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1)
@@ -1504,7 +1504,14 @@ CREATE TABLE public.user_sessions (
     revoked_at timestamp with time zone,
     revoked_reason text,
     user_agent text,
-    ip_address text
+    ip_address text,
+    auth_method text,
+    auth_provider text,
+    authenticated_at timestamp with time zone,
+    idp_amr text[],
+    idp_acr text,
+    CONSTRAINT user_sessions_auth_method_check CHECK ((auth_method = ANY (ARRAY['idp'::text, 'magic_link'::text, 'dev'::text]))),
+    CONSTRAINT user_sessions_idp_has_provider CHECK (((auth_method IS DISTINCT FROM 'idp'::text) OR (auth_provider IS NOT NULL)))
 );
 
 
@@ -4004,5 +4011,5 @@ ALTER TABLE ONLY public.webhook_subscriptions
 -- PostgreSQL database dump complete
 --
 
-\unrestrict nxtGIrFIHxU1sgaFQM2BLJGUoJk6qcNKlcysbGVOTwgT1JC3IIfGOyr3uWRemuT
+\unrestrict IU7gGYzzNTd60ELJcMnX68xk6MwIMaSwIk56fgOPGg3Phe56vVK1sb2CM7pgn1c
 

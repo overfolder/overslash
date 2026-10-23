@@ -32,6 +32,9 @@ enable_dev_auth  = false
 enable_live_map  = true
 # Passwordless email magic-link login — on (email is configured below).
 enable_magic_link = true
+# Admin changes in a shared org need an IdP sign-in from the last hour; a
+# magic link never qualifies while Google/GitHub sign-in is configured.
+admin_step_up_max_age_secs = 3600
 # Sign-in with Google (default) + Sign-in with GitHub. Populate the OAuth
 # client secrets post-apply via `gcloud secrets versions add`.
 enable_google_login = true

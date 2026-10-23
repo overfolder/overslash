@@ -776,7 +776,9 @@ impl FromRequestParts<AppState> for WriteAcl {
     }
 }
 
-/// Requires admin-level ACL access to the overslash platform.
+/// Requires admin-level ACL access to the overslash platform. A mutation
+/// from a dashboard session in a shared org must also be a fresh IdP
+/// sign-in — see [`crate::services::admin_step_up`].
 #[derive(Debug, Clone)]
 pub struct AdminAcl(pub OrgAcl);
 
@@ -791,6 +793,14 @@ impl FromRequestParts<AppState> for AdminAcl {
         if acl.access_level < AccessLevel::Admin {
             return Err(AppError::Forbidden("admin access required".into()));
         }
+        crate::services::admin_step_up::require(
+            state,
+            &parts.extensions,
+            &parts.method,
+            &parts.headers,
+            crate::services::admin_step_up::Target::Org(acl.org_id),
+        )
+        .await?;
         Ok(AdminAcl(acl))
     }
 }
@@ -829,6 +839,14 @@ impl FromRequestParts<AppState> for InstanceAdminAuth {
         if !is_admin {
             return Err(AppError::Forbidden("instance_admin_required".into()));
         }
+        crate::services::admin_step_up::require(
+            state,
+            &parts.extensions,
+            &parts.method,
+            &parts.headers,
+            crate::services::admin_step_up::Target::Instance,
+        )
+        .await?;
         Ok(InstanceAdminAuth { user_id, session })
     }
 }

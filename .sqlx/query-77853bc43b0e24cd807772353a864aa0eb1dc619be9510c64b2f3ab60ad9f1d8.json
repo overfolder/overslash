@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "INSERT INTO user_sessions\n            (user_id, identity_id, org_id, expires_at, user_agent, ip_address)\n         VALUES ($1, $2, $3, now() + make_interval(secs => $4), $5, $6)\n         RETURNING id, user_id, identity_id, org_id, created_at, last_seen_at,\n                   expires_at, revoked_at, revoked_reason, user_agent, ip_address",
+  "query": "INSERT INTO user_sessions\n            (user_id, identity_id, org_id, expires_at, user_agent, ip_address,\n             auth_method, auth_provider, authenticated_at, idp_amr, idp_acr)\n         VALUES ($1, $2, $3, now() + make_interval(secs => $4), $5, $6,\n                 $7, $8, CASE WHEN $7::text IS NULL THEN NULL ELSE LEAST(COALESCE($11, now()), now()) END,\n                 $9, $10)\n         RETURNING id, user_id, identity_id, org_id, created_at, last_seen_at,\n                   expires_at, revoked_at, revoked_reason, user_agent, ip_address,\n                   auth_method, auth_provider, authenticated_at, idp_amr, idp_acr",
   "describe": {
     "columns": [
       {
@@ -123,6 +123,61 @@
             "name": "ip_address"
           }
         }
+      },
+      {
+        "ordinal": 11,
+        "name": "auth_method",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "user_sessions",
+            "name": "auth_method"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "auth_provider",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "user_sessions",
+            "name": "auth_provider"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "authenticated_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "user_sessions",
+            "name": "authenticated_at"
+          }
+        }
+      },
+      {
+        "ordinal": 14,
+        "name": "idp_amr",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "user_sessions",
+            "name": "idp_amr"
+          }
+        }
+      },
+      {
+        "ordinal": 15,
+        "name": "idp_acr",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "user_sessions",
+            "name": "idp_acr"
+          }
+        }
       }
     ],
     "parameters": {
@@ -132,7 +187,12 @@
         "Uuid",
         "Float8",
         "Text",
-        "Text"
+        "Text",
+        "Text",
+        "Text",
+        "TextArray",
+        "Text",
+        "Timestamptz"
       ]
     },
     "nullable": [
@@ -146,8 +206,13 @@
       true,
       true,
       true,
+      true,
+      true,
+      true,
+      true,
+      true,
       true
     ]
   },
-  "hash": "cf3de80dc10dd41d838e9e7eb9ca41a79d6b102ab64192fcface55f0851e1cd9"
+  "hash": "77853bc43b0e24cd807772353a864aa0eb1dc619be9510c64b2f3ab60ad9f1d8"
 }

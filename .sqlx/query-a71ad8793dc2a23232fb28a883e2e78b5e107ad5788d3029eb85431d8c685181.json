@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, user_id, identity_id, org_id, created_at, last_seen_at,\n                expires_at, revoked_at, revoked_reason, user_agent, ip_address\n         FROM user_sessions WHERE id = $1",
+  "query": "SELECT id, user_id, identity_id, org_id, created_at, last_seen_at,\n                expires_at, revoked_at, revoked_reason, user_agent, ip_address,\n                auth_method, auth_provider, authenticated_at, idp_amr, idp_acr\n         FROM user_sessions WHERE id = $1",
   "describe": {
     "columns": [
       {
@@ -123,6 +123,61 @@
             "name": "ip_address"
           }
         }
+      },
+      {
+        "ordinal": 11,
+        "name": "auth_method",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "user_sessions",
+            "name": "auth_method"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "auth_provider",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "user_sessions",
+            "name": "auth_provider"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "authenticated_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "user_sessions",
+            "name": "authenticated_at"
+          }
+        }
+      },
+      {
+        "ordinal": 14,
+        "name": "idp_amr",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "user_sessions",
+            "name": "idp_amr"
+          }
+        }
+      },
+      {
+        "ordinal": 15,
+        "name": "idp_acr",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "user_sessions",
+            "name": "idp_acr"
+          }
+        }
       }
     ],
     "parameters": {
@@ -141,8 +196,13 @@
       true,
       true,
       true,
+      true,
+      true,
+      true,
+      true,
+      true,
       true
     ]
   },
-  "hash": "6d77a7ff66fefee4b3e421f686fa3161246d63ad011a860a9ee9843c4b8bdbf2"
+  "hash": "a71ad8793dc2a23232fb28a883e2e78b5e107ad5788d3029eb85431d8c685181"
 }

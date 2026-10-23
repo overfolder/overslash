@@ -167,6 +167,10 @@
 			<div class="toast">Session expired — please sign in again.</div>
 		{/if}
 
+		{#if reason === 'step_up'}
+			<div class="toast">Sign in again to confirm an admin change.</div>
+		{/if}
+
 		{#if reason === 'magic_link_invalid'}
 			<div class="toast">That sign-in link is invalid or has expired. Request a new one below.</div>
 		{/if}

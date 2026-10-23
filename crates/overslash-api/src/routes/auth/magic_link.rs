@@ -199,6 +199,7 @@ pub(super) async fn verify_magic_link(
             user_id: Some(user_id),
             email,
         },
+        user_sessions::SignIn::MagicLink,
     )
     .await?;
 

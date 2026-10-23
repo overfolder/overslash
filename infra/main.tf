@@ -201,18 +201,19 @@ module "cloud_run" {
   db_user = module.cloud_sql.db_user
   db_name = module.cloud_sql.db_name
 
-  domain                    = var.domain
-  app_host_suffix           = var.app_host_suffix
-  api_host_suffix           = var.api_host_suffix
-  session_cookie_domain     = var.session_cookie_domain
-  dashboard_origin          = var.dashboard_origin
-  mcp_extra_origins         = var.mcp_extra_origins
-  dashboard_url             = var.dashboard_url
-  enable_dev_auth           = var.enable_dev_auth
-  enable_live_map           = var.enable_live_map
-  enable_magic_link         = var.enable_magic_link
-  enable_async_execution    = var.enable_async_execution
-  extra_api_domain_mappings = var.extra_api_domain_mappings
+  domain                     = var.domain
+  app_host_suffix            = var.app_host_suffix
+  api_host_suffix            = var.api_host_suffix
+  session_cookie_domain      = var.session_cookie_domain
+  dashboard_origin           = var.dashboard_origin
+  mcp_extra_origins          = var.mcp_extra_origins
+  dashboard_url              = var.dashboard_url
+  enable_dev_auth            = var.enable_dev_auth
+  enable_live_map            = var.enable_live_map
+  enable_magic_link          = var.enable_magic_link
+  admin_step_up_max_age_secs = var.admin_step_up_max_age_secs
+  enable_async_execution     = var.enable_async_execution
+  extra_api_domain_mappings  = var.extra_api_domain_mappings
 
   overslash_env               = var.env
   vercel_preview_origin_regex = var.vercel_preview_origin_regex

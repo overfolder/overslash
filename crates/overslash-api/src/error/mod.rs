@@ -398,6 +398,19 @@ pub enum AppError {
     /// answer, and nothing about the request itself was wrong.
     #[error("unavailable: {0}")]
     Unavailable(String),
+
+    /// An admin-class mutation from a dashboard session that is not a recent
+    /// sign-in through one of the org's IdPs (`services::admin_step_up`).
+    /// Returned as 403, not 401: the session is still good for everything
+    /// else, and the dashboard turns a 401 into a sign-out. `providers` are
+    /// the sign-ins that would satisfy it; `reason` is `idp_required`,
+    /// `provider_not_allowed` or `stale`.
+    #[error("step_up_required: {reason}")]
+    StepUpRequired {
+        reason: &'static str,
+        providers: Vec<crate::services::admin_step_up::StepUpProvider>,
+        max_age_secs: i64,
+    },
 }
 
 impl AppError {
@@ -411,7 +424,8 @@ impl AppError {
             Self::Forbidden(_)
             | Self::IdentityArchived { .. }
             | Self::MissingScopes { .. }
-            | Self::NotInYourChain { .. } => StatusCode::FORBIDDEN,
+            | Self::NotInYourChain { .. }
+            | Self::StepUpRequired { .. } => StatusCode::FORBIDDEN,
             Self::BadRequest(_)
             | Self::FilterSyntax(_)
             | Self::InvalidActionArgs { .. }
@@ -796,6 +810,22 @@ impl IntoResponse for AppError {
                     }
                 }
                 return (StatusCode::UNAUTHORIZED, Json(body)).into_response();
+            }
+            Self::StepUpRequired {
+                reason,
+                providers,
+                max_age_secs,
+            } => {
+                return (
+                    StatusCode::FORBIDDEN,
+                    Json(json!({
+                        "error": "step_up_required",
+                        "reason": reason,
+                        "providers": providers,
+                        "max_age_secs": max_age_secs,
+                    })),
+                )
+                    .into_response();
             }
             Self::MissingScopes {
                 connection_id,

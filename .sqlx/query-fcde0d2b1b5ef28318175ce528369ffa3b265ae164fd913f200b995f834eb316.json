@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "UPDATE user_sessions\n         SET identity_id = $3, org_id = $4, last_seen_at = now(),\n             expires_at = now() + make_interval(secs => $5)\n         WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL AND expires_at > now()\n         RETURNING id, user_id, identity_id, org_id, created_at, last_seen_at,\n                   expires_at, revoked_at, revoked_reason, user_agent, ip_address",
+  "query": "UPDATE user_sessions\n         SET identity_id = $3, org_id = $4, last_seen_at = now(),\n             expires_at = now() + make_interval(secs => $5)\n         WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL AND expires_at > now()\n         RETURNING id, user_id, identity_id, org_id, created_at, last_seen_at,\n                   expires_at, revoked_at, revoked_reason, user_agent, ip_address,\n                   auth_method, auth_provider, authenticated_at, idp_amr, idp_acr",
   "describe": {
     "columns": [
       {
@@ -123,6 +123,61 @@
             "name": "ip_address"
           }
         }
+      },
+      {
+        "ordinal": 11,
+        "name": "auth_method",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "user_sessions",
+            "name": "auth_method"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "auth_provider",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "user_sessions",
+            "name": "auth_provider"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "authenticated_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "user_sessions",
+            "name": "authenticated_at"
+          }
+        }
+      },
+      {
+        "ordinal": 14,
+        "name": "idp_amr",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "user_sessions",
+            "name": "idp_amr"
+          }
+        }
+      },
+      {
+        "ordinal": 15,
+        "name": "idp_acr",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "user_sessions",
+            "name": "idp_acr"
+          }
+        }
       }
     ],
     "parameters": {
@@ -145,8 +200,13 @@
       true,
       true,
       true,
+      true,
+      true,
+      true,
+      true,
+      true,
       true
     ]
   },
-  "hash": "91ae7f7138db536f4e829f0370c362dfe3b62b88eac830c84fac5be6e706805e"
+  "hash": "fcde0d2b1b5ef28318175ce528369ffa3b265ae164fd913f200b995f834eb316"
 }
