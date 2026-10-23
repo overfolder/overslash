@@ -145,16 +145,33 @@ concrete() {
     esac
 }
 
+# Is `addr` in a network ARIN registers to Vercel? Warns once per address,
+# since a pass here means the prefix list in `matches` is behind.
+vercel_seen=" "
+vercel_net() {
+    local net
+    net=$(curl -fsS --max-time 15 --retry 2 "https://rdap.arin.net/registry/ip/$1" 2>/dev/null \
+        | jq -r '.name // empty' 2>/dev/null) || return 1
+    [[ $net == VERCEL-* ]] || return 1
+    case $vercel_seen in *" $1 "*) ;; *)
+        vercel_seen+="$1 "
+        warn "$1 is Vercel ($net, per ARIN) but not in the known prefixes; add its /24 to matches()" ;;
+    esac
+}
+
 # Is `value` (a record of `type`) one of the comma-separated `expect`?
 matches() {
     local type=$1 expect=$2 value=${3%.} e
     if [ "$expect" = vercel ]; then
         case $type in
-            # The anycast pool Vercel answers with today (216.150.x) and the
-            # two addresses its docs tell you to configure: legacy 76.76.21.21
-            # and the current 216.198.79.1. A Vercel address outside these
-            # fails the row; the tls check still decides whether it is ours.
-            A) [[ $value =~ ^(216\.150\.|216\.198\.79\.|76\.76\.21\.) ]] ;;
+            # Vercel's ARIN nets seen so far: the anycast pool (216.150.x,
+            # 64.29.17.x, 66.33.60.x) and the two addresses its docs tell you
+            # to configure (legacy 76.76.21.21, current 216.198.79.1). Vercel
+            # adds /24s over time, so an address outside these is looked up
+            # in RDAP: a VERCEL-* net passes with a warning to add it here.
+            # The tls check still decides whether the name is ours.
+            A) [[ $value =~ ^(216\.150\.|64\.29\.17\.|66\.33\.60\.|216\.198\.79\.|76\.76\.21\.) ]] \
+                || vercel_net "$value" ;;
             CNAME) [[ $value =~ \.vercel-dns(-[0-9]+)?\.com$ ]] ;;
             *) false ;;
         esac

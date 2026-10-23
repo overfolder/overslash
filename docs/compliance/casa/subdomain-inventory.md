@@ -43,8 +43,10 @@ the script that checks it.
 This is the property subdomain takeover depends on: whether a record pointing at a provider
 can be served by *someone else's* account once ours lets go.
 
-- **Vercel** — the `vercel` expectation accepts Vercel's anycast pool (`216.150.x`) and the
-  two addresses its docs tell you to configure (`76.76.21.21`, `216.198.79.1`). A domain already attached to a team can only be added by another team after a
+- **Vercel** — the `vercel` expectation accepts Vercel's anycast pool (`216.150.x`,
+  `64.29.17.x`, `66.33.60.x`) and the two addresses its docs tell you to configure
+  (`76.76.21.21`, `216.198.79.1`); any other address passes only if ARIN registers it to
+  Vercel (a `VERCEL-*` net), with a warning to add it to the list. A domain already attached to a team can only be added by another team after a
   `_vercel` TXT verification on our zone. While attached, an unclaimed name answers with
   `x-vercel-error: DEPLOYMENT_NOT_FOUND`; the script treats that header as unclaimed.
 - **Cloud Run domain mappings (`ghs.googlehosted.com`, 216.239.32-38.21)** — a mapping can only
