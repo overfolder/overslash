@@ -13,7 +13,7 @@
 #     a random label under every parent in the inventory (catches a new
 #     wildcard), common labels under each apex, and every name in Certificate
 #     Transparency (CertSpotter). A CT name that no longer resolves is fine.
-#   * an apex whose registration expires within 60 days (RDAP).
+#   * an apex whose registration expires within 14 days (RDAP; a warning from 60).
 #
 # The daily Dependency audit runs it against dev, so a record changed at the
 # registrar without an inventory change opens a triage issue the next morning.
@@ -35,7 +35,10 @@ if [ "${1:-}" = --offline ]; then
 fi
 inventory=${1:-docs/compliance/casa/subdomain-inventory.md}
 resolver=${DNS_RESOLVER:-1.1.1.1}
+# Warn early; fail only once auto-renew (Namecheap charges within the last
+# month) should already have run.
 expiry_warn_days=60
+expiry_fail_days=14
 
 status=0
 fail() {
@@ -119,7 +122,17 @@ rcode() {
     q A "$1" | sed -nE 's/.*status: ([A-Z]+).*/\1/p' | head -1
 }
 
-resolves() { [ -n "$(rr "$1" A)$(rr "$1" AAAA)$(rr "$1" CNAME)" ]; }
+# The first record a name owns, as "TYPE value", or nothing. NS covers a
+# delegation to someone else's nameservers, the classic takeover; MX and TXT a
+# name that carries no address at all.
+first_rr() {
+    local t v
+    for t in CNAME A AAAA NS MX TXT; do
+        v=$(rr "$1" "$t" | head -1)
+        [ -n "$v" ] && { echo "$t $v"; return 0; }
+    done
+    return 1
+}
 
 label="zz-dnscheck-$(date -u +%s)$RANDOM"
 # A wildcard row is probed through one random label under it.
@@ -175,7 +188,7 @@ probe_tls() {
 while IFS=$'\t' read -r name type expect check; do
     host=$(concrete "$name")
     if [ "$type" = absent ]; then
-        resolves "$host" && fail "$name: listed as absent but resolves ($(rr "$host" A)$(rr "$host" CNAME))"
+        found=$(first_rr "$host") && fail "$name: listed as absent but resolves ($found)"
         continue
     fi
 
@@ -290,7 +303,7 @@ for c in "${candidates[@]}"; do
     case $checked in *" $c "*) continue ;; esac
     checked+="$c "
     covered_by "$c" >/dev/null && continue
-    resolves "$c" && fail "$c resolves but is not in the inventory ($(rr "$c" CNAME)$(rr "$c" A | head -2 | tr '\n' ' '))"
+    found=$(first_rr "$c") && fail "$c resolves but is not in the inventory ($found)"
 done
 
 # --- registration expiry -----------------------------------------------------
@@ -306,8 +319,10 @@ for a in $apexes; do
         continue
     fi
     exp_s=$(date -u -d "$exp" +%s)
-    if [ "$exp_s" -lt $((now_s + expiry_warn_days * 86400)) ]; then
-        fail "$a registration expires $exp — less than $expiry_warn_days days; renew it"
+    if [ "$exp_s" -lt $((now_s + expiry_fail_days * 86400)) ]; then
+        fail "$a registration expires $exp — less than $expiry_fail_days days and not renewed; renew it"
+    elif [ "$exp_s" -lt $((now_s + expiry_warn_days * 86400)) ]; then
+        warn "$a registration expires $exp — under $expiry_warn_days days; confirm auto-renew is on"
     fi
 done
 

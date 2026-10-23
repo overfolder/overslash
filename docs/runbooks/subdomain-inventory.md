@@ -48,7 +48,7 @@ whose target is gone is a dangling record anyone who can claim that target may s
 | `… is not in the inventory (…)` on a row | The record's value changed | If someone changed it on purpose, update the row; otherwise treat it as a hijack of the zone — check the Namecheap account's audit log and sessions |
 | `… resolves but is not in the inventory` / `unlisted … record` | A record exists that nobody wrote down | Add the row with its owner, or delete the record |
 | `listed as absent but resolves` | One of the `absent` names started resolving | As above |
-| `registration expires …` | Under 60 days to the RDAP expiry | Renew at Namecheap; confirm auto-renew is on |
+| `registration expires …` | Under 14 days to the RDAP expiry and still not renewed (a warning from 60 days) | Renew at Namecheap; confirm auto-renew is on |
 | `resolver … failed N queries` | dig timed out or got SERVFAIL/REFUSED; those names were not checked, so the run is not trusted | Rerun. If it persists, try `DNS_RESOLVER=8.8.8.8` — a broken zone (e.g. bad DNSSEC) shows up as SERVFAIL everywhere |
 | warning `Certificate Transparency lookup … failed` | CertSpotter was unreachable | Nothing; the other checks still ran. It fails nothing on purpose |
 

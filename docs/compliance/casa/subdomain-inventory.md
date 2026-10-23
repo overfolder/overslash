@@ -171,5 +171,6 @@ Not needed to pass 6.4.1, but asked about while it was done. In order of value f
    and Cloud DNS is the one we already have code for. Either move needs the Vercel wildcard
    domains re-verified, the DNSSEC sequencing above, and this file regenerated from the zone.
 4. **Smaller items** — keep registrar 2FA and auto-renew on (the domain expiring is the
-   ultimate takeover; the script fails 60 days before the RDAP expiry); DMARC could move from
+   ultimate takeover; the script warns 60 days and fails 14 days before the RDAP expiry);
+   DMARC could move from
    `quarantine` to `reject` with an `rua` address once reports show only Migadu sends.
