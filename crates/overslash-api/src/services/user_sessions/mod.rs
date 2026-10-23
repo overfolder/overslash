@@ -67,6 +67,37 @@ const MAX_ORIGIN_LEN: usize = 512;
 /// Why a session ended (`user_sessions.revoked_reason`).
 pub use repo::reason;
 
+/// How the human proved who they are for this session. Read back by
+/// [`crate::services::admin_step_up`], which only lets an IdP sign-in reach
+/// admin-class mutations in a shared org.
+pub enum SignIn {
+    /// OAuth/OIDC through `provider_key`, with the ID token's `amr` / `acr`
+    /// when it asserted them (recorded, not enforced).
+    Idp {
+        provider_key: String,
+        amr: Vec<String>,
+        acr: Option<String>,
+    },
+    MagicLink,
+    /// `DEV_AUTH` login. The boot policy keeps it out of production.
+    Dev,
+    /// A session restarted without a sign-in — [`rescope`] finding no live
+    /// row to re-point. Recorded as unknown, so it cannot reach admin
+    /// mutations until the human signs in again.
+    Unrecorded,
+}
+
+impl SignIn {
+    fn method(&self) -> Option<&'static str> {
+        match self {
+            SignIn::Idp { .. } => Some(repo::auth_method::IDP),
+            SignIn::MagicLink => Some(repo::auth_method::MAGIC_LINK),
+            SignIn::Dev => Some(repo::auth_method::DEV),
+            SignIn::Unrecorded => None,
+        }
+    }
+}
+
 /// Who a session is for.
 pub struct Subject {
     pub identity_id: Uuid,
@@ -144,17 +175,31 @@ pub async fn check(
 }
 
 /// Mint the session JWT for a fresh sign-in. Revokes whatever session the
-/// browser presented, so re-authenticating never leaves the old one alive.
+/// browser presented, so re-authenticating never leaves the old one alive —
+/// which is also how a step-up works: it is just a sign-in.
 pub async fn start(
     state: &AppState,
     ext: &Extensions,
     headers: &HeaderMap,
     subject: Subject,
+    sign_in: SignIn,
 ) -> Result<String, AppError> {
     if let Some(prev) = current_jti(state, headers) {
         revoke_one(state, ext, prev, None, reason::REPLACED).await?;
     }
     let (user_agent, ip) = origin(state, ext, headers);
+    let (provider, amr, acr) = match &sign_in {
+        SignIn::Idp {
+            provider_key,
+            amr,
+            acr,
+        } => (
+            Some(provider_key.as_str()),
+            Some(amr.as_slice()).filter(|a| !a.is_empty()),
+            acr.as_deref(),
+        ),
+        _ => (None, None, None),
+    };
     let row = repo::create(
         state.db(ext),
         repo::NewUserSession {
@@ -164,6 +209,10 @@ pub async fn start(
             ttl_secs: SESSION_TTL_SECS,
             user_agent: user_agent.as_deref(),
             ip_address: ip.as_deref(),
+            auth_method: sign_in.method(),
+            auth_provider: provider,
+            idp_amr: amr,
+            idp_acr: acr,
         },
     )
     .await?;
@@ -193,7 +242,7 @@ pub async fn rescope(
         state.session_cache.invalidate(&[prev]).await;
         return mint(state, subject, row.id);
     }
-    start(state, ext, headers, subject).await
+    start(state, ext, headers, subject, SignIn::Unrecorded).await
 }
 
 /// Revoke one session. `owner` limits it to that human's sessions.

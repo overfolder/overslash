@@ -90,6 +90,14 @@ export interface AccountSession {
 	expires_at: string;
 	user_agent: string | null;
 	ip_address: string | null;
+	/** How it was signed in; null when not recorded (older sessions). */
+	auth_method: 'idp' | 'magic_link' | 'dev' | null;
+	/** The IdP's provider key for an `idp` sign-in. */
+	auth_provider: string | null;
+	authenticated_at: string | null;
+	/** The IdP's `amr` / `acr` claims, as asserted. Empty when not sent. */
+	idp_amr: string[];
+	idp_acr: string | null;
 	/** The session this page is running in. */
 	current: boolean;
 }

@@ -181,6 +181,12 @@ variable "enable_magic_link" {
   description = "Enable passwordless email magic-link login (MAGIC_LINK_ENABLED). Default-on — it's the working login with no external IdP configured."
 }
 
+variable "admin_step_up_max_age_secs" {
+  type        = number
+  default     = 3600
+  description = "Step-up window for admin-class changes from a dashboard session (ADMIN_STEP_UP_MAX_AGE_SECS)."
+}
+
 variable "enable_async_execution" {
   type        = bool
   default     = false
@@ -445,6 +451,11 @@ locals {
       # explicitly here so each env's state is visible in the plan. Disabling
       # requires a falsey value ("0"); "1" keeps it on.
       MAGIC_LINK_ENABLED = var.enable_magic_link ? "1" : "0"
+
+      # How fresh an IdP sign-in must be for an admin-class change (CASA
+      # 3.3.1 / 2.4.1). The app defaults to the same 1 h; rendered so the
+      # window is citable from the plan.
+      ADMIN_STEP_UP_MAX_AGE_SECS = tostring(var.admin_step_up_max_age_secs)
 
       # Async (non-blocking) action calls. Rendered unconditionally, like
       # MAGIC_LINK_ENABLED, so each env's state is visible in the plan.

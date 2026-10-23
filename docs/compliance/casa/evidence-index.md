@@ -26,6 +26,7 @@ snippets and the policies, because those are the parts it cannot test for. Assum
 | 6.4.1 | Subdomain inventory: every record under `overslash.com`, its owning service, and a dangling-CNAME check | `need` | — |
 | 7.1.1 / 7.1.2 / 7.3.1 | The webhook-provider posture — this is one document covering scheme enforcement, ownership verification and SSRF mitigation on callback URLs. Scheme enforcement, the ownership handshake, SSRF mitigation and replay protection (7.2.3) have all landed | `need` | `gap-assessment.md` §7 |
 | 5.1.5 | The SSRF scoping memo — the single most important piece of evidence in the pack | `need` | [dast-readiness.md](dast-readiness.md) |
+| 3.3.1 | MFA by IdP delegation: no factor of our own; admin mutations reachable only through a fresh sign-in at the org's IdP; each org's IdP enforces MFA, Overslash's own operators per the runbook policy | `need` | D-NEXT ("Admin-class mutations need a fresh IdP sign-in"); [admin-step-up.md](../../runbooks/admin-step-up.md) |
 
 ## Code snippets
 
@@ -47,6 +48,7 @@ excerpt, without calling functions or underlying libraries.
 | 6.5.1 | `scrub_transport_error` — a strong affirmative artifact, since it declines to log a URL *because* credentials live in the query | `have` | `services/audit_capture.rs:93-118` |
 | 2.3.1 | Cookie construction: one builder, `Secure` + `__Host-`/`__Secure-` on every cookie, prefixed-only reader | `have` | `crates/overslash-api/src/cookies.rs` |
 | 2.2.x | Server-side session lookup: the per-request gate, revocation on logout / identity change / removal, and the Sessions page | `have` | `middleware/session_gate.rs`; `services/user_sessions/`; `routes/auth/account_sessions.rs`; `tests/user_sessions.rs` |
+| 3.3.1 / 2.4.1 | The step-up rule: IdP provenance, the org's provider list, the freshness window, and the `AdminAcl` call site | `have` | `services/admin_step_up.rs::evaluate` + `require`; `extractors.rs` (`AdminAcl`, `InstanceAdminAuth`); `tests/admin_step_up.rs` |
 | 5.1.5 | `ssrf_guard` denial ranges, `.resolve()` pinning, `Policy::none()` — **and** the call sites proving it is on the execution path | `have` / `need` | `services/ssrf_guard.rs:17-43,121-129`; call sites land with P0 |
 
 ## Screenshots
@@ -54,7 +56,8 @@ excerpt, without calling functions or underlying libraries.
 | For | What to capture | Status |
 |-----|-----------------|--------|
 | 1.1.1 | Anti-automation in action: the magic-link throttle tripping, and the identical opaque response before and after | `need` |
-| 3.3.1 | MFA enforcement on an admin account — either our own step-up, or the IdP's challenge if we answer 3.3.1 by IdP delegation | `need` |
+| 3.3.1 | Our step-up prompt on an admin change from a magic-link session | `have` — `dashboard/scripts/screenshot-step-up.mjs` (`step-up-modal.png`) |
+| 3.3.1 | The IdP's MFA challenge on a step-up sign-in, and Account → Sessions showing the session's IdP and `amr` | `need` — operator capture per [admin-step-up.md](../../runbooks/admin-step-up.md) |
 | 7.1.1 | An `http://` webhook endpoint being rejected at registration | `have` — `dashboard/scripts/screenshot-webhook-https.mjs` (`webhook-https-rejected.png`) |
 | 6.2.1 | Debug surfaces absent in production — `/auth/dev/token` returning 404, `/health` with no `db_error` field | `need` |
 

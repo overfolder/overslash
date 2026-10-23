@@ -23,6 +23,10 @@ pub(super) struct LoginQuery {
     /// `PREVIEW_ORIGIN_ALLOWLIST`. Silently ignored otherwise — the feature
     /// must remain invisible on prod.
     preview_origin: Option<String>,
+    /// A step-up sign-in for an admin action (`services::admin_step_up`):
+    /// ask the IdP to re-authenticate rather than reuse its own session.
+    #[serde(default)]
+    step_up: bool,
 }
 
 #[derive(Deserialize)]
@@ -153,7 +157,7 @@ pub(super) async fn provider_login(
 
     let scopes = scopes_for_provider(&provider_key);
 
-    let auth_url = oauth::build_auth_url(
+    let mut auth_url = oauth::build_auth_url(
         &provider,
         &client_id,
         &redirect_uri,
@@ -164,6 +168,13 @@ pub(super) async fn provider_login(
         // has not identified themselves yet, so there is no account to hint at.
         None,
     );
+    // OIDC `max_age=0` makes the IdP re-authenticate (and run its MFA) instead
+    // of answering from its own session. GitHub is not OIDC and has no
+    // equivalent; its step-up is a fresh round-trip, and its 2FA policy is
+    // the org's to require.
+    if query.step_up && provider_key != "github" {
+        auth_url.push_str("&max_age=0");
+    }
 
     let mut headers = HeaderMap::new();
 
@@ -404,6 +415,15 @@ pub(super) async fn provider_callback(
             user_id: Some(resolved_user_id),
             email: email.clone(),
         },
+        user_sessions::SignIn::Idp {
+            provider_key: provider_key.clone(),
+            amr: authn_methods(&userinfo.claims),
+            acr: userinfo
+                .claims
+                .get("acr")
+                .and_then(|v| v.as_str())
+                .map(str::to_owned),
+        },
     )
     .await?;
 
@@ -479,6 +499,20 @@ pub(super) async fn provider_callback(
     // the redirect absolute.
     let redirect_target = absolute_redirect_for_org(&state, &headers, &next_path);
     Ok((resp_headers, Redirect::to(&redirect_target)).into_response())
+}
+
+/// The ID token's `amr` (RFC 8176 method references), as strings. Some IdPs
+/// send a single string instead of an array; anything else is ignored.
+fn authn_methods(claims: &serde_json::Map<String, serde_json::Value>) -> Vec<String> {
+    match claims.get("amr") {
+        Some(serde_json::Value::Array(items)) => items
+            .iter()
+            .filter_map(|v| v.as_str())
+            .map(str::to_owned)
+            .collect(),
+        Some(serde_json::Value::String(one)) => vec![one.clone()],
+        _ => Vec::new(),
+    }
 }
 
 // ---------------------------------------------------------------------------

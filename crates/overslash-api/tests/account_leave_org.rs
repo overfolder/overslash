@@ -126,6 +126,10 @@ async fn session_row(pool: &PgPool, org_id: Uuid, identity_id: Uuid, user_id: Uu
             ttl_secs: 3600,
             user_agent: None,
             ip_address: None,
+            auth_method: Some(user_session::auth_method::DEV),
+            auth_provider: None,
+            idp_amr: None,
+            idp_acr: None,
         },
     )
     .await

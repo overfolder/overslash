@@ -105,6 +105,17 @@ variable "enable_magic_link" {
   default     = true
 }
 
+variable "admin_step_up_max_age_secs" {
+  description = "How old a dashboard IdP sign-in may be and still make an admin-class change in a shared org (ADMIN_STEP_UP_MAX_AGE_SECS). Older, and the dashboard asks for a step-up sign-in. CASA 3.3.1 / 2.4.1; docs/runbooks/admin-step-up.md."
+  type        = number
+  default     = 3600
+
+  validation {
+    condition     = var.admin_step_up_max_age_secs > 0 && var.admin_step_up_max_age_secs <= 86400
+    error_message = "admin_step_up_max_age_secs must be between 1 and 86400."
+  }
+}
+
 variable "enable_async_execution" {
   description = "Enable async (non-blocking) action calls (ASYNC_EXECUTION_ENABLED). Default-off. The worker only drains while an instance exists, so enable it only where cloud_run_min_instances >= 1."
   type        = bool

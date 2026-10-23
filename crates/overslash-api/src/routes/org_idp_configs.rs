@@ -16,7 +16,7 @@ use super::util::fmt_time;
 use crate::{
     AppState,
     error::{AppError, Result},
-    extractors::{ClientIp, ReqExt, UserOrKeyAuth},
+    extractors::{AdminAcl, ClientIp, ReqExt},
     services::{client_credentials, oidc_discovery, org_signin},
 };
 use overslash_core::crypto;
@@ -137,7 +137,7 @@ struct DiscoverRequest {
 async fn create_idp_config(
     State(state): State<AppState>,
     ReqExt(ext): ReqExt,
-    auth: UserOrKeyAuth,
+    AdminAcl(auth): AdminAcl,
     scope: OrgScope,
     ip: ClientIp,
     Json(req): Json<CreateIdpConfigRequest>,
@@ -382,7 +382,7 @@ async fn list_idp_configs(
 async fn update_idp_config(
     State(state): State<AppState>,
     ReqExt(ext): ReqExt,
-    auth: UserOrKeyAuth,
+    AdminAcl(auth): AdminAcl,
     scope: OrgScope,
     ip: ClientIp,
     Path(id): Path<Uuid>,
@@ -520,7 +520,7 @@ async fn update_idp_config(
 }
 
 async fn delete_idp_config(
-    auth: UserOrKeyAuth,
+    AdminAcl(auth): AdminAcl,
     scope: OrgScope,
     ip: ClientIp,
     Path(id): Path<Uuid>,
@@ -547,7 +547,7 @@ async fn delete_idp_config(
 
 /// Preview OIDC discovery for an issuer URL (no persistence).
 async fn discover_oidc(
-    _auth: UserOrKeyAuth,
+    _admin: AdminAcl,
     Json(req): Json<DiscoverRequest>,
 ) -> Result<Json<serde_json::Value>> {
     let doc = oidc_discovery::discover(&req.issuer_url)
