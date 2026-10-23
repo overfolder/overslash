@@ -27,6 +27,11 @@ pub(super) struct LoginQuery {
     /// ask the IdP to re-authenticate rather than reuse its own session.
     #[serde(default)]
     step_up: bool,
+    /// The shared org a root step-up is for (an org with no IdP of its own,
+    /// whose members sign in at the root). The callback re-scopes the new
+    /// session into it, if the human is a member, instead of leaving them in
+    /// their personal org.
+    step_up_org: Option<Uuid>,
 }
 
 #[derive(Deserialize)]
@@ -206,6 +211,10 @@ pub(super) async fn provider_login(
         if let Some(next) = sanitized_next.as_deref() {
             let next_cookie = auth_cookie(&state, cookies::AUTH_NEXT, next);
             headers.append(header::SET_COOKIE, next_cookie.parse().unwrap());
+        }
+        if let (true, Some(org_id)) = (query.step_up, query.step_up_org) {
+            let org_cookie = auth_cookie(&state, cookies::AUTH_STEP_UP_ORG, &org_id.to_string());
+            headers.append(header::SET_COOKIE, org_cookie.parse().unwrap());
         }
     }
 
@@ -427,6 +436,29 @@ pub(super) async fn provider_callback(
     )
     .await?;
 
+    // A root step-up for a shared org lands back in that org: same session,
+    // re-scoped, so its fresh `authenticated_at` carries over (a re-scope is
+    // not a sign-in, and keeps it). Only at the root, and only into an org the
+    // human belongs to — the cookie names a target, it grants nothing.
+    let step_up_org = cookies::read(&headers, &state, cookies::AUTH_STEP_UP_ORG);
+    let mut landed_org = None;
+    let token = match step_up_org
+        .as_deref()
+        .and_then(|v| Uuid::parse_str(v).ok())
+        .filter(|_| org_slug.is_none())
+    {
+        Some(target) => {
+            match rescope_into(&state, &ext, &token, resolved_user_id, target, &email).await? {
+                Some((rescoped, org)) => {
+                    landed_org = Some(org);
+                    rescoped
+                }
+                None => token,
+            }
+        }
+        None => token,
+    };
+
     // Vercel preview-deployment handoff branch. The session cookie can't
     // be set on `api.dev.overslash.com` and read on `<preview>.vercel.app`
     // (no shared parent domain), so we mint a one-time code, hand it to
@@ -483,6 +515,10 @@ pub(super) async fn provider_callback(
         &mut resp_headers,
         cookies::legacy_session_clears_for(&state),
     );
+    if step_up_org.is_some() {
+        let clear = clear_auth_cookie(&state, cookies::AUTH_STEP_UP_ORG);
+        resp_headers.append(header::SET_COOKIE, clear.parse().unwrap());
+    }
 
     // Non-preview path: fall back to the configured dashboard URL when the
     // caller had no explicit `next`. (The preview branch above handles its
@@ -497,8 +533,47 @@ pub(super) async fn provider_callback(
     // across the bounce on the shared `session_cookie_domain`; combine it
     // with `app_host_suffix` to reconstruct the original origin and turn
     // the redirect absolute.
-    let redirect_target = absolute_redirect_for_org(&state, &headers, &next_path);
+    let redirect_target = match &landed_org {
+        Some(org) => org_app_url(&state, &org.slug, &next_path).unwrap_or(next_path),
+        None => absolute_redirect_for_org(&state, &headers, &next_path),
+    };
     Ok((resp_headers, Redirect::to(&redirect_target)).into_response())
+}
+
+/// Re-scope a just-minted root session into `target`, a shared org `user_id`
+/// belongs to. `None` (leave it where it is) for anything else.
+async fn rescope_into(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    token: &str,
+    user_id: Uuid,
+    target: Uuid,
+    email: &str,
+) -> Result<Option<(String, org::OrgRow)>, AppError> {
+    let Some(org) = org::get_by_id(state.db(ext), target).await? else {
+        return Ok(None);
+    };
+    if org.is_personal
+        || membership::find(state.db(ext), user_id, target)
+            .await?
+            .is_none()
+    {
+        return Ok(None);
+    }
+    let Some(identity) =
+        overslash_db::repos::identity::find_by_org_and_user(state.db(ext), target, user_id).await?
+    else {
+        return Ok(None);
+    };
+    let subject = user_sessions::Subject {
+        identity_id: identity.id,
+        org_id: target,
+        user_id: Some(user_id),
+        email: identity.email.clone().unwrap_or_else(|| email.to_string()),
+    };
+    Ok(user_sessions::rescope_token(state, ext, token, subject)
+        .await?
+        .map(|t| (t, org)))
 }
 
 /// The ID token's `amr` (RFC 8176 method references), as strings. Some IdPs

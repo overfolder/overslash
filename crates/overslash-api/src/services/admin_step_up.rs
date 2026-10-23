@@ -93,7 +93,7 @@ pub async fn require(
     let Some(jti) = session_jti(state, headers) else {
         return Ok(());
     };
-    let (allowed, org_slug) = match target {
+    let (allowed, org_slug, root_for) = match target {
         Target::Org(org_id) => {
             let org = overslash_db::repos::org::get_by_id(state.db(ext), org_id)
                 .await?
@@ -107,12 +107,12 @@ pub async fn require(
                 .map(|p| p.provider_key)
                 .collect();
             if keys.is_empty() {
-                (any_idp(state), None)
+                (any_idp(state), None, Some(org_id))
             } else {
-                (Allowed::Only(keys), Some(org.slug))
+                (Allowed::Only(keys), Some(org.slug), None)
             }
         }
-        Target::Instance => (any_idp(state), None),
+        Target::Instance => (any_idp(state), None, None),
     };
     let row = repo::get(state.db(ext), jti).await?;
     let max_age = state.config.admin_step_up_max_age_secs;
@@ -127,7 +127,7 @@ pub async fn require(
         Ok(()) => Ok(()),
         Err(reason) => Err(AppError::StepUpRequired {
             reason,
-            providers: offered(state, ext, &allowed, org_slug.as_deref()).await?,
+            providers: offered(state, ext, &allowed, org_slug.as_deref(), root_for).await?,
             max_age_secs: max_age,
         }),
     }
@@ -217,12 +217,14 @@ fn session_jti(state: &AppState, headers: &HeaderMap) -> Option<Uuid> {
 
 /// `org_slug` is set when the org names its providers: the login must then
 /// resolve them against the org. Otherwise it is the root login, which on a
-/// subdomain deployment means an absolute link to the apex.
+/// subdomain deployment means an absolute link to the apex; `root_for` then
+/// names the shared org the callback should land the new session back in.
 async fn offered(
     state: &AppState,
     ext: &Extensions,
     allowed: &Allowed,
     org_slug: Option<&str>,
+    root_for: Option<Uuid>,
 ) -> Result<Vec<StepUpProvider>, AppError> {
     let keys: Vec<String> = match allowed {
         Allowed::Only(keys) => keys.clone(),
@@ -239,9 +241,10 @@ async fn offered(
     let mut out = Vec::with_capacity(keys.len());
     for key in keys {
         let path = format!("/auth/login/{}?step_up=true", urlencoding::encode(&key));
-        let login_path = match org_slug {
-            Some(slug) => format!("{path}&org={}", urlencoding::encode(slug)),
-            None => format!("{}{path}", root_origin(state)),
+        let login_path = match (org_slug, root_for) {
+            (Some(slug), _) => format!("{path}&org={}", urlencoding::encode(slug)),
+            (None, Some(org_id)) => format!("{}{path}&step_up_org={org_id}", root_origin(state)),
+            (None, None) => format!("{}{path}", root_origin(state)),
         };
         out.push(StepUpProvider {
             display_name: org_signin::display_name_for(state, ext, &key).await?,

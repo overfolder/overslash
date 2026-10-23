@@ -335,9 +335,103 @@ async fn an_org_without_its_own_idp_steps_up_at_the_root_apex() {
     let (_, body) = step_up_reason(create_group(&base, &client, ("cookie", &c)).await).await;
     assert_eq!(
         body["providers"][0]["login_path"],
-        "https://app.stepup.test/auth/login/google?step_up=true",
+        format!("https://app.stepup.test/auth/login/google?step_up=true&step_up_org={org_id}"),
         "{body}"
     );
+}
+
+/// A root step-up must land back in the shared org it was for — the root
+/// callback would otherwise provision the personal-org session — with the
+/// fresh IdP sign-in carried over, so the admin action then goes through.
+#[tokio::test]
+async fn a_root_step_up_lands_back_in_the_shared_org() {
+    let pool = common::test_pool().await;
+    let mock_addr = common::start_mock().await;
+    sqlx::query(
+        "UPDATE oauth_providers SET authorization_endpoint = $1, token_endpoint = $2, userinfo_endpoint = $3 WHERE key = 'google'",
+    )
+    .bind(format!("http://{mock_addr}/oauth/authorize"))
+    .bind(format!("http://{mock_addr}/oauth/token"))
+    .bind(format!("http://{mock_addr}/oidc/userinfo"))
+    .execute(&pool)
+    .await
+    .unwrap();
+    let (base, client) = start_with_google(pool.clone(), false).await;
+
+    let callback = |nonce: &'static str, extra: String| {
+        let client = client.clone();
+        let base = base.clone();
+        async move {
+            client
+                .get(format!(
+                    "{base}/auth/callback/google?code=c&state=login:google:{nonce}"
+                ))
+                .header(
+                    "cookie",
+                    format!(
+                        "__Host-oss_auth_nonce={nonce}; __Host-oss_auth_verifier=v; __Host-oss_auth_org=none{extra}"
+                    ),
+                )
+                .send()
+                .await
+                .unwrap()
+        }
+    };
+
+    // Sign in at the root, then create a shared org with no IdP of its own.
+    let resp = callback("n1", String::new()).await;
+    let personal = cookie(&set_session(&resp).unwrap());
+    let resp = client
+        .post(format!("{base}/v1/orgs"))
+        .header("cookie", &personal)
+        .json(&json!({"name": "Corp", "slug": format!("corp-{}", Uuid::new_v4())}))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success());
+    let corp_cookie = cookie(&set_session(&resp).unwrap());
+    let org: Value = resp.json().await.unwrap();
+    let corp_id: Uuid = org["id"].as_str().unwrap().parse().unwrap();
+    sqlx::query("UPDATE orgs SET allow_overslash_managed_signin = false WHERE id = $1")
+        .bind(corp_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // The step-up login stashes the target org for the callback.
+    let resp = client
+        .get(format!(
+            "{base}/auth/login/google?step_up=true&step_up_org={corp_id}"
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        resp.headers().get_all("set-cookie").iter().any(|c| c
+            .to_str()
+            .unwrap()
+            .contains(&format!("oss_auth_step_up_org={corp_id}"))),
+        "login stashes the step-up org"
+    );
+
+    // The callback re-scopes the fresh root session into the shared org.
+    let resp = callback(
+        "n2",
+        format!("; __Host-oss_auth_step_up_org={corp_id}; {corp_cookie}"),
+    )
+    .await;
+    assert_eq!(resp.status(), 303);
+    let token = set_session(&resp).unwrap();
+    let claims = jwt::verify(&common::signing_key_bytes(), &token, jwt::AUD_SESSION).unwrap();
+    assert_eq!(claims.org, corp_id);
+    let row = user_session::get(&pool, claims.jti.unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.auth_method.as_deref(), Some("idp"));
+
+    let resp = create_group(&base, &client, ("cookie", &cookie(&token))).await;
+    assert!(resp.status().is_success(), "{}", resp.text().await.unwrap());
 }
 
 /// A self-hosted, magic-link-only deployment has no IdP to defer to; refusing

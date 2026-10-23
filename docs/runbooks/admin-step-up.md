@@ -16,7 +16,9 @@ mutations need a fresh IdP sign-in"*.
 - The dashboard shows *Confirm it's you* (`StepUpModal.svelte`), which sends the human
   through `/auth/login/{key}?step_up=true`. For an OIDC IdP that adds `max_age=0`, so
   the IdP re-authenticates and runs its MFA. Afterwards the human lands back on the same
-  page with a new session.
+  page with a new session. For an org with no IdP of its own the link goes to the root
+  login with `step_up_org`, and the callback re-scopes the new session back into that org
+  if the human is a member.
 - Account → Sessions shows each session's sign-in method and the `amr` the IdP reported.
 - `/v1/org-idp-configs` create, update, delete and discover now require `AdminAcl`.
   Before this, any credential in the org could call them, including an agent key.

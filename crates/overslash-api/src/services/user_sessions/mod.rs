@@ -216,7 +216,7 @@ pub async fn start(
         },
     )
     .await?;
-    mint(state, subject, row.id)
+    mint(state, &subject, row.id)
 }
 
 /// Mint the session JWT re-pointing the caller's current session at another
@@ -228,21 +228,59 @@ pub async fn rescope(
     headers: &HeaderMap,
     subject: Subject,
 ) -> Result<String, AppError> {
-    if let (Some(prev), Some(user_id)) = (current_jti(state, headers), subject.user_id)
-        && let Some(row) = repo::rescope(
-            state.db(ext),
-            prev,
-            user_id,
-            subject.identity_id,
-            subject.org_id,
-            SESSION_TTL_SECS,
-        )
-        .await?
+    if let Some(prev) = current_jti(state, headers)
+        && let Some(token) = rescope_jti(state, ext, prev, &subject).await?
     {
-        state.session_cache.invalidate(&[prev]).await;
-        return mint(state, subject, row.id);
+        return Ok(token);
     }
     start(state, ext, headers, subject, SignIn::Unrecorded).await
+}
+
+/// Re-point the session a just-minted `token` names at another org/identity
+/// of the same human — a step-up sign-in at the root landing back in the
+/// shared org it was for. `None` when the session is not that human's.
+pub async fn rescope_token(
+    state: &AppState,
+    ext: &Extensions,
+    token: &str,
+    subject: Subject,
+) -> Result<Option<String>, AppError> {
+    let jti = jwt::verify(
+        &jwt::signing_key_bytes(&state.config.signing_key),
+        token,
+        jwt::AUD_SESSION,
+    )
+    .ok()
+    .and_then(|c| c.jti);
+    match jti {
+        Some(jti) => rescope_jti(state, ext, jti, &subject).await,
+        None => Ok(None),
+    }
+}
+
+async fn rescope_jti(
+    state: &AppState,
+    ext: &Extensions,
+    jti: Uuid,
+    subject: &Subject,
+) -> Result<Option<String>, AppError> {
+    let Some(user_id) = subject.user_id else {
+        return Ok(None);
+    };
+    let Some(row) = repo::rescope(
+        state.db(ext),
+        jti,
+        user_id,
+        subject.identity_id,
+        subject.org_id,
+        SESSION_TTL_SECS,
+    )
+    .await?
+    else {
+        return Ok(None);
+    };
+    state.session_cache.invalidate(&[jti]).await;
+    mint(state, subject, row.id).map(Some)
 }
 
 /// Revoke one session. `owner` limits it to that human's sessions.
@@ -317,12 +355,12 @@ pub fn current_jti(state: &AppState, headers: &HeaderMap) -> Option<Uuid> {
     .jti
 }
 
-fn mint(state: &AppState, subject: Subject, jti: Uuid) -> Result<String, AppError> {
+fn mint(state: &AppState, subject: &Subject, jti: Uuid) -> Result<String, AppError> {
     let now = OffsetDateTime::now_utc().unix_timestamp();
     let claims = jwt::Claims {
         sub: subject.identity_id,
         org: subject.org_id,
-        email: subject.email,
+        email: subject.email.clone(),
         aud: jwt::AUD_SESSION.into(),
         iat: now,
         exp: now + SESSION_TTL_SECS,
