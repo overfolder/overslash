@@ -196,12 +196,28 @@ probe_tls() {
         fi
         via=" via $addr"
     fi
-    # curl verifies the certificate against the hostname by default.
-    if ! out=$(curl -sS --max-time 20 --retry 2 "${pin[@]}" -o /dev/null -D - "https://$host/" 2>&1); then
-        fail "$name: unclaimed target — HTTPS to $host$via has no valid certificate for it ($(tail -1 <<<"$out"))"
-    elif grep -qi '^x-vercel-error: *DEPLOYMENT_NOT_FOUND' <<<"$out"; then
-        fail "$name: unclaimed target — Vercel has no deployment for $host$via"
-    fi
+    # curl verifies the certificate against the hostname by default. The
+    # HTTP status is irrelevant: a 5xx from a sleeping dev backend still means
+    # the name is ours. Not curl's --retry, which retries 5xx and then exits 23
+    # because it cannot rewind the headers already written; retry by hand on
+    # connect failures and timeouts only.
+    local rc attempt
+    for attempt in 1 2 3; do
+        rc=0
+        out=$(curl -sS --max-time 20 "${pin[@]}" -o /dev/null -D - "https://$host/" 2>&1) || rc=$?
+        case $rc in 6 | 7 | 28) sleep 2 ;; *) break ;; esac
+    done
+    case $rc in
+        0)
+            if grep -qi '^x-vercel-error: *DEPLOYMENT_NOT_FOUND' <<<"$out"; then
+                fail "$name: unclaimed target — Vercel has no deployment for $host$via"
+            fi ;;
+        # TLS handshake / certificate failures (35 handshake, 51/60 verify,
+        # 58/59 local cert or cipher): nothing serves our certificate here.
+        35 | 51 | 58 | 59 | 60)
+            fail "$name: unclaimed target — HTTPS to $host$via has no valid certificate for it ($(grep -m1 '^curl:' <<<"$out"))" ;;
+        *) fail "$name: HTTPS to $host$via failed (curl $rc: $(grep -m1 '^curl:' <<<"$out"))" ;;
+    esac
 }
 
 # --- every inventory row against live DNS -----------------------------------

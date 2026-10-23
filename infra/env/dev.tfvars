@@ -17,9 +17,10 @@ session_cookie_domain = ".app.dev.overslash.com"
 # provisioning a global LB just to host a couple of dogfood orgs.
 enable_api_lb = false
 #
-# Each entry also needs a CNAME at the registrar and a row in
-# docs/compliance/casa/subdomain-inventory.md, or the daily subdomain check
-# fails (docs/runbooks/subdomain-inventory.md).
+# The registrar's *.api.dev wildcard CNAME already points each entry at Cloud
+# Run. Add a `tls` row per entry to docs/compliance/casa/subdomain-inventory.md
+# so the daily check notices a mapping that disappears
+# (docs/runbooks/subdomain-inventory.md).
 extra_api_domain_mappings = [
   "overfolder.api.dev.overslash.com",
   "overfolder-dev.api.dev.overslash.com",

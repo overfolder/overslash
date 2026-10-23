@@ -56,31 +56,19 @@ The `_acme-challenge.api` row is expected to point at an NXDOMAIN target between
 renewals (`delegated`). If the cert map is ever recreated, its value changes: take the new one
 from `tofu output` (`acme_challenge_record_name` / `_data` of the `api_lb` module).
 
-## Pending operator steps
+## The `*.api.dev` wildcard (accepted)
 
-### Narrow the `*.api.dev` wildcard
+`*.api.dev.overslash.com` stays a wildcard CNAME to `ghs.googlehosted.com`; the reasoning
+is in the inventory's Findings. A new dev org host therefore needs no registrar change:
 
-*In code, pending apply.* `*.api.dev.overslash.com` is a wildcard CNAME to
-`ghs.googlehosted.com`, but only the hosts in `dev.tfvars` are mapped, so every other label
-resolves to Google with nothing behind it. The inventory already lists those hosts
-explicitly; the wildcard row is the only thing left.
+1. Add it to `extra_api_domain_mappings` in `infra/env/dev.tfvars` and apply.
+2. Add an explicit `tls` row for it to the inventory, so the daily check fails if the
+   mapping later disappears while the name is still in use. (Without the row the wildcard
+   covers it and nothing fails, but nothing checks it either.)
 
-1. At Namecheap → `overslash.com` → Advanced DNS, add a `CNAME` for each of these hosts
-   that is not already an explicit record (value `ghs.googlehosted.com.`):
-   `overfolder.api.dev`, `overfolder-dev.api.dev`, `reveni-dev.api.dev` (`api.dev` itself
-   already has one — confirm it does).
-2. Delete the `*.api.dev` CNAME.
-3. Verify, after the TTL:
-
-   ```bash
-   dig @1.1.1.1 +short CNAME overfolder.api.dev.overslash.com   # ghs.googlehosted.com.
-   dig @1.1.1.1 zz-test.api.dev.overslash.com | grep status      # NXDOMAIN
-   ```
-
-4. Delete the `*.api.dev.overslash.com` row from the inventory and run the script; it must
-   pass. (The row is already `pending`, so the daily check stays green between step 2 and
-   this PR.) From then on a new dev org mapping needs its own CNAME *and* row (see the comment on
-   `extra_api_domain_mappings` in `infra/env/dev.tfvars`).
+To narrow it after all: add an explicit `ghs.googlehosted.com.` CNAME at Namecheap for every
+host in `extra_api_domain_mappings`, delete the wildcard, confirm
+`dig @1.1.1.1 zz-test.api.dev.overslash.com` is NXDOMAIN, then delete the wildcard row.
 
 ### Optional hardening
 

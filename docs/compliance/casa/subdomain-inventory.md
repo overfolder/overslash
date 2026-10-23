@@ -101,7 +101,7 @@ after it, but a value that is present must still match; `-` for `absent`). The o
 | `overfolder.api.dev.overslash.com` | CNAME | `ghs.googlehosted.com` | tls | GCP `overslash-dev` Cloud Run | `extra_api_domain_mappings` |
 | `overfolder-dev.api.dev.overslash.com` | CNAME | `ghs.googlehosted.com` | tls | GCP `overslash-dev` Cloud Run | `extra_api_domain_mappings` |
 | `reveni-dev.api.dev.overslash.com` | CNAME | `ghs.googlehosted.com` | tls | GCP `overslash-dev` Cloud Run | `extra_api_domain_mappings` |
-| `*.api.dev.overslash.com` | CNAME | `ghs.googlehosted.com` | pending | GCP `overslash-dev` Cloud Run | **Finding** — see below; pending removal |
+| `*.api.dev.overslash.com` | CNAME | `ghs.googlehosted.com` | dns | GCP `overslash-dev` Cloud Run | Per-org dev API hosts (`api_host_suffix`); **accepted risk**, see Findings |
 | `mailbox.overslash.com` | CNAME | `ghs.googlehosted.com` | tls | GCP `overslash` Cloud Run | overfwd Mailbox Gateway |
 | `mailbox.dev.overslash.com` | CNAME | `ghs.googlehosted.com` | tls | GCP `overslash-dev` Cloud Run | overfwd Mailbox Gateway |
 | `status.overslash.com` | CNAME | `statuspage.betteruptime.com` | tls | Better Stack | |
@@ -122,16 +122,26 @@ appearing without an inventory change fails the check.
 
 ## Findings
 
-**`*.api.dev.overslash.com` is a wildcard CNAME to `ghs.googlehosted.com`** while only four
-names under it are mapped. Every other label resolves to Google's frontends and serves no
-certificate — a record pointing at a target nobody claims, which is the shape 6.4.1 asks
-about. It is not exploitable as it stands, because only a verified owner of `overslash.com`
-in Search Console can create the mapping that would claim it, but it removes the one signal
-that would show a *real* dangling mapping under that suffix and it means the script cannot
-tell a new dev org's host from noise. Remediation (pending operator apply, in the
-[runbook](../../runbooks/subdomain-inventory.md#narrow-the-apidev-wildcard)): replace the
-wildcard with explicit CNAMEs for the hosts in `extra_api_domain_mappings`, which the four
-explicit rows above already describe, and delete the wildcard row.
+**`*.api.dev.overslash.com` is a wildcard CNAME to `ghs.googlehosted.com`, accepted on dev
+(2026-10-23).** Only the names in `extra_api_domain_mappings` (plus `api.dev`) are mapped.
+Every other label resolves to Google's frontends and serves no certificate for itself, which
+is the "record pointing at a target nobody claims" shape 6.4.1 asks about. It is kept because:
+
+- **No third party can claim a name under it.** A Cloud Run domain mapping can only be
+  created by a principal that is a verified owner of `overslash.com` in Search Console, and
+  only we are. The worst an unmapped label does is fail TLS on a hostname nobody publishes.
+  On a provider that lets any account claim a name (Vercel, GitHub Pages, S3), the same
+  wildcard would be a real takeover; on Cloud Run it is not.
+- **It mirrors prod.** The API serves per-org hosts under `api_host_suffix`; prod's
+  `*.api.overslash.com` is the same pattern on the GCLB. With the wildcard, onboarding a dev
+  org's host needs only the domain mapping in `dev.tfvars`, no registrar change.
+- **It is dev only.** No production data or customer traffic is behind `*.api.dev`.
+
+What it costs: the check cannot tell a missing dev mapping from an unused label under the
+wildcard, so the row is `dns` (record present, target resolves), not `tls`. Each mapped host
+keeps its own explicit `tls` row above, so a mapping that is deleted while still in use does
+fail. Revisit if dev ever holds real customer data, or if the zone moves to Cloud DNS (where
+explicit records would come from Terraform for free).
 
 No other record failed: every CNAME target resolves (bar the expected Certificate Manager
 case), every `tls` row presents a valid certificate for its own name, and no name seen in
