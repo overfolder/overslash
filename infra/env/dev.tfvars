@@ -18,9 +18,9 @@ session_cookie_domain = ".app.dev.overslash.com"
 enable_api_lb = false
 #
 # The registrar's *.api.dev wildcard CNAME already points each entry at Cloud
-# Run. Add a `tls` row per entry to docs/compliance/casa/subdomain-inventory.md
-# so the daily check notices a mapping that disappears
-# (docs/runbooks/subdomain-inventory.md).
+# Run. Add a row per entry to docs/compliance/casa/subdomain-inventory.md,
+# `pending` until its certificate is issued and then `tls`, so the daily check
+# notices a mapping that disappears (docs/runbooks/subdomain-inventory.md).
 extra_api_domain_mappings = [
   "overfolder.api.dev.overslash.com",
   "overfolder-dev.api.dev.overslash.com",

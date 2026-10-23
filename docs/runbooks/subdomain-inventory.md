@@ -62,14 +62,23 @@ from `tofu output` (`acme_challenge_record_name` / `_data` of the `api_lb` modul
 `*.api.dev.overslash.com` stays a wildcard CNAME to `ghs.googlehosted.com`; the reasoning
 is in the inventory's Findings. A new dev org host therefore needs no registrar change:
 
-1. Add it to `extra_api_domain_mappings` in `infra/env/dev.tfvars` and apply.
-2. Add an explicit `tls` row for it to the inventory, so the daily check fails if the
-   mapping later disappears while the name is still in use. (Without the row the wildcard
-   covers it and nothing fails, but nothing checks it either.)
+1. Add it to `extra_api_domain_mappings` in `infra/env/dev.tfvars`, and in the same PR add
+   its inventory row as `pending`: the row's CNAME is checked, but not TLS, so the PR can
+   pass before the mapping exists. Apply.
+2. Once Google has issued the mapping's certificate (`gcloud beta run domain-mappings
+   describe --domain <host> --region <region>` shows `CertificateProvisioned` true,
+   usually within the hour), switch the row to `tls` in a follow-up PR. From then on the
+   daily check fails if the mapping disappears while the name is still in use.
 
-To narrow it after all: add an explicit `ghs.googlehosted.com.` CNAME at Namecheap for every
-host in `extra_api_domain_mappings`, delete the wildcard, confirm
-`dig @1.1.1.1 zz-test.api.dev.overslash.com` is NXDOMAIN, then delete the wildcard row.
+To narrow it after all, in this order so the daily check never sees a record its row
+contradicts:
+
+1. Add an explicit `ghs.googlehosted.com.` CNAME at Namecheap for every host in
+   `extra_api_domain_mappings`.
+2. Merge a PR switching the `*.api.dev.overslash.com` row to `pending`.
+3. Delete the wildcard at Namecheap and, after the TTL, confirm
+   `dig @1.1.1.1 zz-test.api.dev.overslash.com` is NXDOMAIN.
+4. Delete the wildcard row and run the script; it must pass.
 
 ### Optional hardening
 
