@@ -188,7 +188,7 @@ operator applies it; re-measure afterwards. Policy:
 
 The last row is a genuine positive and the answer to a question labs always ask.
 
-**The `secretAccessor` and `cloudsql.admin` rows: in code, pending apply (2026-10-22).**
+**The `secretAccessor` and `cloudsql.admin` rows: fixed and applied (2026-10-23), re-measured on both projects.**
 `roles/secretmanager.secretAccessor` is no longer granted project-wide. Each workload has
 its own service account (`-run` for the API, `-exporter`, `-shortener`, `-overfwd`). The
 API's grant carries an IAM condition that admits only secrets named `overslash-<env>-*`
@@ -197,7 +197,13 @@ granted their secrets one by one: two for the shortener, one each for overfwd an
 exporter. The scheduler's `cloudsql.admin` becomes a two-permission custom role
 (`cloudsql.instances.get` and `.update`), conditioned on the one instance and granted only
 where night shutdown runs. Prod has none, so its scheduler holds no Cloud SQL role at all.
-Apply and verify: [least-privilege-iam.md](../../runbooks/least-privilege-iam.md). Policy:
+Re-measured 2026-10-23. `get-iam-policy` filtered on `secretAccessor` / `cloudsql.admin`
+returns one row per project: `secretAccessor` → `overslash-<env>-run`, condition
+"overslash-<env>-* secrets, minus operator-only". Dev's scheduler holds
+`overslash_dev_sql_start_stop` conditioned on "overslash-dev-db only". Each Cloud Run service
+and the exporter job run as their own account. `db-password` → `-exporter`,
+`overfwd-gateway-key` → `-overfwd`, and in prod `shortener-api-key` and `cache-server-ca` →
+`-shortener`. Apply and verify: [least-privilege-iam.md](../../runbooks/least-privilege-iam.md). Policy:
 [secrets-access-policy.md](secrets-access-policy.md). The `serviceAccountUser` row is
 unchanged.
 
@@ -300,10 +306,11 @@ archive, from a manual `gcloud builds submit` on 2026-04-29. No trigger writes t
 three are GitHub-connected and clone from GitHub. The archive is a working-directory dump.
 With no `.gcloudignore`, gcloud honoured `.gitignore` but not `.git/info/exclude`, so it
 uploaded a local-only `.claude/settings.local.json`. Project viewers could read it through
-the legacy `READER` ACL. **In code, pending apply:** `infra/modules/cloud-build-source/`
+the legacy `READER` ACL. **Fixed and applied 2026-10-23:** `infra/modules/cloud-build-source/`
 imports both buckets with UBLA on, public-access prevention `enforced` and a 30-day delete
-rule, and a root `.gcloudignore` closes the upload path. Apply, archive deletion and
-evidence commands: [cloud-build-bucket.md](../../runbooks/cloud-build-bucket.md).
+rule, and a root `.gcloudignore` closes the upload path. Re-measured on both projects:
+UBLA `true`, prevention `enforced`, the lifecycle rule present, an empty `acl`, and no live
+objects. Apply, archive deletion and evidence commands: [cloud-build-bucket.md](../../runbooks/cloud-build-bucket.md).
 
 ### Supply chain and organization policy
 
@@ -369,7 +376,7 @@ No verdict is overturned. It does three things:
    reading the module.
 3. **Adds three findings the IaC could not show**: `roles/editor` on two GCP-default
    service accounts; the unmanaged `_cloudbuild` bucket holding repository source archives
-   without uniform bucket-level access (in code, pending apply —
+   without uniform bucket-level access (fixed and applied 2026-10-23 —
    [cloud-build-bucket.md](../../runbooks/cloud-build-bucket.md)); and the confirmation that production runs 8 alert
    policies and **zero** uptime checks, so the `[P0] API Down` page does not exist.
 

@@ -13,8 +13,8 @@ Adopted 2026-09-28. The retention, lock and alerting choices are recorded as D11
 > ([infra/README.md](../../../infra/README.md)). Until an operator runs the apply steps in
 > [infra/README.md → Audit logging](../../../infra/README.md#audit-logging-casa-671), the
 > logging and alerting sections describe the configuration in the repo, not the live
-> projects. The same holds for the per-workload grants below until
-> [least-privilege-iam.md](../../runbooks/least-privilege-iam.md) is applied.
+> projects. The per-workload grants below **are** applied (2026-10-23, both projects,
+> verified per [least-privilege-iam.md](../../runbooks/least-privilege-iam.md)).
 > [gcp-posture.md](gcp-posture.md) records what was measured live.
 
 ---
