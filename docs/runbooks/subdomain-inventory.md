@@ -6,6 +6,8 @@ the record of what they should contain, and
 [`scripts/check-subdomains.sh`](../../scripts/check-subdomains.sh) compares it with live DNS
 every morning (the **Subdomain inventory** job of the Dependency audit, `dev` branch). A
 failure opens or bumps the "Dependency audit failing" triage issue. CASA 6.4.1.
+A PR runs the live check only if it edits the inventory or the script. Any other
+dependency PR gets the offline parse, so DNS drift never blocks an unrelated merge.
 
 Run it locally the same way CI does:
 
