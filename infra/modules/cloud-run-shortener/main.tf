@@ -144,6 +144,19 @@ locals {
   }
 }
 
+# Granted one by one: this service account reads exactly the secrets above
+# and nothing else (CASA 6.7.1, docs/compliance/casa/secrets-access-policy.md).
+# Cloud Run resolves them as the revision's identity when it starts, so the
+# service waits on these.
+resource "google_secret_manager_secret_iam_member" "env_secrets" {
+  for_each = local.env_secrets
+
+  project   = var.project_id
+  secret_id = each.value
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${var.service_account_email}"
+}
+
 resource "google_cloud_run_v2_service" "shortener" {
   name     = "${var.base_prefix}-shortener"
   location = var.region
@@ -229,6 +242,8 @@ resource "google_cloud_run_v2_service" "shortener" {
     type    = "TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST"
     percent = 100
   }
+
+  depends_on = [google_secret_manager_secret_iam_member.env_secrets]
 
   lifecycle {
     ignore_changes = [

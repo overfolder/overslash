@@ -188,18 +188,40 @@ operator applies it; re-measure afterwards. Policy:
 
 The last row is a genuine positive and the answer to a question labs always ask.
 
+**The `secretAccessor` and `cloudsql.admin` rows: in code, pending apply (2026-10-22).**
+`roles/secretmanager.secretAccessor` is no longer granted project-wide. Each workload has
+its own service account (`-run` for the API, `-exporter`, `-shortener`, `-overfwd`). The
+API's grant carries an IAM condition that admits only secrets named `overslash-<env>-*`
+minus the operator-only PagerDuty key (`infra/modules/secret-manager`). The other three are
+granted their secrets one by one: two for the shortener, one each for overfwd and the
+exporter. The scheduler's `cloudsql.admin` becomes a two-permission custom role
+(`cloudsql.instances.get` and `.update`), conditioned on the one instance and granted only
+where night shutdown runs. Prod has none, so its scheduler holds no Cloud SQL role at all.
+Apply and verify: [least-privilege-iam.md](../../runbooks/least-privilege-iam.md). Policy:
+[secrets-access-policy.md](secrets-access-policy.md). The `serviceAccountUser` row is
+unchanged.
+
 ### Cloud Run
 
-| Service | Ingress |
-|---|---|
-| `overslash-prod-api` | **`all`** |
-| `overslash-prod-overfwd` | **`all`** |
-| `overslash-prod-shortener` | **`all`** |
+| Service | Ingress, 2026-09-22 | Ingress, re-measured 2026-10-22 |
+|---|---|---|
+| `overslash-prod-api` | **`all`** | **`internal-and-cloud-load-balancing`** — `*.run.app/health` returns 404, `api.overslash.com/health` 200 |
+| `overslash-prod-overfwd` | **`all`** | `all` |
+| `overslash-prod-shortener` | **`all`** | `all` |
+| `overslash-dev-api` | — | `all` |
 
-`overslash-prod-api` sits behind the GCLB, so `all` means its raw `*.run.app` URL stays
-directly reachable and bypasses the load balancer's host allowlist, its access logging, and
-any Cloud Armor policy added later. The correct value for an LB-fronted service is
-`INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER`.
+**Production API: fixed and applied.** On 2026-09-22 `all` left the raw `*.run.app` URL
+reachable, bypassing the load balancer's host allowlist, its access logging and Cloud
+Armor. The service is now `INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER` (`infra/main.tf`, on
+whenever `enable_api_lb` is), and a prod `tofu plan` is clean. Every caller was checked
+first: none uses the `run.app` URL
+([lb-hardening.md](../../runbooks/lb-hardening.md#what-changes-for-clients)).
+
+**Accepted residuals.** `overslash-dev-api` has no LB. Its hosts are Cloud Run domain
+mappings, which LB-only ingress would cut off. overfwd and the shortener have no LB in
+either environment and authenticate their own callers (a bearer key, and a public redirect
+service whose write path needs `API_KEY`). For all three, `all` is the only setting that
+keeps them reachable.
 
 ### Load balancer — production
 
@@ -216,13 +238,24 @@ evidence, and a change to Google's default would move it silently.
 
 Both are now declared in `infra/modules/api-lb/main.tf` — an SSL policy (TLS 1.2 minimum,
 `RESTRICTED`) and a Cloud Armor policy (OWASP rules in preview). Apply steps and
-verification: [lb-hardening.md](../../runbooks/lb-hardening.md). Re-measure this table after
-the apply; until then the values above are still what is live.
+verification: [lb-hardening.md](../../runbooks/lb-hardening.md).
+
+**Re-measured 2026-10-22, applied:**
+
+| | |
+|---|---|
+| `gcloud compute ssl-policies list` | `overslash-prod-api-ssl-policy`, `RESTRICTED`, `TLS_1_2`, on `overslash-prod-api-https-proxy` |
+| `gcloud compute security-policies list` | `overslash-prod-api-armor`, on `overslash-prod-api-backend` (logging on) |
 
 ### Secret Manager
 
-16 secrets in each project. **None declares `rotation`, `nextRotationTime` or
-`expireTime`.** Every consumer pins `version = "latest"`, so a rotation is a revision roll
+16 secrets in each project on 2026-09-22, and 30 in prod and 26 in dev on 2026-10-22.
+Every one is named `overslash-<env>-*`, which is the namespace the API's
+conditional grant matches. Two prod secrets, `overslash-prod-valkey-auth` and
+`-valkey-server-ca`, belong to the deleted Memorystore for Redis instance. Their cleanup is
+step 8 of [memorystore-valkey.md](../../runbooks/memorystore-valkey.md), and it is a
+pre-flight of [least-privilege-iam.md](../../runbooks/least-privilege-iam.md).
+**None declares `rotation`, `nextRotationTime` or `expireTime`.** Every consumer pins `version = "latest"`, so a rotation is a revision roll
 rather than a config change — good — but nothing schedules, tracks or alerts on rotation
 age, which is the shape of evidence 6.7.1 asks for.
 
