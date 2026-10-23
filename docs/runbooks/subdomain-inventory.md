@@ -45,6 +45,7 @@ whose target is gone is a dangling record anyone who can claim that target may s
 |---------|---------|----|
 | `dangling CNAME/MX — target … is NXDOMAIN` | The record points at a name that no longer exists | Delete the record at Namecheap now, then find out what released the target |
 | `unclaimed target — HTTPS … has no valid certificate` / `Vercel has no deployment` | The name resolves to a provider, but no account of ours serves it | If the hostname is still wanted, re-attach it (domain mapping / Vercel domain); if not, delete the record. Either way, the same day |
+| `HTTPS to … failed (curl N: …)` | Not a certificate problem: curl could not connect (7), timed out (28) or failed otherwise, after three tries. An HTTP error status never causes it, because a 5xx from a sleeping dev backend still counts as claimed | Rerun. If it persists, check that provider's status page; a GCLB or Cloud Run host that stays unreachable may be a released address, so compare the record with `tofu output` |
 | `… is not in the inventory (…)` on a row | The record's value changed | If someone changed it on purpose, update the row; otherwise treat it as a hijack of the zone — check the Namecheap account's audit log and sessions |
 | `… resolves but is not in the inventory` / `unlisted … record` | A record exists that nobody wrote down | Add the row with its owner, or delete the record |
 | `listed as absent but resolves` | One of the `absent` names started resolving | As above |
