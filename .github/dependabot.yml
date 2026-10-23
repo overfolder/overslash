@@ -7,9 +7,73 @@ updates:
       interval: "weekly"
     target-branch: "dev"
     open-pull-requests-limit: 10
+    # TLS/PKI crates skip the cooldown (D-NEXT): trust-root changes (CA
+    # additions and distrusts) and cert-validation fixes often ship without a
+    # scored advisory. Almost all of them are transitive, and the default
+    # `allow` is direct-only, so they need the `dependency-type: "all"` entries
+    # to be updated at all. Keep the patterns identical in `allow`,
+    # `cooldown.exclude` and the `pki` group.
+    allow:
+      - dependency-type: "direct"
+      - dependency-name: "rustls*"
+        dependency-type: "all"
+      - dependency-name: "webpki*"
+        dependency-type: "all"
+      - dependency-name: "tokio-rustls"
+        dependency-type: "all"
+      - dependency-name: "hyper-rustls"
+        dependency-type: "all"
+      - dependency-name: "ring"
+        dependency-type: "all"
+      - dependency-name: "aws-lc-*"
+        dependency-type: "all"
+      - dependency-name: "openssl*"
+        dependency-type: "all"
+      - dependency-name: "native-tls"
+        dependency-type: "all"
+      - dependency-name: "tokio-native-tls"
+        dependency-type: "all"
+      - dependency-name: "hyper-tls"
+        dependency-type: "all"
+      - dependency-name: "jsonwebtoken"
+        dependency-type: "all"
+      - dependency-name: "pem*"
+        dependency-type: "all"
+      - dependency-name: "der"
+        dependency-type: "all"
+      - dependency-name: "spki"
+        dependency-type: "all"
+      - dependency-name: "pkcs*"
+        dependency-type: "all"
+      - dependency-name: "sec1"
+        dependency-type: "all"
+      - dependency-name: "simple_asn1"
+        dependency-type: "all"
     cooldown:
       default-days: 7
+      exclude:
+        - "rustls*"
+        - "webpki*"
+        - "tokio-rustls"
+        - "hyper-rustls"
+        - "ring"
+        - "aws-lc-*"
+        - "openssl*"
+        - "native-tls"
+        - "tokio-native-tls"
+        - "hyper-tls"
+        - "jsonwebtoken"
+        - "pem*"
+        - "der"
+        - "spki"
+        - "pkcs*"
+        - "sec1"
+        - "simple_asn1"
     groups:
+      # Listed first: a dependency joins the first group it matches, so PKI
+      # bumps get their own PR instead of riding in the weekly bundle.
+      pki:
+        patterns: ["rustls*", "webpki*", "tokio-rustls", "hyper-rustls", "ring", "aws-lc-*", "openssl*", "native-tls", "tokio-native-tls", "hyper-tls", "jsonwebtoken", "pem*", "der", "spki", "pkcs*", "sec1", "simple_asn1"]
       cargo-deps:
         patterns: ["*"]
 
