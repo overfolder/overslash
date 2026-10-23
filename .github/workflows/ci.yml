@@ -209,7 +209,7 @@ jobs:
       - uses: ./.github/actions/seed-ort-cache
       # Pin sqlx-cli to 0.9 so the CLI's offline-cache format matches the
       # workspace sqlx 0.9 (the .sqlx/ files it verifies).
-      - uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
           tool: sqlx-cli@0.9
 
@@ -345,7 +345,7 @@ jobs:
       # artifacts stay valid). Linking ~99 instrumented test binaries is
       # the bulk of a warm-cache "compile" phase; mold cuts it sharply.
       - uses: rui314/setup-mold@da13e0b42e392e3a45d1215033a2270b849d7d36 # v1 (mutable tag)
-      - uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
           tool: cargo-llvm-cov,cargo-nextest
 
@@ -566,7 +566,7 @@ jobs:
       # its cache from a release asset so cold-cache builds don't touch it.
       - uses: ./.github/actions/seed-ort-cache
       - uses: rui314/setup-mold@da13e0b42e392e3a45d1215033a2270b849d7d36 # v1 (mutable tag)
-      - uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
           tool: sqlx-cli@0.9
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
