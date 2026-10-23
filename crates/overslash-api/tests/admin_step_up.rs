@@ -94,6 +94,7 @@ async fn session(
             auth_provider: provider,
             idp_amr: None,
             idp_acr: None,
+            idp_auth_time: None,
         },
     )
     .await
@@ -407,17 +408,32 @@ async fn a_root_step_up_lands_back_in_the_shared_org() {
         .await
         .unwrap();
     assert!(
-        resp.headers().get_all("set-cookie").iter().any(|c| c
-            .to_str()
-            .unwrap()
-            .contains(&format!("oss_auth_step_up_org={corp_id}"))),
+        resp.headers()
+            .get_all("set-cookie")
+            .iter()
+            .any(|c| c.to_str().unwrap().contains(&format!(".{corp_id}"))),
         "login stashes the step-up org"
     );
 
-    // The callback re-scopes the fresh root session into the shared org.
+    // A step-up cookie left by some *other* login (an abandoned step-up) is
+    // ignored: an ordinary root sign-in stays in the personal org.
     let resp = callback(
         "n2",
-        format!("; __Host-oss_auth_step_up_org={corp_id}; {corp_cookie}"),
+        format!("; __Host-oss_auth_step_up_org=stale-nonce.{corp_id}"),
+    )
+    .await;
+    let stray = set_session(&resp).unwrap();
+    let claims = jwt::verify(&common::signing_key_bytes(), &stray, jwt::AUD_SESSION).unwrap();
+    assert_ne!(
+        claims.org, corp_id,
+        "a stray step-up cookie must not steer a sign-in"
+    );
+
+    // The callback of the step-up's own login re-scopes the fresh root
+    // session into the shared org.
+    let resp = callback(
+        "n3",
+        format!("; __Host-oss_auth_step_up_org=n3.{corp_id}; {corp_cookie}"),
     )
     .await;
     assert_eq!(resp.status(), 303);
@@ -534,6 +550,8 @@ async fn an_idp_sign_in_is_recorded_and_step_up_asks_the_idp_to_reauthenticate()
         "{}",
         location(&step_up)
     );
+    // Google rejects `prompt=login`; its `max_age` is the re-auth signal.
+    assert!(!location(&step_up).contains("prompt=login"));
 
     let nonce = "step-up-nonce";
     let resp = nr
@@ -557,4 +575,46 @@ async fn an_idp_sign_in_is_recorded_and_step_up_asks_the_idp_to_reauthenticate()
     assert_eq!(row.auth_method.as_deref(), Some("idp"));
     assert_eq!(row.auth_provider.as_deref(), Some("google"));
     assert!(row.authenticated_at.is_some());
+}
+
+/// The IdP's `auth_time` is when it last actually authenticated the human: an
+/// IdP that answered a step-up from an old session of its own yields a stale
+/// session, not a fresh one. Never later than now.
+#[tokio::test]
+async fn the_idps_auth_time_is_the_sign_in_time() {
+    let pool = common::test_pool().await;
+    let (addr, client) = common::start_api(pool.clone()).await;
+    let base = format!("http://{addr}");
+    let (org_id, admin, _) = shared_org(&base, &client).await;
+
+    let now = time::OffsetDateTime::now_utc();
+    for (auth_time, expect_stale) in [
+        (now - time::Duration::hours(2), true),
+        (now + time::Duration::hours(2), false),
+    ] {
+        let row = user_session::create(
+            &pool,
+            user_session::NewUserSession {
+                user_id: None,
+                identity_id: admin,
+                org_id,
+                ttl_secs: 3600,
+                user_agent: None,
+                ip_address: None,
+                auth_method: Some("idp"),
+                auth_provider: Some("google"),
+                idp_amr: None,
+                idp_acr: None,
+                idp_auth_time: Some(auth_time),
+            },
+        )
+        .await
+        .unwrap();
+        let at = row.authenticated_at.unwrap();
+        assert!(
+            at <= time::OffsetDateTime::now_utc(),
+            "never later than now"
+        );
+        assert_eq!((now - at).whole_seconds() > 3600, expect_stale, "{at}");
+    }
 }

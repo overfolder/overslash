@@ -97,6 +97,7 @@ async fn session_row(pool: &PgPool, org_id: Uuid, identity_id: Uuid) -> Uuid {
             auth_provider: None,
             idp_amr: None,
             idp_acr: None,
+            idp_auth_time: None,
         },
     )
     .await

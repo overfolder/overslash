@@ -77,6 +77,11 @@ pub enum SignIn {
         provider_key: String,
         amr: Vec<String>,
         acr: Option<String>,
+        /// The ID token's `auth_time`: when the IdP last actually
+        /// authenticated the human. Becomes the session's `authenticated_at`
+        /// (never later than now), so an IdP that answered from an old
+        /// session of its own does not count as a fresh sign-in.
+        auth_time: Option<OffsetDateTime>,
     },
     MagicLink,
     /// `DEV_AUTH` login. The boot policy keeps it out of production.
@@ -188,17 +193,19 @@ pub async fn start(
         revoke_one(state, ext, prev, None, reason::REPLACED).await?;
     }
     let (user_agent, ip) = origin(state, ext, headers);
-    let (provider, amr, acr) = match &sign_in {
+    let (provider, amr, acr, auth_time) = match &sign_in {
         SignIn::Idp {
             provider_key,
             amr,
             acr,
+            auth_time,
         } => (
             Some(provider_key.as_str()),
             Some(amr.as_slice()).filter(|a| !a.is_empty()),
             acr.as_deref(),
+            *auth_time,
         ),
-        _ => (None, None, None),
+        _ => (None, None, None, None),
     };
     let row = repo::create(
         state.db(ext),
@@ -213,6 +220,7 @@ pub async fn start(
             auth_provider: provider,
             idp_amr: amr,
             idp_acr: acr,
+            idp_auth_time: auth_time,
         },
     )
     .await?;

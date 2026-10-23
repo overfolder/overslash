@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "INSERT INTO user_sessions\n            (user_id, identity_id, org_id, expires_at, user_agent, ip_address,\n             auth_method, auth_provider, authenticated_at, idp_amr, idp_acr)\n         VALUES ($1, $2, $3, now() + make_interval(secs => $4), $5, $6,\n                 $7, $8, CASE WHEN $7::text IS NULL THEN NULL ELSE now() END, $9, $10)\n         RETURNING id, user_id, identity_id, org_id, created_at, last_seen_at,\n                   expires_at, revoked_at, revoked_reason, user_agent, ip_address,\n                   auth_method, auth_provider, authenticated_at, idp_amr, idp_acr",
+  "query": "INSERT INTO user_sessions\n            (user_id, identity_id, org_id, expires_at, user_agent, ip_address,\n             auth_method, auth_provider, authenticated_at, idp_amr, idp_acr)\n         VALUES ($1, $2, $3, now() + make_interval(secs => $4), $5, $6,\n                 $7, $8, CASE WHEN $7::text IS NULL THEN NULL ELSE LEAST(COALESCE($11, now()), now()) END,\n                 $9, $10)\n         RETURNING id, user_id, identity_id, org_id, created_at, last_seen_at,\n                   expires_at, revoked_at, revoked_reason, user_agent, ip_address,\n                   auth_method, auth_provider, authenticated_at, idp_amr, idp_acr",
   "describe": {
     "columns": [
       {
@@ -191,7 +191,8 @@
         "Text",
         "Text",
         "TextArray",
-        "Text"
+        "Text",
+        "Timestamptz"
       ]
     },
     "nullable": [
@@ -213,5 +214,5 @@
       true
     ]
   },
-  "hash": "c9d8132bac90fec9f1d819ab9200abd8947da98536c09ec92fcc202101b9d07c"
+  "hash": "77853bc43b0e24cd807772353a864aa0eb1dc619be9510c64b2f3ab60ad9f1d8"
 }

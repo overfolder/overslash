@@ -174,11 +174,21 @@ pub(super) async fn provider_login(
         None,
     );
     // OIDC `max_age=0` makes the IdP re-authenticate (and run its MFA) instead
-    // of answering from its own session. GitHub is not OIDC and has no
-    // equivalent; its step-up is a fresh round-trip, and its 2FA policy is
-    // the org's to require.
+    // of answering from its own session, and the callback then takes the ID
+    // token's `auth_time` as the sign-in time — so an IdP that ignores it
+    // yields a stale session, not a pass. `prompt=login` says the same to IdPs
+    // that key on it (Okta, Entra, Auth0); Google rejects that value, and its
+    // `max_age` is enough. GitHub is not OIDC and has neither; its step-up is
+    // a fresh round-trip, and its 2FA policy is the org's to require.
     if query.step_up && provider_key != "github" {
         auth_url.push_str("&max_age=0");
+        let has_prompt = provider
+            .extra_auth_params
+            .as_object()
+            .is_some_and(|m| m.contains_key("prompt"));
+        if provider_key != "google" && !has_prompt {
+            auth_url.push_str("&prompt=login");
+        }
     }
 
     let mut headers = HeaderMap::new();
@@ -212,8 +222,14 @@ pub(super) async fn provider_login(
             let next_cookie = auth_cookie(&state, cookies::AUTH_NEXT, next);
             headers.append(header::SET_COOKIE, next_cookie.parse().unwrap());
         }
+        // Bound to this login's nonce, so an abandoned step-up cannot steer a
+        // later, ordinary sign-in into the org.
         if let (true, Some(org_id)) = (query.step_up, query.step_up_org) {
-            let org_cookie = auth_cookie(&state, cookies::AUTH_STEP_UP_ORG, &org_id.to_string());
+            let org_cookie = auth_cookie(
+                &state,
+                cookies::AUTH_STEP_UP_ORG,
+                &format!("{nonce}.{org_id}"),
+            );
             headers.append(header::SET_COOKIE, org_cookie.parse().unwrap());
         }
     }
@@ -432,6 +448,11 @@ pub(super) async fn provider_callback(
                 .get("acr")
                 .and_then(|v| v.as_str())
                 .map(str::to_owned),
+            auth_time: userinfo
+                .claims
+                .get("auth_time")
+                .and_then(|v| v.as_i64())
+                .and_then(|t| time::OffsetDateTime::from_unix_timestamp(t).ok()),
         },
     )
     .await?;
@@ -444,7 +465,9 @@ pub(super) async fn provider_callback(
     let mut landed_org = None;
     let token = match step_up_org
         .as_deref()
-        .and_then(|v| Uuid::parse_str(v).ok())
+        .and_then(|v| v.split_once('.'))
+        .filter(|(n, _)| *n == state_nonce_expected)
+        .and_then(|(_, org)| Uuid::parse_str(org).ok())
         .filter(|_| org_slug.is_none())
     {
         Some(target) => {

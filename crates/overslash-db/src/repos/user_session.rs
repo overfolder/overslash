@@ -90,6 +90,8 @@ pub struct NewUserSession<'a> {
     pub auth_provider: Option<&'a str>,
     pub idp_amr: Option<&'a [String]>,
     pub idp_acr: Option<&'a str>,
+    /// The IdP's `auth_time`; `authenticated_at` is the earlier of it and now.
+    pub idp_auth_time: Option<OffsetDateTime>,
 }
 
 pub async fn create(pool: &PgPool, s: NewUserSession<'_>) -> Result<UserSessionRow, sqlx::Error> {
@@ -99,7 +101,8 @@ pub async fn create(pool: &PgPool, s: NewUserSession<'_>) -> Result<UserSessionR
             (user_id, identity_id, org_id, expires_at, user_agent, ip_address,
              auth_method, auth_provider, authenticated_at, idp_amr, idp_acr)
          VALUES ($1, $2, $3, now() + make_interval(secs => $4), $5, $6,
-                 $7, $8, CASE WHEN $7::text IS NULL THEN NULL ELSE now() END, $9, $10)
+                 $7, $8, CASE WHEN $7::text IS NULL THEN NULL ELSE LEAST(COALESCE($11, now()), now()) END,
+                 $9, $10)
          RETURNING id, user_id, identity_id, org_id, created_at, last_seen_at,
                    expires_at, revoked_at, revoked_reason, user_agent, ip_address,
                    auth_method, auth_provider, authenticated_at, idp_amr, idp_acr",
@@ -113,6 +116,7 @@ pub async fn create(pool: &PgPool, s: NewUserSession<'_>) -> Result<UserSessionR
         s.auth_provider,
         s.idp_amr,
         s.idp_acr,
+        s.idp_auth_time,
     )
     .fetch_one(pool)
     .await
