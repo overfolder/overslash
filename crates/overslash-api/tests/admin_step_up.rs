@@ -265,11 +265,10 @@ async fn a_magic_link_session_carried_into_a_shared_org_needs_a_step_up() {
         .json()
         .await
         .unwrap();
-    let resp = client
-        .get(body["dev_verify_url"].as_str().unwrap())
-        .send()
-        .await
-        .unwrap();
+    // The link is built on `public_url`, which is not this test server.
+    let link = body["dev_verify_url"].as_str().unwrap();
+    let path = &link[link.find("/auth/").unwrap()..];
+    let resp = client.get(format!("{base}{path}")).send().await.unwrap();
     let personal = cookie(&set_session(&resp).expect("verify sets a session"));
 
     // Its own personal org is out of scope.
