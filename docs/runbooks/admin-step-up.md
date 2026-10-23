@@ -1,7 +1,7 @@
 # Admin step-up — applying and evidencing it
 
 CASA 3.3.1 ("administrative interfaces use MFA") and 2.4.1 ("re-auth before sensitive
-transactions"). The decision is D-NEXT in [DECISIONS.md](../../DECISIONS.md), *"Admin-class
+transactions"). The decision is D136 in [DECISIONS.md](../../DECISIONS.md), *"Admin-class
 mutations need a fresh IdP sign-in"*.
 
 ## What shipped (code)

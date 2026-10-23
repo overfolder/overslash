@@ -1,4 +1,4 @@
-//! Admin-class mutations need a fresh IdP sign-in (CASA 3.3.1, 2.4.1; D-NEXT
+//! Admin-class mutations need a fresh IdP sign-in (CASA 3.3.1, 2.4.1; D136
 //! "Admin-class mutations need a fresh IdP sign-in").
 //!
 //! Overslash has no second factor of its own and does not grow one: it
