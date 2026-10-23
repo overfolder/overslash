@@ -200,7 +200,7 @@ export function splitQTerms(raw: string): string[] {
  *                             the short or full email; a display name also
  *                             resolves, for older links
  * - `user ~ NAME`           → owner_user_contains (substring on owning-user name),
- *                             or owner_user_id when NAME is exactly one user's email
+ *                             or owner_user_id when NAME is exactly one user's full email
  * - `identity = NAME`       → identity_id=<resolved UUID> (any kind), else q
  * - `identity ~ NAME`       → identity_name_contains (any kind)
  * - `tag = X` (repeatable)  → tag (comma-joined; a row must carry all of them)
@@ -235,8 +235,9 @@ export function searchToFilters(
 	// A user is named by email in the bar, but a name still resolves so links
 	// shared before that change keep working. Each form is tried across all
 	// users before the next, so one user's display name can't shadow another's
-	// email.
-	const resolveUser = (value: string, byName = true): string | undefined => {
+	// email. `exactOnly` limits it to the full email — the one form that can't
+	// also be a substring someone meant to search for.
+	const resolveUser = (value: string, exactOnly = false): string | undefined => {
 		const v = value.toLowerCase();
 		const users = identities.filter((i) => i.kind === 'user');
 		// Emails first: an email-less user is labelled by name, and must not
@@ -245,10 +246,10 @@ export function searchToFilters(
 		const forms: ((i: IdentitySummary) => string | null)[] = [
 			(i) => {
 				const e = email(i);
-				return e && short(e);
+				return e && !exactOnly ? short(e) : null;
 			},
 			email,
-			(i) => (byName ? i.name : null)
+			(i) => (exactOnly ? null : i.name)
 		];
 		for (const form of forms) {
 			const hit = users.find((i) => form(i)?.toLowerCase() === v);
@@ -279,9 +280,9 @@ export function searchToFilters(
 			// up with the audit table's "User" column.
 			// `~` substring-matches the recorded display name server-side, so an
 			// email (which autocomplete offers for `~` too) would match nothing;
-			// an exact email narrows to that user instead. A name keeps `~`'s
-			// substring meaning (`ada` still finds `adam`).
-			const id = expr.value === 'me' ? undefined : resolveUser(expr.value, expr.op !== '~');
+			// a full email narrows to that user instead. A name or a bare short
+			// email keeps `~`'s substring meaning (`ada` still finds `adam`).
+			const id = expr.value === 'me' ? undefined : resolveUser(expr.value, expr.op === '~');
 			if (expr.op === '~') {
 				if (id) filters.owner_user_id = id;
 				else filters.owner_user_contains = expr.value;

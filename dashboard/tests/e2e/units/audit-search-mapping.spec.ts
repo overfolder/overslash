@@ -198,7 +198,7 @@ test.describe('user key labels users by email', () => {
 		expect(f.owner_user_id).toBe(ANGEL);
 	});
 
-	test('user ~ with a suggested email narrows to that user', () => {
+	test('user ~ with a full email narrows to that user', () => {
 		const f = searchToFilters(
 			value({ kind: 'filter', key: 'user', op: '~', value: 'angel@org.com' }),
 			PEOPLE,
@@ -210,6 +210,16 @@ test.describe('user key labels users by email', () => {
 		expect(
 			searchToFilters(value({ kind: 'filter', key: 'user', op: '~', value: 'ang' }), PEOPLE)
 		).toEqual({ owner_user_contains: 'ang' });
+		// So does a bare short email: in a one-domain org `angel` is also a
+		// plausible substring, and must keep matching `Angela` too.
+		expect(
+			searchToFilters(
+				value({ kind: 'filter', key: 'user', op: '~', value: 'angel' }),
+				PEOPLE,
+				undefined,
+				short
+			)
+		).toEqual({ owner_user_contains: 'angel' });
 		// So does an exact display name — `~` must not stop matching `Angel Ma`.
 		expect(
 			searchToFilters(value({ kind: 'filter', key: 'user', op: '~', value: 'Angel M' }), PEOPLE)
