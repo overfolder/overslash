@@ -145,16 +145,33 @@ concrete() {
     esac
 }
 
+# Is `addr` in a network ARIN registers to Vercel? Warns once per address,
+# since a pass here means the prefix list in `matches` is behind.
+vercel_seen=" "
+vercel_net() {
+    local net
+    net=$(curl -fsS --max-time 15 --retry 2 "https://rdap.arin.net/registry/ip/$1" 2>/dev/null \
+        | jq -r '.name // empty' 2>/dev/null) || return 1
+    [[ $net == VERCEL-* ]] || return 1
+    case $vercel_seen in *" $1 "*) ;; *)
+        vercel_seen+="$1 "
+        warn "$1 is Vercel ($net, per ARIN) but not in the known prefixes; add its /24 to matches()" ;;
+    esac
+}
+
 # Is `value` (a record of `type`) one of the comma-separated `expect`?
 matches() {
     local type=$1 expect=$2 value=${3%.} e
     if [ "$expect" = vercel ]; then
         case $type in
-            # The anycast pool Vercel answers with today (216.150.x) and the
-            # two addresses its docs tell you to configure: legacy 76.76.21.21
-            # and the current 216.198.79.1. A Vercel address outside these
-            # fails the row; the tls check still decides whether it is ours.
-            A) [[ $value =~ ^(216\.150\.|216\.198\.79\.|76\.76\.21\.) ]] ;;
+            # Vercel's ARIN nets seen so far: the anycast pool (216.150.x,
+            # 64.29.17.x, 66.33.60.x) and the two addresses its docs tell you
+            # to configure (legacy 76.76.21.21, current 216.198.79.1). Vercel
+            # adds /24s over time, so an address outside these is looked up
+            # in RDAP: a VERCEL-* net passes with a warning to add it here.
+            # The tls check still decides whether the name is ours.
+            A) [[ $value =~ ^(216\.150\.|64\.29\.17\.|66\.33\.60\.|216\.198\.79\.|76\.76\.21\.) ]] \
+                || vercel_net "$value" ;;
             CNAME) [[ $value =~ \.vercel-dns(-[0-9]+)?\.com$ ]] ;;
             *) false ;;
         esac
@@ -196,12 +213,28 @@ probe_tls() {
         fi
         via=" via $addr"
     fi
-    # curl verifies the certificate against the hostname by default.
-    if ! out=$(curl -sS --max-time 20 --retry 2 "${pin[@]}" -o /dev/null -D - "https://$host/" 2>&1); then
-        fail "$name: unclaimed target — HTTPS to $host$via has no valid certificate for it ($(tail -1 <<<"$out"))"
-    elif grep -qi '^x-vercel-error: *DEPLOYMENT_NOT_FOUND' <<<"$out"; then
-        fail "$name: unclaimed target — Vercel has no deployment for $host$via"
-    fi
+    # curl verifies the certificate against the hostname by default. The
+    # HTTP status is irrelevant: a 5xx from a sleeping dev backend still means
+    # the name is ours. Not curl's --retry, which retries 5xx and then exits 23
+    # because it cannot rewind the headers already written; retry by hand on
+    # connect failures and timeouts only.
+    local rc attempt
+    for attempt in 1 2 3; do
+        rc=0
+        out=$(curl -sS --max-time 20 "${pin[@]}" -o /dev/null -D - "https://$host/" 2>&1) || rc=$?
+        case $rc in 6 | 7 | 28) sleep 2 ;; *) break ;; esac
+    done
+    case $rc in
+        0)
+            if grep -qi '^x-vercel-error: *DEPLOYMENT_NOT_FOUND' <<<"$out"; then
+                fail "$name: unclaimed target — Vercel has no deployment for $host$via"
+            fi ;;
+        # TLS handshake / certificate failures (35 handshake, 51/60 verify,
+        # 58/59 local cert or cipher): nothing serves our certificate here.
+        35 | 51 | 58 | 59 | 60)
+            fail "$name: unclaimed target — HTTPS to $host$via has no valid certificate for it ($(grep -m1 '^curl:' <<<"$out"))" ;;
+        *) fail "$name: HTTPS to $host$via failed (curl $rc: $(grep -m1 '^curl:' <<<"$out"))" ;;
+    esac
 }
 
 # --- every inventory row against live DNS -----------------------------------

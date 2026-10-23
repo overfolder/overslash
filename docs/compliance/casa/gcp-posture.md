@@ -331,7 +331,8 @@ for every Cloud Run domain mapping, the GCLB A/AAAA — are therefore created by
 Terraform outputs. They are listed with their owning project in
 [subdomain-inventory.md](subdomain-inventory.md) and checked daily against live DNS
 (CASA 6.4.1). One finding: a `*.api.dev` wildcard CNAME to `ghs.googlehosted.com` with
-only four names mapped in `overslash-dev`, pending removal.
+only four names mapped in `overslash-dev`, accepted as a dev-only risk (only a Search Console
+owner of the domain can create a mapping under it).
 
 ## How this scan was run
 

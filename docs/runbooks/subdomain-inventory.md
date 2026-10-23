@@ -45,6 +45,7 @@ whose target is gone is a dangling record anyone who can claim that target may s
 |---------|---------|----|
 | `dangling CNAME/MX — target … is NXDOMAIN` | The record points at a name that no longer exists | Delete the record at Namecheap now, then find out what released the target |
 | `unclaimed target — HTTPS … has no valid certificate` / `Vercel has no deployment` | The name resolves to a provider, but no account of ours serves it | If the hostname is still wanted, re-attach it (domain mapping / Vercel domain); if not, delete the record. Either way, the same day |
+| `HTTPS to … failed (curl N: …)` | Not a certificate problem: curl could not connect (7), timed out (28) or failed otherwise, after three tries. An HTTP error status never causes it, because a 5xx from a sleeping dev backend still counts as claimed | Rerun. If it persists, check that provider's status page; a GCLB or Cloud Run host that stays unreachable may be a released address, so compare the record with `tofu output` |
 | `… is not in the inventory (…)` on a row | The record's value changed | If someone changed it on purpose, update the row; otherwise treat it as a hijack of the zone — check the Namecheap account's audit log and sessions |
 | `… resolves but is not in the inventory` / `unlisted … record` | A record exists that nobody wrote down | Add the row with its owner, or delete the record |
 | `listed as absent but resolves` | One of the `absent` names started resolving | As above |
@@ -56,31 +57,28 @@ The `_acme-challenge.api` row is expected to point at an NXDOMAIN target between
 renewals (`delegated`). If the cert map is ever recreated, its value changes: take the new one
 from `tofu output` (`acme_challenge_record_name` / `_data` of the `api_lb` module).
 
-## Pending operator steps
+## The `*.api.dev` wildcard (accepted)
 
-### Narrow the `*.api.dev` wildcard
+`*.api.dev.overslash.com` stays a wildcard CNAME to `ghs.googlehosted.com`; the reasoning
+is in the inventory's Findings. A new dev org host therefore needs no registrar change:
 
-*In code, pending apply.* `*.api.dev.overslash.com` is a wildcard CNAME to
-`ghs.googlehosted.com`, but only the hosts in `dev.tfvars` are mapped, so every other label
-resolves to Google with nothing behind it. The inventory already lists those hosts
-explicitly; the wildcard row is the only thing left.
+1. Add it to `extra_api_domain_mappings` in `infra/env/dev.tfvars`, and in the same PR add
+   its inventory row as `pending`: the row's CNAME is checked, but not TLS, so the PR can
+   pass before the mapping exists. Apply.
+2. Once Google has issued the mapping's certificate (`gcloud beta run domain-mappings
+   describe --domain <host> --region <region>` shows `CertificateProvisioned` true,
+   usually within the hour), switch the row to `tls` in a follow-up PR. From then on the
+   daily check fails if the mapping disappears while the name is still in use.
 
-1. At Namecheap → `overslash.com` → Advanced DNS, add a `CNAME` for each of these hosts
-   that is not already an explicit record (value `ghs.googlehosted.com.`):
-   `overfolder.api.dev`, `overfolder-dev.api.dev`, `reveni-dev.api.dev` (`api.dev` itself
-   already has one — confirm it does).
-2. Delete the `*.api.dev` CNAME.
-3. Verify, after the TTL:
+To narrow it after all, in this order so the daily check never sees a record its row
+contradicts:
 
-   ```bash
-   dig @1.1.1.1 +short CNAME overfolder.api.dev.overslash.com   # ghs.googlehosted.com.
-   dig @1.1.1.1 zz-test.api.dev.overslash.com | grep status      # NXDOMAIN
-   ```
-
-4. Delete the `*.api.dev.overslash.com` row from the inventory and run the script; it must
-   pass. (The row is already `pending`, so the daily check stays green between step 2 and
-   this PR.) From then on a new dev org mapping needs its own CNAME *and* row (see the comment on
-   `extra_api_domain_mappings` in `infra/env/dev.tfvars`).
+1. Add an explicit `ghs.googlehosted.com.` CNAME at Namecheap for every host in
+   `extra_api_domain_mappings`.
+2. Merge a PR switching the `*.api.dev.overslash.com` row to `pending`.
+3. Delete the wildcard at Namecheap and, after the TTL, confirm
+   `dig @1.1.1.1 zz-test.api.dev.overslash.com` is NXDOMAIN.
+4. Delete the wildcard row and run the script; it must pass.
 
 ### Optional hardening
 
