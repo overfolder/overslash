@@ -280,13 +280,13 @@ when it was written.
 
 | Verdict | Count |
 |---------|-------|
-| `pass` | 34 |
+| `pass` | 37 |
 | `statement` | 13 |
-| `gap` | 5 |
+| `gap` | 2 |
 | `scan` | 1 |
 | `n/a` | 2 |
 
-Of the 5 gaps, **none is a live vulnerability** any more. The counts moved from the original assessment because the two
+Of the 2 gaps (4.1.1 and 6.7.1, both in code and pending an operator apply), **none is a live vulnerability** any more. The counts moved from the original assessment because the two
 vulnerabilities closed four rows between them: V2 made 3.1.2 and 3.1.4 `pass`, and V1
 made 7.3.1 `pass` and 5.1.5 `statement`. The prefixed-cookie rework then made 2.3.1 `pass`,
 dependency scanning made 6.1.1 `pass`, HTTPS-only webhooks made 7.1.1 `pass`, and the
@@ -294,6 +294,7 @@ endpoint-ownership handshake made 7.1.2 `pass`, and signed timestamps on outboun
 made 7.2.3 `pass`. The boot interlocks (DEV_AUTH, weak keys, production log level,
 `/health` error text) made 6.2.1 and 1.2.1 `pass`. The admin step-up gate moved 3.3.1 from
 `gap` to `statement`: MFA itself lives at the IdP, so the answer is written rather than in the repo.
+(This table was recounted from the rows at the same time; it had fallen three `pass` rows behind.)
 
 ## Priority ladder
 

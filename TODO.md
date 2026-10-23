@@ -71,7 +71,7 @@ Monitoring is deployed; paging and recovery procedures are not yet exercised.
 The annual security assessment Google requires of apps holding restricted OAuth scopes —
 we ship `gmail.*`, `drive` and `keep` templates, so the system OAuth client needs it.
 Full assessment in [docs/compliance/casa/](docs/compliance/casa/README.md); the gap list
-is [gap-assessment.md](docs/compliance/casa/gap-assessment.md). 5 of 55 requirements
+is [gap-assessment.md](docs/compliance/casa/gap-assessment.md). 2 of 55 requirements
 are gaps today.
 
 **P0 — live vulnerabilities, not compliance items. Decide on a security timeline.**
