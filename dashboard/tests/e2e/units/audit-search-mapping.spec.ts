@@ -184,6 +184,38 @@ test.describe('user key labels users by email', () => {
 		expect(f.owner_user_id).toBe(ANGEL);
 	});
 
+	test('an email-less user named like a short email loses to the email', () => {
+		const clash: IdentitySummary[] = [
+			{ id: '77777777-7777-7777-7777-777777777777', name: 'angel', kind: 'user' },
+			...PEOPLE
+		];
+		const f = searchToFilters(
+			value({ kind: 'filter', key: 'user', op: '=', value: 'angel' }),
+			clash,
+			undefined,
+			short
+		);
+		expect(f.owner_user_id).toBe(ANGEL);
+	});
+
+	test('user ~ with a suggested email narrows to that user', () => {
+		const f = searchToFilters(
+			value({ kind: 'filter', key: 'user', op: '~', value: 'angel@org.com' }),
+			PEOPLE,
+			undefined,
+			short
+		);
+		expect(f).toEqual({ owner_user_id: ANGEL });
+		// A partial value still substring-matches the recorded name.
+		expect(
+			searchToFilters(value({ kind: 'filter', key: 'user', op: '~', value: 'ang' }), PEOPLE)
+		).toEqual({ owner_user_contains: 'ang' });
+		// So does an exact display name — `~` must not stop matching `Angel Ma`.
+		expect(
+			searchToFilters(value({ kind: 'filter', key: 'user', op: '~', value: 'Angel M' }), PEOPLE)
+		).toEqual({ owner_user_contains: 'Angel M' });
+	});
+
 	test('owner_user_id hydrates back to the email label', () => {
 		const v = filtersToSearch({ owner_user_id: ANGEL }, PEOPLE, undefined, short);
 		expect(v.terms).toEqual([{ kind: 'filter', key: 'user', op: '=', value: 'angel' }]);

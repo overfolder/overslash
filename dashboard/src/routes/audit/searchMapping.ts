@@ -199,7 +199,8 @@ export function splitQTerms(raw: string): string[] {
  *                             acting directly OR any agent they own). EMAIL is
  *                             the short or full email; a display name also
  *                             resolves, for older links
- * - `user ~ NAME`           → owner_user_contains (substring on owning-user name)
+ * - `user ~ NAME`           → owner_user_contains (substring on owning-user name),
+ *                             or owner_user_id when NAME is exactly one user's email
  * - `identity = NAME`       → identity_id=<resolved UUID> (any kind), else q
  * - `identity ~ NAME`       → identity_name_contains (any kind)
  * - `tag = X` (repeatable)  → tag (comma-joined; a row must carry all of them)
@@ -235,13 +236,19 @@ export function searchToFilters(
 	// shared before that change keep working. Each form is tried across all
 	// users before the next, so one user's display name can't shadow another's
 	// email.
-	const resolveUser = (value: string): string | undefined => {
+	const resolveUser = (value: string, byName = true): string | undefined => {
 		const v = value.toLowerCase();
 		const users = identities.filter((i) => i.kind === 'user');
-		const forms: ((i: IdentitySummary) => string | null | undefined)[] = [
-			(i) => userLabel(i, short),
-			(i) => i.email?.trim(),
-			(i) => i.name
+		// Emails first: an email-less user is labelled by name, and must not
+		// win over another user whose short email is that same string.
+		const email = (i: IdentitySummary) => i.email?.trim() || null;
+		const forms: ((i: IdentitySummary) => string | null)[] = [
+			(i) => {
+				const e = email(i);
+				return e && short(e);
+			},
+			email,
+			(i) => (byName ? i.name : null)
 		];
 		for (const form of forms) {
 			const hit = users.find((i) => form(i)?.toLowerCase() === v);
@@ -270,16 +277,22 @@ export function searchToFilters(
 			// `user` matches the owning user *subtree*: the user acting directly
 			// or any of their agents (backed by identities.owner_id), so it lines
 			// up with the audit table's "User" column.
+			// `~` substring-matches the recorded display name server-side, so an
+			// email (which autocomplete offers for `~` too) would match nothing;
+			// an exact email narrows to that user instead. A name keeps `~`'s
+			// substring meaning (`ada` still finds `adam`).
+			const id = expr.value === 'me' ? undefined : resolveUser(expr.value, expr.op !== '~');
 			if (expr.op === '~') {
-				filters.owner_user_contains = expr.value;
+				if (id) filters.owner_user_id = id;
+				else filters.owner_user_contains = expr.value;
 			} else if (expr.value === 'me' && currentUser) {
 				filters.owner_user_id = currentUser.id;
 			} else if (UUID_RE.test(expr.value)) {
 				filters.owner_user_id = expr.value;
+			} else if (id) {
+				filters.owner_user_id = id;
 			} else {
-				const id = resolveUser(expr.value);
-				if (id) filters.owner_user_id = id;
-				else filters.owner_user_contains = expr.value;
+				filters.owner_user_contains = expr.value;
 			}
 		} else if (expr.key === 'agent') {
 			// `agent` stays exact-actor (the specific agent that acted).
