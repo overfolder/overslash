@@ -309,6 +309,37 @@ async fn a_magic_link_session_carried_into_a_shared_org_needs_a_step_up() {
     assert!(current["authenticated_at"].is_string());
 }
 
+/// On a subdomain deployment a relative `/auth/login/{key}` would resolve
+/// against the corp org's host, which has no provider for an org with none
+/// configured — the step-up link must go to the root apex instead.
+#[tokio::test]
+async fn an_org_without_its_own_idp_steps_up_at_the_root_apex() {
+    let pool = common::test_pool().await;
+    let (base, client) = common::start_api_with_auth_providers_customized(
+        pool.clone(),
+        Some(("test_google_id".into(), "test_google_secret".into())),
+        None,
+        "https://api.stepup.test",
+        |c| c.app_host_suffix = Some("app.stepup.test".into()),
+    )
+    .await;
+    let (org_id, admin, _) = shared_org(&base, &client).await;
+    // No IdP of its own and no managed sign-in: members arrive from the root.
+    sqlx::query("UPDATE orgs SET allow_overslash_managed_signin = false WHERE id = $1")
+        .bind(org_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let c = session(&pool, org_id, admin, Some("magic_link"), None, 0).await;
+    let (_, body) = step_up_reason(create_group(&base, &client, ("cookie", &c)).await).await;
+    assert_eq!(
+        body["providers"][0]["login_path"],
+        "https://app.stepup.test/auth/login/google?step_up=true",
+        "{body}"
+    );
+}
+
 /// A self-hosted, magic-link-only deployment has no IdP to defer to; refusing
 /// would leave its admins unable to configure the first one.
 #[tokio::test]

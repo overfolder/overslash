@@ -52,6 +52,8 @@ pub struct StepUpProvider {
     pub display_name: String,
     /// Where the dashboard sends the human (plus its own `next`): the login
     /// with `step_up=true`, against the org when the org names its IdPs.
+    /// Otherwise it is on the root apex: a corp subdomain resolves logins
+    /// against its own org, which has no provider to offer.
     pub login_path: String,
 }
 
@@ -179,6 +181,22 @@ fn any_idp(state: &AppState) -> Allowed {
     }
 }
 
+/// `scheme://<apex>` on a subdomain deployment, else empty: a single-host
+/// deployment has no org context in the host, so a relative link is the root.
+fn root_origin(state: &AppState) -> String {
+    let scheme = if state.config.public_url.starts_with("https://") {
+        "https"
+    } else {
+        "http"
+    };
+    state
+        .config
+        .app_host_suffix
+        .as_deref()
+        .map(|apex| format!("{scheme}://{apex}"))
+        .unwrap_or_default()
+}
+
 fn is_safe(method: &Method) -> bool {
     matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS)
 }
@@ -198,7 +216,8 @@ fn session_jti(state: &AppState, headers: &HeaderMap) -> Option<Uuid> {
 }
 
 /// `org_slug` is set when the org names its providers: the login must then
-/// resolve them against the org. With `Allowed::Any` it is the root login.
+/// resolve them against the org. Otherwise it is the root login, which on a
+/// subdomain deployment means an absolute link to the apex.
 async fn offered(
     state: &AppState,
     ext: &Extensions,
@@ -212,17 +231,18 @@ async fn offered(
             return Ok(vec![StepUpProvider {
                 key: "email".into(),
                 display_name: "an email link".into(),
-                login_path: "/login?reason=step_up".into(),
+                login_path: format!("{}/login?reason=step_up", root_origin(state)),
             }]);
         }
         Allowed::NoIdp => Vec::new(),
     };
     let mut out = Vec::with_capacity(keys.len());
     for key in keys {
-        let mut login_path = format!("/auth/login/{}?step_up=true", urlencoding::encode(&key));
-        if let Some(slug) = org_slug {
-            login_path.push_str(&format!("&org={}", urlencoding::encode(slug)));
-        }
+        let path = format!("/auth/login/{}?step_up=true", urlencoding::encode(&key));
+        let login_path = match org_slug {
+            Some(slug) => format!("{path}&org={}", urlencoding::encode(slug)),
+            None => format!("{}{path}", root_origin(state)),
+        };
         out.push(StepUpProvider {
             display_name: org_signin::display_name_for(state, ext, &key).await?,
             key,

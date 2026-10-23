@@ -1,5 +1,10 @@
 <script lang="ts">
-	import { stepUp, dismissStepUp, type StepUpChallenge } from '#lib/stores/stepUp.svelte.ts';
+	import {
+		stepUp,
+		dismissStepUp,
+		type StepUpChallenge,
+		type StepUpProvider
+	} from '#lib/stores/stepUp.svelte.ts';
 
 	const challenge = $derived(stepUp.pending);
 
@@ -21,11 +26,11 @@
 
 	/** The login path, returning to this page afterwards. An IdP login takes
 	 * `next`; the email-link fallback goes through the login page's `return_to`. */
-	function href(loginPath: string): string {
+	function href(p: StepUpProvider): string {
 		const here = encodeURIComponent(window.location.pathname + window.location.search);
-		return loginPath.startsWith('/login')
-			? `${loginPath}&return_to=${here}`
-			: `${loginPath}&next=${here}`;
+		return p.key === 'email'
+			? `${p.login_path}&return_to=${here}`
+			: `${p.login_path}&next=${here}`;
 	}
 </script>
 
@@ -43,7 +48,7 @@
 			{#if challenge.providers.length > 0}
 				<div class="providers">
 					{#each challenge.providers as p (p.key)}
-						<a class="btn btn-primary" href={href(p.login_path)}>
+						<a class="btn btn-primary" href={href(p)}>
 							{p.key === 'email' ? 'Sign in again with an email link' : `Continue with ${p.display_name}`}
 						</a>
 					{/each}
