@@ -30,6 +30,22 @@ export interface IdentitySummary {
 	id: string;
 	name: string;
 	kind: string;
+	email?: string | null;
+}
+
+/** Shortens an email for display — `IdentityFormatter.short` from
+ *  #lib/identityDisplay, which drops the org's sole allowed domain. */
+export type ShortEmail = (email: string) => string;
+
+const fullEmail: ShortEmail = (e) => e;
+
+/** How a user is named in the `user` key: their (possibly domain-stripped)
+ *  email, matching the audit table's User column. The IdP display name is
+ *  neither unique nor what the column shows, so it is only the fallback for
+ *  an email-less user. */
+function userLabel(i: IdentitySummary, short: ShortEmail): string {
+	const email = i.email?.trim();
+	return email ? short(email) : i.name;
 }
 
 /** Resource types known to the backend, for `resource` key autocomplete. */
@@ -79,10 +95,11 @@ export interface CurrentUser {
 
 export function buildAuditSearchKeys(
 	identities: IdentitySummary[],
-	currentUser?: CurrentUser
+	currentUser?: CurrentUser,
+	short: ShortEmail = fullEmail
 ): SearchKey[] {
 	const agentNames = identities.filter((i) => AGENT_KINDS.includes(i.kind)).map((i) => i.name);
-	const userNames = identities.filter((i) => i.kind === 'user').map((i) => i.name);
+	const userNames = identities.filter((i) => i.kind === 'user').map((i) => userLabel(i, short));
 	// `me` is offered first so it surfaces at the top of the value dropdown.
 	const userValues = currentUser ? ['me', ...userNames] : userNames;
 	return [
@@ -91,7 +108,7 @@ export function buildAuditSearchKeys(
 			name: 'user',
 			operators: ['=', '~'],
 			values: userValues,
-			hint: currentUser ? 'owning user · me = you' : 'owning user'
+			hint: currentUser ? 'owning user email · me = you' : 'owning user email'
 		},
 		{
 			name: 'identity',
@@ -178,8 +195,10 @@ export function splitQTerms(raw: string): string[] {
  * - `ip = / ~`              → ip_address / ip_address_contains
  * - `agent = NAME`          → identity_id of the agent named NAME (kind-scoped)
  * - `agent ~ NAME`          → identity_name_contains + identity_kind=agent,sub_agent
- * - `user = NAME` / `me`    → owner_user_id (the owning-user subtree: the user
- *                             acting directly OR any agent they own)
+ * - `user = EMAIL` / `me`   → owner_user_id (the owning-user subtree: the user
+ *                             acting directly OR any agent they own). EMAIL is
+ *                             the short or full email; a display name also
+ *                             resolves, for older links
  * - `user ~ NAME`           → owner_user_contains (substring on owning-user name)
  * - `identity = NAME`       → identity_id=<resolved UUID> (any kind), else q
  * - `identity ~ NAME`       → identity_name_contains (any kind)
@@ -190,14 +209,15 @@ export function splitQTerms(raw: string): string[] {
  * - free text               → folded into q
  *
  * Exact `agent`/`identity` resolve NAME → identity_id (the actor column); `user`
- * resolves NAME → owner_user_id. A literal UUID value is used as-is. The
+ * resolves EMAIL → owner_user_id. A literal UUID value is used as-is. The
  * identities list is org-scoped by the API (`GET /v1/identities` enforces
  * `OrgAcl`), so name→id resolution can never leak across tenants.
  */
 export function searchToFilters(
 	value: SearchValue,
 	identities: IdentitySummary[],
-	currentUser?: CurrentUser
+	currentUser?: CurrentUser,
+	short: ShortEmail = fullEmail
 ): AuditFilters {
 	const filters: AuditFilters = {};
 	const qTerms: string[] = [];
@@ -211,6 +231,24 @@ export function searchToFilters(
 		identities.find(
 			(i) => i.name.toLowerCase() === name.toLowerCase() && (!kinds || kinds.includes(i.kind))
 		)?.id;
+	// A user is named by email in the bar, but a name still resolves so links
+	// shared before that change keep working. Each form is tried across all
+	// users before the next, so one user's display name can't shadow another's
+	// email.
+	const resolveUser = (value: string): string | undefined => {
+		const v = value.toLowerCase();
+		const users = identities.filter((i) => i.kind === 'user');
+		const forms: ((i: IdentitySummary) => string | null | undefined)[] = [
+			(i) => userLabel(i, short),
+			(i) => i.email?.trim(),
+			(i) => i.name
+		];
+		for (const form of forms) {
+			const hit = users.find((i) => form(i)?.toLowerCase() === v);
+			if (hit) return hit.id;
+		}
+		return undefined;
+	};
 	for (const expr of value.terms) {
 		if (expr.kind !== 'filter') continue;
 		if (expr.key === 'event') {
@@ -239,7 +277,7 @@ export function searchToFilters(
 			} else if (UUID_RE.test(expr.value)) {
 				filters.owner_user_id = expr.value;
 			} else {
-				const id = resolveId(expr.value, ['user']);
+				const id = resolveUser(expr.value);
 				if (id) filters.owner_user_id = id;
 				else filters.owner_user_contains = expr.value;
 			}
@@ -297,7 +335,8 @@ export function searchToFilters(
 export function filtersToSearch(
 	filters: AuditFilters,
 	identities: IdentitySummary[],
-	currentUser?: CurrentUser
+	currentUser?: CurrentUser,
+	short: ShortEmail = fullEmail
 ): SearchValue {
 	const terms: Term[] = [];
 	if (filters.action) terms.push({ kind: 'filter', key: 'event', op: '=', value: filters.action });
@@ -339,10 +378,13 @@ export function filtersToSearch(
 		terms.push({ kind: 'filter', key, op: '~', value: filters.identity_name_contains });
 	}
 	if (filters.owner_user_id) {
+		const owner = identities.find((i) => i.id === filters.owner_user_id);
 		const value =
 			currentUser && filters.owner_user_id === currentUser.id
 				? 'me'
-				: (identities.find((i) => i.id === filters.owner_user_id)?.name ?? filters.owner_user_id);
+				: owner
+					? userLabel(owner, short)
+					: filters.owner_user_id;
 		terms.push({ kind: 'filter', key: 'user', op: '=', value });
 	}
 	if (filters.owner_user_contains) {
