@@ -13,7 +13,9 @@ Adopted 2026-09-28. The retention, lock and alerting choices are recorded as D11
 > ([infra/README.md](../../../infra/README.md)). Until an operator runs the apply steps in
 > [infra/README.md → Audit logging](../../../infra/README.md#audit-logging-casa-671), the
 > logging and alerting sections describe the configuration in the repo, not the live
-> projects. [gcp-posture.md](gcp-posture.md) records what was measured live.
+> projects. The same holds for the per-workload grants below until
+> [least-privilege-iam.md](../../runbooks/least-privilege-iam.md) is applied.
+> [gcp-posture.md](gcp-posture.md) records what was measured live.
 
 ---
 
@@ -39,9 +41,12 @@ metadata is not a payload read and is not restricted beyond project IAM.
 
 | Principal | Access | Path | Why |
 |-----------|--------|------|-----|
-| `overslash-<env>-run@<project>.iam.gserviceaccount.com` | `roles/secretmanager.secretAccessor`, project-wide | Cloud Run resolves `secret_key_ref` env vars and secret volumes when an instance starts. No payload is ever placed in a plaintext env var or in the service spec | The only runtime identity. The API, the oversla.sh shortener, the overfwd Mailbox Gateway and the metrics-exporter job all run as it |
+| `overslash-<env>-run@` — **the API** | `roles/secretmanager.secretAccessor` on the project, under the IAM condition **every secret named `overslash-<env>-*` except the operator-only list** (today: `overslash-<env>-pagerduty-integration-key`) | Cloud Run resolves `secret_key_ref` env vars and secret volumes as the revision's identity when an instance starts. No payload is ever placed in a plaintext env var or in the service spec | The API reads nearly every platform secret, including ones other modules create (BI password, cache CA, OTel config), so its grant is a naming rule rather than a list. `infra/modules/secret-manager` (`api_secret_accessor`) |
+| `overslash-<env>-shortener@` — oversla.sh | `secretAccessor` on `overslash-<env>-shortener-api-key` and `<cache instance>-server-ca`, nothing else | Same | `infra/modules/cloud-run-shortener` (one grant per `env_secrets` entry). Prod only |
+| `overslash-<env>-overfwd@` — Mailbox Gateway | `secretAccessor` on `overslash-<env>-overfwd-gateway-key`, nothing else | Same | `infra/modules/cloud-run-overfwd` |
+| `overslash-<env>-exporter@` — metrics-exporter job | `secretAccessor` on `overslash-<env>-db-password`, nothing else | Same | `infra/modules/metrics-exporter-job` |
 | Project Owners (humans) | Implicit via `roles/owner` | `tofu plan`/`apply` — the provider refreshes each `google_secret_manager_secret_version` by reading it, and reads the PagerDuty key as a data source. `bin/db-shell.sh` reads the database password. `gcloud secrets versions access` for break-glass | Operating the platform. **Every such read notifies** (below), except Terraform reads by a listed `terraform_operators` principal |
-| Everyone else | **None** | — | `roles/viewer` excludes `secretmanager.versions.access`. The Cloud Build and Scheduler service accounts hold no Secret Manager role. The BigQuery connection stores its own copy of the `bi` credential and never reads the secret |
+| Everyone else | **None** | — | `roles/viewer` excludes `secretmanager.versions.access`. No role is project-wide without a condition. The Cloud Build and Scheduler service accounts hold no Secret Manager role. The BigQuery connection stores its own copy of the `bi` credential and never reads the secret |
 
 **Writes.** A new version is added either by Terraform (generated values: DB password,
 master key, signing key, BI password, OTel config) or by an Owner with
@@ -49,9 +54,20 @@ master key, signing key, BI password, OTel config) or by an Owner with
 PagerDuty, gateway keys). `AddSecretVersion`, `DisableSecretVersion`, `DestroySecretVersion`
 and every IAM change are Admin Activity audit logs, which GCP always writes.
 
-**Adding a runtime reader.** A new service account that must read secrets at runtime is
-added to `expected_secret_accessors` in [`infra/main.tf`](../../../infra/main.tf) in the
-same PR that grants it. The module refuses a non-service-account entry there.
+**Adding a secret.** A secret the API reads is named `overslash-<env>-<name>`: the name
+alone grants it, and no IAM change is needed. A secret only Terraform or an operator reads
+is also named `overslash-<env>-*`, so it must be added to `operator_only_secrets` in
+[`infra/modules/secret-manager/main.tf`](../../../infra/modules/secret-manager/main.tf) in
+the PR that creates it. Without that the API can read it. A secret one of the other
+workloads reads is granted to that workload by name in its own module, next to the
+`secret_key_ref` that consumes it. A secret outside the `overslash-<env>-` namespace is
+readable by no workload until one is granted it explicitly.
+
+**Adding a runtime reader.** A new workload gets its own service account in
+[`infra/modules/iam`](../../../infra/modules/iam/main.tf). Do not reuse the API's: its
+grant is the broad one. The new account is added to `expected_secret_accessors` in
+[`infra/main.tf`](../../../infra/main.tf) in the same PR that grants it, and the module
+refuses a non-service-account entry there.
 
 **Terraform operators.** `terraform_operators` (per environment, in `infra/env/*.tfvars`)
 lists the principals — humans or service accounts — whose `tofu plan`/`apply` reads do not
@@ -112,7 +128,7 @@ be done silently.
 
 A log-based metric, `overslash-<env>-unexpected-secret-access`, counts every
 `AccessSecretVersion` whose caller is **not** in `expected_secret_accessors` (today: the
-run service account alone), leaving out Terraform-provider reads by a `terraform_operators`
+four workload service accounts above, where they exist), leaving out Terraform-provider reads by a `terraform_operators`
 principal. It is labelled by principal and secret. A caller with no principal email at all
 is counted.
 
@@ -183,10 +199,12 @@ only Admin Activity.
 
 These are tracked in [TODO.md §1.6](../../../TODO.md) and are **not** closed by this policy.
 
-- **The runtime grant is project-wide.** `overslash-<env>-run` can read every secret in the
-  project, including the PagerDuty key it never uses. Per-secret
-  `google_secret_manager_secret_iam_member` grants are the fix (the "least-privilege IAM"
-  item). The alert does not cover this: a read by the run SA is by definition expected.
+- **The API's grant is wide by design.** `overslash-<env>-run` can read every
+  `overslash-<env>-*` secret except the operator-only ones. That includes the shortener,
+  overfwd and exporter credentials, which it legitimately shares, and it will include any
+  future secret that is not added to `operator_only_secrets`. The alert does not cover this:
+  any read by the API's account counts as expected. The narrower grants for the other three
+  workloads are what keep a compromise of one of them from reaching the master key.
 - **No rotation metadata.** No secret declares `rotation`, `next_rotation_time` or
   `expire_time`, and nothing alerts on rotation age.
 - **Generated secrets live in Terraform state.** The DB password, the signing key and the
@@ -199,6 +217,6 @@ These are tracked in [TODO.md §1.6](../../../TODO.md) and are **not** closed by
   then moved to Memorystore for Valkey with **IAM auth**
   ([memorystore-valkey.md](../../runbooks/memorystore-valkey.md)): there is no stored
   password any more, in Secret Manager or in Terraform state. Clients present a
-  one-hour access token for the runtime service account, which holds
-  `memorystore.dbConnectionUser` on that instance only. Only the server CA
+  one-hour access token for its own service account (the API's and the shortener's), each
+  holding `memorystore.dbConnectionUser` on that instance only. Only the server CA
   (`<instance>-server-ca`, public material) is in Secret Manager.

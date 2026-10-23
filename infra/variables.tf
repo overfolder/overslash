@@ -307,6 +307,8 @@ variable "cache_instance_name" {
     one-off rename does not stick: a different name builds a second instance
     next to the current one, moves Cloud Run over, then deletes the old one.
     A -var-file value would win over the environment, so keep it out of env/.
+    Keep the "<base_prefix>-" prefix: the API reads the instance's CA secret
+    under its name-based secret grant (modules/secret-manager).
   EOT
   type        = string
   default     = ""

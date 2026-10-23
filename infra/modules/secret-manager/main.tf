@@ -7,7 +7,8 @@ variable "base_prefix" {
 }
 
 variable "cloud_run_sa_email" {
-  type = string
+  type        = string
+  description = "The API's service account. It is granted every secret in this environment's namespace except operator-only ones (see `api_secret_accessor`)."
 }
 
 variable "enable_google_login" {
@@ -455,6 +456,53 @@ resource "google_secret_manager_secret_version" "trusted_proxy_secret" {
 
   lifecycle {
     ignore_changes = [secret_data]
+  }
+}
+
+# --- Who reads these (CASA 6.7.1; docs/compliance/casa/secrets-access-policy.md)
+#
+# The API reads nearly every secret in the environment, including ones other
+# modules create (the BI password, the cache CA, the OTel config), so its grant
+# is a naming rule instead of a list: every secret named `<base_prefix>-*`,
+# minus `operator_only_secrets`. A new API secret needs no IAM change as long
+# as it follows the name; a secret the API must not read goes in the list.
+#
+# Secret Manager names resources under the project NUMBER. A payload read is
+# checked on the version (`projects/<number>/secrets/<id>/versions/<v>`). The
+# exclusion matches the secret and its versions exactly, so excluding `-foo`
+# does not also exclude `-foo-bar`.
+#
+# The other workloads (shortener, overfwd, metrics exporter) get one
+# google_secret_manager_secret_iam_member per secret in their own modules.
+
+data "google_project" "current" {
+  project_id = var.project_id
+}
+
+locals {
+  secrets_root = "projects/${data.google_project.current.number}/secrets/"
+
+  # Read by Terraform alone (modules/monitoring), never by a workload.
+  operator_only_secrets = [
+    google_secret_manager_secret.pagerduty_integration_key.secret_id,
+  ]
+}
+
+resource "google_project_iam_member" "api_secret_accessor" {
+  project = var.project_id
+  role    = "roles/secretmanager.secretAccessor"
+  member  = "serviceAccount:${var.cloud_run_sa_email}"
+
+  condition {
+    title       = "${var.base_prefix}-* secrets, minus operator-only"
+    description = "API runtime secrets by naming rule. Managed in infra/modules/secret-manager."
+    expression = join(" && ", concat(
+      ["resource.name.startsWith(\"${local.secrets_root}${var.base_prefix}-\")"],
+      flatten([for id in local.operator_only_secrets : [
+        "resource.name != \"${local.secrets_root}${id}\"",
+        "!resource.name.startsWith(\"${local.secrets_root}${id}/\")",
+      ]]),
+    ))
   }
 }
 

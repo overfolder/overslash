@@ -555,13 +555,8 @@ resource "google_secret_manager_secret_version" "otel_config" {
   })
 }
 
-resource "google_secret_manager_secret_iam_member" "otel_config_accessor" {
-  count     = var.enable_metrics_sidecar ? 1 : 0
-  project   = var.project_id
-  secret_id = google_secret_manager_secret.otel_config[0].id
-  role      = "roles/secretmanager.secretAccessor"
-  member    = "serviceAccount:${var.service_account_email}"
-}
+# No grant of its own: the name puts it under the API's `<base_prefix>-*`
+# secret rule (modules/secret-manager).
 
 resource "google_cloud_run_v2_service" "api" {
   name     = "${var.base_prefix}-api"

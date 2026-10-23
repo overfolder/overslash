@@ -34,9 +34,9 @@ variable "subnet_id" {
   description = "Subnet the PSC endpoints take their IPs from."
 }
 
-variable "client_service_account_email" {
-  type        = string
-  description = "Service account the clients connect as. Granted roles/memorystore.dbConnectionUser on this instance only."
+variable "client_service_accounts" {
+  type        = map(string)
+  description = "Service accounts the clients connect as, keyed by a stable name (`api`, `shortener`). Each is granted roles/memorystore.dbConnectionUser on this instance only."
 }
 
 # Memorystore for Valkey is reached over Private Service Connect, not VPC
@@ -94,9 +94,11 @@ resource "google_memorystore_instance" "cache" {
 # with the same identity. Replaced before destroy on a rename, so the old
 # instance keeps accepting the clients still pointed at it.
 resource "google_project_iam_member" "client" {
+  for_each = var.client_service_accounts
+
   project = var.project_id
   role    = "roles/memorystore.dbConnectionUser"
-  member  = "serviceAccount:${var.client_service_account_email}"
+  member  = "serviceAccount:${each.value}"
 
   condition {
     title      = "${var.instance_name} only"
@@ -106,6 +108,14 @@ resource "google_project_iam_member" "client" {
   lifecycle {
     create_before_destroy = true
   }
+}
+
+# The API's binding predates the map. Without this, the plan would create the
+# keyed copy and then delete the old address, and deleting an IAM member with
+# the same role, member and condition removes the grant both addresses share.
+moved {
+  from = google_project_iam_member.client
+  to   = google_project_iam_member.client["api"]
 }
 
 locals {
@@ -119,7 +129,9 @@ locals {
 # The server CA reaches Cloud Run through Secret Manager (`secret_key_ref`),
 # like every other mounted value. The secret is named after the instance, so a
 # rename writes a fresh secret instead of colliding with the old instance's.
-# The Cloud Run SA already holds project-level `secretAccessor` (modules/iam).
+# The API reads it under its `<base_prefix>-*` secret rule (modules/secret-
+# manager), so `instance_name` must keep that prefix; the shortener is granted
+# it by name in modules/cloud-run-shortener.
 resource "google_secret_manager_secret" "server_ca" {
   secret_id = "${var.instance_name}-server-ca"
   project   = var.project_id

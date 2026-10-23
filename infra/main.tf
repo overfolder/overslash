@@ -48,6 +48,9 @@ module "iam" {
   project_id  = var.project_id
   base_prefix = local.base_prefix
 
+  enable_shortener = var.enable_shortener
+  enable_overfwd   = var.enable_overfwd
+
   depends_on = [google_project_service.apis]
 }
 
@@ -309,10 +312,16 @@ module "audit_logging" {
   retention_days = var.audit_log_retention_days
   locked         = var.audit_log_bucket_locked
 
-  # Every secret consumer runs as this one SA: the API, the shortener, overfwd
-  # and the metrics-exporter job all take module.iam.cloud_run_sa_email.
-  expected_secret_accessors = [module.iam.cloud_run_sa_email]
-  terraform_operators       = var.terraform_operators
+  # One SA per secret consumer: the API, the metrics-exporter job, and the
+  # shortener and overfwd where they run. Each reads only what modules/iam
+  # describes; any other principal reading a secret alerts.
+  expected_secret_accessors = compact([
+    module.iam.cloud_run_sa_email,
+    module.iam.metrics_exporter_sa_email,
+    module.iam.shortener_sa_email,
+    module.iam.overfwd_sa_email,
+  ])
+  terraform_operators = var.terraform_operators
 
   alerts_enabled        = var.alert_email != ""
   notification_channels = var.alert_email != "" ? [module.monitoring.email_channel_id] : []
@@ -403,7 +412,7 @@ module "metrics_exporter_job" {
   region      = var.region
   base_prefix = local.base_prefix
 
-  service_account_email = module.iam.cloud_run_sa_email
+  service_account_email = module.iam.metrics_exporter_sa_email
   scheduler_sa_email    = module.iam.scheduler_sa_email
 
   image = "${var.region}-docker.pkg.dev/${var.project_id}/${module.artifact_registry.repository_name}/overslash-metrics-exporter:latest"
@@ -491,7 +500,10 @@ module "memorystore" {
   network_id     = module.networking[0].vpc_id
   subnet_id      = module.networking[0].subnet_id
 
-  client_service_account_email = module.iam.cloud_run_sa_email
+  client_service_accounts = merge(
+    { api = module.iam.cloud_run_sa_email },
+    var.enable_shortener ? { shortener = module.iam.shortener_sa_email } : {},
+  )
 
   depends_on = [google_project_service.apis]
 }
@@ -507,7 +519,7 @@ module "cloud_run_shortener" {
   region      = var.region
   base_prefix = local.base_prefix
 
-  service_account_email = module.iam.cloud_run_sa_email
+  service_account_email = module.iam.shortener_sa_email
   vpc_connector_id      = var.use_private_vpc ? module.networking[0].vpc_connector_id : ""
 
   image = "${var.region}-docker.pkg.dev/${var.project_id}/${module.artifact_registry.repository_name}/oversla-sh:latest"
@@ -551,7 +563,7 @@ module "cloud_run_overfwd" {
   region      = var.region
   base_prefix = local.base_prefix
 
-  service_account_email = module.iam.cloud_run_sa_email
+  service_account_email = module.iam.overfwd_sa_email
 
   image = "${module.artifact_registry.docker_hub_repository_url}/${var.overfwd_image}"
 

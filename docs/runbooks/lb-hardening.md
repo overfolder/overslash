@@ -34,9 +34,29 @@ The dashboard (`app.overslash.com`) is served by Vercel, not this LB, so neither
 touches it. Its calls to the API do pass through both.
 
 Cloud Armor only sees traffic that comes through the LB. The API's Cloud Run ingress is
-`INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER` in code (`infra/main.tf`) whenever the LB is on, but
-[gcp-posture.md](../compliance/casa/gcp-posture.md) measured `all` in prod. If a plan shows
-that ingress change too, it is the same apply and makes the policy unbypassable.
+`INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER` (`infra/main.tf`) whenever the LB is on, which
+makes the policy unbypassable: the service's `*.run.app` URL answers 404 to everyone.
+Applied and measured in prod on 2026-10-22 (see [Verify](#verify--evidence-for-the-casa-pack)).
+
+Nothing calls the API by its `*.run.app` URL. The callers, checked before the switch:
+
+| Caller | Reaches the API at | Under LB-only ingress |
+|---|---|---|
+| Vercel rewrites (`dashboard/vercel.json`), prod apex and org subdomains | `api.overslash.com`, `<sub>.api.overslash.com` | Through the LB |
+| Better Stack status page ([status-page.md](status-page.md)) | `api.overslash.com/health`, `/auth/providers` | Through the LB |
+| Agents, MCP clients, OAuth callbacks | `api.overslash.com` and org subdomains | Through the LB |
+| MCP tool calls back into the API | `http://127.0.0.1:<port>` inside the instance (`services/loopback.rs`) | Not ingress at all |
+| Metrics exporter job, Cloud Scheduler | Postgres and `run.googleapis.com` / `sqladmin.googleapis.com`, never the API | Unaffected |
+| Cloud Build | Deploys by service name (`gcloud run deploy`) | Unaffected |
+| CI (`.github/workflows/`) | Nothing deployed: no smoke test hits a live API | Unaffected |
+
+**Dev stays `INGRESS_TRAFFIC_ALL`.** Dev has no LB (`enable_api_lb = false`) and serves
+`api.dev.overslash.com` and its per-org hosts through Cloud Run domain mappings, which
+count as internet ingress: LB-only would take dev offline. That is an accepted dev residual
+(recorded in [gcp-posture.md](../compliance/casa/gcp-posture.md#cloud-run)); a dev LB is not
+planned. overfwd and the
+shortener have no LB in either environment and stay `all` for the same reason; both
+authenticate their own callers.
 
 ## Apply — prod
 
@@ -115,6 +135,21 @@ gcloud logging read --project overslash --freshness=1d --limit=50 \
 Every request also carries `jsonPayload.enforcedSecurityPolicy` with
 `name=overslash-prod-api-armor` and `outcome=ACCEPT`, which shows the policy is attached
 even on a day with no preview hits.
+
+Ingress is LB-only, so the policy cannot be bypassed:
+
+```bash
+gcloud run services describe overslash-prod-api --region europe-west1 --project overslash \
+  --format='value(metadata.annotations."run.googleapis.com/ingress")'
+# Expect: internal-and-cloud-load-balancing   (the v1 spelling of INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER)
+
+RUN=$(gcloud run services describe overslash-prod-api --region europe-west1 --project overslash --format='value(status.url)')
+curl -s -o /dev/null -w '%{http_code}\n' "$RUN/health"         # Expect: 404 (Cloud Run refuses non-LB ingress)
+curl -s -o /dev/null -w '%{http_code}\n' https://api.overslash.com/health   # Expect: 200
+```
+
+Measured 2026-10-22: `internal-and-cloud-load-balancing`; `*.run.app/health` and
+`/auth/providers` 404; `api.overslash.com/health` 200.
 
 Afterwards, re-run the load-balancer block of [gcp-posture.md](../compliance/casa/gcp-posture.md)
 and record the new values there.
