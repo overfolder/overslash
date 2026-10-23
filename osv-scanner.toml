@@ -29,4 +29,4 @@ reason = "unsafe-libyaml is unmaintained, not vulnerable; template parsing via s
 [[IgnoredVulns]]
 id = "RUSTSEC-2026-0385"
 ignoreUntil = 2026-10-30
-reason = "ctutils non-constant-time mask generation, via aes-gcm. Fix 0.4.4 is from 2026-10-23, inside the D30 cooldown; bump then delete. See deny.toml."
+reason = "ctutils non-constant-time mask generation, via aes-gcm and argon2 API-key verify (salted outputs). Fix 0.4.4 is from 2026-10-23, inside the D30 cooldown; bump then delete. See deny.toml."
