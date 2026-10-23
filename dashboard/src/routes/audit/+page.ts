@@ -7,6 +7,7 @@ import {
 	type AuditEntry,
 	type AuditFilters
 } from './types';
+import { rangeFromSearchParams, resolveRange } from './timeRange';
 
 export const ssr = false;
 export const prerender = false;
@@ -26,6 +27,10 @@ const UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0
 
 export const load: PageLoad = async ({ url }) => {
 	const filters: AuditFilters = filtersFromSearchParams(url.searchParams);
+	// The window is resolved here, once, and handed to the page so its
+	// infinite scroll keeps paging these exact bounds.
+	const range = rangeFromSearchParams(url.searchParams);
+	const resolved = resolveRange(range);
 	// `?event=<uuid>` is a deep-link target, not a stored filter — keep it out
 	// of `filters` so it doesn't narrow the visible page, and fetch it
 	// separately so we can render an anchor row even when the active filters
@@ -51,13 +56,15 @@ export const load: PageLoad = async ({ url }) => {
 		: Promise.resolve(null);
 	try {
 		const [entries, identities, anchor] = await Promise.all([
-			session.get<AuditEntry[]>(`/v1/audit?${buildQuery(filters, PAGE_LIMIT)}`),
+			session.get<AuditEntry[]>(`/v1/audit?${buildQuery({ ...filters, ...resolved }, PAGE_LIMIT)}`),
 			identitiesPromise,
 			anchorPromise
 		]);
 		return {
 			entries,
 			filters,
+			range,
+			resolved,
 			identities,
 			eventId,
 			anchor,
@@ -70,6 +77,8 @@ export const load: PageLoad = async ({ url }) => {
 		return {
 			entries: [] as AuditEntry[],
 			filters,
+			range,
+			resolved,
 			identities: await identitiesPromise,
 			eventId,
 			anchor: await anchorPromise,

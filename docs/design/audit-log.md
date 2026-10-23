@@ -104,6 +104,12 @@ The query uses optional parameter matching (`$N::type IS NULL OR column = $N`) t
 
 Response now includes `ip_address`.
 
+### Export
+
+`GET /v1/audit/export?format=csv|jsonl` takes the same filters and writes every matching row, not one page. `limit`, `offset` and the keyset cursor are ignored; `until` defaults to the request time, so rows written during the download stay out. The server walks the range in keyset batches of 1000 through `query_audit_log` and streams each one, so memory stays flat. JSONL is one `GET /v1/audit` entry per line. CSV cells that a spreadsheet would run as a formula get a leading `'`.
+
+If a batch fails after the response has started, the body errors and the client sees a truncated download. Each export writes an `audit.exported` row when its stream ends, with the query, format, `row_count` and `completed` (false if the client left early or a batch failed).
+
 ## Future: Human-readable audit descriptions (Mode C)
 
 Currently, Mode C audit entries store the static action description from the service YAML (e.g. `"Delete a calendar event (Google Calendar)"`). This is useful but doesn't tell you *which* event was deleted — you'd need to cross-reference the URL's UUID with an external system.

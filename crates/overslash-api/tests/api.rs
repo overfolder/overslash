@@ -35,6 +35,7 @@ mod async_call;
 mod async_call_gated;
 mod async_worker;
 mod audit;
+mod audit_export;
 mod audit_tags;
 mod auth_login;
 mod auth_magic_link;

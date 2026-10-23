@@ -1,7 +1,7 @@
 use crate::error::AppError;
 use crate::services::identity_ref;
 use overslash_core::identity_path::IdentityRef;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use axum::{Json, Router, routing::get};
 use serde::{Deserialize, Serialize};
@@ -9,12 +9,16 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use overslash_db::OrgScope;
-use overslash_db::repos::audit::AuditFilter;
+use overslash_db::repos::audit::{AuditFilter, AuditRow};
 
 use crate::{AppState, error::Result};
 
+mod export;
+
 pub fn router() -> Router<AppState> {
-    Router::new().route("/v1/audit", get(query_audit))
+    Router::new()
+        .route("/v1/audit", get(query_audit))
+        .route("/v1/audit/export", get(export::export_audit))
 }
 
 #[derive(Serialize)]
@@ -191,10 +195,15 @@ fn split_q_terms(raw: &str) -> Vec<String> {
     out
 }
 
-async fn query_audit(
-    scope: OrgScope,
-    axum::extract::Query(params): axum::extract::Query<AuditQuery>,
-) -> Result<Json<Vec<AuditEntry>>> {
+/// Turn the query string into the repo filter. Shared by `GET /v1/audit` and
+/// `GET /v1/audit/export`, so a filter the table shows is exactly the filter
+/// the export writes out.
+///
+/// `Ok(None)` means "matches nothing": an email naming nobody (unknown, or an
+/// archived user — the lookup matches live users only) is a filter, not an
+/// address, so it yields the same empty result an unknown UUID gets rather
+/// than a 404.
+async fn parse_filter(scope: &OrgScope, params: AuditQuery) -> Result<Option<AuditFilter>> {
     let empty = |s: String| if s.is_empty() { None } else { Some(s) };
     let identity_kinds = params.identity_kind.and_then(empty).map(|s| {
         s.split(',')
@@ -209,15 +218,12 @@ async fn query_audit(
             .filter(|t| !t.is_empty())
             .collect::<Vec<_>>()
     });
-    // A filter is not an address: an email naming nobody (unknown, or an
-    // archived user — the lookup matches live users only) matches no rows,
-    // the same empty page an unknown UUID gets, rather than a 404.
-    let identity_id = match identity_ref::resolve_opt(&scope, params.identity_id.as_ref()).await {
+    let identity_id = match identity_ref::resolve_opt(scope, params.identity_id.as_ref()).await {
         Ok(id) => id,
-        Err(AppError::NotFound(_)) => return Ok(Json(Vec::new())),
+        Err(AppError::NotFound(_)) => return Ok(None),
         Err(e) => return Err(e),
     };
-    let filter = AuditFilter {
+    Ok(Some(AuditFilter {
         org_id: scope.org_id(),
         action: params.action,
         resource_type: params.resource_type,
@@ -244,139 +250,154 @@ async fn query_audit(
         before: params.before,
         before_id: params.before_id,
         offset: params.offset,
-    };
+    }))
+}
 
+async fn query_audit(
+    scope: OrgScope,
+    axum::extract::Query(params): axum::extract::Query<AuditQuery>,
+) -> Result<Json<Vec<AuditEntry>>> {
+    let Some(filter) = parse_filter(&scope, params).await? else {
+        return Ok(Json(Vec::new()));
+    };
     let rows = scope.query_audit_log(filter).await?;
+    Ok(Json(Enricher::default().enrich(&scope, rows).await))
+}
 
-    // The `approval.resolved` (and self-approve) event carries the resolver in
-    // `detail.resolved_by_identity_id` — the row's `identity_id` is the
-    // approval's *subject*. Pull the resolver id out so we enrich it alongside
-    // the actor/impersonator below and render it distinctly in the dashboard.
-    let resolved_by = |detail: &serde_json::Value| -> Option<Uuid> {
-        detail
-            .get("resolved_by_identity_id")
-            .and_then(|v| v.as_str())
-            .and_then(|s| Uuid::parse_str(s).ok())
-    };
+/// The `approval.resolved` (and self-approve) event carries the resolver in
+/// `detail.resolved_by_identity_id` — the row's `identity_id` is the
+/// approval's *subject*. Pulled out so it is enriched alongside the actor and
+/// impersonator and rendered distinctly in the dashboard.
+fn resolved_by(detail: &serde_json::Value) -> Option<Uuid> {
+    detail
+        .get("resolved_by_identity_id")
+        .and_then(|v| v.as_str())
+        .and_then(|s| Uuid::parse_str(s).ok())
+}
 
-    // Batch-resolve identity names + kinds for actor, impersonator, and resolver.
-    let all_ids: Vec<Uuid> = rows
-        .iter()
-        .flat_map(|r| {
-            [
-                r.identity_id,
-                r.impersonated_by_identity_id,
-                resolved_by(&r.detail),
-            ]
-        })
-        .flatten()
-        .collect::<std::collections::HashSet<_>>()
-        .into_iter()
-        .collect();
-    let (name_map, kind_map): (HashMap<Uuid, String>, HashMap<Uuid, String>) = if all_ids.is_empty()
-    {
-        (HashMap::new(), HashMap::new())
-    } else {
+/// Live identity lookups that turn stored rows into API entries: names and
+/// kinds for actor, impersonator and resolver, plus each one's SPIFFE path.
+///
+/// Remembers every identity it has resolved, so the export — which enriches
+/// one batch at a time — looks each actor up once per download rather than
+/// once per batch. A single `GET /v1/audit` page uses a fresh one.
+#[derive(Default)]
+struct Enricher {
+    seen: HashSet<Uuid>,
+    names: HashMap<Uuid, String>,
+    kinds: HashMap<Uuid, String>,
+    paths: HashMap<Uuid, (String, Vec<Uuid>)>,
+}
+
+impl Enricher {
+    async fn enrich(&mut self, scope: &OrgScope, rows: Vec<AuditRow>) -> Vec<AuditEntry> {
+        let new_ids: Vec<Uuid> = rows
+            .iter()
+            .flat_map(|r| {
+                [
+                    r.identity_id,
+                    r.impersonated_by_identity_id,
+                    resolved_by(&r.detail),
+                ]
+            })
+            .flatten()
+            .filter(|id| self.seen.insert(*id))
+            .collect();
+        if !new_ids.is_empty() {
+            self.resolve(scope, &new_ids).await;
+        }
+        rows.into_iter().map(|r| self.entry(r)).collect()
+    }
+
+    async fn resolve(&mut self, scope: &OrgScope, ids: &[Uuid]) {
         let rows = scope
-            .get_identity_names_by_ids(&all_ids)
+            .get_identity_names_by_ids(ids)
             .await
             .unwrap_or_else(|e| {
                 tracing::warn!("failed to resolve identity names for audit response: {e}");
                 Vec::new()
             });
-        let mut names = HashMap::new();
-        let mut kinds = HashMap::new();
         for (id, name, kind) in rows {
-            names.insert(id, name);
-            kinds.insert(id, kind);
+            self.names.insert(id, name);
+            self.kinds.insert(id, kind);
         }
-        (names, kinds)
-    };
-
-    // Resolve the SPIFFE path for each unique identity referenced on the page.
-    // The page size is bounded (default 50) so per-id lookups are cheap; we
-    // deduplicate to avoid repeating work when many rows share an actor.
-    let mut path_map: HashMap<Uuid, (String, Vec<Uuid>)> = HashMap::new();
-    for id in &all_ids {
-        match crate::services::identity_path::build_for_identity(&scope, *id).await {
-            Ok(Some(p)) => {
-                path_map.insert(*id, p);
-            }
-            Ok(None) => {}
-            Err(e) => {
-                tracing::warn!("failed to build identity_path for audit identity {id}: {e}");
+        // Per-id path lookups: a page is bounded (default 50) and ids are
+        // deduplicated across everything this enricher has seen.
+        for id in ids {
+            match crate::services::identity_path::build_for_identity(scope, *id).await {
+                Ok(Some(p)) => {
+                    self.paths.insert(*id, p);
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::warn!("failed to build identity_path for audit identity {id}: {e}");
+                }
             }
         }
     }
 
-    Ok(Json(
-        rows.into_iter()
-            .map(|r| {
-                // Recorded name first (D56), live name only as a fallback for
-                // rows predating migration 109. A hard-deleted identity keeps
-                // its name here; the live map has nothing to offer for it.
-                let identity_name = r
-                    .actor_name
-                    .or_else(|| r.identity_id.and_then(|id| name_map.get(&id).cloned()));
-                let (identity_path, identity_path_ids) = r
-                    .identity_id
-                    .and_then(|id| path_map.get(&id).cloned())
-                    .map(|(p, ids)| (Some(p), ids))
-                    .unwrap_or((None, Vec::new()));
-                let impersonated_by_name = r
-                    .impersonated_by_identity_id
-                    .and_then(|id| name_map.get(&id).cloned());
-                let (impersonated_by_path, impersonated_by_path_ids) = r
-                    .impersonated_by_identity_id
-                    .and_then(|id| path_map.get(&id).cloned())
-                    .map(|(p, ids)| (Some(p), ids))
-                    .unwrap_or((None, Vec::new()));
-                // Fall back to detail.description for pre-migration entries
-                let description = r.description.or_else(|| {
-                    r.detail
-                        .get("description")
-                        .and_then(|v| v.as_str())
-                        .map(String::from)
-                });
-                // Enrich the resolver inline in `detail` (approval.resolved):
-                // name/kind/path let the dashboard render the approver
-                // distinctly from the subject. No-op for other events.
-                let mut detail = r.detail;
-                if let Some(rid) = resolved_by(&detail)
-                    && let Some(obj) = detail.as_object_mut()
-                {
-                    if let Some(n) = name_map.get(&rid) {
-                        obj.insert("resolved_by_name".into(), serde_json::json!(n));
-                    }
-                    if let Some(k) = kind_map.get(&rid) {
-                        obj.insert("resolved_by_kind".into(), serde_json::json!(k));
-                    }
-                    if let Some((p, ids)) = path_map.get(&rid) {
-                        obj.insert("resolved_by_path".into(), serde_json::json!(p));
-                        obj.insert("resolved_by_path_ids".into(), serde_json::json!(ids));
-                    }
-                }
-                AuditEntry {
-                    id: r.id,
-                    identity_id: r.identity_id,
-                    identity_name,
-                    owner_user_name: r.owner_user_name,
-                    identity_path,
-                    identity_path_ids,
-                    action: r.action,
-                    description,
-                    resource_type: r.resource_type,
-                    resource_id: r.resource_id,
-                    detail,
-                    ip_address: r.ip_address,
-                    created_at: r.created_at,
-                    impersonated_by_identity_id: r.impersonated_by_identity_id,
-                    impersonated_by_name,
-                    impersonated_by_path,
-                    impersonated_by_path_ids,
-                    tags: r.tags,
-                }
-            })
-            .collect(),
-    ))
+    fn entry(&self, r: AuditRow) -> AuditEntry {
+        // Recorded name first (D56), live name only as a fallback for rows
+        // predating migration 109. A hard-deleted identity keeps its name
+        // here; the live map has nothing to offer for it.
+        let identity_name = r
+            .actor_name
+            .or_else(|| r.identity_id.and_then(|id| self.names.get(&id).cloned()));
+        let path_of = |id: Option<Uuid>| {
+            id.and_then(|id| self.paths.get(&id).cloned())
+                .map(|(p, ids)| (Some(p), ids))
+                .unwrap_or((None, Vec::new()))
+        };
+        let (identity_path, identity_path_ids) = path_of(r.identity_id);
+        let impersonated_by_name = r
+            .impersonated_by_identity_id
+            .and_then(|id| self.names.get(&id).cloned());
+        let (impersonated_by_path, impersonated_by_path_ids) =
+            path_of(r.impersonated_by_identity_id);
+        // Fall back to detail.description for pre-migration entries
+        let description = r.description.or_else(|| {
+            r.detail
+                .get("description")
+                .and_then(|v| v.as_str())
+                .map(String::from)
+        });
+        // Enrich the resolver inline in `detail` (approval.resolved):
+        // name/kind/path let the dashboard render the approver distinctly from
+        // the subject. No-op for other events.
+        let mut detail = r.detail;
+        if let Some(rid) = resolved_by(&detail)
+            && let Some(obj) = detail.as_object_mut()
+        {
+            if let Some(n) = self.names.get(&rid) {
+                obj.insert("resolved_by_name".into(), serde_json::json!(n));
+            }
+            if let Some(k) = self.kinds.get(&rid) {
+                obj.insert("resolved_by_kind".into(), serde_json::json!(k));
+            }
+            if let Some((p, ids)) = self.paths.get(&rid) {
+                obj.insert("resolved_by_path".into(), serde_json::json!(p));
+                obj.insert("resolved_by_path_ids".into(), serde_json::json!(ids));
+            }
+        }
+        AuditEntry {
+            id: r.id,
+            identity_id: r.identity_id,
+            identity_name,
+            owner_user_name: r.owner_user_name,
+            identity_path,
+            identity_path_ids,
+            action: r.action,
+            description,
+            resource_type: r.resource_type,
+            resource_id: r.resource_id,
+            detail,
+            ip_address: r.ip_address,
+            created_at: r.created_at,
+            impersonated_by_identity_id: r.impersonated_by_identity_id,
+            impersonated_by_name,
+            impersonated_by_path,
+            impersonated_by_path_ids,
+            tags: r.tags,
+        }
+    }
 }

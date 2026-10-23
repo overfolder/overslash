@@ -1,14 +1,6 @@
 import type { SearchKey, SearchValue, Term } from '#lib/search/terms.ts';
 import type { AuditFilters } from './types';
 
-/** Time presets accepted by the `time` key. */
-const TIME_PRESETS: Record<string, number> = {
-	last_hour: 60 * 60 * 1000,
-	today: 24 * 60 * 60 * 1000,
-	'7d': 7 * 24 * 60 * 60 * 1000,
-	'30d': 30 * 24 * 60 * 60 * 1000
-};
-
 /** Resource types known to the backend (UI_SPEC §Audit Log "event" key). */
 const EVENT_VALUES = [
 	'action.executed',
@@ -137,8 +129,7 @@ export function buildAuditSearchKeys(
 			operators: ['='],
 			values: [],
 			hint: 'event id, execution id, approval id, …'
-		},
-		{ name: 'time', operators: ['='], values: Object.keys(TIME_PRESETS), hint: 'time range' }
+		}
 	];
 }
 
@@ -206,8 +197,10 @@ export function splitQTerms(raw: string): string[] {
  * - `tag = X` (repeatable)  → tag (comma-joined; a row must carry all of them)
  * - `tag ~ X`               → tag_contains (substring against any one tag)
  * - `<key> = <uuid>`        → the id field directly, skipping name resolution
- * - `time = preset`         → since/until window
  * - free text               → folded into q
+ *
+ * Time is not a search key: the range picker owns `since`/`until` (see
+ * `timeRange.ts`), so a window survives every edit of the bar.
  *
  * Exact `agent`/`identity` resolve NAME → identity_id (the actor column); `user`
  * resolves EMAIL → owner_user_id. A literal UUID value is used as-is. The
@@ -327,12 +320,6 @@ export function searchToFilters(
 			}
 		} else if (expr.key === 'uuid') {
 			filters.uuid = expr.value;
-		} else if (expr.key === 'time') {
-			const ms = TIME_PRESETS[expr.value];
-			if (ms !== undefined) {
-				filters.since = new Date(Date.now() - ms).toISOString();
-				filters.until = new Date().toISOString();
-			}
 		}
 	}
 	// Comma-joined: the API splits `q` on commas and requires *every* term to
@@ -413,8 +400,6 @@ export function filtersToSearch(
 	if (filters.tag_contains)
 		terms.push({ kind: 'filter', key: 'tag', op: '~', value: filters.tag_contains });
 	if (filters.uuid) terms.push({ kind: 'filter', key: 'uuid', op: '=', value: filters.uuid });
-	// We can't reliably reverse `time` from since/until alone (presets are
-	// snapshotted to ISO timestamps); leave it out and let the user re-pick.
 	// Text bubbles come back last; `AuditFilters` is an unordered bag, so the
 	// original interleaving of a shared URL can't be recovered.
 	for (const q of splitQTerms(filters.q ?? '')) {

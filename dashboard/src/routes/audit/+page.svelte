@@ -4,18 +4,28 @@
 	import { session, ApiError } from '#lib/session.ts';
 	import SearchBar, { addTerm, type SearchValue, type Term } from '#lib/components/SearchBar.svelte';
 	import AuditRow from './AuditRow.svelte';
-	import { downloadCsv } from './exportCsv';
+	import TimeRangePicker from './TimeRangePicker.svelte';
 	import { buildAuditSearchKeys, filtersToSearch, searchToFilters } from './searchMapping';
 	import { makeIdentityFormatter } from '#lib/identityDisplay.ts';
 	import {
 		buildQuery,
 		cursorFrom,
+		exportQuery,
 		filtersToSearchString,
 		PAGE_LIMIT,
 		type AuditCursor,
 		type AuditEntry,
 		type AuditFilters
 	} from './types';
+	import {
+		rangeLabel,
+		rangeToParams,
+		resolveRange,
+		sameRange,
+		widerPreset,
+		type ResolvedRange,
+		type TimeRange
+	} from './timeRange';
 
 	let { data } = $props();
 
@@ -23,6 +33,14 @@
 	let entries = $state<AuditEntry[]>(data.entries);
 	// svelte-ignore state_referenced_locally
 	let filters = $state<AuditFilters>(data.filters);
+	// The window as the picker shows it (`last 24h`), and the concrete bounds
+	// it resolved to for the current fetch session. `resolved` moves only on a
+	// reset, so scrolling pages one fixed window and the export writes exactly
+	// the window the table is showing.
+	// svelte-ignore state_referenced_locally
+	let range = $state<TimeRange>(data.range);
+	// svelte-ignore state_referenced_locally
+	let resolved = $state<ResolvedRange>(data.resolved);
 	// svelte-ignore state_referenced_locally
 	const allIdentities = data.identities;
 	// The search bar offers live identities only — archived ones are fetched
@@ -87,7 +105,10 @@
 		loading = true;
 		loadError = null;
 		const nextCursor = reset ? null : cursor;
-		const requestFilters = filters;
+		// A reset re-resolves the window, so Refresh on "last 1h" means the
+		// last hour as of now, not as of page load.
+		if (reset) resolved = resolveRange(range);
+		const requestFilters = { ...filters, ...resolved };
 		try {
 			const page = await session.get<AuditEntry[]>(
 				`/v1/audit?${buildQuery(requestFilters, PAGE_LIMIT, nextCursor)}`,
@@ -110,25 +131,41 @@
 		}
 	}
 
-	function buildUrl(next: AuditFilters): string {
-		const base = `/audit${filtersToSearchString(next)}`;
+	function buildUrl(): string {
+		const p = new URLSearchParams(filtersToSearchString(filters));
+		for (const [k, v] of Object.entries(rangeToParams(range))) p.set(k, v);
 		// Preserve `?event=<uuid>` across filter changes when the anchor is
 		// still useful — i.e. the targeted event still exists. Drop it when
 		// the user has explicitly cleared the deep-link via the anchor's
 		// "Clear" affordance.
-		if (!eventId) return base;
-		const sep = base.includes('?') ? '&' : '?';
-		return `${base}${sep}event=${eventId}`;
+		if (eventId) p.set('event', eventId);
+		return `/audit?${p.toString()}`;
+	}
+
+	function reload() {
+		// Update the URL in place so filters are shareable, without re-running
+		// the page `load` function (which would duplicate the network request
+		// triggered by fetchPage below).
+		void goto(buildUrl(), { shallow: true, replace: true });
+		fetchPage(true);
 	}
 
 	function applyFilters(next: AuditFilters) {
 		filters = next;
-		// Update the URL in place so filters are shareable, without re-running
-		// the page `load` function (which would duplicate the network request
-		// triggered by fetchPage below).
-		void goto(buildUrl(next), { shallow: true, replace: true });
-		fetchPage(true);
+		reload();
 	}
+
+	function onRangeChange(next: TimeRange) {
+		// Re-picking the active preset still refreshes, the way clicking a
+		// selected tab re-reads it; an unchanged custom range is a no-op.
+		if (next.kind === 'absolute' && sameRange(next, range)) return;
+		range = next;
+		reload();
+	}
+
+	const exportHref = (format: 'csv' | 'jsonl') =>
+		`/v1/audit/export?${exportQuery({ ...filters, ...resolved }, format)}`;
+	const wider = $derived(range.kind === 'relative' ? widerPreset(range.preset) : null);
 
 	function onSearchChange(next: SearchValue) {
 		searchValue = next;
@@ -157,7 +194,7 @@
 		eventId = null;
 		anchor = null;
 		expandedId = null;
-		void goto(`/audit${filtersToSearchString(filters)}`, { shallow: true, replace: true });
+		void goto(buildUrl(), { shallow: true, replace: true });
 	}
 
 	async function scrollToEvent(id: string) {
@@ -216,19 +253,36 @@
 		<h1>Audit Log</h1>
 		<div class="actions">
 			<button type="button" onclick={refresh} disabled={loading}>Refresh</button>
-			<button type="button" onclick={() => downloadCsv(entries)} disabled={entries.length === 0}>
-				Export CSV
-			</button>
+			<!-- Plain links, not fetches: the API is same-origin with cookie auth,
+			     so the browser streams the file straight to disk however large
+			     the range is. The server exports the whole window, not just the
+			     rows scrolled into view. -->
+			<details class="export" data-test="audit-export">
+				<summary>
+					Export
+					<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+						<path d="m6 9 6 6 6-6" fill="none" stroke="currentColor" stroke-width="1.5" />
+					</svg>
+				</summary>
+				<div class="export-menu">
+					<p class="export-note">Every event in the {rangeLabel(range)} matching the current search</p>
+					<a href={exportHref('csv')} download>CSV <span>spreadsheet</span></a>
+					<a href={exportHref('jsonl')} download>JSONL <span>one event per line, full detail</span></a>
+				</div>
+			</details>
 		</div>
 	</header>
 
 	<div class="search-wrap">
-		<SearchBar
-			keys={searchKeys}
-			value={searchValue}
-			onchange={onSearchChange}
-			placeholder="Search audit log — try `event = action.executed` or free text"
-		/>
+		<div class="search-bar">
+			<SearchBar
+				keys={searchKeys}
+				value={searchValue}
+				onchange={onSearchChange}
+				placeholder="Search audit log — try `event = action.executed` or free text"
+			/>
+		</div>
+		<TimeRangePicker value={range} onchange={onRangeChange} />
 	</div>
 
 	{#if anchorVisible && anchor}
@@ -262,7 +316,14 @@
 			<button type="button" onclick={refresh}>Retry</button>
 		</div>
 	{:else if entries.length === 0 && !loading}
-		<div class="state muted">No audit events match the current filters.</div>
+		<div class="state muted">
+			No audit events in the {rangeLabel(range)} match the current filters.
+			{#if wider}
+				<button type="button" onclick={() => onRangeChange({ kind: 'relative', preset: wider })}>
+					Try {wider}
+				</button>
+			{/if}
+		</div>
 	{:else}
 		<div class="table-wrap" bind:this={tableWrap}>
 			<table>
@@ -340,7 +401,75 @@
 		gap: var(--space-2);
 	}
 	.search-wrap {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: flex-start;
+		gap: var(--space-2) var(--space-3);
 		margin-bottom: var(--space-4);
+	}
+	.search-bar {
+		flex: 1 1 360px;
+		min-width: 0;
+	}
+	.export {
+		position: relative;
+	}
+	.export summary {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		padding: 6px 12px;
+		border: 1px solid var(--color-border);
+		background: var(--color-bg);
+		color: var(--color-text);
+		border-radius: var(--radius-sm, 4px);
+		cursor: pointer;
+		list-style: none;
+		user-select: none;
+	}
+	.export summary::-webkit-details-marker {
+		display: none;
+	}
+	.export summary:hover,
+	.export[open] summary {
+		border-color: var(--color-primary);
+	}
+	.export-menu {
+		position: absolute;
+		top: calc(100% + 6px);
+		right: 0;
+		z-index: 20;
+		display: flex;
+		flex-direction: column;
+		width: 260px;
+		padding: var(--space-2);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-md, 8px);
+		background: var(--color-bg);
+		box-shadow: 0 4px 24px rgba(0, 0, 0, 0.08);
+	}
+	.export-note {
+		margin: 0;
+		padding: var(--space-2);
+		font-size: var(--text-label, 0.75rem);
+		color: var(--color-text-muted);
+	}
+	.export-menu a {
+		display: flex;
+		flex-direction: column;
+		padding: var(--space-2);
+		border-radius: var(--radius-sm, 4px);
+		color: var(--color-text);
+		font-weight: 600;
+		text-decoration: none;
+	}
+	.export-menu a span {
+		font-weight: 400;
+		font-size: var(--text-label, 0.75rem);
+		color: var(--color-text-muted);
+	}
+	.export-menu a:hover {
+		background: var(--color-surface);
 	}
 	.actions button {
 		padding: 6px 12px;
