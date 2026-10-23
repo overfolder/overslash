@@ -141,16 +141,17 @@ the GitHub button on `/auth/providers` only once both are populated.
 | Module | Purpose |
 |--------|---------|
 | `networking` | VPC + private service access (only when `use_private_vpc = true`) |
-| `iam` | Least-privilege SAs for Cloud Run, Cloud Build, Cloud Scheduler |
+| `iam` | One SA per workload (API `-run`, `-exporter`, `-shortener`, `-overfwd`) plus Cloud Build and Cloud Scheduler; no unconditional project-wide Secret Manager or Cloud SQL admin role — see [docs/runbooks/least-privilege-iam.md](../docs/runbooks/least-privilege-iam.md) |
 | `artifact-registry` | Docker image repository with cleanup policy (+ optional Docker Hub pull-through mirror) |
 | `secret-manager` | DB password, encryption key, Google + GitHub login + Google services OAuth secrets |
 | `cloud-sql` | PostgreSQL 16 (Auth Proxy or private IP mode). TLS-only, deletion-protected, pgAudit on — see [docs/runbooks/cloud-sql-hardening.md](../docs/runbooks/cloud-sql-hardening.md) |
 | `cloud-run` | Overslash API with health checks and secret injection |
 | `api-lb` | (Optional, `enable_api_lb`) Global HTTPS LB for `<apex>` + `*.<apex>`: wildcard Certificate Manager cert, TLS 1.2+ `RESTRICTED` SSL policy, Cloud Armor (WAF in preview), optional IPv6 front door (`api_lb_enable_ipv6`) — see [docs/runbooks/lb-hardening.md](../docs/runbooks/lb-hardening.md) |
 | `cloud-build` | GitHub push trigger: build -> push -> deploy |
+| `cloud-build-source` | Adopts (via `import`) the auto-created `<project>_cloudbuild` bucket: UBLA on, public access prevention enforced, 30-day object expiry. No trigger uses it — see [docs/runbooks/cloud-build-bucket.md](../docs/runbooks/cloud-build-bucket.md) |
 | `infra-scheduler` | (Optional) Stop/start Cloud SQL on cron (Europe/Madrid) |
 | `dns` | (Optional) Cloud DNS managed zone |
-| `memorystore` | (Optional) Memorystore for Valkey 9.1 over Private Service Connect, IAM auth + TLS on; the Cloud Run SA gets `memorystore.dbConnectionUser` on the instance and the server CA is published to Secret Manager. `TF_VAR_cache_instance_name` swaps instances without downtime. See [docs/runbooks/memorystore-valkey.md](../docs/runbooks/memorystore-valkey.md) |
+| `memorystore` | (Optional) Memorystore for Valkey 9.1 over Private Service Connect, IAM auth + TLS on; the API and shortener SAs get `memorystore.dbConnectionUser` on the instance and the server CA is published to Secret Manager. `TF_VAR_cache_instance_name` swaps instances without downtime. See [docs/runbooks/memorystore-valkey.md](../docs/runbooks/memorystore-valkey.md) |
 | `cloud-run-shortener` | (Optional) oversla.sh URL shortener |
 | `cloud-run-overfwd` | (Optional) Shared overfwd Mailbox Gateway behind `services/email.yaml` — see [docs/runbooks/mailbox-gateway.md](../docs/runbooks/mailbox-gateway.md) |
 | `audit-logging` | Data Access audit logs, a retained (and in prod **locked**) audit log bucket + sink, and an alert on unexpected secret reads — see [Audit logging](#audit-logging-casa-671) |
@@ -265,7 +266,7 @@ browser's address, not a Vercel or Google one.
 `DATA_WRITE`) for Secret Manager, Cloud SQL (`cloudsql.googleapis.com`, which also carries pgAudit output) and Cloud Run; routes every Cloud
 Audit Log into a dedicated bucket `overslash-<env>-audit` kept for
 `audit_log_retention_days` (400); and alerts (P1, email) whenever a principal other than
-the runtime service account reads a secret payload. Policy and rationale:
+the workload service accounts reads a secret payload. Policy and rationale:
 [docs/compliance/casa/secrets-access-policy.md](../docs/compliance/casa/secrets-access-policy.md).
 
 > **`audit_log_bucket_locked = true` is IRREVERSIBLE.** It is `true` in

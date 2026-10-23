@@ -11,7 +11,9 @@
 	import Avatar from '#lib/components/Avatar.svelte';
 	import type { ByocCredentialSummary, OAuthProviderInfo } from '#lib/types.ts';
 
-	let { data } = $props<{
+	let {
+		data
+	}: {
 		data: {
 			user: MeIdentity;
 			secrets: SecretMetadata[];
@@ -20,7 +22,7 @@
 			byoc: ByocCredentialSummary[];
 			providers: OAuthProviderInfo[];
 		};
-	}>();
+	} = $props();
 
 	const providerByKey = $derived(new Map(data.providers.map((p: OAuthProviderInfo) => [p.key, p])));
 	// For org admins, list_byoc returns BYOC for all identities in the org.

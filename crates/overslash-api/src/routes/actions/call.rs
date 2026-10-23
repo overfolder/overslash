@@ -19,7 +19,7 @@ use crate::{
         call_timeout, credential_scrub, group_ceiling, http_caller,
         response_filter::{self},
         response_size::ResponseSize,
-        staged_upload,
+        staged_upload, success_predicate,
     },
 };
 use overslash_core::{
@@ -607,6 +607,7 @@ pub(super) async fn call_action_impl(
             duration_ms: 0,
             filtered_body: None,
             wire_bytes: None,
+            body_failed: false,
         };
         let mut audit_detail = serde_json::json!({
             "runtime": "platform",
@@ -793,9 +794,11 @@ pub(super) async fn call_action_impl(
         overslash_metrics::actions::status_class(result.status_code),
     );
 
+    let filter_ms = std::time::Duration::from_millis(state.config.filter_timeout_ms);
+    success_predicate::judge(&mut result, meta.action_success.as_deref(), filter_ms).await;
     let filter_audit = filter_apply::apply_to(&state, &req, &mut result).await;
 
-    let upstream_error = result.status_code >= 400;
+    let upstream_error = result.is_upstream_error();
     let mut audit_detail = serde_json::json!({
         "method": action_req.method,
         "url": action_req.url,

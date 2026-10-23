@@ -363,6 +363,9 @@ pub(super) struct ResolvedMeta {
     /// above: a raw HTTP call has no action template, so there is no
     /// declaration to read and nothing to say about the next page.
     pub(super) action_pagination: Option<overslash_core::types::PaginationSpec>,
+    /// `x-overslash-success` on the resolved HTTP action: the jq predicate
+    /// that judges a below-400 body. `None` for every other shape.
+    pub(super) action_success: Option<String>,
     /// `x-overslash-download` from the action template. MCP actions only —
     /// it's how a tool result says "the bytes are over there". HTTP actions
     /// are their own download and leave this `None`.

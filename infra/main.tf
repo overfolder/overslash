@@ -48,6 +48,9 @@ module "iam" {
   project_id  = var.project_id
   base_prefix = local.base_prefix
 
+  enable_shortener = var.enable_shortener
+  enable_overfwd   = var.enable_overfwd
+
   depends_on = [google_project_service.apis]
 }
 
@@ -198,18 +201,19 @@ module "cloud_run" {
   db_user = module.cloud_sql.db_user
   db_name = module.cloud_sql.db_name
 
-  domain                    = var.domain
-  app_host_suffix           = var.app_host_suffix
-  api_host_suffix           = var.api_host_suffix
-  session_cookie_domain     = var.session_cookie_domain
-  dashboard_origin          = var.dashboard_origin
-  mcp_extra_origins         = var.mcp_extra_origins
-  dashboard_url             = var.dashboard_url
-  enable_dev_auth           = var.enable_dev_auth
-  enable_live_map           = var.enable_live_map
-  enable_magic_link         = var.enable_magic_link
-  enable_async_execution    = var.enable_async_execution
-  extra_api_domain_mappings = var.extra_api_domain_mappings
+  domain                     = var.domain
+  app_host_suffix            = var.app_host_suffix
+  api_host_suffix            = var.api_host_suffix
+  session_cookie_domain      = var.session_cookie_domain
+  dashboard_origin           = var.dashboard_origin
+  mcp_extra_origins          = var.mcp_extra_origins
+  dashboard_url              = var.dashboard_url
+  enable_dev_auth            = var.enable_dev_auth
+  enable_live_map            = var.enable_live_map
+  enable_magic_link          = var.enable_magic_link
+  admin_step_up_max_age_secs = var.admin_step_up_max_age_secs
+  enable_async_execution     = var.enable_async_execution
+  extra_api_domain_mappings  = var.extra_api_domain_mappings
 
   overslash_env               = var.env
   vercel_preview_origin_regex = var.vercel_preview_origin_regex
@@ -309,10 +313,16 @@ module "audit_logging" {
   retention_days = var.audit_log_retention_days
   locked         = var.audit_log_bucket_locked
 
-  # Every secret consumer runs as this one SA: the API, the shortener, overfwd
-  # and the metrics-exporter job all take module.iam.cloud_run_sa_email.
-  expected_secret_accessors = [module.iam.cloud_run_sa_email]
-  terraform_operators       = var.terraform_operators
+  # One SA per secret consumer: the API, the metrics-exporter job, and the
+  # shortener and overfwd where they run. Each reads only what modules/iam
+  # describes; any other principal reading a secret alerts.
+  expected_secret_accessors = compact([
+    module.iam.cloud_run_sa_email,
+    module.iam.metrics_exporter_sa_email,
+    module.iam.shortener_sa_email,
+    module.iam.overfwd_sa_email,
+  ])
+  terraform_operators = var.terraform_operators
 
   alerts_enabled        = var.alert_email != ""
   notification_channels = var.alert_email != "" ? [module.monitoring.email_channel_id] : []
@@ -383,6 +393,19 @@ module "cloud_build" {
   ]
 }
 
+# --- Cloud Build source staging bucket ---
+module "cloud_build_source" {
+  source     = "./modules/cloud-build-source"
+  project_id = var.project_id
+}
+
+# Adopt the bucket Cloud Build auto-created. A no-op once imported; a brand-new
+# project has no such bucket, so drop this block for its first apply.
+import {
+  to = module.cloud_build_source.google_storage_bucket.source
+  id = "${var.project_id}_cloudbuild"
+}
+
 # --- Metrics exporter Cloud Run Job + Scheduler trigger ---
 module "metrics_exporter_job" {
   source      = "./modules/metrics-exporter-job"
@@ -390,7 +413,7 @@ module "metrics_exporter_job" {
   region      = var.region
   base_prefix = local.base_prefix
 
-  service_account_email = module.iam.cloud_run_sa_email
+  service_account_email = module.iam.metrics_exporter_sa_email
   scheduler_sa_email    = module.iam.scheduler_sa_email
 
   image = "${var.region}-docker.pkg.dev/${var.project_id}/${module.artifact_registry.repository_name}/overslash-metrics-exporter:latest"
@@ -478,7 +501,10 @@ module "memorystore" {
   network_id     = module.networking[0].vpc_id
   subnet_id      = module.networking[0].subnet_id
 
-  client_service_account_email = module.iam.cloud_run_sa_email
+  client_service_accounts = merge(
+    { api = module.iam.cloud_run_sa_email },
+    var.enable_shortener ? { shortener = module.iam.shortener_sa_email } : {},
+  )
 
   depends_on = [google_project_service.apis]
 }
@@ -494,7 +520,7 @@ module "cloud_run_shortener" {
   region      = var.region
   base_prefix = local.base_prefix
 
-  service_account_email = module.iam.cloud_run_sa_email
+  service_account_email = module.iam.shortener_sa_email
   vpc_connector_id      = var.use_private_vpc ? module.networking[0].vpc_connector_id : ""
 
   image = "${var.region}-docker.pkg.dev/${var.project_id}/${module.artifact_registry.repository_name}/oversla-sh:latest"
@@ -538,7 +564,7 @@ module "cloud_run_overfwd" {
   region      = var.region
   base_prefix = local.base_prefix
 
-  service_account_email = module.iam.cloud_run_sa_email
+  service_account_email = module.iam.overfwd_sa_email
 
   image = "${module.artifact_registry.docker_hub_repository_url}/${var.overfwd_image}"
 

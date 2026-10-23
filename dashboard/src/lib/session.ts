@@ -9,6 +9,7 @@
 // Type-only, so the `#lib/api/account` → `#lib/session` import cycle is erased
 // at build time rather than becoming a runtime one.
 import type { PendingInvitation } from '#lib/api/account.ts';
+import { requestStepUp } from '#lib/stores/stepUp.svelte.ts';
 
 export class ApiError extends Error {
 	constructor(
@@ -82,6 +83,11 @@ async function request<T>(
 			if (!isServiceAuth && window.location.pathname !== '/login') {
 				window.location.href = `/login?reason=expired&return_to=${encodeURIComponent(here)}`;
 			}
+		}
+		if (res.status === 403 && typeof window !== 'undefined') {
+			// An admin change that needs a fresh IdP sign-in: the root layout's
+			// StepUpModal offers it. Still thrown, so the caller's error shows.
+			requestStepUp(errorBody);
 		}
 		throw new ApiError(res.status, errorBody);
 	}

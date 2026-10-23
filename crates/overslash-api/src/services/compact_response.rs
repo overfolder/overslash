@@ -544,6 +544,7 @@ mod tests {
             duration_ms: 42,
             filtered_body: None,
             wire_bytes: None,
+            body_failed: false,
         }
     }
 

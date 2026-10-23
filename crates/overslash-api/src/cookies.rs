@@ -29,6 +29,8 @@ pub const AUTH_NONCE: &str = "oss_auth_nonce";
 pub const AUTH_VERIFIER: &str = "oss_auth_verifier";
 pub const AUTH_ORG: &str = "oss_auth_org";
 pub const AUTH_NEXT: &str = "oss_auth_next";
+/// The shared org a step-up sign-in at the root should land back in.
+pub const AUTH_STEP_UP_ORG: &str = "oss_auth_step_up_org";
 
 /// Session lifetime; matches the JWT `exp` the minting sites stamp.
 pub const SESSION_MAX_AGE: i64 = 7 * 24 * 3600;

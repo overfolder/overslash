@@ -1,4 +1,5 @@
 pub mod action_caller;
+pub mod admin_step_up;
 pub mod agent_icon;
 pub mod approval_access;
 pub mod approval_expiry;
@@ -72,6 +73,7 @@ pub mod shutdown;
 pub mod ssrf_guard;
 pub mod staged_upload;
 pub mod stored_call;
+pub mod success_predicate;
 pub mod template_resolve;
 pub mod user_sessions;
 pub mod valkey;

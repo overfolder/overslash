@@ -292,6 +292,7 @@ pub(super) async fn dev_token(
             user_id: dev_user_id,
             email: dev_email.into(),
         },
+        user_sessions::SignIn::Dev,
     )
     .await?;
 

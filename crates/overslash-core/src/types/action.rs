@@ -193,6 +193,19 @@ pub struct ActionResult {
     /// stored or replayed result reads it back as `None`.
     #[serde(skip)]
     pub wire_bytes: Option<u64>,
+    /// The action's `x-overslash-success` predicate judged this body a
+    /// failure, even though the status was below 400. `status_code` keeps the
+    /// real status, so read failure through [`Self::is_upstream_error`].
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub body_failed: bool,
+}
+
+impl ActionResult {
+    /// Whether the upstream reported failure, either by status or, for an
+    /// action that declares `x-overslash-success`, in the body.
+    pub fn is_upstream_error(&self) -> bool {
+        self.status_code >= 400 || self.body_failed
+    }
 }
 
 /// Result of evaluating a server-side filter against the upstream response body.

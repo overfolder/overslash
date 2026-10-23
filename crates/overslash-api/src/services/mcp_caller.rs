@@ -171,6 +171,7 @@ pub async fn invoke(
         duration_ms,
         filtered_body: None,
         wire_bytes: None,
+        body_failed: false,
     })
 }
 
@@ -383,6 +384,7 @@ mod tests {
             duration_ms: 3,
             filtered_body: None,
             wire_bytes: None,
+            body_failed: false,
         };
         let (_, detail) =
             super::build_audit_detail(&result, "t", "https://m", &serde_json::json!({}));

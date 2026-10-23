@@ -22,6 +22,7 @@
 	import TrialBanner from '#lib/components/shell/TrialBanner.svelte';
 	import DevEnvBanner from '#lib/components/shell/DevEnvBanner.svelte';
 	import Toaster from '#lib/components/Toaster.svelte';
+	import StepUpModal from '#lib/components/StepUpModal.svelte';
 	import { isSettingsPath } from '#lib/components/settings/sections.ts';
 
 	let { children, data }: { children: Snippet; data: { user: MeIdentity | null } } = $props();
@@ -197,6 +198,7 @@
 </div>
 
 <Toaster />
+<StepUpModal />
 
 <style>
 	.env-scope {
