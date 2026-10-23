@@ -7,7 +7,7 @@ updates:
       interval: "weekly"
     target-branch: "dev"
     open-pull-requests-limit: 10
-    # TLS/PKI crates skip the cooldown (D-NEXT): trust-root changes (CA
+    # TLS/PKI crates skip the cooldown (D135): trust-root changes (CA
     # additions and distrusts) and cert-validation fixes often ship without a
     # scored advisory. Almost all of them are transitive, and the default
     # `allow` is direct-only, so they need the `dependency-type: "all"` entries
