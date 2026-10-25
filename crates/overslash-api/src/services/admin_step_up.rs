@@ -20,6 +20,10 @@
 //!    refusing would leave its admins unable to add the first one;
 //! 3. no older than `ADMIN_STEP_UP_MAX_AGE_SECS` (default 1 h). A switch-org
 //!    re-scope keeps the original `authenticated_at`: it is not a sign-in.
+//!    For an IdP sign-in that is the ID token's `auth_time`, never the
+//!    callback time — an IdP that omits it yields `auth_time_missing`. The
+//!    exception is `ADMIN_STEP_UP_CALLBACK_TIME_PROVIDERS` (GitHub, which is
+//!    not OIDC and can neither report nor force a re-authentication).
 //!
 //! Otherwise the answer is 403 `step_up_required` naming the providers that
 //! would do; the dashboard sends the human through `/auth/login/{key}` with
@@ -161,6 +165,10 @@ pub fn evaluate(
     }
     match row.authenticated_at {
         Some(at) if (now - at).whole_seconds() <= max_age_secs => Ok(()),
+        // An IdP sign-in whose ID token carried no `auth_time`: how recent
+        // it is cannot be known, and a fresh step-up through the same IdP
+        // will not change that unless the IdP starts reporting it.
+        None if row.auth_method.as_deref() == Some(auth_method::IDP) => Err("auth_time_missing"),
         _ => Err("stale"),
     }
 }
@@ -328,6 +336,13 @@ mod tests {
     fn an_old_sign_in_is_stale() {
         let r = row(Some("idp"), Some("google"), 3601);
         assert_eq!(eval(&r, &Allowed::Any, false), Err("stale"));
+    }
+
+    #[test]
+    fn an_idp_sign_in_without_auth_time_is_not_fresh() {
+        let mut r = row(Some("idp"), Some("okta-1234"), 0);
+        r.authenticated_at = None;
+        assert_eq!(eval(&r, &Allowed::Any, false), Err("auth_time_missing"));
     }
 
     #[test]

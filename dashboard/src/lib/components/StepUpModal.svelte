@@ -17,6 +17,8 @@
 		switch (c.reason) {
 			case 'stale':
 				return `Admin changes need a sign-in from the last ${minutes(c.max_age_secs)}. Sign in again to continue.`;
+			case 'auth_time_missing':
+				return "Your identity provider signed you in but didn't say when it last checked your password or second factor, so Overslash can't treat the sign-in as recent. Signing in again with it won't help until it does.";
 			case 'provider_not_allowed':
 				return "Admin changes in this org need a sign-in through one of the org's own identity providers.";
 			default:
@@ -45,6 +47,13 @@
 		<div class="card">
 			<h2 id="su-title">Confirm it's you</h2>
 			<p>{explain(challenge)}</p>
+			{#if challenge.reason === 'auth_time_missing'}
+				<p class="error" role="alert" data-testid="step-up-auth-time-missing">
+					Ask your Overslash operator to enable the sign-in time (<code>auth_time</code>) claim for
+					this provider — for Google, "Session age claims" in Google Auth Platform settings. Until
+					then, use another provider below if one is offered.
+				</p>
+			{/if}
 			{#if challenge.providers.length > 0}
 				<div class="providers">
 					{#each challenge.providers as p (p.key)}

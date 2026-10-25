@@ -19,6 +19,11 @@ mutations need a fresh IdP sign-in"*.
   page with a new session. For an org with no IdP of its own the link goes to the root
   login with `step_up_org`, and the callback re-scopes the new session back into that org
   if the human is a member.
+- The sign-in time is the ID token's `auth_time`, never the callback time. An OIDC IdP
+  that sends none leaves the session with no sign-in time, and the prompt reports
+  `auth_time_missing` (D136's amendment). Google logins ask for it with
+  `claims={"id_token":{"auth_time":{"essential":true}}}`. GitHub, which is not OIDC, is
+  the default entry in `ADMIN_STEP_UP_CALLBACK_TIME_PROVIDERS`: its callback time stands in.
 - Account → Sessions shows each session's sign-in method and the `amr` the IdP reported.
 - `/v1/org-idp-configs` create, update, delete and discover now require `AdminAcl`.
   Before this, any credential in the org could call them, including an agent key.
@@ -76,6 +81,28 @@ SELECT column_name FROM information_schema.columns
 #    succeeds. Account → Sessions now shows the session "with Google" (or the org's IdP).
 ```
 
+### Google must send `auth_time`
+
+**Required before this ships to an environment whose admins sign in with Google.**
+Without it, every Google session has no sign-in time and its admins see
+`auth_time_missing` on every admin change. Google adds `auth_time` only for an app that is
+published, verified and has the security bundle enabled. For each OAuth client in
+`GOOGLE_AUTH_CLIENT_ID` (prod and dev), go to Google Auth Platform → *Settings* →
+*Advanced settings* and enable **Session age claims**. See Google's
+[security bundle](https://developers.google.com/identity/siwg/security-bundle) guide.
+
+Verify by signing in with Google and checking the session row:
+
+```sql
+SELECT auth_provider, authenticated_at FROM user_sessions
+ WHERE auth_provider = 'google' ORDER BY created_at DESC LIMIT 1;  -- authenticated_at NOT NULL
+```
+
+If the client cannot be verified (a dev project, say), set
+`admin_step_up_callback_time_providers = "github,google"` for that env and re-apply. Google
+sign-ins then fall back to the callback time, the weaker guarantee D136 originally had.
+Don't do this on prod.
+
 ## MFA at the IdP — the written answer's other half
 
 Overslash does not have a second factor of its own. 3.3.1 is answered by delegation, and
@@ -108,6 +135,10 @@ For [evidence-index.md](../compliance/casa/evidence-index.md), 3.3.1:
   UPDATE org_idp_configs SET enabled = false WHERE org_id = '<org>' AND provider_key = '<key>';
   ```
   Record the change in the incident log. Re-enabling it is then an ordinary admin action.
+- **An IdP never sends `auth_time`** (every attempt ends in `auth_time_missing`). Fix it
+  at the IdP if you can (for Google, see above). If you can't, add the provider's key to
+  `admin_step_up_callback_time_providers` and re-apply, and record why. That provider's
+  step-up is then only a fresh round-trip.
 - **The prompt is too frequent.** Raise `admin_step_up_max_age_secs` (at most 86400) and
   re-apply. Anything above a working day weakens the 2.4.1 answer. Say so in the
   assessment if you change it.

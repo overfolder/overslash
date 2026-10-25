@@ -80,7 +80,12 @@ pub enum SignIn {
         /// The ID token's `auth_time`: when the IdP last actually
         /// authenticated the human. Becomes the session's `authenticated_at`
         /// (never later than now), so an IdP that answered from an old
-        /// session of its own does not count as a fresh sign-in.
+        /// session of its own does not count as a fresh sign-in. `None`
+        /// leaves `authenticated_at` NULL — never the callback time, which
+        /// says nothing about when the IdP checked a credential — so the
+        /// session cannot pass the admin step-up. The callback substitutes
+        /// its own time only for `ADMIN_STEP_UP_CALLBACK_TIME_PROVIDERS`
+        /// (GitHub, which cannot report it).
         auth_time: Option<OffsetDateTime>,
     },
     MagicLink,

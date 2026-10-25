@@ -48,6 +48,15 @@ pub(super) fn parse_connection_return_url_allowed_hosts(raw: Option<&str>) -> Ve
         .collect()
 }
 
+/// A comma-separated list of provider keys, trimmed and lowercased. `none`
+/// spells the empty list, since an empty variable reads as unset.
+pub(super) fn parse_provider_keys(s: &str) -> Vec<String> {
+    s.split(',')
+        .map(|k| k.trim().to_ascii_lowercase())
+        .filter(|k| !k.is_empty() && k != "none")
+        .collect()
+}
+
 /// Build the platform credential from its three env vars. All three must be
 /// present and non-empty — a partial config (a host with no key, a key with no
 /// host) is a misconfiguration that must not silently degrade into "inject
@@ -263,6 +272,15 @@ mod tests {
         ));
         assert_eq!(map.len(), 1);
         assert!(map.contains_key("api.github.com"));
+    }
+
+    #[test]
+    fn parse_provider_keys_trims_lowercases_and_spells_none() {
+        assert_eq!(
+            parse_provider_keys(" GitHub, okta ,"),
+            vec!["github", "okta"]
+        );
+        assert!(parse_provider_keys("none").is_empty());
     }
 
     // ── connection_return_url_allowed_hosts ─────────────────────────────
