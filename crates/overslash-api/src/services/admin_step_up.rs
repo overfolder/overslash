@@ -29,8 +29,10 @@
 //! Out of scope by construction: safe methods (reading an admin page is not
 //! an admin action), personal orgs (their only member is their admin, and
 //! nothing there reaches anyone else), API keys and MCP tokens (bearer
-//! credentials, minted by a session that passed this gate or scoped to an
-//! agent), and the stateless session JWTs the API mints for its own loopback
+//! credentials: an API key is minted only through `AdminAcl`, and an MCP
+//! token for an org admin's agent — which passes `AdminAcl` through its
+//! owner — only by a session that passes this gate in `consent_finish`,
+//! D-NEXT), and the stateless session JWTs the API mints for its own loopback
 //! calls (no `jti`, under 24 h, never handed to a browser).
 
 use axum::http::{Extensions, HeaderMap, Method};
