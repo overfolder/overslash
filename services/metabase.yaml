@@ -164,6 +164,13 @@ paths:
           primary: true
           filter: .params.dataset_query.native.query // empty
           max_chars: 2000
+        # The query parser only reads SQL, so an MBQL card gets no policy
+        # classification — but run_card still runs it, so the approver sees
+        # the MBQL itself rather than nothing.
+        - label: MBQL query
+          primary: true
+          filter: .params.dataset_query.query // empty | tojson
+          max_chars: 2000
         - label: Database
           filter: .resolved.dataset_query // (.params.dataset_query.database | tostring)
         - label: Collection
@@ -205,6 +212,12 @@ paths:
                         query:
                           type: string
                           description: The SQL statement to save
+                        # Untyped: keyed by the `{{tag}}` names the SQL itself
+                        # declares, so there is no fixed key set to write down.
+                        template-tags:
+                          description: >-
+                            Variables for {{tag}} placeholders in the SQL, keyed
+                            by tag name. Needed for parameterized questions.
                     query:
                       description: MBQL query, present when type is query
                   # Display only — no `scope:`. This action is not SQL-policy
@@ -254,6 +267,13 @@ paths:
         - label: SQL
           primary: true
           filter: .params.dataset_query.native.query // empty
+          max_chars: 2000
+        # The query parser only reads SQL, so an MBQL card gets no policy
+        # classification — but run_card still runs it, so the approver sees
+        # the MBQL itself rather than nothing.
+        - label: MBQL query
+          primary: true
+          filter: .params.dataset_query.query // empty | tojson
           max_chars: 2000
         - label: Database
           filter: .params.dataset_query.database // empty | tostring
@@ -311,6 +331,12 @@ paths:
                         query:
                           type: string
                           description: The SQL statement to save
+                        # Untyped: keyed by the `{{tag}}` names the SQL itself
+                        # declares, so there is no fixed key set to write down.
+                        template-tags:
+                          description: >-
+                            Variables for {{tag}} placeholders in the SQL, keyed
+                            by tag name. Needed for parameterized questions.
                     query:
                       description: MBQL query, present when type is query
                 display:

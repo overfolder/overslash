@@ -288,6 +288,13 @@ async fn metabase_template_ships() {
                 .any(|d| d.label == "SQL" && d.primary),
             "{action} must put the saved SQL in front of the approver"
         );
+        assert!(
+            svc.actions[action]
+                .disclose
+                .iter()
+                .any(|d| d.label == "MBQL query" && d.primary),
+            "{action} must put a saved MBQL query in front of the approver too"
+        );
     }
     assert_eq!(
         svc.actions["create_card"].params["display"].default,
@@ -726,6 +733,93 @@ async fn create_card_approval_discloses_the_saved_sql() {
         Some("Cleanup"),
         "{disclosed:?}"
     );
+}
+
+/// The parser only reads SQL, but `run_card` runs MBQL cards just the same,
+/// so an MBQL create still puts the query itself in front of the approver.
+#[tokio::test]
+async fn mbql_card_discloses_the_query() {
+    let pool = common::test_pool().await;
+    let (mock, _seen) = start_mock_metabase().await;
+    let (base, client, agent_key, _admin, _ident) = setup(pool, mock, "admin", true, None).await;
+
+    let resp = call(
+        &base,
+        &client,
+        &agent_key,
+        json!({
+            "service": "metabase",
+            "action": "create_card",
+            "params": {
+                "name": "Films",
+                "dataset_query": {
+                    "database": 1,
+                    "type": "query",
+                    "query": { "source-table": 12 },
+                },
+            },
+        }),
+    )
+    .await;
+    assert_eq!(
+        resp["status"].as_str(),
+        Some("pending_approval"),
+        "{resp:?}"
+    );
+    let disclosed = resp["disclosed_fields"].as_array().cloned().unwrap();
+    assert_eq!(
+        disclosed_value(&disclosed, "MBQL query"),
+        Some(r#"{"source-table":12}"#),
+        "{disclosed:?}"
+    );
+    assert_eq!(disclosed_value(&disclosed, "SQL"), None, "{disclosed:?}");
+}
+
+/// A parameterized SQL card carries `native.template-tags`; nested-shape
+/// validation must let it through to Metabase rather than call it unknown.
+#[tokio::test]
+async fn create_card_accepts_template_tags() {
+    let pool = common::test_pool().await;
+    let (mock, seen) = start_mock_metabase().await;
+    let (base, client, agent_key, admin_key, ident) = setup(pool, mock, "admin", true, None).await;
+    add_rule(
+        &base,
+        &client,
+        &admin_key,
+        &ident,
+        "metabase:create_card:*",
+        "allow",
+    )
+    .await;
+
+    let native = json!({
+        "query": "SELECT * FROM public.film WHERE rating = {{rating}}",
+        "template-tags": {
+            "rating": { "id": "a1", "name": "rating", "display-name": "Rating", "type": "text" },
+        },
+    });
+    let resp = call(
+        &base,
+        &client,
+        &agent_key,
+        json!({
+            "service": "metabase",
+            "action": "create_card",
+            "params": {
+                "name": "Films by rating",
+                "dataset_query": { "database": 1, "type": "native", "native": native },
+            },
+        }),
+    )
+    .await;
+    assert_eq!(resp["status"].as_str(), Some("called"), "{resp:?}");
+
+    let seen = seen.lock().unwrap();
+    let req = seen
+        .iter()
+        .rfind(|r| r.path == "/api/card")
+        .expect("mock saw the create");
+    assert_eq!(req.body["dataset_query"]["native"], native);
 }
 
 /// Update is a partial `PUT`: only the given fields go upstream, and an
