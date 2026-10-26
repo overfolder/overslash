@@ -107,6 +107,7 @@ mod layered_templates;
 mod linkedin;
 mod live_map;
 mod mcp_approve_split;
+mod mcp_consent_step_up;
 mod mcp_elicitation;
 mod mcp_external;
 mod mcp_external_e2e;

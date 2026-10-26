@@ -17,13 +17,13 @@ use uuid::Uuid;
 use overslash_api::services::jwt;
 use overslash_db::repos::user_session;
 
-fn cookie(token: &str) -> String {
+pub(crate) fn cookie(token: &str) -> String {
     format!("__Host-oss_session={token}")
 }
 
 /// A deployment with a root IdP (Google), so a magic link is never enough.
 /// The harness client does not follow redirects.
-async fn start_with_google(pool: PgPool, dev_auth: bool) -> (String, Client) {
+pub(crate) async fn start_with_google(pool: PgPool, dev_auth: bool) -> (String, Client) {
     common::start_api_with_auth_providers_customized(
         pool,
         Some(("test_google_id".into(), "test_google_secret".into())),
@@ -35,7 +35,7 @@ async fn start_with_google(pool: PgPool, dev_auth: bool) -> (String, Client) {
 }
 
 /// The session token a response sets, if any.
-fn set_session(resp: &reqwest::Response) -> Option<String> {
+pub(crate) fn set_session(resp: &reqwest::Response) -> Option<String> {
     resp.headers()
         .get_all("set-cookie")
         .iter()
@@ -46,7 +46,7 @@ fn set_session(resp: &reqwest::Response) -> Option<String> {
 }
 
 /// A shared (non-personal) org and its bootstrap admin key + identity.
-async fn shared_org(base: &str, client: &Client) -> (Uuid, Uuid, String) {
+pub(crate) async fn shared_org(base: &str, client: &Client) -> (Uuid, Uuid, String) {
     let org: Value = client
         .post(format!("{base}/v1/orgs"))
         .json(&json!({"name": "StepUp", "slug": format!("stepup-{}", Uuid::new_v4())}))
@@ -73,7 +73,7 @@ async fn shared_org(base: &str, client: &Client) -> (Uuid, Uuid, String) {
 
 /// A live session row signed in by `method` (`provider` for `idp`)
 /// `age_secs` ago, and a cookie naming it.
-async fn session(
+pub(crate) async fn session(
     pool: &PgPool,
     org_id: Uuid,
     identity_id: Uuid,
@@ -128,7 +128,11 @@ async fn session(
 }
 
 /// `POST /v1/groups` — an `AdminAcl` mutation.
-async fn create_group(base: &str, client: &Client, auth: (&str, &str)) -> reqwest::Response {
+pub(crate) async fn create_group(
+    base: &str,
+    client: &Client,
+    auth: (&str, &str),
+) -> reqwest::Response {
     client
         .post(format!("{base}/v1/groups"))
         .header(auth.0, auth.1)
@@ -138,7 +142,7 @@ async fn create_group(base: &str, client: &Client, auth: (&str, &str)) -> reqwes
         .unwrap()
 }
 
-async fn step_up_reason(resp: reqwest::Response) -> (Option<String>, Value) {
+pub(crate) async fn step_up_reason(resp: reqwest::Response) -> (Option<String>, Value) {
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     let body: Value = resp.json().await.unwrap();
     assert_eq!(body["error"], "step_up_required", "{body}");

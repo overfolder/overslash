@@ -1236,6 +1236,8 @@ where
         .merge(overslash_api::routes::groups::router())
         .merge(overslash_api::routes::directory_groups::router())
         .merge(overslash_api::routes::google_directory::router())
+        .merge(overslash_api::mcp_oauth_routes(&state))
+        .merge(overslash_api::routes::oauth::consent_router())
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             overslash_api::middleware::session_gate::session_gate,
