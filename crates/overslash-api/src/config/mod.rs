@@ -160,6 +160,12 @@ pub struct Config {
     /// Older, and the dashboard asks for a step-up sign-in through the org's
     /// IdP. See `services::admin_step_up`.
     pub admin_step_up_max_age_secs: i64,
+    /// Sign-in providers whose callback time stands in for `auth_time`
+    /// (`ADMIN_STEP_UP_CALLBACK_TIME_PROVIDERS`, default `github`). Any other
+    /// IdP sign-in without an `auth_time` claim is recorded with no
+    /// `authenticated_at`, so it cannot pass the admin step-up. GitHub is not
+    /// OIDC and has no way to report or force a re-authentication.
+    pub admin_step_up_callback_time_providers: Vec<String>,
     pub max_response_body_bytes: usize,
     /// Truncation cap for upstream response bodies persisted on
     /// `action.executed` audit rows (when the org's
@@ -886,6 +892,7 @@ pub(crate) mod tests {
             live_map_enabled: false,
             magic_link_enabled: true,
             admin_step_up_max_age_secs: 3600,
+            admin_step_up_callback_time_providers: vec!["github".into()],
             max_response_body_bytes: 0,
             audit_response_body_max_bytes: 0,
             filter_timeout_ms: 0,

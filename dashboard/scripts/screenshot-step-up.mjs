@@ -4,6 +4,10 @@
 //                          email link tries to create a group; the API answers
 //                          403 step_up_required and the dashboard asks for a
 //                          sign-in through the org's IdP.
+//   step-up-auth-time-missing.png — the same, after a Google sign-in whose ID
+//                          token carried no `auth_time`: the prompt says the
+//                          provider can't satisfy it and what the operator
+//                          must enable.
 //   step-up-sessions.png — Account → Sessions naming how the session signed in.
 //
 // The e2e stack signs in through DEV_AUTH, which the gate accepts, so the
@@ -65,6 +69,20 @@ try {
 	await page.waitForTimeout(200);
 	await page.screenshot({ path: 'screenshots/step-up-modal.png' });
 	console.log('[scenarios] wrote screenshots/step-up-modal.png');
+
+	sql(
+		`UPDATE user_sessions SET auth_method = 'idp', auth_provider = 'google', authenticated_at = NULL
+		  WHERE id = '${jti(session.rawCookieValue)}'`
+	);
+	await page.reload();
+	await page.getByRole('button', { name: 'New group' }).waitFor({ timeout: 15_000 });
+	await page.getByRole('button', { name: 'New group' }).click();
+	await page.locator('form.modal input[type="text"]').fill('finance-admins');
+	await page.locator('form.modal').getByRole('button', { name: 'Create' }).click();
+	await page.getByTestId('step-up-auth-time-missing').waitFor({ timeout: 15_000 });
+	await page.waitForTimeout(200);
+	await page.screenshot({ path: 'screenshots/step-up-auth-time-missing.png' });
+	console.log('[scenarios] wrote screenshots/step-up-auth-time-missing.png');
 
 	await page.goto(new URL('/account', session.dashboardUrl).toString());
 	const card = page.getByTestId('sessions-card');

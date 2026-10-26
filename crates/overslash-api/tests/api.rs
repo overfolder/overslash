@@ -24,6 +24,7 @@ mod actions_validate;
 mod additional_properties;
 mod admin_cross_user_call;
 mod admin_step_up;
+mod admin_step_up_auth_time;
 mod api_key_org_binding;
 mod approval_disclosure;
 mod approval_expiry_events;

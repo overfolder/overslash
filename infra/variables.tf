@@ -116,6 +116,12 @@ variable "admin_step_up_max_age_secs" {
   }
 }
 
+variable "admin_step_up_callback_time_providers" {
+  description = "Sign-in providers whose callback time stands in for a missing ID-token auth_time in the admin step-up (ADMIN_STEP_UP_CALLBACK_TIME_PROVIDERS; comma-separated, \"none\" for no exceptions). GitHub is not OIDC and cannot report it. Adding an OIDC provider weakens its step-up to a fresh round-trip; docs/runbooks/admin-step-up.md."
+  type        = string
+  default     = "github"
+}
+
 variable "enable_async_execution" {
   description = "Enable async (non-blocking) action calls (ASYNC_EXECUTION_ENABLED). Default-off. The worker only drains while an instance exists, so enable it only where cloud_run_min_instances >= 1."
   type        = bool

@@ -94,7 +94,7 @@ pub(crate) async fn session(
             auth_provider: provider,
             idp_amr: None,
             idp_acr: None,
-            idp_auth_time: None,
+            idp_auth_time: Some(time::OffsetDateTime::now_utc()),
         },
     )
     .await
@@ -434,7 +434,14 @@ async fn a_root_step_up_lands_back_in_the_shared_org() {
     );
 
     // The callback of the step-up's own login re-scopes the fresh root
-    // session into the shared org.
+    // session into the shared org. The IdP reports when it re-authenticated.
+    let resp = Client::new()
+        .post(format!("http://{mock_addr}/control/userinfo-claims"))
+        .json(&json!({"auth_time": time::OffsetDateTime::now_utc().unix_timestamp()}))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success());
     let resp = callback(
         "n3",
         format!("; __Host-oss_auth_step_up_org=n3.{corp_id}; {corp_cookie}"),
@@ -578,7 +585,9 @@ async fn an_idp_sign_in_is_recorded_and_step_up_asks_the_idp_to_reauthenticate()
         .unwrap();
     assert_eq!(row.auth_method.as_deref(), Some("idp"));
     assert_eq!(row.auth_provider.as_deref(), Some("google"));
-    assert!(row.authenticated_at.is_some());
+    // The fake IdP sent no `auth_time`, so there is no sign-in time
+    // (`admin_step_up_auth_time.rs`).
+    assert!(row.authenticated_at.is_none());
 }
 
 /// The IdP's `auth_time` is when it last actually authenticated the human: an

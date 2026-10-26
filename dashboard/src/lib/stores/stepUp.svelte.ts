@@ -6,7 +6,11 @@
 // root layout) offers the sign-ins that would satisfy it. The failed request
 // still throws, so the page that made it shows its usual error too.
 
-export type StepUpReason = 'idp_required' | 'provider_not_allowed' | 'stale';
+export type StepUpReason =
+	| 'idp_required'
+	| 'provider_not_allowed'
+	| 'stale'
+	| 'auth_time_missing';
 
 export interface StepUpProvider {
 	key: string;

@@ -143,6 +143,7 @@ async fn make_app_state(pool: PgPool) -> overslash_api::AppState {
         dev_auth_enabled: false,
         magic_link_enabled: true,
         admin_step_up_max_age_secs: 3600,
+        admin_step_up_callback_time_providers: vec!["github".into()],
         max_response_body_bytes: 5_242_880,
         audit_response_body_max_bytes: 65_536,
         filter_timeout_ms: 2000,
