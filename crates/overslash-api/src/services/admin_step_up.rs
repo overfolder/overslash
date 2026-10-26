@@ -32,7 +32,7 @@
 //! credentials: an API key is minted only through `AdminAcl`, and an MCP
 //! token for an org admin's agent — which passes `AdminAcl` through its
 //! owner — only by a session that passes this gate in `consent_finish`,
-//! D-NEXT), and the stateless session JWTs the API mints for its own loopback
+//! D137), and the stateless session JWTs the API mints for its own loopback
 //! calls (no `jti`, under 24 h, never handed to a browser).
 
 use axum::http::{Extensions, HeaderMap, Method};

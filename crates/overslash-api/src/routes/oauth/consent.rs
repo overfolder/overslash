@@ -469,7 +469,7 @@ pub(super) async fn consent_finish(
     // `AdminAcl` level through its owner — so an org admin's MCP token can do
     // admin work, and `AdminAcl` does not step bearer credentials up. Mint one
     // only for a session that would itself pass the admin step-up (D136,
-    // D-NEXT). Checked before the pending record is consumed, so the human can
+    // D137). Checked before the pending record is consumed, so the human can
     // step up and come back to finish the same request.
     let scope = OrgScope::new(session_claims.org, state.db_pool(&ext));
     if crate::extractors::resolve_access_level(&scope, session_claims.sub).await?
