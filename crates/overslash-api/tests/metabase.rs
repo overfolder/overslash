@@ -84,6 +84,10 @@ async fn start_mock_metabase() -> (SocketAddr, SeenLog) {
             return (axum::http::StatusCode::NOT_FOUND, axum::Json(json!({}))).into_response();
         } else if path == "/api/dataset" {
             json!({ "status": "completed", "data": { "rows": [[1]], "cols": [{"name": "n"}] } })
+        } else if path == "/api/card/7" {
+            // What the `card_id` display resolver reads (and what update /
+            // delete hit — the echo is harmless for those).
+            json!({ "id": 7, "name": "Weekly revenue" })
         } else {
             json!({ "ok": true })
         };
@@ -268,8 +272,40 @@ async fn metabase_template_ships() {
         ("recents", DeclaredRisk::Read),
         ("run_query", DeclaredRisk::Dynamic),
         ("export_query", DeclaredRisk::Dynamic),
+        // Never `dynamic`: the SQL saved into a card later runs through
+        // `run_card` at read class, so the save itself is the SQL review.
+        ("create_card", DeclaredRisk::Write),
+        ("update_card", DeclaredRisk::Write),
+        ("delete_card", DeclaredRisk::Delete),
     ] {
         assert_eq!(svc.actions[action].risk, want, "{action}");
+    }
+    for action in ["create_card", "update_card"] {
+        assert!(
+            svc.actions[action]
+                .disclose
+                .iter()
+                .any(|d| d.label == "SQL" && d.primary),
+            "{action} must put the saved SQL in front of the approver"
+        );
+        assert!(
+            svc.actions[action]
+                .disclose
+                .iter()
+                .any(|d| d.label == "MBQL query" && d.primary),
+            "{action} must put a saved MBQL query in front of the approver too"
+        );
+    }
+    assert_eq!(
+        svc.actions["create_card"].params["display"].default,
+        Some(json!("table"))
+    );
+    for action in ["update_card", "delete_card"] {
+        let resolve = svc.actions[action].params["card_id"]
+            .resolve
+            .as_ref()
+            .unwrap_or_else(|| panic!("{action}.card_id declares a display resolver"));
+        assert_eq!(resolve.get.as_deref(), Some("/api/card/{card_id}"));
     }
 
     // ── The middle gear ──────────────────────────────────────────────
@@ -577,6 +613,311 @@ async fn api_key_injects_on_read_action() {
     let req = seen.last().expect("mock saw the request");
     assert_eq!(req.method, "GET");
     assert_eq!(req.path, "/api/database");
+    assert_eq!(req.api_key.as_deref(), Some("mb_test_key_123"));
+}
+
+// ─── card mutations ───────────────────────────────────────────────────────
+
+async fn call(base: &str, client: &reqwest::Client, agent_key: &str, body: Value) -> Value {
+    client
+        .post(format!("{base}/v1/actions/call"))
+        .header(auth(agent_key).0, auth(agent_key).1)
+        .json(&body)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap()
+}
+
+/// A granted create reaches Metabase as one `POST /api/card` carrying the
+/// nested dataset query untouched, with `display` / `visualization_settings`
+/// / `type` filled from their defaults — Metabase 400s without the first two.
+#[tokio::test]
+async fn create_card_posts_the_dataset_query_with_defaults() {
+    let pool = common::test_pool().await;
+    let (mock, seen) = start_mock_metabase().await;
+    let (base, client, agent_key, admin_key, ident) = setup(pool, mock, "admin", true, None).await;
+    add_rule(
+        &base,
+        &client,
+        &admin_key,
+        &ident,
+        "metabase:create_card:*",
+        "allow",
+    )
+    .await;
+
+    let dataset_query = json!({
+        "database": 1,
+        "type": "native",
+        "native": { "query": "SELECT count(*) FROM public.film" },
+    });
+    let resp = call(
+        &base,
+        &client,
+        &agent_key,
+        json!({
+            "service": "metabase",
+            "action": "create_card",
+            "params": { "name": "Film count", "dataset_query": dataset_query },
+        }),
+    )
+    .await;
+    assert_eq!(resp["status"].as_str(), Some("called"), "{resp:?}");
+
+    let seen = seen.lock().unwrap();
+    let req = seen
+        .iter()
+        .rfind(|r| r.path == "/api/card")
+        .expect("mock saw the create");
+    assert_eq!(req.method, "POST");
+    assert_eq!(req.api_key.as_deref(), Some("mb_test_key_123"));
+    assert_eq!(
+        req.body,
+        json!({
+            "name": "Film count",
+            "dataset_query": dataset_query,
+            "display": "table",
+            "visualization_settings": {},
+            "type": "question",
+        })
+    );
+}
+
+/// An ungranted create waits for a human, and what the human reads is the
+/// SQL that `run_card` will later execute plus the database by name.
+#[tokio::test]
+async fn create_card_approval_discloses_the_saved_sql() {
+    let pool = common::test_pool().await;
+    let (mock, _seen) = start_mock_metabase().await;
+    let (base, client, agent_key, _admin, _ident) = setup(pool, mock, "admin", true, None).await;
+
+    let resp = call(
+        &base,
+        &client,
+        &agent_key,
+        json!({
+            "service": "metabase",
+            "action": "create_card",
+            "params": {
+                "name": "Cleanup",
+                "dataset_query": {
+                    "database": 1,
+                    "type": "native",
+                    "native": { "query": "DELETE FROM public.film" },
+                },
+            },
+        }),
+    )
+    .await;
+    assert_eq!(
+        resp["status"].as_str(),
+        Some("pending_approval"),
+        "{resp:?}"
+    );
+    let disclosed = resp["disclosed_fields"].as_array().cloned().unwrap();
+    assert_eq!(
+        disclosed_value(&disclosed, "SQL"),
+        Some("DELETE FROM public.film"),
+        "{disclosed:?}"
+    );
+    assert_eq!(
+        disclosed_value(&disclosed, "Database"),
+        Some("pagila"),
+        "{disclosed:?}"
+    );
+    assert_eq!(
+        disclosed_value(&disclosed, "Name"),
+        Some("Cleanup"),
+        "{disclosed:?}"
+    );
+}
+
+/// The parser only reads SQL, but `run_card` runs MBQL cards just the same,
+/// so an MBQL create still puts the query itself in front of the approver.
+#[tokio::test]
+async fn mbql_card_discloses_the_query() {
+    let pool = common::test_pool().await;
+    let (mock, _seen) = start_mock_metabase().await;
+    let (base, client, agent_key, _admin, _ident) = setup(pool, mock, "admin", true, None).await;
+
+    let resp = call(
+        &base,
+        &client,
+        &agent_key,
+        json!({
+            "service": "metabase",
+            "action": "create_card",
+            "params": {
+                "name": "Films",
+                "dataset_query": {
+                    "database": 1,
+                    "type": "query",
+                    "query": { "source-table": 12 },
+                },
+            },
+        }),
+    )
+    .await;
+    assert_eq!(
+        resp["status"].as_str(),
+        Some("pending_approval"),
+        "{resp:?}"
+    );
+    let disclosed = resp["disclosed_fields"].as_array().cloned().unwrap();
+    assert_eq!(
+        disclosed_value(&disclosed, "MBQL query"),
+        Some(r#"{"source-table":12}"#),
+        "{disclosed:?}"
+    );
+    assert_eq!(disclosed_value(&disclosed, "SQL"), None, "{disclosed:?}");
+}
+
+/// A parameterized SQL card carries `native.template-tags`; nested-shape
+/// validation must let it through to Metabase rather than call it unknown.
+#[tokio::test]
+async fn create_card_accepts_template_tags() {
+    let pool = common::test_pool().await;
+    let (mock, seen) = start_mock_metabase().await;
+    let (base, client, agent_key, admin_key, ident) = setup(pool, mock, "admin", true, None).await;
+    add_rule(
+        &base,
+        &client,
+        &admin_key,
+        &ident,
+        "metabase:create_card:*",
+        "allow",
+    )
+    .await;
+
+    let native = json!({
+        "query": "SELECT * FROM public.film WHERE rating = {{rating}}",
+        "template-tags": {
+            "rating": { "id": "a1", "name": "rating", "display-name": "Rating", "type": "text" },
+        },
+    });
+    let resp = call(
+        &base,
+        &client,
+        &agent_key,
+        json!({
+            "service": "metabase",
+            "action": "create_card",
+            "params": {
+                "name": "Films by rating",
+                "dataset_query": { "database": 1, "type": "native", "native": native },
+            },
+        }),
+    )
+    .await;
+    assert_eq!(resp["status"].as_str(), Some("called"), "{resp:?}");
+
+    let seen = seen.lock().unwrap();
+    let req = seen
+        .iter()
+        .rfind(|r| r.path == "/api/card")
+        .expect("mock saw the create");
+    assert_eq!(req.body["dataset_query"]["native"], native);
+}
+
+/// Update is a partial `PUT`: only the given fields go upstream, and an
+/// un-archive (`archived: false`) still shows up in the disclosure.
+#[tokio::test]
+async fn update_card_puts_only_the_given_fields() {
+    let pool = common::test_pool().await;
+    let (mock, seen) = start_mock_metabase().await;
+    let (base, client, agent_key, admin_key, ident) = setup(pool, mock, "admin", true, None).await;
+
+    let body = json!({
+        "service": "metabase",
+        "action": "update_card",
+        "params": { "card_id": 7, "archived": false },
+    });
+    let pending = call(&base, &client, &agent_key, body.clone()).await;
+    assert_eq!(
+        pending["status"].as_str(),
+        Some("pending_approval"),
+        "{pending:?}"
+    );
+    let disclosed = pending["disclosed_fields"].as_array().cloned().unwrap();
+    assert_eq!(
+        disclosed_value(&disclosed, "Card"),
+        Some("#7 — Weekly revenue"),
+        "{disclosed:?}"
+    );
+    assert_eq!(
+        disclosed_value(&disclosed, "Archived"),
+        Some("false"),
+        "{disclosed:?}"
+    );
+
+    add_rule(
+        &base,
+        &client,
+        &admin_key,
+        &ident,
+        "metabase:update_card:*",
+        "allow",
+    )
+    .await;
+    let resp = call(&base, &client, &agent_key, body).await;
+    assert_eq!(resp["status"].as_str(), Some("called"), "{resp:?}");
+
+    let seen = seen.lock().unwrap();
+    let req = seen
+        .iter()
+        .rfind(|r| r.method == "PUT")
+        .expect("mock saw the update");
+    assert_eq!(req.path, "/api/card/7");
+    assert_eq!(req.body, json!({ "archived": false }));
+}
+
+/// Delete is delete-class, names the card by its Metabase name for the
+/// reviewer, and once granted sends a bodyless `DELETE /api/card/{id}`.
+#[tokio::test]
+async fn delete_card_names_the_card_and_deletes_by_id() {
+    let pool = common::test_pool().await;
+    let (mock, seen) = start_mock_metabase().await;
+    let (base, client, agent_key, admin_key, ident) = setup(pool, mock, "admin", true, None).await;
+
+    let body = json!({
+        "service": "metabase",
+        "action": "delete_card",
+        "params": { "card_id": 7 },
+    });
+    let pending = call(&base, &client, &agent_key, body.clone()).await;
+    assert_eq!(
+        pending["status"].as_str(),
+        Some("pending_approval"),
+        "{pending:?}"
+    );
+    let disclosed = pending["disclosed_fields"].as_array().cloned().unwrap();
+    assert_eq!(
+        disclosed_value(&disclosed, "Card"),
+        Some("#7 — Weekly revenue"),
+        "{disclosed:?}"
+    );
+
+    add_rule(
+        &base,
+        &client,
+        &admin_key,
+        &ident,
+        "metabase:delete_card:*",
+        "allow",
+    )
+    .await;
+    let resp = call(&base, &client, &agent_key, body).await;
+    assert_eq!(resp["status"].as_str(), Some("called"), "{resp:?}");
+
+    let seen = seen.lock().unwrap();
+    let req = seen
+        .iter()
+        .rfind(|r| r.method == "DELETE")
+        .expect("mock saw the delete");
+    assert_eq!(req.path, "/api/card/7");
     assert_eq!(req.api_key.as_deref(), Some("mb_test_key_123"));
 }
 
@@ -1862,6 +2203,99 @@ mod real_e2e {
         assert_eq!(resp["status"].as_str(), Some("called"), "{resp:?}");
         let body = resp["result"]["body"].as_str().unwrap();
         assert!(body.contains("film"), "search found nothing: {body}");
+    }
+
+    /// The card lifecycle against a real Metabase: the bodies the template
+    /// assembles are ones Metabase accepts, the saved SQL is what run_card
+    /// executes, and archive / delete land on the card that was created.
+    #[ignore] // real-Metabase e2e: run with --ignored after `make metabase-up`
+    #[tokio::test]
+    async fn card_create_update_delete_round_trip() {
+        let (url, key, db_id) = require_harness!();
+        let pool = common::test_pool().await;
+        let (base, client, agent_key, admin_key, ident) =
+            setup_against(pool, url, &key, "admin", true, Some(&dbs_config(db_id))).await;
+        for action in ["create_card", "update_card", "delete_card"] {
+            add_rule(
+                &base,
+                &client,
+                &admin_key,
+                &ident,
+                &format!("metabase:{action}:*"),
+                "allow",
+            )
+            .await;
+        }
+
+        let resp = call(
+            &base,
+            &client,
+            &agent_key,
+            json!({
+                "service": "metabase",
+                "action": "create_card",
+                "params": {
+                    "name": "overslash e2e card",
+                    "dataset_query": {
+                        "database": db_id,
+                        "type": "native",
+                        "native": { "query": "SELECT title FROM public.film ORDER BY film_id LIMIT 1" },
+                    },
+                },
+            }),
+        )
+        .await;
+        assert_eq!(resp["status"].as_str(), Some("called"), "{resp:?}");
+        assert_eq!(resp["result"]["status_code"], 200, "{resp:?}");
+        let card: Value = serde_json::from_str(resp["result"]["body"].as_str().unwrap()).unwrap();
+        let card_id = card["id"].as_i64().expect("created card has an id");
+        assert_eq!(card["display"], "table");
+
+        let resp = call(
+            &base,
+            &client,
+            &agent_key,
+            json!({
+                "service": "metabase",
+                "action": "run_card",
+                "params": { "card_id": card_id },
+            }),
+        )
+        .await;
+        assert_eq!(resp["status"].as_str(), Some("called"), "{resp:?}");
+        let body = resp["result"]["body"].as_str().unwrap();
+        assert!(body.contains("ACADEMY DINOSAUR"), "run_card: {body}");
+
+        let resp = call(
+            &base,
+            &client,
+            &agent_key,
+            json!({
+                "service": "metabase",
+                "action": "update_card",
+                "params": { "card_id": card_id, "name": "overslash e2e card (renamed)", "archived": true },
+            }),
+        )
+        .await;
+        assert_eq!(resp["status"].as_str(), Some("called"), "{resp:?}");
+        let card: Value = serde_json::from_str(resp["result"]["body"].as_str().unwrap()).unwrap();
+        assert_eq!(card["name"], "overslash e2e card (renamed)");
+        assert_eq!(card["archived"], true);
+
+        let resp = call(
+            &base,
+            &client,
+            &agent_key,
+            json!({
+                "service": "metabase",
+                "action": "delete_card",
+                "params": { "card_id": card_id },
+            }),
+        )
+        .await;
+        assert_eq!(resp["status"].as_str(), Some("called"), "{resp:?}");
+        let status = resp["result"]["status_code"].as_u64().unwrap();
+        assert!((200..300).contains(&status), "delete: {resp:?}");
     }
 }
 

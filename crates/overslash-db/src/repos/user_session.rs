@@ -13,6 +13,13 @@ use sqlx::PgPool;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+/// How a session was authenticated (`auth_method`).
+pub mod auth_method {
+    pub const IDP: &str = "idp";
+    pub const MAGIC_LINK: &str = "magic_link";
+    pub const DEV: &str = "dev";
+}
+
 /// Why a session ended (`revoked_reason`).
 pub mod reason {
     pub const LOGOUT: &str = "logout";
@@ -37,6 +44,14 @@ pub struct UserSessionRow {
     pub revoked_reason: Option<String>,
     pub user_agent: Option<String>,
     pub ip_address: Option<String>,
+    /// `auth_method::*`, or `None` when not recorded (migration 137).
+    pub auth_method: Option<String>,
+    /// `oauth_providers.key` for an `idp` sign-in.
+    pub auth_provider: Option<String>,
+    /// When the human last signed in. A re-scope keeps it.
+    pub authenticated_at: Option<OffsetDateTime>,
+    pub idp_amr: Option<Vec<String>>,
+    pub idp_acr: Option<String>,
 }
 
 impl UserSessionRow {
@@ -56,6 +71,11 @@ pub struct UserSessionListing {
     pub expires_at: OffsetDateTime,
     pub user_agent: Option<String>,
     pub ip_address: Option<String>,
+    pub auth_method: Option<String>,
+    pub auth_provider: Option<String>,
+    pub authenticated_at: Option<OffsetDateTime>,
+    pub idp_amr: Option<Vec<String>>,
+    pub idp_acr: Option<String>,
 }
 
 pub struct NewUserSession<'a> {
@@ -65,22 +85,44 @@ pub struct NewUserSession<'a> {
     pub ttl_secs: i64,
     pub user_agent: Option<&'a str>,
     pub ip_address: Option<&'a str>,
+    /// `None` leaves the sign-in unrecorded; `authenticated_at` follows it.
+    pub auth_method: Option<&'a str>,
+    pub auth_provider: Option<&'a str>,
+    pub idp_amr: Option<&'a [String]>,
+    pub idp_acr: Option<&'a str>,
+    /// The IdP's `auth_time`; `authenticated_at` is the earlier of it and now.
+    /// `None` on an `idp` sign-in leaves `authenticated_at` NULL: the IdP did
+    /// not say when it authenticated the human, and the callback time is not
+    /// evidence of it. Other methods take now.
+    pub idp_auth_time: Option<OffsetDateTime>,
 }
 
 pub async fn create(pool: &PgPool, s: NewUserSession<'_>) -> Result<UserSessionRow, sqlx::Error> {
     sqlx::query_as!(
         UserSessionRow,
         "INSERT INTO user_sessions
-            (user_id, identity_id, org_id, expires_at, user_agent, ip_address)
-         VALUES ($1, $2, $3, now() + make_interval(secs => $4), $5, $6)
+            (user_id, identity_id, org_id, expires_at, user_agent, ip_address,
+             auth_method, auth_provider, authenticated_at, idp_amr, idp_acr)
+         VALUES ($1, $2, $3, now() + make_interval(secs => $4), $5, $6,
+                 $7, $8,
+                 CASE WHEN $7::text IS NULL
+                        OR ($7 = 'idp' AND $11::timestamptz IS NULL) THEN NULL
+                      ELSE LEAST(COALESCE($11, now()), now()) END,
+                 $9, $10)
          RETURNING id, user_id, identity_id, org_id, created_at, last_seen_at,
-                   expires_at, revoked_at, revoked_reason, user_agent, ip_address",
+                   expires_at, revoked_at, revoked_reason, user_agent, ip_address,
+                   auth_method, auth_provider, authenticated_at, idp_amr, idp_acr",
         s.user_id,
         s.identity_id,
         s.org_id,
         s.ttl_secs as f64,
         s.user_agent,
         s.ip_address,
+        s.auth_method,
+        s.auth_provider,
+        s.idp_amr,
+        s.idp_acr,
+        s.idp_auth_time,
     )
     .fetch_one(pool)
     .await
@@ -90,7 +132,8 @@ pub async fn get(pool: &PgPool, id: Uuid) -> Result<Option<UserSessionRow>, sqlx
     sqlx::query_as!(
         UserSessionRow,
         "SELECT id, user_id, identity_id, org_id, created_at, last_seen_at,
-                expires_at, revoked_at, revoked_reason, user_agent, ip_address
+                expires_at, revoked_at, revoked_reason, user_agent, ip_address,
+                auth_method, auth_provider, authenticated_at, idp_amr, idp_acr
          FROM user_sessions WHERE id = $1",
         id,
     )
@@ -117,7 +160,8 @@ pub async fn rescope(
              expires_at = now() + make_interval(secs => $5)
          WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL AND expires_at > now()
          RETURNING id, user_id, identity_id, org_id, created_at, last_seen_at,
-                   expires_at, revoked_at, revoked_reason, user_agent, ip_address",
+                   expires_at, revoked_at, revoked_reason, user_agent, ip_address,
+                   auth_method, auth_provider, authenticated_at, idp_amr, idp_acr",
         id,
         user_id,
         identity_id,
@@ -146,7 +190,8 @@ pub async fn list_live_for_user(
     sqlx::query_as!(
         UserSessionListing,
         "SELECT s.id, s.org_id, o.name AS org_name, s.created_at, s.last_seen_at,
-                s.expires_at, s.user_agent, s.ip_address
+                s.expires_at, s.user_agent, s.ip_address,
+                s.auth_method, s.auth_provider, s.authenticated_at, s.idp_amr, s.idp_acr
          FROM user_sessions s JOIN orgs o ON o.id = s.org_id
          WHERE s.user_id = $1 AND s.revoked_at IS NULL AND s.expires_at > now()
          ORDER BY s.last_seen_at DESC, s.created_at DESC",

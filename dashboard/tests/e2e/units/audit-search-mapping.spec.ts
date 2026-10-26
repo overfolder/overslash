@@ -9,6 +9,7 @@
 import { test, expect } from '@playwright/test';
 import {
 	escapeQTerm,
+	buildAuditSearchKeys,
 	filtersToSearch,
 	searchToFilters,
 	splitQTerms,
@@ -138,6 +139,97 @@ test.describe('commas inside a text term', () => {
 
 	test('unescaped commas still separate terms', () => {
 		expect(splitQTerms('a,b, c ,,')).toEqual(['a', 'b', 'c']);
+	});
+});
+
+test.describe('user key labels users by email', () => {
+	const ANGEL = '33333333-3333-3333-3333-333333333333';
+	const PEOPLE: IdentitySummary[] = [
+		{ id: ANGEL, name: 'Angel M', kind: 'user', email: 'angel@org.com' },
+		{ id: '44444444-4444-4444-4444-444444444444', name: 'nomail', kind: 'user' },
+		{ id: '55555555-5555-5555-5555-555555555555', name: 'scout', kind: 'agent' }
+	];
+	const short = (e: string) => e.replace(/@org\.com$/, '');
+	const userValues = (s?: (e: string) => string) =>
+		buildAuditSearchKeys(PEOPLE, undefined, s).find((k) => k.name === 'user')!.values;
+
+	test('autocomplete offers the email, short when the domain is stripped', () => {
+		expect(userValues()).toEqual(['angel@org.com', 'nomail']);
+		expect(userValues(short)).toEqual(['angel', 'nomail']);
+	});
+
+	test('short email, full email and legacy display name all resolve', () => {
+		for (const v of ['angel', 'angel@org.com', 'ANGEL@org.com', 'Angel M']) {
+			const f = searchToFilters(
+				value({ kind: 'filter', key: 'user', op: '=', value: v }),
+				PEOPLE,
+				undefined,
+				short
+			);
+			expect(f.owner_user_id, v).toBe(ANGEL);
+		}
+	});
+
+	test('an email beats another user whose display name is that string', () => {
+		const clash: IdentitySummary[] = [
+			{ id: '66666666-6666-6666-6666-666666666666', name: 'angel', kind: 'user', email: 'x@y.com' },
+			...PEOPLE
+		];
+		const f = searchToFilters(
+			value({ kind: 'filter', key: 'user', op: '=', value: 'angel' }),
+			clash,
+			undefined,
+			short
+		);
+		expect(f.owner_user_id).toBe(ANGEL);
+	});
+
+	test('an email-less user named like a short email loses to the email', () => {
+		const clash: IdentitySummary[] = [
+			{ id: '77777777-7777-7777-7777-777777777777', name: 'angel', kind: 'user' },
+			...PEOPLE
+		];
+		const f = searchToFilters(
+			value({ kind: 'filter', key: 'user', op: '=', value: 'angel' }),
+			clash,
+			undefined,
+			short
+		);
+		expect(f.owner_user_id).toBe(ANGEL);
+	});
+
+	test('user ~ with a full email narrows to that user', () => {
+		const f = searchToFilters(
+			value({ kind: 'filter', key: 'user', op: '~', value: 'angel@org.com' }),
+			PEOPLE,
+			undefined,
+			short
+		);
+		expect(f).toEqual({ owner_user_id: ANGEL });
+		// A partial value still substring-matches the recorded name.
+		expect(
+			searchToFilters(value({ kind: 'filter', key: 'user', op: '~', value: 'ang' }), PEOPLE)
+		).toEqual({ owner_user_contains: 'ang' });
+		// So does a bare short email: in a one-domain org `angel` is also a
+		// plausible substring, and must keep matching `Angela` too.
+		expect(
+			searchToFilters(
+				value({ kind: 'filter', key: 'user', op: '~', value: 'angel' }),
+				PEOPLE,
+				undefined,
+				short
+			)
+		).toEqual({ owner_user_contains: 'angel' });
+		// So does an exact display name — `~` must not stop matching `Angel Ma`.
+		expect(
+			searchToFilters(value({ kind: 'filter', key: 'user', op: '~', value: 'Angel M' }), PEOPLE)
+		).toEqual({ owner_user_contains: 'Angel M' });
+	});
+
+	test('owner_user_id hydrates back to the email label', () => {
+		const v = filtersToSearch({ owner_user_id: ANGEL }, PEOPLE, undefined, short);
+		expect(v.terms).toEqual([{ kind: 'filter', key: 'user', op: '=', value: 'angel' }]);
+		expect(searchToFilters(v, PEOPLE, undefined, short).owner_user_id).toBe(ANGEL);
 	});
 });
 

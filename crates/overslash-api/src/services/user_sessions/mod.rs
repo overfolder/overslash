@@ -67,6 +67,47 @@ const MAX_ORIGIN_LEN: usize = 512;
 /// Why a session ended (`user_sessions.revoked_reason`).
 pub use repo::reason;
 
+/// How the human proved who they are for this session. Read back by
+/// [`crate::services::admin_step_up`], which only lets an IdP sign-in reach
+/// admin-class mutations in a shared org.
+pub enum SignIn {
+    /// OAuth/OIDC through `provider_key`, with the ID token's `amr` / `acr`
+    /// when it asserted them (recorded, not enforced).
+    Idp {
+        provider_key: String,
+        amr: Vec<String>,
+        acr: Option<String>,
+        /// The ID token's `auth_time`: when the IdP last actually
+        /// authenticated the human. Becomes the session's `authenticated_at`
+        /// (never later than now), so an IdP that answered from an old
+        /// session of its own does not count as a fresh sign-in. `None`
+        /// leaves `authenticated_at` NULL — never the callback time, which
+        /// says nothing about when the IdP checked a credential — so the
+        /// session cannot pass the admin step-up. The callback substitutes
+        /// its own time only for `ADMIN_STEP_UP_CALLBACK_TIME_PROVIDERS`
+        /// (GitHub, which cannot report it).
+        auth_time: Option<OffsetDateTime>,
+    },
+    MagicLink,
+    /// `DEV_AUTH` login. The boot policy keeps it out of production.
+    Dev,
+    /// A session restarted without a sign-in — [`rescope`] finding no live
+    /// row to re-point. Recorded as unknown, so it cannot reach admin
+    /// mutations until the human signs in again.
+    Unrecorded,
+}
+
+impl SignIn {
+    fn method(&self) -> Option<&'static str> {
+        match self {
+            SignIn::Idp { .. } => Some(repo::auth_method::IDP),
+            SignIn::MagicLink => Some(repo::auth_method::MAGIC_LINK),
+            SignIn::Dev => Some(repo::auth_method::DEV),
+            SignIn::Unrecorded => None,
+        }
+    }
+}
+
 /// Who a session is for.
 pub struct Subject {
     pub identity_id: Uuid,
@@ -144,17 +185,33 @@ pub async fn check(
 }
 
 /// Mint the session JWT for a fresh sign-in. Revokes whatever session the
-/// browser presented, so re-authenticating never leaves the old one alive.
+/// browser presented, so re-authenticating never leaves the old one alive —
+/// which is also how a step-up works: it is just a sign-in.
 pub async fn start(
     state: &AppState,
     ext: &Extensions,
     headers: &HeaderMap,
     subject: Subject,
+    sign_in: SignIn,
 ) -> Result<String, AppError> {
     if let Some(prev) = current_jti(state, headers) {
         revoke_one(state, ext, prev, None, reason::REPLACED).await?;
     }
     let (user_agent, ip) = origin(state, ext, headers);
+    let (provider, amr, acr, auth_time) = match &sign_in {
+        SignIn::Idp {
+            provider_key,
+            amr,
+            acr,
+            auth_time,
+        } => (
+            Some(provider_key.as_str()),
+            Some(amr.as_slice()).filter(|a| !a.is_empty()),
+            acr.as_deref(),
+            *auth_time,
+        ),
+        _ => (None, None, None, None),
+    };
     let row = repo::create(
         state.db(ext),
         repo::NewUserSession {
@@ -164,10 +221,15 @@ pub async fn start(
             ttl_secs: SESSION_TTL_SECS,
             user_agent: user_agent.as_deref(),
             ip_address: ip.as_deref(),
+            auth_method: sign_in.method(),
+            auth_provider: provider,
+            idp_amr: amr,
+            idp_acr: acr,
+            idp_auth_time: auth_time,
         },
     )
     .await?;
-    mint(state, subject, row.id)
+    mint(state, &subject, row.id)
 }
 
 /// Mint the session JWT re-pointing the caller's current session at another
@@ -179,21 +241,59 @@ pub async fn rescope(
     headers: &HeaderMap,
     subject: Subject,
 ) -> Result<String, AppError> {
-    if let (Some(prev), Some(user_id)) = (current_jti(state, headers), subject.user_id)
-        && let Some(row) = repo::rescope(
-            state.db(ext),
-            prev,
-            user_id,
-            subject.identity_id,
-            subject.org_id,
-            SESSION_TTL_SECS,
-        )
-        .await?
+    if let Some(prev) = current_jti(state, headers)
+        && let Some(token) = rescope_jti(state, ext, prev, &subject).await?
     {
-        state.session_cache.invalidate(&[prev]).await;
-        return mint(state, subject, row.id);
+        return Ok(token);
     }
-    start(state, ext, headers, subject).await
+    start(state, ext, headers, subject, SignIn::Unrecorded).await
+}
+
+/// Re-point the session a just-minted `token` names at another org/identity
+/// of the same human — a step-up sign-in at the root landing back in the
+/// shared org it was for. `None` when the session is not that human's.
+pub async fn rescope_token(
+    state: &AppState,
+    ext: &Extensions,
+    token: &str,
+    subject: Subject,
+) -> Result<Option<String>, AppError> {
+    let jti = jwt::verify(
+        &jwt::signing_key_bytes(&state.config.signing_key),
+        token,
+        jwt::AUD_SESSION,
+    )
+    .ok()
+    .and_then(|c| c.jti);
+    match jti {
+        Some(jti) => rescope_jti(state, ext, jti, &subject).await,
+        None => Ok(None),
+    }
+}
+
+async fn rescope_jti(
+    state: &AppState,
+    ext: &Extensions,
+    jti: Uuid,
+    subject: &Subject,
+) -> Result<Option<String>, AppError> {
+    let Some(user_id) = subject.user_id else {
+        return Ok(None);
+    };
+    let Some(row) = repo::rescope(
+        state.db(ext),
+        jti,
+        user_id,
+        subject.identity_id,
+        subject.org_id,
+        SESSION_TTL_SECS,
+    )
+    .await?
+    else {
+        return Ok(None);
+    };
+    state.session_cache.invalidate(&[jti]).await;
+    mint(state, subject, row.id).map(Some)
 }
 
 /// Revoke one session. `owner` limits it to that human's sessions.
@@ -268,12 +368,12 @@ pub fn current_jti(state: &AppState, headers: &HeaderMap) -> Option<Uuid> {
     .jti
 }
 
-fn mint(state: &AppState, subject: Subject, jti: Uuid) -> Result<String, AppError> {
+fn mint(state: &AppState, subject: &Subject, jti: Uuid) -> Result<String, AppError> {
     let now = OffsetDateTime::now_utc().unix_timestamp();
     let claims = jwt::Claims {
         sub: subject.identity_id,
         org: subject.org_id,
-        email: subject.email,
+        email: subject.email.clone(),
         aud: jwt::AUD_SESSION.into(),
         iat: now,
         exp: now + SESSION_TTL_SECS,

@@ -12,7 +12,7 @@ use super::params::{collect_body_parameters, collect_parameters, parse_request_b
 use super::{
     parse_additional_properties, parse_aliases, parse_disclose, parse_instance_config,
     parse_pagination, parse_promoted, parse_redact, parse_scope_params, parse_sql_policy,
-    parse_test, parse_timeout_ms, parse_wait_mode,
+    parse_success, parse_test, parse_timeout_ms, parse_wait_mode,
 };
 
 // ── paths.*.* → ServiceAction ────────────────────────────────────────
@@ -186,6 +186,13 @@ pub(crate) fn extract_http_action(
         &base,
         &mut disclose_errors,
     );
+    // `None` here may still pick up the `info` default, which `compile` folds
+    // in once every operation has been extracted.
+    let success = parse_success(
+        ext::get(op, Pos::Operation, Ext::Success),
+        &base,
+        &mut disclose_errors,
+    );
     if !disclose_errors.is_empty() {
         return Err(disclose_errors);
     }
@@ -211,6 +218,7 @@ pub(crate) fn extract_http_action(
             request_body,
             test,
             additional_properties,
+            success,
             // Everything else defaults. Notably `download`: an HTTP action that
             // returns bytes already *is* its own download, since `deliver:
             // "url"` mints a token from the resolved request. Only MCP, whose

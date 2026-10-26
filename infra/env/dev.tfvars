@@ -16,6 +16,11 @@ session_cookie_domain = ".app.dev.overslash.com"
 # `extra_api_domain_mappings` below, which keeps cost at zero and avoids
 # provisioning a global LB just to host a couple of dogfood orgs.
 enable_api_lb = false
+#
+# The registrar's *.api.dev wildcard CNAME already points each entry at Cloud
+# Run. Add a row per entry to docs/compliance/casa/subdomain-inventory.md,
+# `pending` until its certificate is issued and then `tls`, so the daily check
+# notices a mapping that disappears (docs/runbooks/subdomain-inventory.md).
 extra_api_domain_mappings = [
   "overfolder.api.dev.overslash.com",
   "overfolder-dev.api.dev.overslash.com",
@@ -34,6 +39,9 @@ enable_dev_auth  = false
 enable_live_map = true
 # Passwordless email magic-link login — on (email is configured below).
 enable_magic_link = true
+# Admin changes in a shared org need an IdP sign-in from the last hour; a
+# magic link never qualifies while Google/GitHub sign-in is configured.
+admin_step_up_max_age_secs = 3600
 # Sign-in with Google (default) + Sign-in with GitHub. Populate the OAuth
 # client secrets post-apply via `gcloud secrets versions add`.
 enable_google_login = true

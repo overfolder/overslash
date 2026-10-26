@@ -6,7 +6,8 @@ info:
   description: >-
     Metabase BI over its REST API. Discovery and saved-question actions are
     read-class; native SQL runs through the D42 content policy — the query is
-    parsed, classified read/write, and gated per referenced table. Auth is a
+    parsed, classified read/write, and gated per referenced table. Creating,
+    editing and deleting saved questions is write/delete-class. Auth is a
     Metabase API key (Admin → Settings → Authentication → API keys) sent as
     x-api-key; pair it with a read-only Metabase group for
     belt-and-suspenders.
@@ -136,6 +137,245 @@ paths:
             f=using_segment. Ignored for the other filters.
           schema:
             type: integer
+    # The SQL saved into a card is what `run_card` later executes, at *read*
+    # class and outside the D42 parser — `run_card` never sees the query text.
+    # So the create/update approval is the only SQL review a card gets: both
+    # actions are plain `write` (never `dynamic`, which would let a SELECT
+    # card through as a read and with it any later edit's precedent), and the
+    # SQL is a primary disclosure. A standing grant on create_card/update_card
+    # is a standing grant of arbitrary SQL through run_card.
+    post:
+      operationId: create_card
+      summary: "Create saved question '{name}'"
+      risk: write
+      description: >-
+        Save a new question (card). The query is passed as Metabase's dataset
+        query object: dataset_query = {"database": <id>, "type": "native",
+        "native": {"query": "SELECT …"}} for SQL, or "type": "query" with an
+        MBQL "query" object. Saving does not run the query, but run_card runs
+        whatever was saved, so the SQL is shown to the approver here. display
+        defaults to table. Returns the new card, whose `id` works with
+        run_card, update_card and delete_card.
+      disclose:
+        - label: Name
+          primary: true
+          filter: .params.name
+        - label: SQL
+          primary: true
+          filter: .params.dataset_query.native.query // empty
+          max_chars: 2000
+        # The query parser only reads SQL, so an MBQL card gets no policy
+        # classification — but run_card still runs it, so the approver sees
+        # the MBQL itself rather than nothing.
+        - label: MBQL query
+          primary: true
+          filter: .params.dataset_query.query // empty | tojson
+          max_chars: 2000
+        - label: Database
+          filter: .resolved.dataset_query // (.params.dataset_query.database | tostring)
+        - label: Collection
+          filter: .params.collection_id // empty
+        - label: Type
+          filter: .params.type // empty
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, dataset_query, display, visualization_settings]
+              properties:
+                name:
+                  type: string
+                  description: Card name, as shown in Metabase
+                description:
+                  type: string
+                  description: Optional longer description
+                dataset_query:
+                  type: object
+                  description: >-
+                    The query to save: {"database": <id>, "type": "native",
+                    "native": {"query": "SELECT …"}}, or "type": "query" with
+                    an MBQL "query" object.
+                  required: [database, type]
+                  properties:
+                    database:
+                      type: integer
+                      description: Metabase database id (from list_databases)
+                    type:
+                      type: string
+                      enum: [native, query]
+                    native:
+                      type: object
+                      description: Present when type is native
+                      properties:
+                        query:
+                          type: string
+                          description: The SQL statement to save
+                        # Untyped: keyed by the `{{tag}}` names the SQL itself
+                        # declares, so there is no fixed key set to write down.
+                        template-tags:
+                          description: >-
+                            Variables for {{tag}} placeholders in the SQL, keyed
+                            by tag name. Needed for parameterized questions.
+                    query:
+                      description: MBQL query, present when type is query
+                  # Display only — no `scope:`. This action is not SQL-policy
+                  # classified, so the database name feeds the approval and
+                  # the disclosure, not the permission key.
+                  x-overslash-resolve:
+                    get: /api/database/{dataset_query.database}
+                    pick: name
+                display:
+                  type: string
+                  description: >-
+                    Visualization type, e.g. table, scalar, line, bar, row,
+                    pie, area, combo, pivot, funnel, map.
+                  default: table
+                # Untyped on purpose: Metabase keys this map by the chosen
+                # visualization's own settings, so there is no fixed shape.
+                visualization_settings:
+                  description: >-
+                    Visualization settings map, keyed by the display's own
+                    settings. Pass {} for Metabase's defaults.
+                  default: {}
+                collection_id:
+                  type: integer
+                  description: Collection to save into; omit for the root collection
+                type:
+                  type: string
+                  description: What the card is — a plain question, a model, or a metric.
+                  enum: [question, model, metric]
+                  default: question
+  /api/card/{card_id}:
+    put:
+      operationId: update_card
+      summary: "Update saved question {card_id}"
+      risk: write
+      scope_param: card_id
+      description: >-
+        Change a saved question in place. Only the fields given are touched.
+        Replacing dataset_query changes what run_card executes from then on,
+        so the new SQL is shown to the approver. Set archived: true to move a
+        card to the trash — the reversible alternative to delete_card.
+      disclose:
+        - label: Card
+          primary: true
+          filter: '"#" + (.params.card_id | tostring) + (if .resolved.card_id then " — " + .resolved.card_id else "" end)'
+        - label: New name
+          filter: .params.name // empty
+        - label: SQL
+          primary: true
+          filter: .params.dataset_query.native.query // empty
+          max_chars: 2000
+        # The query parser only reads SQL, so an MBQL card gets no policy
+        # classification — but run_card still runs it, so the approver sees
+        # the MBQL itself rather than nothing.
+        - label: MBQL query
+          primary: true
+          filter: .params.dataset_query.query // empty | tojson
+          max_chars: 2000
+        - label: Database
+          filter: .params.dataset_query.database // empty | tostring
+        - label: Collection
+          filter: .params.collection_id // empty
+        # `has()`, not `//`: `archived: false` (un-archive) is a change worth
+        # showing, and `//` would drop it.
+        - label: Archived
+          filter: 'if .params | has("archived") then (.params.archived | tostring) else empty end'
+      parameters:
+        - name: card_id
+          in: path
+          required: true
+          description: Card id (from search, list_cards or create_card)
+          x-overslash-aliases: [id]
+          schema:
+            type: integer
+          # Turns the bare id into the card's own name for the approval
+          # title and the `Card` disclosure. Display only: the permission key
+          # stays on the id, which a rename cannot move out from under a grant.
+          resolve:
+            get: /api/card/{card_id}
+            pick: name
+            cache_ttl: 60
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  description: New card name
+                description:
+                  type: string
+                  description: New description
+                dataset_query:
+                  type: object
+                  description: >-
+                    Replacement query, same shape as create_card:
+                    {"database": <id>, "type": "native", "native": {"query":
+                    "SELECT …"}}.
+                  properties:
+                    database:
+                      type: integer
+                      description: Metabase database id (from list_databases)
+                    type:
+                      type: string
+                      enum: [native, query]
+                    native:
+                      type: object
+                      description: Present when type is native
+                      properties:
+                        query:
+                          type: string
+                          description: The SQL statement to save
+                        # Untyped: keyed by the `{{tag}}` names the SQL itself
+                        # declares, so there is no fixed key set to write down.
+                        template-tags:
+                          description: >-
+                            Variables for {{tag}} placeholders in the SQL, keyed
+                            by tag name. Needed for parameterized questions.
+                    query:
+                      description: MBQL query, present when type is query
+                display:
+                  type: string
+                  description: Visualization type, e.g. table, scalar, line, bar.
+                visualization_settings:
+                  description: Replacement visualization settings map.
+                collection_id:
+                  type: integer
+                  description: Collection to move the card into
+                archived:
+                  type: boolean
+                  description: >-
+                    true moves the card to the trash, false restores it.
+    delete:
+      operationId: delete_card
+      summary: "Delete saved question {card_id}"
+      risk: delete
+      scope_param: card_id
+      description: >-
+        Permanently delete a saved question. There is no undo — dashboards
+        that embed it lose the tile. update_card with archived: true is the
+        reversible way to take a card out of the way.
+      disclose:
+        - label: Card
+          primary: true
+          filter: '"#" + (.params.card_id | tostring) + (if .resolved.card_id then " — " + .resolved.card_id else "" end)'
+      parameters:
+        - name: card_id
+          in: path
+          required: true
+          description: Card id (from search, list_cards or create_card)
+          x-overslash-aliases: [id]
+          schema:
+            type: integer
+          resolve:
+            get: /api/card/{card_id}
+            pick: name
+            cache_ttl: 60
   /api/card/{card_id}/query:
     post:
       operationId: run_card

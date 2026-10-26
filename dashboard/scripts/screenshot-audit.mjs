@@ -171,6 +171,31 @@ try {
 		await ctx.close();
 	}
 
+	// 6b. `user` key — autocomplete offers emails, not IdP display names, and
+	//     the committed chip reads as the email too.
+	{
+		const { page, ctx } = await snap.navigateAndSnap('audit-user-filter', '/audit', {
+			viewport: { width: 1400, height: 900 },
+			waitFor: async (p) => {
+				await p.locator('.search input').first().waitFor({ timeout: 15_000 });
+			}
+		});
+		const input = page.locator('.search input').first();
+		await input.click();
+		await input.fill('user');
+		await page.waitForTimeout(400);
+		await input.press('Enter'); // pick the key; its values open next
+		await page.waitForTimeout(400);
+		await snap.snap(page, 'audit-user-autocomplete');
+		// Past `me` (offered first) and the admin, onto another user.
+		await input.press('ArrowDown');
+		await input.press('ArrowDown');
+		await input.press('Enter');
+		await page.waitForTimeout(600);
+		await snap.snap(page, 'audit-user-filter');
+		await ctx.close();
+	}
+
 	// 7. Empty state — filter to a key that nothing matches.
 	{
 		const { page, ctx } = await snap.navigateAndSnap('audit-empty', '/audit', {

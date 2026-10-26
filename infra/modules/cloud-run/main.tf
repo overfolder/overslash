@@ -181,6 +181,18 @@ variable "enable_magic_link" {
   description = "Enable passwordless email magic-link login (MAGIC_LINK_ENABLED). Default-on — it's the working login with no external IdP configured."
 }
 
+variable "admin_step_up_max_age_secs" {
+  type        = number
+  default     = 3600
+  description = "Step-up window for admin-class changes from a dashboard session (ADMIN_STEP_UP_MAX_AGE_SECS)."
+}
+
+variable "admin_step_up_callback_time_providers" {
+  type        = string
+  default     = "github"
+  description = "Providers whose callback time stands in for a missing auth_time in the admin step-up (ADMIN_STEP_UP_CALLBACK_TIME_PROVIDERS)."
+}
+
 variable "enable_async_execution" {
   type        = bool
   default     = false
@@ -446,6 +458,14 @@ locals {
       # requires a falsey value ("0"); "1" keeps it on.
       MAGIC_LINK_ENABLED = var.enable_magic_link ? "1" : "0"
 
+      # How fresh an IdP sign-in must be for an admin-class change (CASA
+      # 3.3.1 / 2.4.1). The app defaults to the same 1 h; rendered so the
+      # window is citable from the plan.
+      ADMIN_STEP_UP_MAX_AGE_SECS = tostring(var.admin_step_up_max_age_secs)
+      # Providers whose callback time counts when the ID token carries no
+      # auth_time. GitHub only: it is not OIDC.
+      ADMIN_STEP_UP_CALLBACK_TIME_PROVIDERS = var.admin_step_up_callback_time_providers
+
       # Async (non-blocking) action calls. Rendered unconditionally, like
       # MAGIC_LINK_ENABLED, so each env's state is visible in the plan.
       # Off means `execution: "async"` is rejected and no worker is spawned.
@@ -555,13 +575,8 @@ resource "google_secret_manager_secret_version" "otel_config" {
   })
 }
 
-resource "google_secret_manager_secret_iam_member" "otel_config_accessor" {
-  count     = var.enable_metrics_sidecar ? 1 : 0
-  project   = var.project_id
-  secret_id = google_secret_manager_secret.otel_config[0].id
-  role      = "roles/secretmanager.secretAccessor"
-  member    = "serviceAccount:${var.service_account_email}"
-}
+# No grant of its own: the name puts it under the API's `<base_prefix>-*`
+# secret rule (modules/secret-manager).
 
 resource "google_cloud_run_v2_service" "api" {
   name     = "${var.base_prefix}-api"

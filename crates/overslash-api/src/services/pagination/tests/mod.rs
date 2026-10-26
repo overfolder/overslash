@@ -24,6 +24,7 @@ fn result(status: u16, body: Value, headers: &[(&str, &str)]) -> ActionResult {
         duration_ms: 1,
         filtered_body: None,
         wire_bytes: None,
+        body_failed: false,
     }
 }
 

@@ -465,6 +465,26 @@ pub(super) async fn consent_finish(
     let session_claims = session::extract_session(&state, &headers)
         .ok_or_else(|| AppError::Unauthorized("session expired".into()))?;
 
+    // The token minted here is bound to an agent, and an agent resolves its
+    // `AdminAcl` level through its owner — so an org admin's MCP token can do
+    // admin work, and `AdminAcl` does not step bearer credentials up. Mint one
+    // only for a session that would itself pass the admin step-up (D136,
+    // D137). Checked before the pending record is consumed, so the human can
+    // step up and come back to finish the same request.
+    let scope = OrgScope::new(session_claims.org, state.db_pool(&ext));
+    if crate::extractors::resolve_access_level(&scope, session_claims.sub).await?
+        == overslash_core::permissions::AccessLevel::Admin
+    {
+        crate::services::admin_step_up::require(
+            &state,
+            &ext,
+            &axum::http::Method::POST,
+            &headers,
+            crate::services::admin_step_up::Target::Org(session_claims.org),
+        )
+        .await?;
+    }
+
     // Consume the pending record up front — consent is single-use, and a
     // replayable `request_id` would let a second finish call create a
     // duplicate agent and a second auth code. If any downstream lookup

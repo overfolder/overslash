@@ -17,6 +17,11 @@ ignoreUntil = 2026-12-22
 reason = "rsa (Marvin) needs a private RSA key; jsonwebtoken is used with HS256 only, no RSA key is ever loaded. No upstream fix. See deny.toml."
 
 [[IgnoredVulns]]
+id = "RUSTSEC-2026-0387"
+ignoreUntil = 2026-12-22
+reason = "crypto-bigint timing side channels in EC arithmetic; reaches us only via jsonwebtoken's rust_crypto p256/p384, and no EC algorithm or key is ever used. Fix 0.7.6 is a semver-major no dependent has adopted. See deny.toml."
+
+[[IgnoredVulns]]
 id = "RUSTSEC-2024-0436"
 ignoreUntil = 2026-12-22
 reason = "paste is unmaintained, not vulnerable; build-time proc-macro via fastembed. No maintained release. See deny.toml."

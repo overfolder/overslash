@@ -20,6 +20,22 @@
 
 	const others = $derived(sessions.filter((s) => !s.current));
 
+	const PROVIDER_NAMES: Record<string, string> = { google: 'Google', github: 'GitHub' };
+
+	/** "Google", "email link", … — how this session was signed in. */
+	function signInMethod(s: AccountSession): string {
+		switch (s.auth_method) {
+			case 'idp':
+				return PROVIDER_NAMES[s.auth_provider ?? ''] ?? s.auth_provider ?? 'identity provider';
+			case 'magic_link':
+				return 'email link';
+			case 'dev':
+				return 'dev login';
+			default:
+				return 'unknown method';
+		}
+	}
+
 	async function load() {
 		try {
 			sessions = (await listSessions()).sessions;
@@ -77,6 +93,7 @@
 	</div>
 	<p class="muted intro">
 		Every browser signed in to your account. Ending a session signs that browser out immediately.
+		Admin changes in a shared org need a sign-in through its identity provider from the last hour.
 	</p>
 
 	{#if loading}
@@ -105,9 +122,16 @@
 								{s.current ? 'Active now' : `Active ${relativeTime(s.last_seen_at)}`}
 							</span>
 							<span>·</span>
-							<span title={absoluteTime(s.created_at)}>
-								Signed in {relativeTime(s.created_at)}
+							<span title={absoluteTime(s.authenticated_at ?? s.created_at)}>
+								Signed in {relativeTime(s.authenticated_at ?? s.created_at)}
+								with <span data-testid="session-method">{signInMethod(s)}</span>
 							</span>
+							{#if s.idp_amr.length > 0}
+								<span>·</span>
+								<span title="Authentication methods the identity provider reported (amr)">
+									<code>{s.idp_amr.join(', ')}</code>
+								</span>
+							{/if}
 						</div>
 					</div>
 					<button

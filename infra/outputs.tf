@@ -24,7 +24,7 @@ output "artifact_registry_url" {
 }
 
 output "cloud_run_service_account" {
-  description = "Cloud Run service account email"
+  description = "The API's service account email (the other workloads have their own; see modules/iam)"
   value       = module.iam.cloud_run_sa_email
 }
 

@@ -21,6 +21,16 @@ struct SessionView {
     expires_at: time::OffsetDateTime,
     user_agent: Option<String>,
     ip_address: Option<String>,
+    /// `idp`, `magic_link`, `dev`, or null when not recorded. Only a recent
+    /// `idp` sign-in can perform admin mutations in a shared org.
+    auth_method: Option<String>,
+    /// The IdP (`oauth_providers.key`) for an `idp` sign-in.
+    auth_provider: Option<String>,
+    #[serde(with = "time::serde::rfc3339::option")]
+    authenticated_at: Option<time::OffsetDateTime>,
+    /// The ID token's `amr` / `acr`, as the IdP asserted them.
+    idp_amr: Vec<String>,
+    idp_acr: Option<String>,
     /// The session this request came in on.
     current: bool,
 }
@@ -56,6 +66,11 @@ pub(super) async fn list_sessions(
             expires_at: r.expires_at,
             user_agent: r.user_agent,
             ip_address: r.ip_address,
+            auth_method: r.auth_method,
+            auth_provider: r.auth_provider,
+            authenticated_at: r.authenticated_at,
+            idp_amr: r.idp_amr.unwrap_or_default(),
+            idp_acr: r.idp_acr,
         })
         .collect();
     Ok(axum::Json(json!({ "sessions": sessions })))

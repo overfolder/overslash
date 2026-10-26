@@ -203,6 +203,7 @@ pub(crate) async fn intercept_mint(
         duration_ms: started.elapsed().as_millis() as u64,
         filtered_body: None,
         wire_bytes: None,
+        body_failed: false,
     })
 }
 

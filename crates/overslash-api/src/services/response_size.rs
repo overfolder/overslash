@@ -360,6 +360,7 @@ mod tests {
             duration_ms: 0,
             filtered_body: None,
             wire_bytes: None,
+            body_failed: false,
         };
         let s = ResponseSize::complete(&result, 100);
         assert_eq!(

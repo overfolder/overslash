@@ -23,9 +23,10 @@ snippets and the policies, because those are the parts it cannot test for. Assum
 | 2.3.3 | Why `osk_` API keys coexist with session tokens — programmatic access, not user sessions | `need` | — |
 | 5.1.3 | The jq sandbox: in-process, JSON-only, syntax-validated, timeout-bounded, no filesystem / network / shell | `need` | `services/response_filter.rs:145-199` |
 | 5.2.1 | "Overslash stores and serves no uploads." One-shot capability token, bytes forwarded to a pinned upstream, nothing written to disk, nothing served back | `need` | `routes/uploads.rs:15-24,58-67` |
-| 6.4.1 | Subdomain inventory: every record under `overslash.com`, its owning service, and a dangling-CNAME check | `need` | — |
+| 6.4.1 | Subdomain inventory: every record under `overslash.com`, its owning service, and a dangling-CNAME check | `have` | [subdomain-inventory.md](subdomain-inventory.md); checked daily by `scripts/check-subdomains.sh` (Dependency audit, job `subdomains`) — attach a green run's log. The dev `*.api.dev` wildcard is an accepted risk, reasoning in the inventory's Findings |
 | 7.1.1 / 7.1.2 / 7.3.1 | The webhook-provider posture — this is one document covering scheme enforcement, ownership verification and SSRF mitigation on callback URLs. Scheme enforcement, the ownership handshake, SSRF mitigation and replay protection (7.2.3) have all landed | `need` | `gap-assessment.md` §7 |
 | 5.1.5 | The SSRF scoping memo — the single most important piece of evidence in the pack | `need` | [dast-readiness.md](dast-readiness.md) |
+| 3.3.1 | MFA by IdP delegation: no factor of our own; admin mutations reachable only through a fresh sign-in at the org's IdP; each org's IdP enforces MFA, Overslash's own operators per the runbook policy | `need` | D136 ("Admin-class mutations need a fresh IdP sign-in"); [admin-step-up.md](../../runbooks/admin-step-up.md) |
 
 ## Code snippets
 
@@ -47,6 +48,7 @@ excerpt, without calling functions or underlying libraries.
 | 6.5.1 | `scrub_transport_error` — a strong affirmative artifact, since it declines to log a URL *because* credentials live in the query | `have` | `services/audit_capture.rs:93-118` |
 | 2.3.1 | Cookie construction: one builder, `Secure` + `__Host-`/`__Secure-` on every cookie, prefixed-only reader | `have` | `crates/overslash-api/src/cookies.rs` |
 | 2.2.x | Server-side session lookup: the per-request gate, revocation on logout / identity change / removal, and the Sessions page | `have` | `middleware/session_gate.rs`; `services/user_sessions/`; `routes/auth/account_sessions.rs`; `tests/user_sessions.rs` |
+| 3.3.1 / 2.4.1 | The step-up rule: IdP provenance, the org's provider list, the freshness window, and the `AdminAcl` call site | `have` | `services/admin_step_up.rs::evaluate` + `require`; `extractors.rs` (`AdminAcl`, `InstanceAdminAuth`); `tests/admin_step_up.rs` |
 | 5.1.5 | `ssrf_guard` denial ranges, `.resolve()` pinning, `Policy::none()` — **and** the call sites proving it is on the execution path | `have` / `need` | `services/ssrf_guard.rs:17-43,121-129`; call sites land with P0 |
 
 ## Screenshots
@@ -54,7 +56,8 @@ excerpt, without calling functions or underlying libraries.
 | For | What to capture | Status |
 |-----|-----------------|--------|
 | 1.1.1 | Anti-automation in action: the magic-link throttle tripping, and the identical opaque response before and after | `need` |
-| 3.3.1 | MFA enforcement on an admin account — either our own step-up, or the IdP's challenge if we answer 3.3.1 by IdP delegation | `need` |
+| 3.3.1 | Our step-up prompt on an admin change from a magic-link session | `have` — `dashboard/scripts/screenshot-step-up.mjs` (`step-up-modal.png`) |
+| 3.3.1 | The IdP's MFA challenge on a step-up sign-in, and Account → Sessions showing the session's IdP and `amr` | `need` — operator capture per [admin-step-up.md](../../runbooks/admin-step-up.md) |
 | 7.1.1 | An `http://` webhook endpoint being rejected at registration | `have` — `dashboard/scripts/screenshot-webhook-https.mjs` (`webhook-https-rejected.png`) |
 | 6.2.1 | Debug surfaces absent in production — `/auth/dev/token` returning 404, `/health` with no `db_error` field | `need` |
 
@@ -75,6 +78,8 @@ what the product actually renders.
 |-----|----------|--------|
 | 6.7.1 | A documented access-control policy for server-side secrets: who can read what, through which path, and how access is logged and monitored | `have`: [secrets-access-policy.md](secrets-access-policy.md) |
 | 6.7.1 | Evidence that secret access is logged — Secret Manager Data Access logs plus a sink with locked retention | `need` — the config is written (`infra/modules/audit-logging/`); once applied, capture the output of the "Verifying the controls" commands in [secrets-access-policy.md](secrets-access-policy.md): `auditConfigs`, the locked 400-day bucket, and a sample `AccessSecretVersion` entry naming its caller |
+| 6.7.1 / 3.1.1 | Evidence that each workload reads only its own secrets and no service account holds a project-wide Secret Manager or Cloud SQL admin role | `have` / `need` — applied 2026-10-23. Measured on both projects: the project policy with only the conditional `secretAccessor`, no `cloudsql.admin`, each secret's per-workload binding, every workload on its own account, and fresh revisions going Ready. Still `need`: the Policy Troubleshooter allow/deny checks (step 4 of the "Verify" block in [least-privilege-iam.md](../../runbooks/least-privilege-iam.md)). `policytroubleshooter.googleapis.com` must be enabled on the caller's quota project. Also still `need`: a dev scheduler `db-start`/`db-stop` returning 200 after the apply (step 6) |
+| 4.1.1 / 6.7.1 | Evidence that the API is reachable only through the load balancer, so Cloud Armor and the SSL policy cannot be bypassed | `have` — measured 2026-10-22: ingress `internal-and-cloud-load-balancing`, `*.run.app` 404, `api.overslash.com` 200. Re-capture with the ingress block in [lb-hardening.md](../../runbooks/lb-hardening.md#verify--evidence-for-the-casa-pack) |
 | 6.7.1 | Evidence that the cache holding resolver PII requires AUTH and TLS | `need` — the config is written (`infra/modules/memorystore/main.tf`, Memorystore for Valkey); once applied, capture the first three checks of step 7 in [memorystore-valkey.md](../../runbooks/memorystore-valkey.md): `authorizationMode: IAM_AUTH`, `transitEncryptionMode: SERVER_AUTHENTICATION`, and both services running with `*_AUTH=gcp-iam`, no password, and the CA by `secretKeyRef` |
 | 6.1.1 | A dependency-update and vulnerability-response policy: scan cadence, severity triage, patch SLA, and the justified-exception process for `rsa` and `paste` | `have`: [dependency-vulnerability-policy.md](dependency-vulnerability-policy.md), with the exceptions as config in `deny.toml` / `osv-scanner.toml` |
 | — | `SECURITY.md` with a vulnerability disclosure policy and a security contact. Not a numbered CASA requirement, but its absence on a public repo hosting a credential vault is the cheapest possible finding to avoid | `have`: [`SECURITY.md`](../../../SECURITY.md) (contact, response and fix SLAs matching [dependency-vulnerability-policy.md](dependency-vulnerability-policy.md), scope, safe harbor) |
@@ -87,4 +92,5 @@ what the product actually renders.
 | For | Artifact | Status |
 |-----|----------|--------|
 | 6.1.1 | Dependency scan output: the *Dependency audit* jobs (`cargo-deny`, `npm audit`, OSV). Take a recent scheduled run against `master`, which shows the two justified ignores filtered with their reasons | `have`: GitHub Actions, `.github/workflows/deps-audit.yml` |
+| 3.1.1 | `gcloud storage buckets describe` for `overslash_cloudbuild` and `overslash-dev_cloudbuild`: UBLA `true`, public-access prevention `enforced`, the 30-day delete rule, an empty `acl`, and no objects | `have` — measured 2026-10-23 on both projects, every field as listed. Re-capture with the verify step of [cloud-build-bucket.md](../../runbooks/cloud-build-bucket.md) |
 | The 18 DAST-validated requirements | An authenticated Burp Suite scan run with the ADA Burp Audit Scan Configuration. Developer-run at AL1; lab-run at AL2 | `need` — see [dast-readiness.md](dast-readiness.md) |

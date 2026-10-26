@@ -36,6 +36,19 @@ ignore = [
     # has jsonwebtoken moved to it (or grown per-algorithm features)?
     { id = "RUSTSEC-2023-0071", reason = "rsa: Marvin timing attack needs a private RSA key; we only use HS256 via jsonwebtoken, no RSA key is ever loaded. No upstream fix. review-by: 2026-12-22" },
 
+    # crypto-bigint 0.5.5 — secret-dependent branches in operations meant to
+    # be constant-time (RUSTSEC-2026-0387, unscored). The only fix is 0.7.6, a
+    # semver-major; elliptic-curve 0.13 pins ^0.5 and no jsonwebtoken release
+    # has moved off it, so there is nothing compatible to bump to. Reaches us
+    # only through jsonwebtoken's `rust_crypto` backend (p256/p384 ->
+    # elliptic-curve), which compiles every algorithm in. We never use an EC
+    # algorithm: HS256 in services/jwt.rs and RS256 in
+    # services/google_directory.rs; no EC key is ever constructed, so the
+    # vulnerable arithmetic is linked but unreachable. Re-check on review: has
+    # jsonwebtoken moved to elliptic-curve 0.14 / crypto-bigint 0.7, or grown
+    # per-algorithm features? Alternative: its `aws_lc_rs` backend.
+    { id = "RUSTSEC-2026-0387", reason = "crypto-bigint: timing side channels in EC arithmetic; reaches us only via jsonwebtoken's rust_crypto p256/p384, and we never use an EC algorithm or key. Fix is a semver-major (0.7.6) no dependent has adopted. review-by: 2026-12-22" },
+
     # paste 1.0.15 — unmaintained (the author archived it), not a
     # vulnerability. A proc-macro: it runs at build time only and contributes
     # no runtime code. Pulled in by tokenizers (via fastembed) and rav1e (via

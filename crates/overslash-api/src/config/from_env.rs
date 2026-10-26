@@ -104,6 +104,13 @@ impl Config {
             live_map_enabled: env::flag("OVERSLASH_LIVE_MAP"),
             // Default-on; only an explicit falsey value disables it.
             magic_link_enabled: env::flag_or("MAGIC_LINK_ENABLED", true),
+            admin_step_up_max_age_secs: env::parse_opt("ADMIN_STEP_UP_MAX_AGE_SECS")
+                .filter(|n| *n > 0)
+                .unwrap_or(3600),
+            admin_step_up_callback_time_providers: parse_provider_keys(&env::or_default(
+                "ADMIN_STEP_UP_CALLBACK_TIME_PROVIDERS",
+                "github",
+            )),
             max_response_body_bytes: env::parse_opt("MAX_RESPONSE_BODY_BYTES").unwrap_or(5_242_880), // 5 MB
             audit_response_body_max_bytes: env::parse_opt("AUDIT_RESPONSE_BODY_MAX_BYTES")
                 .unwrap_or(65_536), // 64 KB

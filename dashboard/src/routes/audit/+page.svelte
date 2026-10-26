@@ -38,9 +38,15 @@
 	const currentUser = data.user
 		? { id: data.user.identity_id, name: data.user.name }
 		: undefined;
-	const searchKeys = buildAuditSearchKeys(identities, currentUser);
+	// `user` values are labelled by email like the User column. Read once: the
+	// keys and the initial bar value are built at init, not re-derived.
 	// svelte-ignore state_referenced_locally
-	let searchValue = $state<SearchValue>(filtersToSearch(data.filters, identities, currentUser));
+	const shortEmail = fmt.short;
+	const searchKeys = buildAuditSearchKeys(identities, currentUser, shortEmail);
+	// svelte-ignore state_referenced_locally
+	let searchValue = $state<SearchValue>(
+		filtersToSearch(data.filters, identities, currentUser, shortEmail)
+	);
 	// Keyset cursor rather than a row offset: `OFFSET n` walks n+limit index
 	// entries, so scrolling a long log would get slower with every page.
 	// svelte-ignore state_referenced_locally
@@ -126,7 +132,7 @@
 
 	function onSearchChange(next: SearchValue) {
 		searchValue = next;
-		applyFilters(searchToFilters(next, identities, currentUser));
+		applyFilters(searchToFilters(next, identities, currentUser, shortEmail));
 	}
 
 	/** Add `tag = <t>` to the active search. Tags AND, so clicking a second chip

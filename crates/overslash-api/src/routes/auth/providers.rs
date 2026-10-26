@@ -3,6 +3,10 @@
 use super::*;
 use super::{provisioning::*, userinfo::*};
 
+/// The OIDC `claims` request that makes Google put `auth_time` in its ID
+/// token ("session age claims"; Google's Sign-In security bundle).
+const GOOGLE_AUTH_TIME_CLAIMS: &str = r#"{"id_token":{"auth_time":{"essential":true}}}"#;
+
 // ---------------------------------------------------------------------------
 // Query params
 // ---------------------------------------------------------------------------
@@ -23,6 +27,15 @@ pub(super) struct LoginQuery {
     /// `PREVIEW_ORIGIN_ALLOWLIST`. Silently ignored otherwise — the feature
     /// must remain invisible on prod.
     preview_origin: Option<String>,
+    /// A step-up sign-in for an admin action (`services::admin_step_up`):
+    /// ask the IdP to re-authenticate rather than reuse its own session.
+    #[serde(default)]
+    step_up: bool,
+    /// The shared org a root step-up is for (an org with no IdP of its own,
+    /// whose members sign in at the root). The callback re-scopes the new
+    /// session into it, if the human is a member, instead of leaving them in
+    /// their personal org.
+    step_up_org: Option<Uuid>,
 }
 
 #[derive(Deserialize)]
@@ -153,7 +166,7 @@ pub(super) async fn provider_login(
 
     let scopes = scopes_for_provider(&provider_key);
 
-    let auth_url = oauth::build_auth_url(
+    let mut auth_url = oauth::build_auth_url(
         &provider,
         &client_id,
         &redirect_uri,
@@ -164,6 +177,31 @@ pub(super) async fn provider_login(
         // has not identified themselves yet, so there is no account to hint at.
         None,
     );
+    // OIDC `max_age=0` makes the IdP re-authenticate (and run its MFA) instead
+    // of answering from its own session, and the callback then takes the ID
+    // token's `auth_time` as the sign-in time — so an IdP that ignores it
+    // yields a stale session, not a pass, and one that omits `auth_time`
+    // (which §3.1.2.1 makes REQUIRED once `max_age` is sent) yields none. `prompt=login` says the same to IdPs
+    // that key on it (Okta, Entra, Auth0); Google rejects that value, and its
+    // `max_age` is enough. GitHub is not OIDC and has neither; its step-up is
+    // a fresh round-trip, and its 2FA policy is the org's to require.
+    // Google sends `auth_time` only when asked for it here (and the OAuth
+    // client has session age claims enabled). Without it a Google sign-in
+    // records no sign-in time and cannot pass the admin step-up.
+    if provider_key == "google" {
+        auth_url.push_str("&claims=");
+        auth_url.push_str(&urlencoding::encode(GOOGLE_AUTH_TIME_CLAIMS));
+    }
+    if query.step_up && provider_key != "github" {
+        auth_url.push_str("&max_age=0");
+        let has_prompt = provider
+            .extra_auth_params
+            .as_object()
+            .is_some_and(|m| m.contains_key("prompt"));
+        if provider_key != "google" && !has_prompt {
+            auth_url.push_str("&prompt=login");
+        }
+    }
 
     let mut headers = HeaderMap::new();
 
@@ -195,6 +233,16 @@ pub(super) async fn provider_login(
         if let Some(next) = sanitized_next.as_deref() {
             let next_cookie = auth_cookie(&state, cookies::AUTH_NEXT, next);
             headers.append(header::SET_COOKIE, next_cookie.parse().unwrap());
+        }
+        // Bound to this login's nonce, so an abandoned step-up cannot steer a
+        // later, ordinary sign-in into the org.
+        if let (true, Some(org_id)) = (query.step_up, query.step_up_org) {
+            let org_cookie = auth_cookie(
+                &state,
+                cookies::AUTH_STEP_UP_ORG,
+                &format!("{nonce}.{org_id}"),
+            );
+            headers.append(header::SET_COOKIE, org_cookie.parse().unwrap());
         }
     }
 
@@ -404,8 +452,49 @@ pub(super) async fn provider_callback(
             user_id: Some(resolved_user_id),
             email: email.clone(),
         },
+        user_sessions::SignIn::Idp {
+            provider_key: provider_key.clone(),
+            amr: authn_methods(&userinfo.claims),
+            acr: userinfo
+                .claims
+                .get("acr")
+                .and_then(|v| v.as_str())
+                .map(str::to_owned),
+            auth_time: authn_time(&userinfo.claims).or_else(|| {
+                state
+                    .config
+                    .admin_step_up_callback_time_providers
+                    .contains(&provider_key)
+                    .then(time::OffsetDateTime::now_utc)
+            }),
+        },
     )
     .await?;
+
+    // A root step-up for a shared org lands back in that org: same session,
+    // re-scoped, so its fresh `authenticated_at` carries over (a re-scope is
+    // not a sign-in, and keeps it). Only at the root, and only into an org the
+    // human belongs to — the cookie names a target, it grants nothing.
+    let step_up_org = cookies::read(&headers, &state, cookies::AUTH_STEP_UP_ORG);
+    let mut landed_org = None;
+    let token = match step_up_org
+        .as_deref()
+        .and_then(|v| v.split_once('.'))
+        .filter(|(n, _)| *n == state_nonce_expected)
+        .and_then(|(_, org)| Uuid::parse_str(org).ok())
+        .filter(|_| org_slug.is_none())
+    {
+        Some(target) => {
+            match rescope_into(&state, &ext, &token, resolved_user_id, target, &email).await? {
+                Some((rescoped, org)) => {
+                    landed_org = Some(org);
+                    rescoped
+                }
+                None => token,
+            }
+        }
+        None => token,
+    };
 
     // Vercel preview-deployment handoff branch. The session cookie can't
     // be set on `api.dev.overslash.com` and read on `<preview>.vercel.app`
@@ -463,6 +552,10 @@ pub(super) async fn provider_callback(
         &mut resp_headers,
         cookies::legacy_session_clears_for(&state),
     );
+    if step_up_org.is_some() {
+        let clear = clear_auth_cookie(&state, cookies::AUTH_STEP_UP_ORG);
+        resp_headers.append(header::SET_COOKIE, clear.parse().unwrap());
+    }
 
     // Non-preview path: fall back to the configured dashboard URL when the
     // caller had no explicit `next`. (The preview branch above handles its
@@ -477,8 +570,82 @@ pub(super) async fn provider_callback(
     // across the bounce on the shared `session_cookie_domain`; combine it
     // with `app_host_suffix` to reconstruct the original origin and turn
     // the redirect absolute.
-    let redirect_target = absolute_redirect_for_org(&state, &headers, &next_path);
+    let redirect_target = match &landed_org {
+        Some(org) => org_app_url(&state, &org.slug, &next_path).unwrap_or(next_path),
+        None => absolute_redirect_for_org(&state, &headers, &next_path),
+    };
     Ok((resp_headers, Redirect::to(&redirect_target)).into_response())
+}
+
+/// Re-scope a just-minted root session into `target`, a shared org `user_id`
+/// belongs to. `None` (leave it where it is) for anything else.
+async fn rescope_into(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    token: &str,
+    user_id: Uuid,
+    target: Uuid,
+    email: &str,
+) -> Result<Option<(String, org::OrgRow)>, AppError> {
+    let Some(org) = org::get_by_id(state.db(ext), target).await? else {
+        return Ok(None);
+    };
+    if org.is_personal
+        || membership::find(state.db(ext), user_id, target)
+            .await?
+            .is_none()
+    {
+        return Ok(None);
+    }
+    let Some(identity) =
+        overslash_db::repos::identity::find_by_org_and_user(state.db(ext), target, user_id).await?
+    else {
+        return Ok(None);
+    };
+    let subject = user_sessions::Subject {
+        identity_id: identity.id,
+        org_id: target,
+        user_id: Some(user_id),
+        email: identity.email.clone().unwrap_or_else(|| email.to_string()),
+    };
+    Ok(user_sessions::rescope_token(state, ext, token, subject)
+        .await?
+        .map(|t| (t, org)))
+}
+
+/// The ID token's `amr` (RFC 8176 method references), as strings. Some IdPs
+/// send a single string instead of an array; anything else is ignored.
+fn authn_methods(claims: &serde_json::Map<String, serde_json::Value>) -> Vec<String> {
+    match claims.get("amr") {
+        Some(serde_json::Value::Array(items)) => items
+            .iter()
+            .filter_map(|v| v.as_str())
+            .map(str::to_owned)
+            .collect(),
+        Some(serde_json::Value::String(one)) => vec![one.clone()],
+        _ => Vec::new(),
+    }
+}
+
+/// The ID token's `auth_time` (OIDC Core §2: seconds since the epoch, a JSON
+/// number). Accepted as an integer, a fractional number, or a numeric string,
+/// since IdPs disagree; anything else is `None`, which records no sign-in
+/// time rather than the callback's — see `SignIn::Idp::auth_time`.
+fn authn_time(claims: &serde_json::Map<String, serde_json::Value>) -> Option<time::OffsetDateTime> {
+    let secs = match claims.get("auth_time")? {
+        serde_json::Value::Number(n) => n.as_i64().or_else(|| n.as_f64().map(|f| f as i64))?,
+        serde_json::Value::String(s) => {
+            let s = s.trim();
+            s.parse::<i64>().ok().or_else(|| {
+                s.parse::<f64>()
+                    .ok()
+                    .filter(|f| f.is_finite())
+                    .map(|f| f as i64)
+            })?
+        }
+        _ => return None,
+    };
+    time::OffsetDateTime::from_unix_timestamp(secs).ok()
 }
 
 // ---------------------------------------------------------------------------
@@ -709,4 +876,37 @@ pub(super) async fn list_auth_providers(
     Ok(axum::Json(
         json!({ "providers": providers, "scope": "root" }),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn claims(v: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+        json!({ "auth_time": v }).as_object().unwrap().clone()
+    }
+
+    #[test]
+    fn auth_time_parses_integers_fractions_and_numeric_strings() {
+        let at = |v| authn_time(&claims(v)).map(|t| t.unix_timestamp());
+        assert_eq!(at(json!(1_700_000_000)), Some(1_700_000_000));
+        assert_eq!(at(json!(1_700_000_000.75)), Some(1_700_000_000));
+        assert_eq!(at(json!("1700000000")), Some(1_700_000_000));
+        assert_eq!(at(json!(" 1700000000.5 ")), Some(1_700_000_000));
+    }
+
+    #[test]
+    fn an_unusable_auth_time_is_none() {
+        for v in [
+            json!(null),
+            json!(true),
+            json!("yesterday"),
+            json!("NaN"),
+            json!([1_700_000_000]),
+            json!(i64::MAX),
+        ] {
+            assert_eq!(authn_time(&claims(v.clone())), None, "{v}");
+        }
+        assert_eq!(authn_time(&serde_json::Map::new()), None);
+    }
 }

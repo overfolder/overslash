@@ -667,6 +667,8 @@ where
         public_url: format!("http://{addr}"),
         dev_auth_enabled: false,
         magic_link_enabled: true,
+        admin_step_up_max_age_secs: 3600,
+        admin_step_up_callback_time_providers: vec!["github".into()],
         max_response_body_bytes: 5_242_880,
         audit_response_body_max_bytes: 65_536,
         filter_timeout_ms: 2000,
@@ -910,6 +912,8 @@ pub async fn start_api_with_dev_auth(pool: PgPool) -> (String, Client) {
         public_url: format!("http://{addr}"),
         dev_auth_enabled: true,
         magic_link_enabled: true,
+        admin_step_up_max_age_secs: 3600,
+        admin_step_up_callback_time_providers: vec!["github".into()],
         max_response_body_bytes: 5_242_880,
         audit_response_body_max_bytes: 65_536,
         filter_timeout_ms: 2000,
@@ -1114,6 +1118,8 @@ where
         public_url: public_url.to_string(),
         dev_auth_enabled: true,
         magic_link_enabled: true,
+        admin_step_up_max_age_secs: 3600,
+        admin_step_up_callback_time_providers: vec!["github".into()],
         max_response_body_bytes: 5_242_880,
         audit_response_body_max_bytes: 65_536,
         filter_timeout_ms: 2000,
@@ -1233,6 +1239,8 @@ where
         .merge(overslash_api::routes::groups::router())
         .merge(overslash_api::routes::directory_groups::router())
         .merge(overslash_api::routes::google_directory::router())
+        .merge(overslash_api::mcp_oauth_routes(&state))
+        .merge(overslash_api::routes::oauth::consent_router())
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             overslash_api::middleware::session_gate::session_gate,
@@ -1888,6 +1896,8 @@ where
         public_url: format!("http://{addr}"),
         dev_auth_enabled: false,
         magic_link_enabled: true,
+        admin_step_up_max_age_secs: 3600,
+        admin_step_up_callback_time_providers: vec!["github".into()],
         max_response_body_bytes: 5_242_880,
         audit_response_body_max_bytes: 65_536,
         filter_timeout_ms: 2000,
@@ -2082,6 +2092,8 @@ pub async fn start_api_for_search(pool: PgPool) -> (String, Client) {
         public_url: "http://localhost:3000".into(),
         dev_auth_enabled: false,
         magic_link_enabled: true,
+        admin_step_up_max_age_secs: 3600,
+        admin_step_up_callback_time_providers: vec!["github".into()],
         max_response_body_bytes: 5_242_880,
         audit_response_body_max_bytes: 65_536,
         filter_timeout_ms: 2000,
@@ -2249,6 +2261,8 @@ pub async fn start_api_with_body_limit(pool: PgPool, max_bytes: usize) -> (Socke
         public_url: format!("http://{addr}"),
         dev_auth_enabled: false,
         magic_link_enabled: true,
+        admin_step_up_max_age_secs: 3600,
+        admin_step_up_callback_time_providers: vec!["github".into()],
         max_response_body_bytes: max_bytes,
         audit_response_body_max_bytes: 65_536,
         filter_timeout_ms: 2000,
@@ -2602,6 +2616,8 @@ pub async fn make_app_state(pool: PgPool) -> overslash_api::AppState {
         public_url: "http://localhost:3000".into(),
         dev_auth_enabled: false,
         magic_link_enabled: true,
+        admin_step_up_max_age_secs: 3600,
+        admin_step_up_callback_time_providers: vec!["github".into()],
         max_response_body_bytes: 5_242_880,
         audit_response_body_max_bytes: 65_536,
         filter_timeout_ms: 2000,

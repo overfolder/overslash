@@ -16,7 +16,7 @@ The prior `feat/mcp-hosting` branch tried to bundle this with *hosting* (subproc
 - A service template can declare `x-overslash-runtime: mcp` with an `x-overslash-mcp` block.
 - Agents invoke its tools through `/v1/actions/call` exactly as they would an HTTP action.
 - Permission chain, approval bubbling, and audit semantics are unchanged.
-- Auth supported: `none`, `bearer` (via the org secret vault), `oauth` (via a provider connection — HubSpot/Slack remote MCP; see below).
+- Auth supported: `none`, `bearer` (via the org secret vault), `oauth` (via a provider connection — HubSpot remote MCP; see below).
 - Streamable HTTP transport only (MCP 2025-06-18). No stdio, no subprocess, no hosting.
 
 ## Template shape
@@ -46,11 +46,11 @@ x-overslash-mcp:
 
 ```yaml
 x-overslash-mcp:
-  url: https://mcp.slack.com/mcp     # or https://mcp.hubspot.com
+  url: https://mcp.hubspot.com
   auth:
     kind: oauth
-    provider: slack                  # an oauth_providers row
-    scopes: [chat:write, channels:read, ...]   # superset requested at connect
+    provider: hubspot                # an oauth_providers row
+    scopes: [crm.objects.contacts.read, ...]   # superset requested at connect
 ```
 
 `kind: oauth` authenticates to the upstream MCP server with a live token from a
@@ -60,8 +60,10 @@ provider **connection**, not a static vault secret. At call time
 `Authorization: Bearer <token>` — mirroring HTTP-runtime `ServiceAuth::OAuth`.
 This is distinct from the DCR-based resource-server flow in the non-goals below:
 it reuses a **pre-configured** provider client, so it works with MCP auth
-servers that don't support Dynamic Client Registration (e.g. Slack, HubSpot).
-`services/hubspot.yaml` and `services/slack.yaml` are the shipped examples.
+servers that don't support Dynamic Client Registration (e.g. HubSpot).
+`services/hubspot.yaml` is the shipped example. Slack used this kind until its
+MCP server turned out to admit only Marketplace-listed apps, so it now goes
+through the Web API (see DECISIONS, "Slack goes through its Web API").
 
 - `tools[]` is the admin-authored overlay (risk, scope_param, disabled, description/schema overrides).
 - A template's `discovered_tools[]` may ship in-repo (globals) or be authored; it compiles into the template's action set.

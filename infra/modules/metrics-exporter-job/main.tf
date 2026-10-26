@@ -1,10 +1,11 @@
 # Cloud Run Job + Cloud Scheduler trigger for the business-metrics exporter.
 #
 # The job runs on a 5-minute Cloud Scheduler cron, queries Postgres in
-# parallel, and pushes ~15 time-series to Cloud Monitoring. It uses the
-# Cloud Run service account, which must already have:
+# parallel, and pushes ~15 time-series to Cloud Monitoring. It runs as its own
+# service account (modules/iam), which must already have:
 #   - roles/cloudsql.client (Cloud SQL connector)
 #   - roles/monitoring.metricWriter (timeSeries.create)
+# Its one secret, the DB password, is granted below.
 
 variable "project_id" {
   type = string
@@ -86,6 +87,14 @@ variable "vpc_connector_id" {
   type        = string
   default     = ""
   description = "Serverless VPC Access connector ID. Required when use_private_vpc = true."
+}
+
+# The only secret this identity can read (CASA 6.7.1).
+resource "google_secret_manager_secret_iam_member" "db_password" {
+  project   = var.project_id
+  secret_id = var.db_password_secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${var.service_account_email}"
 }
 
 resource "google_cloud_run_v2_job" "exporter" {
@@ -172,6 +181,8 @@ resource "google_cloud_run_v2_job" "exporter" {
       client_version,
     ]
   }
+
+  depends_on = [google_secret_manager_secret_iam_member.db_password]
 }
 
 resource "google_cloud_scheduler_job" "tick" {

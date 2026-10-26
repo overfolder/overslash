@@ -128,7 +128,13 @@
 			submitting = false;
 			if (e instanceof ApiError) {
 				const body = e.body as { error?: string } | undefined;
-				errorMsg = body?.error ?? `Request failed (${e.status}).`;
+				// An org admin's agent can do admin work, so connecting one needs
+				// the admin step-up; the root layout's StepUpModal offers it and
+				// brings the human back here to finish the same request.
+				errorMsg =
+					body?.error === 'step_up_required'
+						? 'You administer this org, so connecting an agent needs a fresh sign-in. Sign in again, then connect.'
+						: (body?.error ?? `Request failed (${e.status}).`);
 			} else {
 				errorMsg = 'Unexpected error.';
 			}

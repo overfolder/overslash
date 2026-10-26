@@ -188,18 +188,46 @@ operator applies it; re-measure afterwards. Policy:
 
 The last row is a genuine positive and the answer to a question labs always ask.
 
+**The `secretAccessor` and `cloudsql.admin` rows: fixed and applied (2026-10-23), re-measured on both projects.**
+`roles/secretmanager.secretAccessor` is no longer granted project-wide. Each workload has
+its own service account (`-run` for the API, `-exporter`, `-shortener`, `-overfwd`). The
+API's grant carries an IAM condition that admits only secrets named `overslash-<env>-*`
+minus the operator-only PagerDuty key (`infra/modules/secret-manager`). The other three are
+granted their secrets one by one: two for the shortener, one each for overfwd and the
+exporter. The scheduler's `cloudsql.admin` becomes a two-permission custom role
+(`cloudsql.instances.get` and `.update`), conditioned on the one instance and granted only
+where night shutdown runs. Prod has none, so its scheduler holds no Cloud SQL role at all.
+Re-measured 2026-10-23. `get-iam-policy` filtered on `secretAccessor` / `cloudsql.admin`
+returns one row per project: `secretAccessor` → `overslash-<env>-run`, condition
+"overslash-<env>-* secrets, minus operator-only". Dev's scheduler holds
+`overslash_dev_sql_start_stop` conditioned on "overslash-dev-db only". Each Cloud Run service
+and the exporter job run as their own account. `db-password` → `-exporter`,
+`overfwd-gateway-key` → `-overfwd`, and in prod `shortener-api-key` and `cache-server-ca` →
+`-shortener`. Apply and verify: [least-privilege-iam.md](../../runbooks/least-privilege-iam.md). Policy:
+[secrets-access-policy.md](secrets-access-policy.md). The `serviceAccountUser` row is
+unchanged.
+
 ### Cloud Run
 
-| Service | Ingress |
-|---|---|
-| `overslash-prod-api` | **`all`** |
-| `overslash-prod-overfwd` | **`all`** |
-| `overslash-prod-shortener` | **`all`** |
+| Service | Ingress, 2026-09-22 | Ingress, re-measured 2026-10-22 |
+|---|---|---|
+| `overslash-prod-api` | **`all`** | **`internal-and-cloud-load-balancing`** — `*.run.app/health` returns 404, `api.overslash.com/health` 200 |
+| `overslash-prod-overfwd` | **`all`** | `all` |
+| `overslash-prod-shortener` | **`all`** | `all` |
+| `overslash-dev-api` | — | `all` |
 
-`overslash-prod-api` sits behind the GCLB, so `all` means its raw `*.run.app` URL stays
-directly reachable and bypasses the load balancer's host allowlist, its access logging, and
-any Cloud Armor policy added later. The correct value for an LB-fronted service is
-`INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER`.
+**Production API: fixed and applied.** On 2026-09-22 `all` left the raw `*.run.app` URL
+reachable, bypassing the load balancer's host allowlist, its access logging and Cloud
+Armor. The service is now `INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER` (`infra/main.tf`, on
+whenever `enable_api_lb` is), and a prod `tofu plan` is clean. Every caller was checked
+first: none uses the `run.app` URL
+([lb-hardening.md](../../runbooks/lb-hardening.md#what-changes-for-clients)).
+
+**Accepted residuals.** `overslash-dev-api` has no LB. Its hosts are Cloud Run domain
+mappings, which LB-only ingress would cut off. overfwd and the shortener have no LB in
+either environment and authenticate their own callers (a bearer key, and a public redirect
+service whose write path needs `API_KEY`). For all three, `all` is the only setting that
+keeps them reachable.
 
 ### Load balancer — production
 
@@ -216,13 +244,24 @@ evidence, and a change to Google's default would move it silently.
 
 Both are now declared in `infra/modules/api-lb/main.tf` — an SSL policy (TLS 1.2 minimum,
 `RESTRICTED`) and a Cloud Armor policy (OWASP rules in preview). Apply steps and
-verification: [lb-hardening.md](../../runbooks/lb-hardening.md). Re-measure this table after
-the apply; until then the values above are still what is live.
+verification: [lb-hardening.md](../../runbooks/lb-hardening.md).
+
+**Re-measured 2026-10-22, applied:**
+
+| | |
+|---|---|
+| `gcloud compute ssl-policies list` | `overslash-prod-api-ssl-policy`, `RESTRICTED`, `TLS_1_2`, on `overslash-prod-api-https-proxy` |
+| `gcloud compute security-policies list` | `overslash-prod-api-armor`, on `overslash-prod-api-backend` (logging on) |
 
 ### Secret Manager
 
-16 secrets in each project. **None declares `rotation`, `nextRotationTime` or
-`expireTime`.** Every consumer pins `version = "latest"`, so a rotation is a revision roll
+16 secrets in each project on 2026-09-22, and 30 in prod and 26 in dev on 2026-10-22.
+Every one is named `overslash-<env>-*`, which is the namespace the API's
+conditional grant matches. Two prod secrets, `overslash-prod-valkey-auth` and
+`-valkey-server-ca`, belong to the deleted Memorystore for Redis instance. Their cleanup is
+step 8 of [memorystore-valkey.md](../../runbooks/memorystore-valkey.md), and it is a
+pre-flight of [least-privilege-iam.md](../../runbooks/least-privilege-iam.md).
+**None declares `rotation`, `nextRotationTime` or `expireTime`.** Every consumer pins `version = "latest"`, so a rotation is a revision roll
 rather than a config change — good — but nothing schedules, tracks or alerts on rotation
 age, which is the shape of evidence 6.7.1 asks for.
 
@@ -258,9 +297,20 @@ gap is CMEK, which matters because versioning retains every historical value of 
 generated `encryption-key` for 90 days.
 
 `overslash_cloudbuild` is auto-created by Cloud Build, **not managed by Terraform**, and
-holds source archives of the repository uploaded for each build — under legacy ACLs rather
-than uniform bucket-level access, with public-access prevention merely inherited rather
-than enforced. Same finding in dev.
+holds a source archive of the repository — under legacy ACLs rather than uniform
+bucket-level access, with public-access prevention merely inherited rather than enforced.
+Same finding in dev.
+
+Followed up 2026-10-21. Both buckets are in the `US` multi-region and each holds exactly one
+archive, from a manual `gcloud builds submit` on 2026-04-29. No trigger writes there: all
+three are GitHub-connected and clone from GitHub. The archive is a working-directory dump.
+With no `.gcloudignore`, gcloud honoured `.gitignore` but not `.git/info/exclude`, so it
+uploaded a local-only `.claude/settings.local.json`. Project viewers could read it through
+the legacy `READER` ACL. **Fixed and applied 2026-10-23:** `infra/modules/cloud-build-source/`
+imports both buckets with UBLA on, public-access prevention `enforced` and a 30-day delete
+rule, and a root `.gcloudignore` closes the upload path. Re-measured on both projects:
+UBLA `true`, prevention `enforced`, the lifecycle rule present, an empty `acl`, and no live
+objects. Apply, archive deletion and evidence commands: [cloud-build-bucket.md](../../runbooks/cloud-build-bucket.md).
 
 ### Supply chain and organization policy
 
@@ -278,6 +328,18 @@ all unset. Every guardrail in this stack is convention expressed in HCL, so a `g
 command or a console click moves the project outside it without failing anything.
 
 ---
+
+### DNS — not in either project
+
+Neither project has a Cloud DNS zone: `enable_dns = false` in both tfvars, and both zones are
+on Namecheap BasicDNS, unsigned. The records GCP depends on — the Certificate Manager ACME
+CNAME for the prod wildcard cert (`_acme-challenge.api`), the `ghs.googlehosted.com` CNAMEs
+for every Cloud Run domain mapping, the GCLB A/AAAA — are therefore created by hand from
+Terraform outputs. They are listed with their owning project in
+[subdomain-inventory.md](subdomain-inventory.md) and checked daily against live DNS
+(CASA 6.4.1). One finding: a `*.api.dev` wildcard CNAME to `ghs.googlehosted.com` with
+only four names mapped in `overslash-dev`, accepted as a dev-only risk (only a Search Console
+owner of the domain can create a mapping under it).
 
 ## How this scan was run
 
@@ -315,7 +377,8 @@ No verdict is overturned. It does three things:
    reading the module.
 3. **Adds three findings the IaC could not show**: `roles/editor` on two GCP-default
    service accounts; the unmanaged `_cloudbuild` bucket holding repository source archives
-   without uniform bucket-level access; and the confirmation that production runs 8 alert
+   without uniform bucket-level access (fixed and applied 2026-10-23 —
+   [cloud-build-bucket.md](../../runbooks/cloud-build-bucket.md)); and the confirmation that production runs 8 alert
    policies and **zero** uptime checks, so the `[P0] API Down` page does not exist.
 
 And it supplies better evidence than prose: "Google's own Recommender rates this P2, with a
