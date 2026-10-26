@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.24.0](https://github.com/overfolder/overslash/compare/v0.23.0...v0.24.0) (2026-10-26)
+
+
+### Features
+
+* **auth:** admin-class mutations need a fresh IdP sign-in (CASA 3.3.1, 2.4.1) ([#823](https://github.com/overfolder/overslash/issues/823)) ([338d608](https://github.com/overfolder/overslash/commit/338d6084b4f5a08ab6e540de550c18b20501bdea))
+* **infra:** least-privilege IAM for secrets and Cloud SQL; document LB-only ingress ([#815](https://github.com/overfolder/overslash/issues/815)) ([f6b93d8](https://github.com/overfolder/overslash/commit/f6b93d8e811736bfaf0a902644865c356c71c3dd))
+* **metabase:** create, update and delete saved questions ([#833](https://github.com/overfolder/overslash/issues/833)) ([81a6023](https://github.com/overfolder/overslash/commit/81a60234714d10b871cf094d3161b93755b4e952))
+* **slack:** call Slack's Web API instead of its MCP server ([#814](https://github.com/overfolder/overslash/issues/814)) ([37eb608](https://github.com/overfolder/overslash/commit/37eb6087cc0f594b242b5da2c36a51fabd6a5219))
+
+
+### Bug Fixes
+
+* **auth:** enrolling an MCP client as an org admin needs the admin step-up ([#831](https://github.com/overfolder/overslash/issues/831)) ([9193e4f](https://github.com/overfolder/overslash/commit/9193e4f381d068fa892b52fbead03ebafafac44e))
+* **auth:** never take the callback time as an IdP sign-in's auth_time ([#832](https://github.com/overfolder/overslash/issues/832)) ([a485230](https://github.com/overfolder/overslash/commit/a485230ce8c5f96379d9b70cbe7ebb08af73b17a))
+* **dashboard:** audit user filter names users by email, not display name ([#824](https://github.com/overfolder/overslash/issues/824)) ([6b2705b](https://github.com/overfolder/overslash/commit/6b2705b81ed0cfbbe6e05275a5b37510b9198de6))
+* **deps:** bridge ctutils RUSTSEC-2026-0385 through the cooldown ([#816](https://github.com/overfolder/overslash/issues/816)) ([256ede5](https://github.com/overfolder/overslash/commit/256ede58afff31086ef9523df377aca112d400e6))
+* **deps:** bridge happy-dom GHSA-834v-8h66-3h79 through the cooldown ([#828](https://github.com/overfolder/overslash/issues/828)) ([fbf5ee4](https://github.com/overfolder/overslash/commit/fbf5ee4a0b1a46287a1a47efed7acd9f72fe9645))
+* **deps:** bump ctutils to 0.4.4 now instead of bridging the cooldown ([#825](https://github.com/overfolder/overslash/issues/825)) ([d741cfc](https://github.com/overfolder/overslash/commit/d741cfc9e5012e98cacfb5a8775b41baf543e1ce))
+* **deps:** bump happy-dom to 21.0.4; except crypto-bigint RUSTSEC-2026-0387 ([#834](https://github.com/overfolder/overslash/issues/834)) ([cefb8e3](https://github.com/overfolder/overslash/commit/cefb8e3662990579303c95f919130f076688a2ce))
+* **deps:** storybook 10.6.2; webpki emSign fixes (cooldown waived) ([#813](https://github.com/overfolder/overslash/issues/813)) ([13fa9fc](https://github.com/overfolder/overslash/commit/13fa9fc02c16e985a52312d800409892127d89a0))
+* **infra:** adopt and harden the &lt;project&gt;_cloudbuild buckets ([#811](https://github.com/overfolder/overslash/issues/811)) ([3ef3584](https://github.com/overfolder/overslash/commit/3ef3584ad124bf24c9907246bf24a8fc011a5b3d))
+
 ## [0.23.0](https://github.com/overfolder/overslash/compare/v0.22.0...v0.23.0) (2026-10-19)
 
 
