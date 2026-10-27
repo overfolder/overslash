@@ -50,6 +50,28 @@ nothing of the sort. Both bindings are project-creation defaults, invisible to T
 and there is no `constraints/iam.automaticIamGrantsForDefaultServiceAccounts` to stop them
 being recreated.
 
+**Remediation (2026-10-27).** Nothing depends on the default Compute SA: every Cloud Run
+service and job, Cloud Build trigger and Scheduler job runs as its own account, there are no
+instances, keys or `actAs` grants on it, and the one build ever run as it was the manual
+submit of 2026-04-29. The cloudservices agent's 12 exercised permissions are all
+`compute.instanceGroupManagers.*` / `instanceTemplates.*` / `instances.*` / `subnetworks.use`,
+which is the prod VPC connector's managed instance group. Dev has no connector and its agent
+holds no Editor.
+
+- Dev's default-SA binding was **removed by hand on 2026-10-27**, and `overslash-dev-api`
+  `/health` still returned 200.
+- Prod is **in code, pending apply**. `infra/modules/project-guardrails/` removes both
+  bindings with `google_project_iam_member_remove` and grants the cloudservices agent
+  `roles/compute.editor` first, but only where `use_private_vpc` (that is, where the
+  connector exists).
+- Both projects have since moved into the overspiral.com organization. Its inherited
+  policies already enforce `iam.automaticIamGrantsForDefaultServiceAccounts`. The module
+  pins that at project level and adds
+  `iam.managed.preventPrivilegedBasicRolesForDefaultServiceAccounts`, which also blocks a
+  later grant.
+
+Operator step: [project-guardrails.md](../../runbooks/project-guardrails.md).
+
 ---
 
 ## Measured configuration
@@ -326,6 +348,24 @@ Organization policy constraints set on either project: **none**.
 `storage.publicAccessPrevention` · `iam.automaticIamGrantsForDefaultServiceAccounts` are
 all unset. Every guardrail in this stack is convention expressed in HCL, so a `gcloud`
 command or a console click moves the project outside it without failing anything.
+
+**Update 2026-10-27: both projects now sit in the overspiral.com organization.** Measured
+effective policies on both projects. Google's secure-by-default set is inherited, notably:
+
+- `iam.automaticIamGrantsForDefaultServiceAccounts`, `iam.disableServiceAccountKeyUpload`,
+  `iam.disableCrossProjectServiceAccountUsage`, `iam.managed.disableServiceAccountKeyCreation`
+  (dev has a project opt-out for the Directory-sync key), `storage.uniformBucketLevelAccess`,
+  and `cloudbuild.useBuildServiceAccount` — all enforced.
+- `iam.allowedPolicyMemberDomains`, limited to the org's customer ID. This is why the public
+  Cloud Run services moved to `invoker_iam_disabled` instead of an `allUsers` binding.
+
+`sql.restrictPublicIp`, `storage.publicAccessPrevention`, `iam.disableAuditLoggingExemption`
+and `run.allowedIngress` remain unset at org level. The project-level half is in code,
+pending apply: `infra/modules/project-guardrails/`
+([project-guardrails.md](../../runbooks/project-guardrails.md)) sets the SQL pair (prod
+enforced, dev explicitly off), public-access prevention, the audit-exemption ban and the
+default-SA pair. `run.allowedIngress` waits on overfwd and the shortener leaving
+`INGRESS_TRAFFIC_ALL`.
 
 ---
 

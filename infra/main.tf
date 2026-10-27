@@ -12,6 +12,7 @@ resource "google_project_service" "apis" {
       "monitoring.googleapis.com",
       "logging.googleapis.com",
       "billingbudgets.googleapis.com",
+      "orgpolicy.googleapis.com",
     ],
     var.use_private_vpc ? [
       "servicenetworking.googleapis.com",
@@ -52,6 +53,27 @@ module "iam" {
   enable_overfwd   = var.enable_overfwd
 
   depends_on = [google_project_service.apis]
+}
+
+# --- Project guardrails: default-SA Editor removal + project org policies
+#     (CASA 3.1.1; docs/runbooks/project-guardrails.md) ---
+module "project_guardrails" {
+  source     = "./modules/project-guardrails"
+  project_id = var.project_id
+
+  vpc_connector_enabled              = var.use_private_vpc
+  restrict_sql_public_ip             = var.use_private_vpc
+  allow_service_account_key_creation = var.allow_service_account_key_creation
+
+  depends_on = [google_project_service.apis]
+}
+
+# Adopt the key-creation override set by hand on dev (2026-10-27). A no-op once
+# it is in state; prod has no hand-set policy, so it imports nothing there.
+import {
+  for_each = var.allow_service_account_key_creation ? toset(["adopt"]) : toset([])
+  to       = module.project_guardrails.google_org_policy_policy.service_account_key_creation
+  id       = "projects/${var.project_id}/policies/iam.managed.disableServiceAccountKeyCreation"
 }
 
 # --- Artifact Registry ---
