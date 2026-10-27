@@ -56,7 +56,7 @@
           "xyChart": {
             "dataSets": [{
               "timeSeriesQuery": {
-                "prometheusQuery": "sum by (template_key) (rate(overslash_upstream_responses_total{status_class=~\"5xx|error\"}[15m])) / clamp_min(sum by (template_key) (rate(overslash_upstream_responses_total[15m])), 1)"
+                "prometheusQuery": "sum by (template_key) (rate(overslash_upstream_responses_total{status_class=~\"5xx|error\"}[15m])) / clamp_min(sum by (template_key) (rate(overslash_upstream_responses_total[15m])), 0.001)"
               },
               "plotType": "LINE"
             }],
@@ -87,7 +87,7 @@
           "xyChart": {
             "dataSets": [{
               "timeSeriesQuery": {
-                "prometheusQuery": "sum by (provider) (rate(overslash_oauth_events_total{flow=\"refresh\",status=\"failure\"}[15m])) / clamp_min(sum by (provider) (rate(overslash_oauth_events_total{flow=\"refresh\"}[15m])), 1)"
+                "prometheusQuery": "sum by (provider) (rate(overslash_oauth_events_total{flow=\"refresh\",status=\"failure\"}[15m])) / clamp_min(sum by (provider) (rate(overslash_oauth_events_total{flow=\"refresh\"}[15m])), 0.001)"
               },
               "plotType": "LINE"
             }],

@@ -10,9 +10,8 @@ use crate::AppState;
 /// Upper bound on how long a probe may wait for Postgres.
 ///
 /// Without this, `PgPool::acquire` blocks for the pool's `acquire_timeout`
-/// (30 s by default) when the database is unreachable — long enough for the
-/// Cloud Run liveness probe to time out and recycle the container, which is
-/// exactly what the always-200 `/health` below exists to prevent.
+/// (30 s by default) when the database is unreachable, and the uptime check
+/// (10 s timeout) would read a hung database as a timeout rather than a 503.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
 // The `version` / `commit` / `sql_policy` fields in both bodies are
@@ -87,39 +86,27 @@ async fn probe_db(pool: &PgPool) -> DbProbe {
     }
 }
 
-/// Liveness. **Always 200**, even when Postgres is unreachable.
+/// Origin health: 200 when the process *and* Postgres are up, 503 otherwise.
 ///
-/// This endpoint backs the Cloud Run startup *and* liveness probes
-/// (`infra/modules/cloud-run/main.tf`) plus the Better Stack P0 monitor. If it
-/// failed on a Cloud SQL blip, Cloud Run would kill and restart every container
-/// mid-outage and the startup probe would block redeploys until the database
-/// recovered — the probe would amplify the incident instead of reporting it.
-///
-/// So DB state is reported in the body (`db`, plus `db_latency_ms` when up) and
-/// never in the status code. For a check that *fails* when the database is
-/// down, use [`ready`].
-async fn health(State(state): State<AppState>) -> Json<Value> {
-    let probe = probe_db(&state.db).await;
-    let info = build_info();
-    let mut body = json!({
-        "status": "ok",
-        "version": info.version,
-        "commit": info.commit,
-        "sql_policy": overslash_core::sql_policy::available(),
-    });
-    probe.extend(&mut body);
-    Json(body)
+/// This is what the GCM uptime check (`[P0] API Down`) and the Better Stack
+/// monitor probe, so a database outage pages. It used to be always-200 because
+/// the Cloud Run probes pointed here; they are TCP probes now
+/// (`infra/modules/cloud-run/main.tf`), so nothing restarts a container on a
+/// 503 from this endpoint.
+async fn health(State(state): State<AppState>) -> (StatusCode, Json<Value>) {
+    respond(probe_db(&state.db).await, "ok")
 }
 
-/// Readiness — 503 when Postgres is unreachable.
-///
-/// The gated counterpart to [`health`]: this is the one safe to point a
-/// load-balancer or an alerting monitor at, because failing it takes the
-/// instance out of rotation rather than restarting it.
+/// Readiness. Same gate as [`health`]; kept for the callers that use it.
 async fn ready(State(state): State<AppState>) -> (StatusCode, Json<Value>) {
-    let probe = probe_db(&state.db).await;
+    respond(probe_db(&state.db).await, "ready")
+}
+
+/// Shared body + status for both endpoints: `up_status` when the database
+/// answered, 503 `degraded` when it did not.
+fn respond(probe: DbProbe, up_status: &str) -> (StatusCode, Json<Value>) {
     let (code, status) = if probe.is_up() {
-        (StatusCode::OK, "ready")
+        (StatusCode::OK, up_status)
     } else {
         (StatusCode::SERVICE_UNAVAILABLE, "degraded")
     };
@@ -175,6 +162,18 @@ mod tests {
             body.get("db_error").is_none(),
             "the sqlx error must stay in the log, not the public body"
         );
+    }
+
+    #[test]
+    fn respond_is_503_degraded_when_db_is_down() {
+        let (code, Json(body)) = respond(DbProbe::Down, "ok");
+        assert_eq!(code, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body["status"], "degraded");
+        assert_eq!(body["db"], "down");
+
+        let (code, Json(body)) = respond(DbProbe::Up { latency_ms: 1 }, "ok");
+        assert_eq!(code, StatusCode::OK);
+        assert_eq!(body["status"], "ok");
     }
 
     #[test]

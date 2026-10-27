@@ -694,9 +694,16 @@ resource "google_cloud_run_v2_service" "api" {
           mount_path = "/cloudsql"
         }
 
+        # TCP, not `/health`: the probes ask only "is the process up", never
+        # "are its dependencies up". `/health` checks Postgres and 503s when it
+        # is down, and an HTTP liveness probe on it killed every instance
+        # within ~90s of a Cloud SQL stop (dev, nightly) — a replacement then
+        # cannot boot either, so the probe turned a DB outage into an API one.
+        # The startup probe loses nothing: the listener binds only after
+        # `create_app` has connected, migrated and preflighted.
+        # Dependency health is the uptime check's job (modules/monitoring).
         startup_probe {
-          http_get {
-            path = "/health"
+          tcp_socket {
             port = var.container_port
           }
           initial_delay_seconds = 5
@@ -705,8 +712,7 @@ resource "google_cloud_run_v2_service" "api" {
         }
 
         liveness_probe {
-          http_get {
-            path = "/health"
+          tcp_socket {
             port = var.container_port
           }
           period_seconds    = 30
