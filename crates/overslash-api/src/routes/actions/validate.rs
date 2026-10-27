@@ -184,11 +184,12 @@ pub(super) async fn validate_action_impl(
         .await;
         PermissionKey::from_service_action(&svc.service_key, &svc.action_key, &scope)
     };
-    let perm_keys = super::merge_sql_keys(perm_keys, svc, sql_policy.as_ref());
+    // Same order as `/call`: subaction keys first, then the D42 table keys.
     let perm_keys = match &subaction {
         Some(outcome) => outcome.merge_keys(perm_keys),
         None => perm_keys,
     };
+    let perm_keys = super::merge_sql_keys(perm_keys, svc, sql_policy.as_ref());
     let deny_screen_keys: Vec<PermissionKey> = sql_policy
         .as_ref()
         .map(|sp| sp.column_keys.clone())

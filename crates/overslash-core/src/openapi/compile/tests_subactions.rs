@@ -126,6 +126,10 @@ fn malformed_blocks_are_refused_with_a_reason() {
             "subactions_malformed",
         ),
         (
+            json!({"subactions": {"variants": [{"name": "x", "match": null}]}}),
+            "subactions_malformed",
+        ),
+        (
             json!({"subactions": {"variants": [{"name": "x", "match": "true", "transform": "."}]}}),
             "subactions_malformed",
         ),

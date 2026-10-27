@@ -193,7 +193,10 @@ fn parse_variant(
         Some(_) => {}
     }
     let matches = opt_str(obj, "match", path, errors);
-    if matches.is_none() && !obj.contains_key("match") {
+    // `opt_str` already reports a non-string `match`; an absent or explicit
+    // `null` one (YAML `match:` with no value) is reported here, or the
+    // variant would be dropped without a word.
+    if matches.is_none() && obj.get("match").is_none_or(Value::is_null) {
         errors.push(issue(
             "subactions_malformed",
             "a variant needs a `match` jq predicate",

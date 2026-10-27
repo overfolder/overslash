@@ -341,12 +341,14 @@ pub(super) async fn call_action_impl(
     };
     // D42: per-table keys join (or, for the bare `:*` fallback, replace)
     // the scope_param keys; column keys ride separately as deny-screen.
-    let perm_keys = merge_sql_keys(perm_keys, scope_meta, sql_policy.as_ref());
-    // Subaction keys replace the parent's, unless an item went unclaimed.
+    // Subaction keys replace the parent's, unless an item went unclaimed. They
+    // go in *before* the D42 table keys, which must never be the ones
+    // replaced: a per-table gate is not something a variant can stand in for.
     let perm_keys = match &subaction {
         Some(outcome) => outcome.merge_keys(perm_keys),
         None => perm_keys,
     };
+    let perm_keys = merge_sql_keys(perm_keys, scope_meta, sql_policy.as_ref());
     let deny_screen_keys: Vec<PermissionKey> = sql_policy
         .as_ref()
         .map(|sp| sp.column_keys.clone())
