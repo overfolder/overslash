@@ -188,6 +188,7 @@ mod short_url;
 mod shortcut;
 mod slack;
 mod ssrf_guard;
+mod subaction_scopes;
 mod subdomain_oauth_as;
 mod template_endpoint_fields;
 mod template_validation;

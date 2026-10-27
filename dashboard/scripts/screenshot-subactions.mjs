@@ -33,7 +33,7 @@ const variant = (op, type, noun, label) => `
             match: '.op == "${op}" and .objectType == "${type}"'
             description: "${op === 'create' ? 'Create' : 'Update'} a ${noun}."
             verb: ${op}
-            phrase: "${noun}[ {item.label}]"
+            phrase: "${noun}[ '{item.label}']"
             vars:
               label: '${label}'
             disclose:

@@ -32,7 +32,7 @@ index arrays, so it couldn't name anything in `createRequest.objects[0]`.
         match: '.op == "create" and .objectType == "contacts"'   # jq predicate on one item
         description: "Create a HubSpot contact from a flat property map."
         verb: create
-        phrase: "contact[ {item.label}]"
+        phrase: "contact[ '{item.label}']"
         vars: { label: '.properties.email' }   # jq on the item → {item.label}
         disclose:                              # filters see `.items`
           - { label: Contacts, filter: '[.items[].label] | join(", ")', primary: true }

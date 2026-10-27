@@ -97,7 +97,6 @@ pub(super) async fn validate_action_impl(
         std::time::Duration::from_millis(state.config.filter_timeout_ms),
         &meta,
         &req.params,
-        &std::collections::HashMap::new(),
         direct_subaction.as_deref(),
     )
     .await?;

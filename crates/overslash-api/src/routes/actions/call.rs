@@ -186,6 +186,31 @@ pub(super) async fn call_action_impl(
     )
     .await?;
 
+    // ── x-overslash-subactions ───────────────────────────────────────
+    //
+    // Params are final, so the call can be classified into its variants. Done
+    // before resolution because the variants' own `required_scopes` are
+    // checked against the instance's connection, and `resolve_request`
+    // consumes the instance — its own scope gate only ever sees the parent.
+    let subaction = super::subactions::classify(
+        std::time::Duration::from_millis(state.config.filter_timeout_ms),
+        &pre_meta,
+        &req.params,
+        direct_subaction.as_deref(),
+    )
+    .await?;
+    if let Some(outcome) = &subaction {
+        outcome
+            .check_scopes(
+                &state,
+                &scope,
+                ceiling_user_id,
+                pre_resolved_mode_c.as_ref(),
+                req.return_url.as_deref(),
+            )
+            .await?;
+    }
+
     // Resolve the request to a concrete ActionRequest. Passing `ceiling_user_id` reuses
     // the identity lookup above so service-name resolution doesn't re-fetch it.
     // The live OAuth credential (when one resolved) rides separately on
@@ -206,23 +231,12 @@ pub(super) async fn call_action_impl(
         auth_header,
     } = resolved;
     let mut meta = meta;
-
-    // ── x-overslash-subactions ───────────────────────────────────────
-    //
-    // Params are final and the resolvers' display names exist, so the call
-    // can be classified into its variants. Folded into `meta` here, above
-    // every reader of risk, description, disclosure, tags and keys, so the
-    // ceiling, the approval and the audit all see the classified call.
-    let subaction = super::subactions::classify(
-        std::time::Duration::from_millis(state.config.filter_timeout_ms),
-        &pre_meta,
-        &req.params,
-        &meta.resolved,
-        direct_subaction.as_deref(),
-    )
-    .await?;
+    // Folded into `meta` here, above every reader of risk, description,
+    // disclosure, tags and keys, so the ceiling, the approval and the audit
+    // all see the classified call. The description renders now because the
+    // resolvers' display names only exist from here.
     if let Some(outcome) = &subaction {
-        outcome.apply(&mut meta);
+        outcome.apply(&mut meta, &req.params);
     }
 
     // ── The execution-mode cascade ──────────────────────────────────

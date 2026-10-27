@@ -110,9 +110,16 @@ pub(super) async fn lower_direct_call(
 
 /// What classification decided about one call.
 pub(super) struct SubactionOutcome {
-    /// Without the ` (Service)` suffix.
-    pub(super) description: String,
+    /// What the description is rendered from, once the resolvers' display
+    /// names exist — classification itself runs before them.
+    items: Vec<ClassifiedItem>,
+    spec: overslash_core::types::SubactionSpec,
+    label_template: String,
+    service_display_name: String,
     pub(super) risk: Risk,
+    /// OAuth scopes the matched variants add to the parent's. Checked by
+    /// [`check_scopes`](Self::check_scopes) against the instance's connection.
+    pub(super) required_scopes: Vec<String>,
     /// Keys for the claimed items. When [`unclaimed`](Self::unclaimed) is set
     /// the parent's own keys must be required beside these.
     pub(super) keys: Vec<PermissionKey>,
@@ -134,7 +141,6 @@ pub(super) async fn classify(
     timeout: Duration,
     pre_meta: &ActionMetadata,
     params: &HashMap<String, Value>,
-    resolved: &HashMap<String, String>,
     direct: Option<&str>,
 ) -> Result<Option<SubactionOutcome>, AppError> {
     let Some(ctx) = pre_meta.subactions.as_ref() else {
@@ -184,13 +190,6 @@ pub(super) async fn classify(
         return Ok(None);
     };
 
-    let parent_label = overslash_core::description::interpolate_description_with_resolved(
-        &ctx.label_template,
-        params,
-        resolved,
-    );
-    let description = describe_call(spec, &items, &parent_label, params, resolved);
-
     let unclaimed = items.iter().any(|i| i.variant.is_none());
     let base = pre_meta.risk.map(|r| r.base_risk()).unwrap_or(Risk::Write);
     let mut risk = if unclaimed { base } else { Risk::Read };
@@ -199,6 +198,7 @@ pub(super) async fn classify(
     let mut disclose: Vec<DisclosureField> = Vec::new();
     let mut redact: Vec<String> = Vec::new();
     let mut timeout_ms: Option<u64> = None;
+    let mut required_scopes: Vec<String> = Vec::new();
 
     for (n, v) in spec.variants.iter().enumerate() {
         let group: Vec<&ClassifiedItem> = items.iter().filter(|i| i.variant == Some(n)).collect();
@@ -248,6 +248,11 @@ pub(super) async fn classify(
                 redact.push(r.clone());
             }
         }
+        for sc in &v.required_scopes {
+            if !required_scopes.contains(sc) {
+                required_scopes.push(sc.clone());
+            }
+        }
         timeout_ms = match (timeout_ms, v.timeout_ms) {
             (Some(a), Some(b)) => Some(a.max(b)),
             (a, b) => a.or(b),
@@ -255,8 +260,12 @@ pub(super) async fn classify(
     }
 
     Ok(Some(SubactionOutcome {
-        description: format!("{description} ({})", ctx.service_display_name),
+        items,
+        spec: spec.clone(),
+        label_template: ctx.label_template.clone(),
+        service_display_name: ctx.service_display_name.clone(),
         risk,
+        required_scopes,
         keys,
         unclaimed,
         variants,
@@ -269,8 +278,8 @@ pub(super) async fn classify(
 impl SubactionOutcome {
     /// Fold the outcome into the resolved call so everything downstream —
     /// approval, audit, tags, disclosure — reads the classified call.
-    pub(super) fn apply(&self, meta: &mut ResolvedMeta) {
-        meta.description = Some(self.description.clone());
+    pub(super) fn apply(&self, meta: &mut ResolvedMeta, params: &HashMap<String, Value>) {
+        meta.description = Some(self.describe(params, &meta.resolved));
         meta.risk = Some(self.risk.into());
         meta.disclose.extend(self.disclose.iter().cloned());
         for r in &self.redact {
@@ -282,6 +291,58 @@ impl SubactionOutcome {
             meta.action_timeout_ms = Some(meta.action_timeout_ms.map_or(t, |a| a.max(t)));
         }
         meta.subactions = self.variants.clone();
+    }
+
+    /// The call's description, with the ` (Service)` suffix every action
+    /// description carries. `resolved` is empty on `/validate`, which runs no
+    /// resolvers (D55); keys and risk never read it.
+    pub(super) fn describe(
+        &self,
+        params: &HashMap<String, Value>,
+        resolved: &HashMap<String, String>,
+    ) -> String {
+        let parent_label = overslash_core::description::interpolate_description_with_resolved(
+            &self.label_template,
+            params,
+            resolved,
+        );
+        let description = describe_call(&self.spec, &self.items, &parent_label, params, resolved);
+        format!("{description} ({})", self.service_display_name)
+    }
+
+    /// The scope gate for the variants' own `required_scopes` — the same
+    /// fail-fast `missing_scopes` check the parent's scopes get in
+    /// `resolve_request`, which only ever sees the parent action. Runs before
+    /// resolution consumes the instance.
+    pub(super) async fn check_scopes(
+        &self,
+        state: &crate::AppState,
+        scope: &overslash_db::scopes::OrgScope,
+        owner_identity_id: uuid::Uuid,
+        mode_c: Option<&ResolvedModeC>,
+        return_url: Option<&str>,
+    ) -> Result<(), AppError> {
+        let Some(mode_c) = mode_c else {
+            return Ok(());
+        };
+        if self.required_scopes.is_empty() {
+            return Ok(());
+        }
+        let synthetic = overslash_core::types::ServiceAction {
+            required_scopes: self.required_scopes.clone(),
+            ..Default::default()
+        };
+        let hint = crate::services::platform_connections::parse_return_url(return_url)?;
+        super::auth_scopes::check_required_scopes(
+            state,
+            scope,
+            owner_identity_id,
+            Some(&mode_c.instance),
+            &mode_c.svc,
+            &synthetic,
+            hint.as_deref(),
+        )
+        .await
     }
 
     /// The call's permission keys: the classified items' keys, plus the

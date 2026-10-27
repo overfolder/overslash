@@ -617,7 +617,7 @@ x-overslash-mcp:
       # Variants of this one overloaded tool, classified per call from its own
       # arguments: every object in the batch is an item, matched to a variant
       # by operation and object type. A matched item gets its own description
-      # ("Create contact jane@acme.com and deal Acme renewal"), its own
+      # ("Create contact 'jane@acme.com' and deal 'Acme renewal'"), its own
       # permission key (`hubspot:manage_crm_objects/create_contact:*`) and its
       # own disclosure; an object type with no variant stays with this tool's
       # key and label. A rule on `hubspot:manage_crm_objects:*` still covers
@@ -634,12 +634,12 @@ x-overslash-mcp:
             description: >-
               Create a HubSpot contact from a flat property map.
             verb: create
-            phrase: "contact[ {item.label}]"
+            phrase: "contact[ '{item.label}']"
             vars:
               label: '.properties.email // ([.properties.firstname, .properties.lastname] | map(select(type == "string" and . != "")) | join(" ") | select(. != ""))'
             disclose:
               - label: Contacts to create
-                filter: '[.items[] | .label // "(unnamed)"] | join(", ")'
+                filter: '[.items[] | .label // .ref // "(unnamed)"] | join(", ")'
                 primary: true
             input_schema:
               type: object
@@ -675,12 +675,14 @@ x-overslash-mcp:
             description: >-
               Update an existing HubSpot contact by id. Only the properties you pass change.
             verb: update
-            phrase: "contact[ {item.label}]"
+            phrase: "contact[ '{item.label}'][ {item.ref}]"
             vars:
-              label: '.properties.email // ([.properties.firstname, .properties.lastname] | map(select(type == "string" and . != "")) | join(" ") | select(. != "")) // (if .objectId then "#\(.objectId)" else empty end)'
+              label: '.properties.email // ([.properties.firstname, .properties.lastname] | map(select(type == "string" and . != "")) | join(" ") | select(. != ""))'
+              # No name to quote: name the record by id instead.
+              ref: 'select(([.properties.email // ([.properties.firstname, .properties.lastname] | map(select(type == "string" and . != "")) | join(" ") | select(. != ""))] | first) == null) | "#\(.objectId)"'
             disclose:
               - label: Contacts to update
-                filter: '[.items[] | .label // "(unnamed)"] | join(", ")'
+                filter: '[.items[] | .label // .ref // "(unnamed)"] | join(", ")'
                 primary: true
             input_schema:
               type: object
@@ -716,12 +718,12 @@ x-overslash-mcp:
             description: >-
               Create a HubSpot company from a flat property map.
             verb: create
-            phrase: "company[ {item.label}]"
+            phrase: "company[ '{item.label}']"
             vars:
               label: '.properties.name // .properties.domain'
             disclose:
               - label: Companies to create
-                filter: '[.items[] | .label // "(unnamed)"] | join(", ")'
+                filter: '[.items[] | .label // .ref // "(unnamed)"] | join(", ")'
                 primary: true
             input_schema:
               type: object
@@ -756,12 +758,14 @@ x-overslash-mcp:
             description: >-
               Update an existing HubSpot company by id. Only the properties you pass change.
             verb: update
-            phrase: "company[ {item.label}]"
+            phrase: "company[ '{item.label}'][ {item.ref}]"
             vars:
-              label: '.properties.name // .properties.domain // (if .objectId then "#\(.objectId)" else empty end)'
+              label: '.properties.name // .properties.domain'
+              # No name to quote: name the record by id instead.
+              ref: 'select(([.properties.name // .properties.domain] | first) == null) | "#\(.objectId)"'
             disclose:
               - label: Companies to update
-                filter: '[.items[] | .label // "(unnamed)"] | join(", ")'
+                filter: '[.items[] | .label // .ref // "(unnamed)"] | join(", ")'
                 primary: true
             input_schema:
               type: object
@@ -796,12 +800,12 @@ x-overslash-mcp:
             description: >-
               Create a HubSpot deal from a flat property map.
             verb: create
-            phrase: "deal[ {item.label}]"
+            phrase: "deal[ '{item.label}']"
             vars:
               label: '.properties.dealname'
             disclose:
               - label: Deals to create
-                filter: '[.items[] | .label // "(unnamed)"] | join(", ")'
+                filter: '[.items[] | .label // .ref // "(unnamed)"] | join(", ")'
                 primary: true
             input_schema:
               type: object
@@ -837,12 +841,14 @@ x-overslash-mcp:
             description: >-
               Update an existing HubSpot deal by id. Only the properties you pass change.
             verb: update
-            phrase: "deal[ {item.label}]"
+            phrase: "deal[ '{item.label}'][ {item.ref}]"
             vars:
-              label: '.properties.dealname // (if .objectId then "#\(.objectId)" else empty end)'
+              label: '.properties.dealname'
+              # No name to quote: name the record by id instead.
+              ref: 'select(([.properties.dealname] | first) == null) | "#\(.objectId)"'
             disclose:
               - label: Deals to update
-                filter: '[.items[] | .label // "(unnamed)"] | join(", ")'
+                filter: '[.items[] | .label // .ref // "(unnamed)"] | join(", ")'
                 primary: true
             input_schema:
               type: object
@@ -878,12 +884,12 @@ x-overslash-mcp:
             description: >-
               Create a HubSpot ticket from a flat property map.
             verb: create
-            phrase: "ticket[ {item.label}]"
+            phrase: "ticket[ '{item.label}']"
             vars:
               label: '.properties.subject'
             disclose:
               - label: Tickets to create
-                filter: '[.items[] | .label // "(unnamed)"] | join(", ")'
+                filter: '[.items[] | .label // .ref // "(unnamed)"] | join(", ")'
                 primary: true
             input_schema:
               type: object
@@ -918,12 +924,14 @@ x-overslash-mcp:
             description: >-
               Update an existing HubSpot ticket by id. Only the properties you pass change.
             verb: update
-            phrase: "ticket[ {item.label}]"
+            phrase: "ticket[ '{item.label}'][ {item.ref}]"
             vars:
-              label: '.properties.subject // (if .objectId then "#\(.objectId)" else empty end)'
+              label: '.properties.subject'
+              # No name to quote: name the record by id instead.
+              ref: 'select(([.properties.subject] | first) == null) | "#\(.objectId)"'
             disclose:
               - label: Tickets to update
-                filter: '[.items[] | .label // "(unnamed)"] | join(", ")'
+                filter: '[.items[] | .label // .ref // "(unnamed)"] | join(", ")'
                 primary: true
             input_schema:
               type: object

@@ -123,7 +123,7 @@ async fn a_raw_call_is_described_keyed_and_disclosed_as_its_variant() {
     assert_eq!(status, 202, "{env}");
     assert_eq!(env["status"], "pending_approval");
     assert_eq!(
-        env["action_description"], "Create contact jane@acme.com (HubSpot)",
+        env["action_description"], "Create contact 'jane@acme.com' (HubSpot)",
         "the approval names the record, not the overloaded tool"
     );
     assert_eq!(
@@ -176,7 +176,7 @@ async fn a_mixed_batch_needs_every_variants_key() {
     assert_eq!(status, 202, "{env}");
     assert_eq!(
         env["action_description"],
-        "Create contact jane@acme.com and deal Acme renewal; update deal Big Co (HubSpot)"
+        "Create contact 'jane@acme.com' and deal 'Acme renewal'; update deal 'Big Co' (HubSpot)"
     );
 }
 
@@ -194,7 +194,7 @@ async fn an_object_no_variant_claims_keeps_the_parent_key_and_label() {
     let (_, env) = fx.call("manage_crm_objects", params).await;
     assert_eq!(
         env["action_description"],
-        "Create contact jane@acme.com; Create or update CRM records (HubSpot)"
+        "Create contact 'jane@acme.com'; Create or update CRM records (HubSpot)"
     );
 }
 
