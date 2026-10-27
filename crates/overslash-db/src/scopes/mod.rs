@@ -57,6 +57,7 @@ mod org_google_directory;
 mod org_groups;
 mod org_identities;
 mod org_idp_config;
+mod org_oauth_signin_override;
 mod org_permission_rules;
 mod org_rate_limits;
 mod org_secrets;
