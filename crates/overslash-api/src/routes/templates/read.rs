@@ -337,5 +337,7 @@ pub(super) async fn get_template_action(
         params: action.params.clone(),
         scope_param: action.scope_param.refs().to_vec(),
         additional_properties: action.additional_properties,
+        subactions: SubactionSummary::of(action),
+        subaction_of: action.subaction_of.as_ref().map(|r| r.parent.clone()),
     }))
 }

@@ -6,6 +6,7 @@ pub mod pagination;
 pub mod param_shape;
 pub mod risk;
 pub mod scope;
+pub mod subaction;
 
 pub use action::*;
 pub use auth::*;
@@ -15,3 +16,4 @@ pub use pagination::*;
 pub use param_shape::*;
 pub use risk::*;
 pub use scope::*;
+pub use subaction::*;

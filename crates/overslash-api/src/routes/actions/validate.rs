@@ -58,7 +58,7 @@ pub(super) async fn validate_action_impl(
     // resolved template/instance ride along but the validate path
     // doesn't forward them anywhere; they're dropped at the end of
     // this scope.
-    let (meta, resolved_mode_c) =
+    let (mut meta, resolved_mode_c) =
         resolve_action_metadata(&state, &ext, &auth, &scope, ceiling_user_id, &req).await?;
 
     // Mirror `/call`'s admin-as-owner rebind so validation answers reflect
@@ -74,43 +74,33 @@ pub(super) async fn validate_action_impl(
     )
     .await?;
 
-    // Rewrite parameter aliases to canonical names in lockstep with `/call`
-    // so the dry-run validates the exact keys the real call would execute.
-    overslash_core::openapi::validate_input::apply_aliases(
-        &meta.validation_params,
-        &mut req.params,
-    );
-    // Overlay the pinned config (instance's own, then the org layer's defaults)
-    // in lockstep with `/call`, so a param satisfied by a pin doesn't validate
-    // here as missing.
-    super::apply_instance_config(
-        &meta.validation_params,
+    // Canonicalize and validate the arguments in lockstep with `/call` — the
+    // same function, so the dry-run validates the exact keys and values the
+    // real call would execute and the 400 bodies stay byte-identical.
+    super::resolve_metadata::prepare_args(&meta, resolved_mode_c.as_ref(), &mut req.params)?;
+    // A callable subaction is rewritten into its parent exactly as `/call`
+    // rewrites it, then validated again as the parent.
+    let direct_subaction = super::subactions::lower_direct_call(
+        std::time::Duration::from_millis(state.config.filter_timeout_ms),
+        &mut meta,
         resolved_mode_c.as_ref(),
-        &mut req.params,
-    );
-    // Fill template-declared defaults before validating — mirrors `/call`
-    // so a defaulted-required param (e.g. `calendarId: primary`) omitted by
-    // the caller validates here exactly as it would execute there.
-    overslash_core::openapi::validate_input::apply_defaults(
-        &meta.validation_params,
-        &mut req.params,
-    );
-    // Coerce in lockstep with `/call` so the dry-run validates the same value
-    // the real call would execute, keeping the 400 bodies byte-identical.
-    overslash_core::openapi::validate_input::coerce_args(&meta.validation_params, &mut req.params);
-
-    // Argument validation runs before the risk gate so a request with
-    // both bad params and a wrong-risk assertion produces the same
-    // `invalid_action_args` 400 it would on `/call` — the byte-identical
-    // 400 contract is meaningful only when the gates fire in the same
-    // order in both endpoints.
-    if let Err(errors) = overslash_core::openapi::validate_input::validate_args(
-        &meta.validation_params,
-        &req.params,
-        meta.additional_properties,
-    ) {
-        return Err(invalid_action_args_error(&meta.validation_params, errors));
+        &mut req,
+    )
+    .await?;
+    if direct_subaction.is_some() {
+        super::resolve_metadata::prepare_args(&meta, resolved_mode_c.as_ref(), &mut req.params)?;
     }
+    // Subaction classification, in lockstep with `/call`. A dry run runs no
+    // resolvers (D55), so descriptions name raw arguments — but keys and risk
+    // never read display names, so those match `/call` exactly.
+    let subaction = super::subactions::classify(
+        std::time::Duration::from_millis(state.config.filter_timeout_ms),
+        &meta,
+        &req.params,
+        &std::collections::HashMap::new(),
+        direct_subaction.as_deref(),
+    )
+    .await?;
 
     // D42 SQL content policy — in lockstep with `/call`, so the dry-run
     // reports the same effective risk and table/column keys the real call
@@ -140,7 +130,11 @@ pub(super) async fn validate_action_impl(
 
     // Caller-asserted risk gate — mirrors `/call` (which runs it inside
     // `resolve_request` after `validate_args` has already gated bad args).
-    let effective = super::effective_risk(meta.risk, sql_policy.as_ref(), &meta.raw_method);
+    let declared = match &subaction {
+        Some(outcome) => Some(outcome.risk.into()),
+        None => meta.risk,
+    };
+    let effective = super::effective_risk(declared, sql_policy.as_ref(), &meta.raw_method);
     if let Some(required) = req.require_risk
         && required == Risk::Read
         && effective.is_mutating()
@@ -192,6 +186,10 @@ pub(super) async fn validate_action_impl(
         PermissionKey::from_service_action(&svc.service_key, &svc.action_key, &scope)
     };
     let perm_keys = super::merge_sql_keys(perm_keys, svc, sql_policy.as_ref());
+    let perm_keys = match &subaction {
+        Some(outcome) => outcome.merge_keys(perm_keys),
+        None => perm_keys,
+    };
     let deny_screen_keys: Vec<PermissionKey> = sql_policy
         .as_ref()
         .map(|sp| sp.column_keys.clone())

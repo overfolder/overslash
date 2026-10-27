@@ -101,6 +101,9 @@ pub(super) fn call_tags(
             tags.push(tag("action", &scope.action_key));
         }
     }
+    for variant in &meta.subactions {
+        tags.push(tag("subaction", variant));
+    }
 
     let BindingFacts {
         template_key,
@@ -206,6 +209,7 @@ mod tests {
             platform_target: None,
             instance_id: None,
             binding,
+            subactions: Vec::new(),
         }
     }
 

@@ -614,6 +614,345 @@ x-overslash-mcp:
         - label: Payload
           filter: '(.arguments.createRequest // .arguments.updateRequest // empty) | tojson'
           max_chars: 1000
+      # Variants of this one overloaded tool, classified per call from its own
+      # arguments: every object in the batch is an item, matched to a variant
+      # by operation and object type. A matched item gets its own description
+      # ("Create contact jane@acme.com and deal Acme renewal"), its own
+      # permission key (`hubspot:manage_crm_objects/create_contact:*`) and its
+      # own disclosure; an object type with no variant stays with this tool's
+      # key and label. A rule on `hubspot:manage_crm_objects:*` still covers
+      # every variant. Each variant is also callable directly with a flat
+      # argument shape — `create_contact(properties)` — rewritten into the
+      # createRequest/updateRequest envelope by its `transform`.
+      subactions:
+        each: >-
+          (.createRequest.objects[]? | . + {op: "create"}),
+          (.updateRequest.objects[]? | . + {op: "update"})
+        variants:
+          - name: create_contact
+            match: '.op == "create" and .objectType == "contacts"'
+            description: >-
+              Create a HubSpot contact from a flat property map.
+            verb: create
+            phrase: "contact[ {item.label}]"
+            vars:
+              label: '.properties.email // ([.properties.firstname, .properties.lastname] | map(select(type == "string" and . != "")) | join(" ") | select(. != ""))'
+            disclose:
+              - label: Contacts to create
+                filter: '[.items[] | .label // "(unnamed)"] | join(", ")'
+                primary: true
+            input_schema:
+              type: object
+              properties:
+                properties:
+                  type: object
+                  description: >-
+                    Property values to set, e.g. {email, firstname, lastname, phone}. Keys are this portal's
+                    property names — check them with search_properties.
+                  # The well-known keys, typed; any other portal property
+                  # passes as a string, which is how HubSpot takes every value.
+                  properties:
+                    email: {type: string}
+                    firstname: {type: string}
+                    lastname: {type: string}
+                    phone: {type: string}
+                    company: {type: string}
+                  additionalProperties: {type: string}
+                associations:
+                  type: array
+                  description: >-
+                    Optional [{targetObjectId, targetObjectType, labels}] to
+                    associate once the contact is created.
+                  items:
+                    type: object
+              required: [properties]
+            transform: >-
+              {createRequest: {objects: [{objectType: "contacts", properties: .properties}
+                + (if .associations then {associations: .associations} else {} end)]},
+                confirmationStatus: "CONFIRMED"}
+          - name: update_contact
+            match: '.op == "update" and .objectType == "contacts"'
+            description: >-
+              Update an existing HubSpot contact by id. Only the properties you pass change.
+            verb: update
+            phrase: "contact[ {item.label}]"
+            vars:
+              label: '.properties.email // ([.properties.firstname, .properties.lastname] | map(select(type == "string" and . != "")) | join(" ") | select(. != "")) // (if .objectId then "#\(.objectId)" else empty end)'
+            disclose:
+              - label: Contacts to update
+                filter: '[.items[] | .label // "(unnamed)"] | join(", ")'
+                primary: true
+            input_schema:
+              type: object
+              properties:
+                id:
+                  type: integer
+                  description: "The contact's record id (hs_object_id)."
+                properties:
+                  type: object
+                  description: "Property values to change, e.g. {email, firstname, lastname, phone}."
+                  # The well-known keys, typed; any other portal property
+                  # passes as a string, which is how HubSpot takes every value.
+                  properties:
+                    email: {type: string}
+                    firstname: {type: string}
+                    lastname: {type: string}
+                    phone: {type: string}
+                    company: {type: string}
+                  additionalProperties: {type: string}
+                associations:
+                  type: array
+                  description: "Optional [{targetObjectId, targetObjectType, labels}] to add."
+                  items:
+                    type: object
+              required: [id, properties]
+            transform: >-
+              {updateRequest: {objects: [{objectType: "contacts", objectId: .id,
+                properties: .properties}
+                + (if .associations then {associations: .associations} else {} end)]},
+                confirmationStatus: "CONFIRMED"}
+          - name: create_company
+            match: '.op == "create" and .objectType == "companies"'
+            description: >-
+              Create a HubSpot company from a flat property map.
+            verb: create
+            phrase: "company[ {item.label}]"
+            vars:
+              label: '.properties.name // .properties.domain'
+            disclose:
+              - label: Companies to create
+                filter: '[.items[] | .label // "(unnamed)"] | join(", ")'
+                primary: true
+            input_schema:
+              type: object
+              properties:
+                properties:
+                  type: object
+                  description: >-
+                    Property values to set, e.g. {name, domain, industry}. Keys are this portal's
+                    property names — check them with search_properties.
+                  # The well-known keys, typed; any other portal property
+                  # passes as a string, which is how HubSpot takes every value.
+                  properties:
+                    name: {type: string}
+                    domain: {type: string}
+                    industry: {type: string}
+                    phone: {type: string}
+                  additionalProperties: {type: string}
+                associations:
+                  type: array
+                  description: >-
+                    Optional [{targetObjectId, targetObjectType, labels}] to
+                    associate once the company is created.
+                  items:
+                    type: object
+              required: [properties]
+            transform: >-
+              {createRequest: {objects: [{objectType: "companies", properties: .properties}
+                + (if .associations then {associations: .associations} else {} end)]},
+                confirmationStatus: "CONFIRMED"}
+          - name: update_company
+            match: '.op == "update" and .objectType == "companies"'
+            description: >-
+              Update an existing HubSpot company by id. Only the properties you pass change.
+            verb: update
+            phrase: "company[ {item.label}]"
+            vars:
+              label: '.properties.name // .properties.domain // (if .objectId then "#\(.objectId)" else empty end)'
+            disclose:
+              - label: Companies to update
+                filter: '[.items[] | .label // "(unnamed)"] | join(", ")'
+                primary: true
+            input_schema:
+              type: object
+              properties:
+                id:
+                  type: integer
+                  description: "The company's record id (hs_object_id)."
+                properties:
+                  type: object
+                  description: "Property values to change, e.g. {name, domain, industry}."
+                  # The well-known keys, typed; any other portal property
+                  # passes as a string, which is how HubSpot takes every value.
+                  properties:
+                    name: {type: string}
+                    domain: {type: string}
+                    industry: {type: string}
+                    phone: {type: string}
+                  additionalProperties: {type: string}
+                associations:
+                  type: array
+                  description: "Optional [{targetObjectId, targetObjectType, labels}] to add."
+                  items:
+                    type: object
+              required: [id, properties]
+            transform: >-
+              {updateRequest: {objects: [{objectType: "companies", objectId: .id,
+                properties: .properties}
+                + (if .associations then {associations: .associations} else {} end)]},
+                confirmationStatus: "CONFIRMED"}
+          - name: create_deal
+            match: '.op == "create" and .objectType == "deals"'
+            description: >-
+              Create a HubSpot deal from a flat property map.
+            verb: create
+            phrase: "deal[ {item.label}]"
+            vars:
+              label: '.properties.dealname'
+            disclose:
+              - label: Deals to create
+                filter: '[.items[] | .label // "(unnamed)"] | join(", ")'
+                primary: true
+            input_schema:
+              type: object
+              properties:
+                properties:
+                  type: object
+                  description: >-
+                    Property values to set, e.g. {dealname, amount, dealstage, pipeline, closedate}. Keys are this portal's
+                    property names — check them with search_properties.
+                  # The well-known keys, typed; any other portal property
+                  # passes as a string, which is how HubSpot takes every value.
+                  properties:
+                    dealname: {type: string}
+                    amount: {type: string}
+                    dealstage: {type: string}
+                    pipeline: {type: string}
+                    closedate: {type: string}
+                  additionalProperties: {type: string}
+                associations:
+                  type: array
+                  description: >-
+                    Optional [{targetObjectId, targetObjectType, labels}] to
+                    associate once the deal is created.
+                  items:
+                    type: object
+              required: [properties]
+            transform: >-
+              {createRequest: {objects: [{objectType: "deals", properties: .properties}
+                + (if .associations then {associations: .associations} else {} end)]},
+                confirmationStatus: "CONFIRMED"}
+          - name: update_deal
+            match: '.op == "update" and .objectType == "deals"'
+            description: >-
+              Update an existing HubSpot deal by id. Only the properties you pass change.
+            verb: update
+            phrase: "deal[ {item.label}]"
+            vars:
+              label: '.properties.dealname // (if .objectId then "#\(.objectId)" else empty end)'
+            disclose:
+              - label: Deals to update
+                filter: '[.items[] | .label // "(unnamed)"] | join(", ")'
+                primary: true
+            input_schema:
+              type: object
+              properties:
+                id:
+                  type: integer
+                  description: "The deal's record id (hs_object_id)."
+                properties:
+                  type: object
+                  description: "Property values to change, e.g. {dealname, amount, dealstage, pipeline, closedate}."
+                  # The well-known keys, typed; any other portal property
+                  # passes as a string, which is how HubSpot takes every value.
+                  properties:
+                    dealname: {type: string}
+                    amount: {type: string}
+                    dealstage: {type: string}
+                    pipeline: {type: string}
+                    closedate: {type: string}
+                  additionalProperties: {type: string}
+                associations:
+                  type: array
+                  description: "Optional [{targetObjectId, targetObjectType, labels}] to add."
+                  items:
+                    type: object
+              required: [id, properties]
+            transform: >-
+              {updateRequest: {objects: [{objectType: "deals", objectId: .id,
+                properties: .properties}
+                + (if .associations then {associations: .associations} else {} end)]},
+                confirmationStatus: "CONFIRMED"}
+          - name: create_ticket
+            match: '.op == "create" and .objectType == "tickets"'
+            description: >-
+              Create a HubSpot ticket from a flat property map.
+            verb: create
+            phrase: "ticket[ {item.label}]"
+            vars:
+              label: '.properties.subject'
+            disclose:
+              - label: Tickets to create
+                filter: '[.items[] | .label // "(unnamed)"] | join(", ")'
+                primary: true
+            input_schema:
+              type: object
+              properties:
+                properties:
+                  type: object
+                  description: >-
+                    Property values to set, e.g. {subject, content, hs_pipeline_stage}. Keys are this portal's
+                    property names — check them with search_properties.
+                  # The well-known keys, typed; any other portal property
+                  # passes as a string, which is how HubSpot takes every value.
+                  properties:
+                    subject: {type: string}
+                    content: {type: string}
+                    hs_pipeline: {type: string}
+                    hs_pipeline_stage: {type: string}
+                  additionalProperties: {type: string}
+                associations:
+                  type: array
+                  description: >-
+                    Optional [{targetObjectId, targetObjectType, labels}] to
+                    associate once the ticket is created.
+                  items:
+                    type: object
+              required: [properties]
+            transform: >-
+              {createRequest: {objects: [{objectType: "tickets", properties: .properties}
+                + (if .associations then {associations: .associations} else {} end)]},
+                confirmationStatus: "CONFIRMED"}
+          - name: update_ticket
+            match: '.op == "update" and .objectType == "tickets"'
+            description: >-
+              Update an existing HubSpot ticket by id. Only the properties you pass change.
+            verb: update
+            phrase: "ticket[ {item.label}]"
+            vars:
+              label: '.properties.subject // (if .objectId then "#\(.objectId)" else empty end)'
+            disclose:
+              - label: Tickets to update
+                filter: '[.items[] | .label // "(unnamed)"] | join(", ")'
+                primary: true
+            input_schema:
+              type: object
+              properties:
+                id:
+                  type: integer
+                  description: "The ticket's record id (hs_object_id)."
+                properties:
+                  type: object
+                  description: "Property values to change, e.g. {subject, content, hs_pipeline_stage}."
+                  # The well-known keys, typed; any other portal property
+                  # passes as a string, which is how HubSpot takes every value.
+                  properties:
+                    subject: {type: string}
+                    content: {type: string}
+                    hs_pipeline: {type: string}
+                    hs_pipeline_stage: {type: string}
+                  additionalProperties: {type: string}
+                associations:
+                  type: array
+                  description: "Optional [{targetObjectId, targetObjectType, labels}] to add."
+                  items:
+                    type: object
+              required: [id, properties]
+            transform: >-
+              {updateRequest: {objects: [{objectType: "tickets", objectId: .id,
+                properties: .properties}
+                + (if .associations then {associations: .associations} else {} end)]},
+                confirmationStatus: "CONFIRMED"}
 
     # ── meta ────────────────────────────────────────────────────────────
     - name: tool_guidance

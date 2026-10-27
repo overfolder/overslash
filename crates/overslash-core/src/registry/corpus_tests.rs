@@ -257,10 +257,23 @@ fn shipped_mutating_actions_declare_disclose() {
         }
         for (key, action) in &def.actions {
             let id = format!("{}:{}", def.key, key);
+            // A callable subaction is never disclosed as itself: it is
+            // rewritten into its parent and classified, so what a reviewer
+            // sees is the parent's disclose plus the variant's own.
+            let disclose_declared = match &action.subaction_of {
+                Some(of) => def.actions.get(&of.parent).is_some_and(|p| {
+                    !p.disclose.is_empty()
+                        || p.subactions
+                            .as_ref()
+                            .and_then(|s| s.variant(&of.variant))
+                            .is_some_and(|v| !v.disclose.is_empty())
+                }),
+                None => !action.disclose.is_empty(),
+            };
             // `dynamic` counts as mutating here: a per-call-classified
             // action can write, so its approvals need disclose too.
             if action.risk.display_risk().is_mutating()
-                && action.disclose.is_empty()
+                && !disclose_declared
                 && !ALLOW_MISSING.contains(&id.as_str())
             {
                 missing.push(id);

@@ -34,6 +34,7 @@
 		ServiceInstanceDetail,
 		ServiceStatus,
 		ServiceTestResponse,
+		SubactionSummary,
 		TemplateDetail
 	} from '#lib/types.ts';
 	import { listSecrets } from '#lib/api/secrets.ts';
@@ -71,6 +72,17 @@
 	let svc = $state<ServiceInstanceDetail | null>(null);
 	let template = $state<TemplateDetail | null>(null);
 	let actions = $state<ActionSummary[]>([]);
+	// A callable variant is listed once, under its parent, rather than again as
+	// a row of its own that would read as a second upstream tool.
+	const topLevelActions = $derived(actions.filter((a) => !a.subaction_of));
+
+	function classifiedTitle(parent: ActionSummary, v: SubactionSummary): string {
+		return `Calls to ${parent.key} are matched against this variant. A matching call is described, risk-rated and permission-keyed as ${parent.key}/${v.key}; a rule on ${parent.key} still covers it.`;
+	}
+
+	function callableTitle(parent: ActionSummary, v: SubactionSummary): string {
+		return `${classifiedTitle(parent, v)} Agents can also call ${v.key} directly with a narrower argument shape, which is rewritten into a ${parent.key} call.`;
+	}
 	let connections = $state<ConnectionSummary[]>([]);
 	let identities = $state<Identity[]>([]);
 	let serviceGroups = $state<ServiceGroupRef[]>([]);
@@ -1590,7 +1602,7 @@
 							</tr>
 						</thead>
 						<tbody>
-							{#each actions as a}
+							{#each topLevelActions as a}
 								<tr class:disabled={a.disabled}>
 									<td><span class="mono">{a.mcp_tool ?? a.key}</span></td>
 									<!-- The one-line label; the full agent-facing description can run to
@@ -1619,6 +1631,20 @@
 										>{/if}
 									</td>
 								</tr>
+								{#each a.subactions ?? [] as v (v.key)}
+									<tr class="subaction" class:disabled={a.disabled}>
+										<td><span class="mono">↳ {v.key}</span></td>
+										<td>{v.description}</td>
+										<td><span class="mono">{v.risk}</span></td>
+										<td>
+											{#if v.callable}<span class="pill pill-callable" title={callableTitle(a, v)}
+													>callable</span
+												>{:else}<span class="pill pill-muted" title={classifiedTitle(a, v)}
+													>classified</span
+												>{/if}
+										</td>
+									</tr>
+								{/each}
 							{/each}
 						</tbody>
 					</table>
@@ -1633,7 +1659,7 @@
 							</tr>
 						</thead>
 						<tbody>
-							{#each actions as a}
+							{#each topLevelActions as a}
 								<tr>
 									<td><span class="method">{a.method}</span></td>
 									<td><span class="mono">{a.path}</span></td>
@@ -1658,6 +1684,21 @@
 										>{/if}</td
 									>
 								</tr>
+								{#each a.subactions ?? [] as v (v.key)}
+									<tr class="subaction">
+										<td></td>
+										<td><span class="mono">↳ {v.key}</span></td>
+										<td>{v.description}</td>
+										<td
+											><span class="mono">{v.risk}</span>
+											{#if v.callable}<span class="pill pill-callable" title={callableTitle(a, v)}
+													>callable</span
+												>{:else}<span class="pill pill-muted" title={classifiedTitle(a, v)}
+													>classified</span
+												>{/if}</td
+										>
+									</tr>
+								{/each}
 							{/each}
 						</tbody>
 					</table>
@@ -1876,6 +1917,20 @@
 	}
 	/* Same register as .pill-defer: a declaration about the response shape,
 	   not a problem. This one is good news — the action is bounded. */
+	tr.subaction td {
+		font-size: 0.85rem;
+		color: var(--color-text-muted);
+	}
+	tr.subaction td:first-child .mono {
+		padding-left: 0.75rem;
+	}
+	/* A variant agents can call by name — the same register as the other
+	   declarations, distinct enough to tell from a classify-only variant. */
+	.pill-callable {
+		background: rgba(160, 110, 220, 0.12);
+		color: var(--color-text-muted);
+		border-color: rgba(160, 110, 220, 0.35);
+	}
 	.pill-page {
 		background: rgba(90, 190, 140, 0.12);
 		color: var(--color-text-muted);

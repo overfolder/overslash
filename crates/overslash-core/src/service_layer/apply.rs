@@ -65,6 +65,15 @@ pub fn apply_delta(
         actions.remove(d);
     }
 
+    // A callable variant is its parent called with rewritten arguments, so it
+    // cannot outlive the parent: hiding the parent hides every way to call it.
+    let visible: HashSet<String> = actions.keys().cloned().collect();
+    actions.retain(|_, a| {
+        a.subaction_of
+            .as_ref()
+            .is_none_or(|of| visible.contains(&of.parent))
+    });
+
     // ── action_patch: risk clamp-up / additive disclose / relabel ─────────
     for (key, patch) in &delta.action_patch {
         match actions.get_mut(key) {
@@ -83,6 +92,8 @@ pub fn apply_delta(
             }
         }
     }
+
+    sync_subaction_risk(&mut actions);
 
     // ── extensions: add new actions (base wins on collision) + hosts ──────
     let mut hosts = base.hosts.clone();
@@ -205,6 +216,14 @@ fn apply_action_patch(action: &mut ServiceAction, patch: &ActionPatch) {
         if risk.severity() >= action.risk.display_risk().severity() {
             action.risk = risk.into();
         }
+        // A classified call takes its variants' risk, not the parent's, so a
+        // clamp on the parent has to reach them or it would bind only the
+        // calls no variant claims.
+        if let Some(spec) = action.subactions.as_mut() {
+            for v in &mut spec.variants {
+                v.risk = v.risk.max_severity(risk);
+            }
+        }
     }
     if !patch.disclose.is_empty() {
         action.disclose.extend(patch.disclose.iter().cloned());
@@ -217,6 +236,37 @@ fn apply_action_patch(action: &mut ServiceAction, patch: &ActionPatch) {
     // patched value *is* the action's value and there is no second lookup.
     if let Some(ms) = patch.timeout_ms {
         action.timeout_ms = Some(ms);
+    }
+}
+
+/// Reconcile a callable variant's two risk spellings after the patches ran:
+/// its own action entry (what listings show, and what a patch addressing the
+/// variant by key raised) and its entry in the parent's spec (what a call is
+/// classified with). Each takes the more severe of the two — clamp-up only,
+/// whichever side the patch landed on.
+fn sync_subaction_risk(actions: &mut std::collections::HashMap<String, ServiceAction>) {
+    let callables: Vec<(String, String, String)> = actions
+        .iter()
+        .filter_map(|(k, a)| {
+            a.subaction_of
+                .as_ref()
+                .map(|of| (k.clone(), of.parent.clone(), of.variant.clone()))
+        })
+        .collect();
+    for (key, parent, variant) in callables {
+        let own = actions[&key].risk.display_risk();
+        let Some(v) = actions
+            .get_mut(&parent)
+            .and_then(|p| p.subactions.as_mut())
+            .and_then(|s| s.variants.iter_mut().find(|v| v.key == variant))
+        else {
+            continue;
+        };
+        v.risk = v.risk.max_severity(own);
+        let merged = v.risk;
+        if let Some(a) = actions.get_mut(&key) {
+            a.risk = merged.into();
+        }
     }
 }
 
@@ -279,6 +329,113 @@ mod tests {
                 url: "https://cdn.acme.test/logo.svg".into()
             })
         );
+    }
+
+    /// `parent` with one callable variant `child` (risk read) compiled
+    /// beside it, the way `emit_callable_subactions` lays them out.
+    fn base_with_callable() -> ServiceDefinition {
+        use crate::types::{Subaction, SubactionRef, SubactionSpec};
+        let mut base = base_with(&[("parent", Risk::Write), ("other", Risk::Read)]);
+        let variant = Subaction {
+            key: "child".into(),
+            matches: "true".into(),
+            description: "child".into(),
+            verb: None,
+            phrase: None,
+            summary: None,
+            vars: Default::default(),
+            risk: Risk::Read,
+            scope_param: Default::default(),
+            disclose: vec![],
+            redact: vec![],
+            timeout_ms: None,
+            required_scopes: vec![],
+            transform: Some(".".into()),
+            params: Default::default(),
+        };
+        base.actions.get_mut("parent").unwrap().subactions = Some(SubactionSpec {
+            variants: vec![variant],
+            ..Default::default()
+        });
+        base.actions.insert(
+            "child".into(),
+            ServiceAction {
+                description: "child".into(),
+                risk: Risk::Read.into(),
+                subaction_of: Some(SubactionRef {
+                    parent: "parent".into(),
+                    variant: "child".into(),
+                }),
+                ..Default::default()
+            },
+        );
+        base
+    }
+
+    fn variant_risk(def: &ServiceDefinition) -> Risk {
+        def.actions["parent"].subactions.as_ref().unwrap().variants[0].risk
+    }
+
+    #[test]
+    fn hiding_a_parent_hides_its_callable_variants() {
+        let base = base_with_callable();
+        let denied = Delta {
+            denylist: vec!["parent".into()],
+            ..Default::default()
+        };
+        assert_eq!(
+            keyset(&apply_delta(&denied, &base).0),
+            HashSet::from(["other".into()])
+        );
+        // Allowlisting the variant alone does not smuggle the parent back in.
+        let allowed = Delta {
+            allowlist: Some(vec!["child".into()]),
+            ..Default::default()
+        };
+        assert!(apply_delta(&allowed, &base).0.actions.is_empty());
+    }
+
+    #[test]
+    fn a_parent_risk_clamp_reaches_its_variants() {
+        let base = base_with_callable();
+        let delta = Delta {
+            action_patch: [(
+                "parent".to_string(),
+                ActionPatch {
+                    risk: Some(Risk::Delete),
+                    ..Default::default()
+                },
+            )]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        };
+        let (def, _) = apply_delta(&delta, &base);
+        assert_eq!(variant_risk(&def), Risk::Delete);
+        assert_eq!(
+            def.actions["child"].risk,
+            Risk::Delete,
+            "the listing agrees"
+        );
+    }
+
+    #[test]
+    fn a_clamp_on_the_callable_variant_reaches_classification() {
+        let base = base_with_callable();
+        let delta = Delta {
+            action_patch: [(
+                "child".to_string(),
+                ActionPatch {
+                    risk: Some(Risk::Write),
+                    ..Default::default()
+                },
+            )]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        };
+        let (def, _) = apply_delta(&delta, &base);
+        assert_eq!(variant_risk(&def), Risk::Write);
     }
 
     #[test]

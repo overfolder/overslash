@@ -39,12 +39,24 @@ fn split_scope_arg(arg: &str) -> (Option<String>, String) {
 /// the value. A `label=`-qualified rule only matches keys with that label,
 /// which is what makes `email:send:cc=*@example.com` narrower than the bare
 /// form rather than a synonym for it.
+///
+/// A subaction key (`hubspot:manage_crm_objects/create_contact:*`) also answers
+/// to its **parent** form (`hubspot:manage_crm_objects:*`), so a grant on the
+/// overloaded action keeps covering every call it covered before the action
+/// grew variants, while a rule naming the variant stays narrower.
 fn match_forms(key: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for spelling in expand_alternations(key) {
         let dk = parse_derived_key(&spelling);
+        let parent = dk.action.split_once('/').map(|(p, _)| p);
         if dk.label.is_some() {
             out.push(format!("{}:{}:{}", dk.service, dk.action, dk.value));
+        }
+        if let Some(parent) = parent {
+            out.push(format!("{}:{parent}:{}", dk.service, dk.arg));
+            if dk.label.is_some() {
+                out.push(format!("{}:{parent}:{}", dk.service, dk.value));
+            }
         }
         out.push(spelling);
     }
@@ -197,6 +209,10 @@ pub(crate) fn broadening_ladder(dk: &DerivedKey) -> Vec<String> {
                 if dk.arg != "*" {
                     ladder.push(format!("{}:{}:*", dk.service, dk.action));
                 }
+                // A subaction widens to its parent before the whole service.
+                if let Some((parent, _)) = dk.action.split_once('/') {
+                    ladder.push(format!("{}:{parent}:*", dk.service));
+                }
                 ladder.push(format!("{}:*:*", dk.service));
             }
         }
@@ -296,6 +312,42 @@ mod tests {
     }
 
     // ── DerivedKey / SuggestedTier tests ───────────────────────────────
+
+    #[test]
+    fn a_parent_rule_covers_its_subactions() {
+        let key = "hubspot:manage_crm_objects/create_contact:*";
+        assert!(key_covers("hubspot:manage_crm_objects:*", key));
+        assert!(key_covers(
+            "hubspot:manage_crm_objects/create_contact:*",
+            key
+        ));
+        assert!(key_covers("hubspot:manage_crm_objects/create_*:*", key));
+        assert!(!key_covers("hubspot:manage_crm_objects/update_*:*", key));
+        assert!(!key_covers("hubspot:get_crm_objects:*", key));
+        // A parent rule never reaches *up*: a plain parent key is not covered
+        // by a variant rule.
+        assert!(!key_covers(
+            "hubspot:manage_crm_objects/create_contact:*",
+            "hubspot:manage_crm_objects:*"
+        ));
+        let labelled = "hubspot:manage_crm_objects/create_contact:owner=42";
+        assert!(key_covers("hubspot:manage_crm_objects:owner=42", labelled));
+        assert!(key_covers("hubspot:manage_crm_objects:42", labelled));
+        assert!(!key_covers("hubspot:manage_crm_objects:owner=7", labelled));
+    }
+
+    #[test]
+    fn broadening_ladder_widens_a_subaction_to_its_parent() {
+        let dk = parse_derived_key("hubspot:manage_crm_objects/create_contact:*");
+        assert_eq!(
+            broadening_ladder(&dk),
+            vec![
+                "hubspot:manage_crm_objects/create_contact:*",
+                "hubspot:manage_crm_objects:*",
+                "hubspot:*:*"
+            ]
+        );
+    }
 
     #[test]
     fn parse_service_action_key() {

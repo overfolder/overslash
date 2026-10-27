@@ -82,6 +82,7 @@ mod health;
 mod holded;
 mod holded_attachments;
 mod hubspot;
+mod hubspot_subactions;
 mod hybrid_call;
 mod hybrid_sweeps;
 mod identity_archive;

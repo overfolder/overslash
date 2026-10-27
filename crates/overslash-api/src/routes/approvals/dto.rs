@@ -117,6 +117,8 @@ mod risk_tests {
         actions.insert(
             action.into(),
             ServiceAction {
+                subactions: None,
+                subaction_of: None,
                 additional_properties: false,
                 success: None,
                 wait_mode: None,
