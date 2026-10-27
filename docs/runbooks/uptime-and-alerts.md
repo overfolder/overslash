@@ -59,7 +59,7 @@ ratios close to zero. They now use the same `0.001` floor.
 
 ### What `/health` reports, and dev at night
 
-`/health` returns 503 when Postgres is unreachable (D-NEXT in DECISIONS.md), so
+`/health` returns 503 when Postgres is unreachable (D141 in DECISIONS.md), so
 `[P0] API Down` covers the API's database as well as the process. Cloud Run's
 own startup and liveness probes are TCP probes and never read `/health`, so a
 503 never restarts a container. Before that change, an HTTP liveness probe on

@@ -335,7 +335,7 @@ Re-measured after the apply (2026-10-27, prod):
 
 Follow-up, in code, pending a Cloud Run apply and an API deploy: `/health` returns 503
 when Postgres is down, and the Cloud Run probes are TCP, so `[P0] API Down` also covers
-the database (D-NEXT in DECISIONS.md).
+the database (D141 in DECISIONS.md).
 
 ### Storage — production
 
