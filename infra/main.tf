@@ -13,6 +13,10 @@ resource "google_project_service" "apis" {
       "logging.googleapis.com",
       "billingbudgets.googleapis.com",
       "orgpolicy.googleapis.com",
+      # The provider bills quota to this project (user_project_override), so
+      # its own reads go through here. Enable by hand on a fresh project:
+      # this list can't be read without it.
+      "cloudresourcemanager.googleapis.com",
     ],
     var.use_private_vpc ? [
       "servicenetworking.googleapis.com",
