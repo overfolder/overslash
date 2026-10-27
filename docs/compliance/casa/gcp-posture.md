@@ -60,15 +60,16 @@ holds no Editor.
 
 - Dev's default-SA binding was **removed by hand on 2026-10-27**, and `overslash-dev-api`
   `/health` still returned 200.
-- Prod is **in code, pending apply**. `infra/modules/project-guardrails/` removes both
+- Prod was **applied on 2026-10-27**. `infra/modules/project-guardrails/` removes both
   bindings with `google_project_iam_member_remove` and grants the cloudservices agent
   `roles/compute.editor` first, but only where `use_private_vpc` (that is, where the
-  connector exists).
-- Both projects have since moved into the overspiral.com organization. Its inherited
-  policies already enforce `iam.automaticIamGrantsForDefaultServiceAccounts`. The module
-  pins that at project level and adds
-  `iam.managed.preventPrivilegedBasicRolesForDefaultServiceAccounts`, which also blocks a
-  later grant.
+  connector exists). Re-measured the same day: prod's only Editor-class binding is
+  `roles/compute.editor` on the cloudservices agent; dev has none. Prod `tofu plan` is clean.
+- Both projects have since moved into the overspiral.com organization, which enforces
+  `iam.automaticIamGrantsForDefaultServiceAccounts` and
+  `iam.managed.preventPrivilegedBasicRolesForDefaultServiceAccounts` at org level. The
+  module also pins both at project level, so the grants can come back neither by creation
+  nor by a later grant, and a change of parent does not lift them.
 
 Operator step: [project-guardrails.md](../../runbooks/project-guardrails.md).
 
@@ -349,23 +350,46 @@ Organization policy constraints set on either project: **none**.
 all unset. Every guardrail in this stack is convention expressed in HCL, so a `gcloud`
 command or a console click moves the project outside it without failing anything.
 
-**Update 2026-10-27: both projects now sit in the overspiral.com organization.** Measured
-effective policies on both projects. Google's secure-by-default set is inherited, notably:
+**Update 2026-10-27: both projects now sit in the overspiral.com organization, and the
+baseline is applied.** The organization enforces a policy set at org level, and
+`infra/modules/project-guardrails/` ([project-guardrails.md](../../runbooks/project-guardrails.md))
+pins the Overslash-specific ones per project. Both applied on 2026-10-27; `tofu plan` is
+clean in both environments. Effective policy, measured the same day with
+`gcloud org-policies describe <constraint> --project=<p> --effective`:
 
-- `iam.automaticIamGrantsForDefaultServiceAccounts`, `iam.disableServiceAccountKeyUpload`,
-  `iam.disableCrossProjectServiceAccountUsage`, `iam.managed.disableServiceAccountKeyCreation`
-  (dev has a project opt-out for the Directory-sync key), `storage.uniformBucketLevelAccess`,
-  and `cloudbuild.useBuildServiceAccount` — all enforced.
-- `iam.allowedPolicyMemberDomains`, limited to the org's customer ID. This is why the public
-  Cloud Run services moved to `invoker_iam_disabled` instead of an `allUsers` binding.
+| Constraint | `overslash` | `overslash-dev` | Set at | CASA |
+|---|---|---|---|---|
+| `iam.allowedPolicyMemberDomains` | org customer only | same | org | 3.1.1 |
+| `iam.automaticIamGrantsForDefaultServiceAccounts` | enforced | enforced | org + project | 3.1.1 |
+| `iam.managed.preventPrivilegedBasicRolesForDefaultServiceAccounts` | enforced | enforced | org + project | 3.1.1 |
+| `iam.managed.disableServiceAccountKeyCreation` | enforced | **off** (Directory-sync key) | org; dev project opt-out | 6.7.1 |
+| `iam.disableServiceAccountKeyUpload` | enforced | enforced | org | 6.7.1 |
+| `iam.disableAuditLoggingExemption` | enforced | enforced | org + project | 6.7.1 |
+| `sql.managed.restrictPublicIp` | enforced | **off** (public IP, no authorized networks) | org; dev project opt-out | 6.2.1 |
+| `sql.managed.restrictAuthorizedNetworks` | enforced | **off** | org; dev project opt-out | 6.2.1 |
+| `storage.publicAccessPrevention` | enforced | enforced | org + project | 6.2.1 |
+| `storage.uniformBucketLevelAccess` | enforced | enforced | org | 6.2.1 |
+| `storage.secureHttpTransport` | enforced | enforced | org | 4.1.1 |
+| `compute.managed.requireOsLogin` | enforced | enforced | org | 3.1.1 |
+| `compute.managed.disableSerialPortAccess` | enforced | enforced | org | 3.1.1 |
+| `compute.skipDefaultNetworkCreation` | enforced | enforced | org | — |
+| `compute.managed.restrictProtocolForwardingCreationForTypes` | `INTERNAL` only | same | org | — |
+| `essentialcontacts.managed.allowedContactDomains` | `@overspiral.com` | same | org | — |
+| `run.allowedIngress` | **unset** (allow all) | **unset** | — | 6.2.1 |
 
-`sql.restrictPublicIp`, `storage.publicAccessPrevention`, `iam.disableAuditLoggingExemption`
-and `run.allowedIngress` remain unset at org level. The project-level half is in code,
-pending apply: `infra/modules/project-guardrails/`
-([project-guardrails.md](../../runbooks/project-guardrails.md)) sets the SQL pair (prod
-enforced, dev explicitly off), public-access prevention, the audit-exemption ban and the
-default-SA pair. `run.allowedIngress` waits on overfwd and the shortener leaving
-`INGRESS_TRAFFIC_ALL`.
+So the closing sentence above no longer holds: a `gcloud` command or console click that
+would make a bucket public, add a public IP or an authorized network to the prod database,
+mint or upload a service-account key, grant a default SA a basic role, or add an IAM member
+from outside the organization now **fails** instead of drifting silently.
+
+`iam.allowedPolicyMemberDomains` is why the public Cloud Run services moved to
+`invoker_iam_disabled` instead of an `allUsers` binding. The old `allUsers` invoker
+bindings were removed by hand on 2026-10-27; no Cloud Run service in either project has an
+`allUsers` or `allAuthenticatedUsers` member, and `api.overslash.com/health`, the
+shortener and `overslash-dev-api` still answer 200.
+
+**Still open:** `run.allowedIngress` — it applies project-wide, so it can only be tightened
+once overfwd and the shortener stop running with `INGRESS_TRAFFIC_ALL`.
 
 ---
 

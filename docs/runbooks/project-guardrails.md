@@ -29,6 +29,12 @@
    The dev key-creation override already exists. It was set by hand on 2026-10-27, and an
    `import` block in `infra/main.tf` adopts it.
 
+   The organization now enforces every "enforced" cell above at org level as well, so the
+   project-level copies are pins: they keep the guarantee if the project changes parent.
+   The dev "off" cells are real overrides of an org-level enforce.
+
+**Status: applied to dev and prod on 2026-10-27.** `tofu plan` is clean in both.
+
 `run.allowedIngress` is deliberately absent. The constraint applies to the whole project,
 and overfwd and the shortener still run with `INGRESS_TRAFFIC_ALL`, so the only value that
 fits today is `all`, which enforces nothing.
