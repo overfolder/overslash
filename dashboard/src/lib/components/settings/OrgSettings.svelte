@@ -265,6 +265,10 @@
 	let showOauthCredForm = $state(false);
 	let oauthCredEditingProvider = $state<string | null>(null);
 	let oauthCredOverridingEnv = $state(false);
+	// Whether these credentials also replace the built-in Google/GitHub
+	// sign-in app. Off by default: an org override for service connections
+	// should not quietly move login onto the org's app.
+	let oauthCredOverrideSignin = $state(false);
 	let oauthCredProvider = $state<string>('google');
 	let oauthCredClientId = $state('');
 	let oauthCredClientSecret = $state('');
@@ -296,6 +300,9 @@
 			: null
 	);
 	const oauthCredGuideUrl = $derived(orgAppGuideUrl(oauthCredProvider));
+	const oauthCredIsSigninProvider = $derived(
+		oauthCredProvider === 'google' || oauthCredProvider === 'github'
+	);
 
 	/** True when an org credential exists (from any source) for this provider. */
 	function hasOrgCredFor(providerKey: string): boolean {
@@ -530,6 +537,7 @@
 		void loadOauthProviders();
 		oauthCredEditingProvider = null;
 		oauthCredOverridingEnv = false;
+		oauthCredOverrideSignin = false;
 		// Pick a default provider that isn't already configured, falling back
 		// to "google" if everything is already configured.
 		const taken = new Set(oauthCredentials.map((c) => c.provider_key));
@@ -545,6 +553,7 @@
 		void loadOauthProviders();
 		oauthCredEditingProvider = row.provider_key;
 		oauthCredOverridingEnv = row.source === 'env';
+		oauthCredOverrideSignin = row.overrides_signin === true;
 		oauthCredProvider = row.provider_key;
 		oauthCredClientId = '';
 		oauthCredClientSecret = '';
@@ -563,7 +572,8 @@
 				`/v1/org-oauth-credentials/${oauthCredProvider}`,
 				{
 					client_id: oauthCredClientId,
-					client_secret: oauthCredClientSecret
+					client_secret: oauthCredClientSecret,
+					...(oauthCredIsSigninProvider ? { override_signin: oauthCredOverrideSignin } : {})
 				}
 			);
 			showOauthCredForm = false;
@@ -602,6 +612,17 @@
 				}
 			}
 		);
+	}
+
+	async function toggleOauthCredSignin(row: OAuthCredential) {
+		try {
+			await session.patch(`/v1/org-oauth-credentials/${row.provider_key}`, {
+				override_signin: !row.overrides_signin
+			});
+			await Promise.all([refetchOauthCreds(), refetchIdp()]);
+		} catch (err) {
+			alert(asMessage(err));
+		}
 	}
 
 	async function toggleIdp(cfg: IdpConfig) {
@@ -1854,12 +1875,20 @@
 									{:else}
 										<span class="badge badge-on">org secrets</span>
 									{/if}
+									{#if row.overrides_signin}
+										<span class="badge badge-on">sign-in</span>
+									{/if}
 								</td>
 								<td class="actions-col">
 									{#if row.source === 'db'}
 										<button type="button" class="btn-link" onclick={() => openEditOauthCred(row)}>
 											Edit
 										</button>
+										{#if row.signin_env_available}
+											<button type="button" class="btn-link" onclick={() => toggleOauthCredSignin(row)}>
+												{row.overrides_signin ? 'Stop using for sign-in' : 'Use for sign-in'}
+											</button>
+										{/if}
 										<button type="button" class="btn-link danger" onclick={() => removeOauthCred(row)}>
 											Remove
 										</button>
@@ -1880,8 +1909,9 @@
 					{#if oauthCredOverridingEnv}
 						<p class="muted small">
 							This provider is currently served by environment variables. Saving an
-							org-level credential here overrides that default for both service
-							connections and IdP login.
+							org-level credential here overrides that default for service
+							connections.{#if oauthCredIsSigninProvider}
+								Sign-in keeps using the built-in app unless you opt in below.{/if}
 						</p>
 					{/if}
 					<label>
@@ -1939,6 +1969,19 @@
 							</span>
 						{/if}
 					</label>
+					{#if oauthCredIsSigninProvider}
+						<label class="checkbox-row">
+							<input type="checkbox" bind:checked={oauthCredOverrideSignin} />
+							<span class="checkbox-body">
+								<span class="checkbox-label">Also use these credentials for sign-in</span>
+								<span class="checkbox-help">
+									Off by default: members keep signing in through the built-in
+									{oauthCredProviderInfo?.display_name ?? oauthCredProvider} app. Turn on to
+									send Overslash-managed sign-in through your app instead.
+								</span>
+							</span>
+						</label>
+					{/if}
 					{#if oauthCredError}
 						<p class="form-error">{oauthCredError}</p>
 					{/if}

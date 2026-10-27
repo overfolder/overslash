@@ -10,6 +10,9 @@
 //! - For keys no row claims, `orgs.allow_overslash_managed_signin` makes the
 //!   Overslash-managed providers ([`MANAGED_PROVIDER_KEYS`]) available on the
 //!   deployment's `{PROVIDER}_AUTH_*` credentials — where configured.
+//!   The org's OAuth App Credentials replace that env app for sign-in only
+//!   when the admin opts the provider in (`org_oauth_signin_overrides`);
+//!   saving them for service connections alone leaves login untouched.
 //!
 //! Availability is **not** admission. Whether the authenticated human may
 //! become a member is decided separately by `require_invite_admission` /
@@ -181,8 +184,9 @@ pub enum CredentialLookup {
 ///
 /// Precedence within a dedicated row: the row's own encrypted credentials,
 /// else the org's OAuth App Credentials (`OAUTH_{PROVIDER}_CLIENT_ID/SECRET`
-/// org secrets) it defers to. A managed provider prefers the org's OAuth App
-/// Credentials — an explicit admin override — over the shared env pair.
+/// org secrets) it defers to. A managed provider uses the shared env pair
+/// unless the admin opted that provider into sign-in via the org's OAuth App
+/// Credentials (`org_oauth_signin_overrides`).
 pub async fn resolve_org_signin_credentials(
     state: &AppState,
     ext: &axum::http::Extensions,
@@ -246,13 +250,16 @@ pub async fn resolve_org_signin_credentials(
         ));
     }
 
-    // Managed: org OAuth App Credentials win over the operator-shared env pair.
-    if let Some(creds) = crate::services::client_credentials::resolve_org_oauth_secrets(
-        &scope,
-        &enc_key,
-        provider_key,
-    )
-    .await?
+    // Managed: org OAuth App Credentials replace the operator-shared env pair
+    // only when the admin opted this provider in — saving them for service
+    // connections alone must not move sign-in onto the org's app.
+    if scope.oauth_signin_override_enabled(provider_key).await?
+        && let Some(creds) = crate::services::client_credentials::resolve_org_oauth_secrets(
+            &scope,
+            &enc_key,
+            provider_key,
+        )
+        .await?
     {
         return Ok(CredentialLookup::Found(
             creds.client_id,

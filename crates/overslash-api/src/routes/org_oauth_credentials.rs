@@ -9,7 +9,7 @@
 use axum::{
     Json, Router,
     extract::{Path, State},
-    routing::{get, put},
+    routing::get,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -23,7 +23,7 @@ use crate::{
     AppState,
     error::{AppError, Result},
     extractors::{AdminAcl, ClientIp, ReqExt},
-    services::client_credentials::oauth_secret_names,
+    services::{client_credentials::oauth_secret_names, org_signin::MANAGED_PROVIDER_KEYS},
 };
 
 pub fn router() -> Router<AppState> {
@@ -31,7 +31,9 @@ pub fn router() -> Router<AppState> {
         .route("/v1/org-oauth-credentials", get(list_credentials))
         .route(
             "/v1/org-oauth-credentials/{provider_key}",
-            put(put_credentials).delete(delete_credentials),
+            axum::routing::put(put_credentials)
+                .patch(patch_credentials)
+                .delete(delete_credentials),
         )
 }
 
@@ -43,6 +45,15 @@ pub fn router() -> Router<AppState> {
 struct PutCredentialsRequest {
     client_id: String,
     client_secret: String,
+    /// Also serve Overslash-managed sign-in from these credentials. Only
+    /// meaningful for [`MANAGED_PROVIDER_KEYS`]; absent leaves it unchanged.
+    #[serde(default)]
+    override_signin: Option<bool>,
+}
+
+#[derive(Deserialize)]
+struct PatchCredentialsRequest {
+    override_signin: bool,
 }
 
 #[derive(Serialize)]
@@ -53,6 +64,11 @@ struct CredentialRow {
     source: &'static str,
     /// Truncated client_id — never the full value, never the secret.
     client_id_preview: String,
+    /// The deployment has a built-in `{PROVIDER}_AUTH_*` sign-in app for this
+    /// provider, so org credentials only take over login when opted in.
+    signin_env_available: bool,
+    /// The org opted these credentials into managed sign-in as well.
+    overrides_signin: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -75,6 +91,7 @@ async fn list_credentials(
     let enc_key = state.config.keyring()?;
     let env_fallback_enabled =
         overslash_env::flag("OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS");
+    let signin_overrides = scope.list_oauth_signin_overrides().await?;
 
     let mut rows: Vec<CredentialRow> = Vec::new();
 
@@ -99,6 +116,8 @@ async fn list_credentials(
                 display_name: provider.display_name.clone(),
                 source: "db",
                 client_id_preview: preview(&client_id),
+                signin_env_available: signin_env_available(&state, &provider.key),
+                overrides_signin: signin_overrides.contains(&provider.key),
             });
             continue;
         }
@@ -115,6 +134,8 @@ async fn list_credentials(
                 display_name: provider.display_name.clone(),
                 source: "env",
                 client_id_preview: preview(&client_id),
+                signin_env_available: signin_env_available(&state, &provider.key),
+                overrides_signin: false,
             });
         }
     }
@@ -136,13 +157,16 @@ async fn put_credentials(
         .await?
         .ok_or_else(|| AppError::NotFound(format!("provider '{provider_key}' not found")))?;
 
-    // Org-level credentials are an intentional override and always win over
-    // env vars, so writing them is allowed even when an env var is live:
+    // Org-level credentials are an intentional override, so writing them is
+    // allowed even when an env var is live:
     //   - Service connections: org secrets are tier 3 and env vars tier 4 in
     //     `client_credentials::resolve`, so the org credential is read first.
-    //   - IdP login: `auth.rs::resolve_auth_credentials` checks org OAuth App
-    //     Credentials before the `{PROVIDER}_AUTH_*` env fallback.
+    //   - Managed IdP login keeps the built-in `{PROVIDER}_AUTH_*` app unless
+    //     `override_signin` opts the provider in (`services::org_signin`).
     // See TECH_DEBT.md for the env-var naming split between the two schemes.
+    if req.override_signin == Some(true) {
+        require_managed_provider(&provider_key)?;
+    }
 
     let enc_key = state.config.keyring()?;
     let (id_name, secret_name) = oauth_secret_names(&provider_key);
@@ -163,6 +187,12 @@ async fn put_credentials(
             acl.identity_id,
         )
         .await?;
+    if let Some(enabled) = req.override_signin {
+        scope
+            .set_oauth_signin_override(&provider.key, enabled)
+            .await?;
+    }
+    let overrides_signin = scope.oauth_signin_override_enabled(&provider.key).await?;
 
     let _ = scope
         .log_audit(AuditEntry {
@@ -171,7 +201,7 @@ async fn put_credentials(
             action: "oauth_credentials.put",
             resource_type: Some("oauth_credentials"),
             resource_id: None,
-            detail: json!({ "provider_key": &provider_key }),
+            detail: json!({ "provider_key": &provider_key, "overrides_signin": overrides_signin }),
             description: Some(&format!(
                 "Configured {} OAuth App Credentials",
                 provider.display_name
@@ -181,10 +211,71 @@ async fn put_credentials(
         .await;
 
     Ok(Json(CredentialRow {
+        signin_env_available: signin_env_available(&state, &provider.key),
         provider_key: provider.key,
         display_name: provider.display_name,
         source: "db",
         client_id_preview: preview(&req.client_id),
+        overrides_signin,
+    }))
+}
+
+/// Flip whether the org's OAuth App Credentials also serve managed sign-in,
+/// without re-entering the client secret.
+async fn patch_credentials(
+    State(state): State<AppState>,
+    ReqExt(ext): ReqExt,
+    AdminAcl(acl): AdminAcl,
+    scope: OrgScope,
+    ip: ClientIp,
+    Path(provider_key): Path<String>,
+    Json(req): Json<PatchCredentialsRequest>,
+) -> Result<Json<CredentialRow>> {
+    let provider = oauth_provider::get_by_key(state.db(&ext), &provider_key)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("provider '{provider_key}' not found")))?;
+    require_managed_provider(&provider.key)?;
+
+    // The flag only makes sense on top of an existing override: without org
+    // credentials there is nothing to sign in with.
+    let enc_key = state.config.keyring()?;
+    let (id_name, _) = oauth_secret_names(&provider.key);
+    let Some(id_version) = scope.get_current_secret_value(&Org.path(&*id_name)).await? else {
+        return Err(AppError::NotFound(format!(
+            "no org OAuth App Credentials for provider '{provider_key}'"
+        )));
+    };
+    let client_id = String::from_utf8(crypto::decrypt(&enc_key, &id_version.encrypted_value)?)
+        .map_err(|e| AppError::Internal(format!("org OAuth client_id is not valid UTF-8: {e}")))?;
+
+    scope
+        .set_oauth_signin_override(&provider.key, req.override_signin)
+        .await?;
+
+    let _ = scope
+        .log_audit(AuditEntry {
+            org_id: scope.org_id(),
+            identity_id: acl.identity_id,
+            action: "oauth_credentials.signin_override_updated",
+            resource_type: Some("oauth_credentials"),
+            resource_id: None,
+            detail: json!({ "provider_key": &provider.key, "overrides_signin": req.override_signin }),
+            description: Some(&format!(
+                "{} sign-in via {} OAuth App Credentials",
+                if req.override_signin { "Enabled" } else { "Disabled" },
+                provider.display_name
+            )),
+            ip_address: ip.0.as_deref(),
+        })
+        .await;
+
+    Ok(Json(CredentialRow {
+        signin_env_available: signin_env_available(&state, &provider.key),
+        provider_key: provider.key,
+        display_name: provider.display_name,
+        source: "db",
+        client_id_preview: preview(&client_id),
+        overrides_signin: req.override_signin,
     }))
 }
 
@@ -213,6 +304,10 @@ async fn delete_credentials(
         .soft_delete_secrets(Org, &[&id_name, &secret_name])
         .await?
         > 0;
+    // A stale opt-in must not silently resurface when credentials are re-added.
+    scope
+        .set_oauth_signin_override(&provider_key, false)
+        .await?;
 
     if deleted {
         let _ = scope
@@ -235,6 +330,21 @@ async fn delete_credentials(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+fn signin_env_available(state: &AppState, provider_key: &str) -> bool {
+    MANAGED_PROVIDER_KEYS.contains(&provider_key)
+        && state.config.env_auth_credentials(provider_key).is_some()
+}
+
+fn require_managed_provider(provider_key: &str) -> Result<()> {
+    if MANAGED_PROVIDER_KEYS.contains(&provider_key) {
+        Ok(())
+    } else {
+        Err(AppError::BadRequest(format!(
+            "provider '{provider_key}' has no Overslash-managed sign-in to override"
+        )))
+    }
+}
 
 /// Client IDs are not secret but they're long; show a stable fingerprint
 /// that's recognizable without leaking extra detail. Short inputs fall back
