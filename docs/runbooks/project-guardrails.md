@@ -41,10 +41,10 @@ Infra is never auto-applied. This page is the human half.
   carry it, and `roles/orgpolicy.policyAdmin` can only be granted on the organization
   (overspiral.com). Run tofu as an identity that holds it there.
 - **Quota project.** With user ADC, `orgpolicy.googleapis.com` refuses calls that carry no
-  quota project ("…requires a quota project, which is not set by default"). Set one where
-  the API is enabled, once:
-  `gcloud auth application-default set-quota-project overslash-dev`. Alternatively, prefix a
-  single run with `USER_PROJECT_OVERRIDE=true GOOGLE_BILLING_PROJECT=overslash-dev`.
+  quota project. `infra/providers.tf` sets `user_project_override` + `billing_project`, so
+  every provider call is billed to the managed project and no local setup is needed. That
+  means `cloudresourcemanager.googleapis.com` must already be enabled there, which it is
+  on both projects.
 - **Secret-read alert.** `terraform_operators` (tfvars) lists the principals whose
   `tofu plan` secret reads do not page. If you apply as `angel@overspiral.com`, add it there
   first, or expect an `AccessSecretVersion` alert per plan.
