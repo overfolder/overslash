@@ -290,23 +290,44 @@ age, which is the shape of evidence 6.7.1 asks for.
 
 ### Monitoring — the count-gate, confirmed
 
-| | |
-|---|---|
-| Alert policies deployed | **8**, all enabled |
-| Uptime checks deployed | **0** |
+| | 2026-09-22 | 2026-10-27 |
+|---|---|---|
+| Alert policies deployed (prod) | **8**, all enabled | **10**, all enabled |
+| Uptime checks deployed (prod) | **0** | **0** |
+| Uptime checks deployed (dev) | 1 | 1 (`overslash-dev-api-health` → `api.dev.overslash.com/health`) |
 
-The arithmetic matches `infra/` exactly: 12 policies declared, minus the 3 disabled at
-`infra/env/prod.tfvars:113-119` (`api_latency`, `oauth_refresh`, `upstream_error`), minus
-`[P0] API Down`, which is `count`-gated on `api_domain != ""` while prod sets
-`domain = ""`. **So production has no GCM uptime check and no API-down page**; the only
+The 2026-09-22 arithmetic matched `infra/` exactly: 12 policies declared, minus the 3
+disabled in `infra/env/prod.tfvars` (`api_latency`, `oauth_refresh`, `upstream_error`),
+minus `[P0] API Down`, which is `count`-gated on `api_domain != ""` while prod sets
+`domain = ""`. **So production has no GCM uptime check and no API-down page**. The only
 deployed P0 is `API High 5xx Rate`, which cannot fire when the service is returning
-nothing at all. Better Stack covers the detection out-of-band, but it is console-managed
-and outside the reviewable configuration.
+nothing at all. Better Stack ([status-page.md](../../runbooks/status-page.md)) detects the
+outage out-of-band, but it is console-managed, outside the reviewable configuration, and
+does not page. The two policies added since are `[P1] Data Integrity Violation` and
+`[P1] Unexpected Secret Access` (audit-logging module).
 
-Deployed: `[P0] API High 5xx Rate`, `[P1]` API High CPU / API High Memory / Cloud SQL High
-CPU / Cloud SQL High Disk / Background Task Stale / Webhook Delivery Failure Rate,
-`[P2] API High 4xx Rate`. Every one is an availability or capacity signal — there is no
-alert on any security event.
+Deployed on 2026-10-27: `[P0] API High 5xx Rate`, `[P1]` API High CPU / API High Memory /
+Cloud SQL High CPU / Cloud SQL High Disk / Background Task Stale / Webhook Delivery Failure
+Rate / Data Integrity Violation / Unexpected Secret Access, `[P2] API High 4xx Rate`. Both
+notification channels exist and are enabled: `overslash-prod PagerDuty (EU)`
+(`webhook_tokenauth`) and `overslash-prod Email Alerts`. The 5xx P0 routes to both.
+
+**The three disabled gates no longer have a reason to stay disabled.** Their descriptors
+were measured present in both projects on 2026-10-27:
+`overslash_http_request_duration_seconds/histogram`, `overslash_oauth_events_total/counter`,
+`overslash_upstream_responses_total/counter`. Reading the queries turned up a second
+defect: the OAuth, upstream and (deployed) webhook ratios divided by
+`clamp_min(rate, 1)`, which at prod volume (well under 1/s) pins the denominator to 1. They
+could not fire, so the deployed webhook policy was counted as coverage it did not provide.
+
+**Remediation, in code, pending apply** ([uptime-and-alerts.md](../../runbooks/uptime-and-alerts.md)):
+`infra/main.tf` feeds the monitoring module `api_host_suffix` (`api.overslash.com`, served
+by the GCLB) when `domain` is empty and the LB is on. That creates the uptime check and
+`[P0] API Down` (PagerDuty + email) in prod. All three gates are `true` in both tfvars,
+and the ratio queries take a `0.001` divide-by-zero floor plus an explicit minimum-sample
+guard. A `-refresh=false -target=module.monitoring` plan from the agent sandbox showed the
+expected creates. After apply, the expected count is **14 policies and 1 uptime check** in
+prod; re-measure with the runbook's *Verify* commands and record them here.
 
 ### Storage — production
 
@@ -443,7 +464,7 @@ No verdict is overturned. It does three things:
    service accounts; the unmanaged `_cloudbuild` bucket holding repository source archives
    without uniform bucket-level access (fixed and applied 2026-10-23 —
    [cloud-build-bucket.md](../../runbooks/cloud-build-bucket.md)); and the confirmation that production runs 8 alert
-   policies and **zero** uptime checks, so the `[P0] API Down` page does not exist.
+   policies and **zero** uptime checks, so the `[P0] API Down` page does not exist. (Root cause and fix, pending apply: [uptime-and-alerts.md](../../runbooks/uptime-and-alerts.md).)
 
 And it supplies better evidence than prose: "Google's own Recommender rates this P2, with a
 HIGH-severity insight behind it" is a stronger line in a submission than "we read our

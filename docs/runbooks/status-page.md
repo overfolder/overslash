@@ -27,9 +27,11 @@ Public URL: <https://status.overslash.com>
   — if GCM itself has an outage the public page stays truthful.
 
 The Better Stack monitors mirror the *target* of the GCM uptime check in
-`infra/modules/monitoring/uptime.tf`. The GCM `[P0] api_down` alert
-(`infra/modules/monitoring/alerts_p0.tf`) continues to page on-call
-independently.
+`infra/modules/monitoring/uptime.tf`. The GCM `[P0] API Down` alert
+(`infra/modules/monitoring/alerts_p0.tf`) is what pages on-call. Until the change
+in [uptime-and-alerts.md](uptime-and-alerts.md) is applied, **prod has neither**:
+both were `count`-gated on a `domain` that prod leaves empty, so a total prod outage
+shows here and pages no one.
 
 ## Who has access
 
@@ -65,9 +67,9 @@ is structural.
 
 ## On-call
 
-Page is wired only as a status signal. Paging is via the GCM P0 alert pipeline
-(PagerDuty integration tracked in TODO.md §1.4, first bullet). When that lands,
-link the rotation schedule from this page.
+Page is wired only as a status signal. Paging is via the GCM P0 alert pipeline,
+which routes to PagerDuty (EU) and email in prod. The API-down half of that
+pipeline is [uptime-and-alerts.md](uptime-and-alerts.md).
 
 ## Verifying after changes
 

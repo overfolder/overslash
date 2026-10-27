@@ -313,11 +313,16 @@ module "monitoring" {
   upstream_error_alert_enabled = var.upstream_error_alert_enabled
   api_latency_alert_enabled    = var.api_latency_alert_enabled
   integrity_alert_enabled      = var.integrity_alert_enabled
-  api_domain                   = var.domain
-  api_service_name             = module.cloud_run.service_name
-  cloud_sql_instance_name      = module.cloud_sql.instance_name
-  monthly_budget_usd           = var.monthly_budget_usd
-  billing_account_id           = var.billing_account_id
+  # The host the uptime check probes. Prod leaves `domain` empty (the GCLB
+  # serves `api_host_suffix` and its wildcard instead of a Cloud Run domain
+  # mapping), which used to leave this empty too and silently drop both the
+  # uptime check and `[P0] API Down`. Without the LB and without `domain`
+  # nothing public answers on `api_host_suffix`, so it stays empty there.
+  api_domain              = var.domain != "" ? var.domain : (var.enable_api_lb ? var.api_host_suffix : "")
+  api_service_name        = module.cloud_run.service_name
+  cloud_sql_instance_name = module.cloud_sql.instance_name
+  monthly_budget_usd      = var.monthly_budget_usd
+  billing_account_id      = var.billing_account_id
 
   depends_on = [
     google_project_service.apis,
