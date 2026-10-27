@@ -191,3 +191,7 @@ audit_log_bucket_locked  = false
 
 enable_google_directory_sync = true
 
+# The org enforces iam.managed.disableServiceAccountKeyCreation; dev opts out so
+# the Directory-sync key can be minted (docs/runbooks/project-guardrails.md).
+allow_service_account_key_creation = true
+

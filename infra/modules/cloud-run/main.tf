@@ -769,6 +769,10 @@ resource "google_cloud_run_v2_service" "api" {
 # mid-apply; drop the leftover binding by hand afterwards.
 removed {
   from = google_cloud_run_v2_service_iam_member.public
+
+  lifecycle {
+    destroy = false
+  }
 }
 
 resource "google_cloud_run_domain_mapping" "domain" {
