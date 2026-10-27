@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.25.0](https://github.com/overfolder/overslash/compare/v0.24.0...v0.25.0) (2026-10-27)
+
+
+### Features
+
+* **auth:** org OAuth credentials no longer take over built-in sign-in unless opted in ([#837](https://github.com/overfolder/overslash/issues/837)) ([bf8293a](https://github.com/overfolder/overslash/commit/bf8293abff6ce5eb6deadf070ae093ff5719c720))
+* **templates:** subactions — classify overloaded actions per item ([#836](https://github.com/overfolder/overslash/issues/836)) ([1beb42e](https://github.com/overfolder/overslash/commit/1beb42e0fbe67624e3d61c15711fb1730888db94))
+
 ## [0.24.0](https://github.com/overfolder/overslash/compare/v0.23.0...v0.24.0) (2026-10-26)
 
 
