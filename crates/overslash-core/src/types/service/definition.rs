@@ -623,6 +623,8 @@ mod tests {
         actions.insert(
             "search_issues".into(),
             ServiceAction {
+                subactions: None,
+                subaction_of: None,
                 additional_properties: false,
                 success: None,
                 wait_mode: None,
@@ -699,6 +701,8 @@ mod tests {
     #[test]
     fn service_action_disabled_elided_when_false() {
         let a = ServiceAction {
+            subactions: None,
+            subaction_of: None,
             additional_properties: false,
             success: None,
             wait_mode: None,

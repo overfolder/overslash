@@ -83,6 +83,10 @@ pub(super) const MCP_TOOL_ALIASES: &[Alias] = &[
         canonical: "x-overslash-test",
     },
     Alias {
+        alias: "subactions",
+        canonical: "x-overslash-subactions",
+    },
+    Alias {
         alias: "additional-properties",
         canonical: "x-overslash-additional-properties",
     },
@@ -155,6 +159,10 @@ pub(super) const OPERATION_ALIASES: &[Alias] = &[
     Alias {
         alias: "test",
         canonical: "x-overslash-test",
+    },
+    Alias {
+        alias: "subactions",
+        canonical: "x-overslash-subactions",
     },
     Alias {
         alias: "additional-properties",

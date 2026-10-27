@@ -154,6 +154,10 @@ export interface OAuthCredential {
   display_name: string;
   source: 'env' | 'db';
   client_id_preview: string;
+  /** A built-in `{PROVIDER}_AUTH_*` sign-in app exists for this provider. */
+  signin_env_available?: boolean;
+  /** These org credentials also serve Overslash-managed sign-in. */
+  overrides_signin?: boolean;
 }
 
 export interface McpClient {
@@ -670,6 +674,24 @@ export interface ActionSummary {
    *  for the page after it. Absent where nobody has declared how it pages —
    *  which is not the same as "it returns everything". */
   pagination?: ActionPagination;
+  /** `x-overslash-subactions`: the variants a call to this action is
+   *  classified into — each object a call writes is matched to one, which
+   *  decides its description, risk and permission key. Absent for almost every
+   *  action. */
+  subactions?: SubactionSummary[];
+  /** Set on a callable variant: the parent action it is rewritten into. The
+   *  dashboard nests it under that parent rather than listing it twice. */
+  subaction_of?: string;
+}
+
+/** One variant of an overloaded action. Its permission key is
+ *  `{service}:{parent}/{key}:{arg}`, which a rule on the parent also covers. */
+export interface SubactionSummary {
+  key: string;
+  description: string;
+  risk: string;
+  /** Also an action of its own, callable by `key` with a narrower schema. */
+  callable: boolean;
 }
 
 export interface ActionPagination {
@@ -750,6 +772,10 @@ export interface ActionDetail {
    *  advisory, so the form offers free-form extra rows and renders enums as an
    *  open combobox instead of a closed `<select>`. Absent when strict. */
   additional_properties?: boolean;
+  /** See {@link ActionSummary.subactions}. */
+  subactions?: SubactionSummary[];
+  /** See {@link ActionSummary.subaction_of}. */
+  subaction_of?: string;
 }
 
 // -- Service instances --

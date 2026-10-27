@@ -187,6 +187,8 @@ mod test_fixtures {
             map.insert(
                 key.to_string(),
                 ServiceAction {
+                    subactions: None,
+                    subaction_of: None,
                     additional_properties: false,
                     success: None,
                     wait_mode: None,

@@ -418,6 +418,10 @@ pub(super) struct ResolvedMeta {
     /// during resolution because the instance row is consumed there, and read
     /// back out by the metadata tagger.
     pub(super) binding: BindingFacts,
+    /// Subaction variants this call classified into (`x-overslash-subactions`),
+    /// in declaration order. Empty for every action without subactions, and
+    /// for a call no variant claimed.
+    pub(super) subactions: Vec<String>,
 }
 
 /// The resolved service binding, reduced to the three names worth tagging.
@@ -542,6 +546,21 @@ pub(super) struct ActionMetadata {
     /// Service shapes are always gated (templates ship with auth or are
     /// platform/MCP); raw HTTP is gated only when secrets are injected.
     pub(super) needs_gate: bool,
+    /// The action's `x-overslash-subactions`, with what classification needs
+    /// to rebuild the parent's own description for unclaimed items.
+    pub(super) subactions: Option<SubactionContext>,
+    /// Set when the called action is a callable variant: the call is rewritten
+    /// into its parent before anything else reads the metadata.
+    pub(super) subaction_of: Option<overslash_core::types::SubactionRef>,
+}
+
+/// See [`ActionMetadata::subactions`].
+pub(super) struct SubactionContext {
+    pub(super) spec: overslash_core::types::SubactionSpec,
+    /// The parent's `label_template()`, uninterpolated.
+    pub(super) label_template: String,
+    /// The ` (Service)` suffix every action description carries.
+    pub(super) service_display_name: String,
 }
 
 /// Pre-resolved service template + instance, threaded

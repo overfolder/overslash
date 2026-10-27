@@ -1,6 +1,6 @@
 # RESTy / scoped / monotype tools over MCP-wrapped services
 
-**Status:** Draft — proposed
+**Status:** Superseded by [subactions.md](subactions.md) — Tier 2's transform shipped as a callable subaction's `transform`, Tier 1's scoping as classification.
 **Date:** 2026-07-09
 **Draft spec:** [hubspot-resty-draft.yaml](hubspot-resty-draft.yaml)
 **Related:** [external-mcp-services.md](external-mcp-services.md) (Shipped), [DECISIONS.md](../../DECISIONS.md) D27

@@ -193,6 +193,12 @@ pub(crate) fn extract_http_action(
         &base,
         &mut disclose_errors,
     );
+    let subactions = super::subactions::parse_subactions(
+        ext::get(op, Pos::Operation, Ext::Subactions),
+        risk,
+        &base,
+        &mut disclose_errors,
+    );
     if !disclose_errors.is_empty() {
         return Err(disclose_errors);
     }
@@ -219,6 +225,7 @@ pub(crate) fn extract_http_action(
             test,
             additional_properties,
             success,
+            subactions,
             // Everything else defaults. Notably `download`: an HTTP action that
             // returns bytes already *is* its own download, since `deliver:
             // "url"` mints a token from the resolved request. Only MCP, whose

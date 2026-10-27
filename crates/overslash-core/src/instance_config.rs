@@ -142,6 +142,8 @@ mod tests {
 
     fn def_with(params: &[(&str, bool)]) -> ServiceDefinition {
         let mut action = ServiceAction {
+            subactions: None,
+            subaction_of: None,
             additional_properties: false,
             success: None,
             wait_mode: None,

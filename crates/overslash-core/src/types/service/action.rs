@@ -7,6 +7,7 @@ use super::pagination::PaginationSpec;
 use super::param_shape::ParamShape;
 use super::risk::DeclaredRisk;
 use super::scope::ScopeParams;
+use super::subaction::{SubactionRef, SubactionSpec};
 
 /// An action within a service (maps to an HTTP request template).
 ///
@@ -238,6 +239,14 @@ pub struct ServiceAction {
     /// without asking anyone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub test: Option<TestSpec>,
+    /// `x-overslash-subactions`: variants of this action, classified per call
+    /// from its params. See [`SubactionSpec`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subactions: Option<SubactionSpec>,
+    /// Set on the action a *callable* variant compiles to: the call is
+    /// rewritten into the parent's params and dispatched as the parent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subaction_of: Option<SubactionRef>,
 }
 
 /// How to invoke an action as a credential probe.

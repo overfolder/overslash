@@ -17,6 +17,7 @@
 	import { pushToast } from '#lib/stores/toasts.svelte.ts';
 	import {
 		humanize,
+		operationsOf,
 		scopeArgSummary,
 		renderPayload,
 		formatBytes,
@@ -113,6 +114,7 @@
 	);
 
 	const primaryKey = $derived(current.derived_keys[0] ?? null);
+	const operations = $derived(operationsOf(current.derived_keys));
 	const serviceLabel = $derived(primaryKey ? humanize(primaryKey.service) : '—');
 	const targetArg = $derived(scopeArgSummary(current.derived_keys));
 
@@ -337,7 +339,7 @@
 								<div class="handle">{targetArg}</div>
 							</div>
 						</div>
-						{#if primaryKey}<span class="tag">{primaryKey.action}</span>{/if}
+						{#each operations as op (op)}<span class="tag">{op}</span>{/each}
 					</div>
 					<div class="aq-hero-body">
 						{#if primaryDisclosed.length > 0}
@@ -430,9 +432,11 @@
 								<IdentityPath path={current.identity_path} pathIds={current.identity_path_ids} />
 							{/if}
 						</dd>
-						{#if primaryKey}
-							<dt>Operation</dt>
-							<dd><code class="mono">{primaryKey.action}</code></dd>
+						{#if operations.length > 0}
+							<dt>{operations.length > 1 ? 'Operations' : 'Operation'}</dt>
+							<dd>
+								{#each operations as op (op)}<code class="mono op">{op}</code>{/each}
+							</dd>
 						{/if}
 						{#if current.tags?.length}
 							<!-- Read-only here: the approval queue has no server-side
@@ -1127,5 +1131,8 @@
 			flex: 1;
 			justify-content: center;
 		}
+	}
+	code.op {
+		display: block;
 	}
 </style>

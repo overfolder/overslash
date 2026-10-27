@@ -277,6 +277,10 @@ pub fn compile_service(
         None
     };
 
+    // Callable variants become actions of their own, once every parent they
+    // could name — HTTP, platform or MCP — is in the map.
+    extract::emit_callable_subactions(&mut actions, &mut errors);
+
     // A declared page size only bounds anything if it reaches the request, and
     // the mechanism that puts it there is `validate_input::apply_defaults`,
     // which reads the parameter's own `default:`. So the extension does not
@@ -369,5 +373,7 @@ pub fn compile_service(
 mod tests;
 #[cfg(test)]
 mod tests_relaxed_args;
+#[cfg(test)]
+mod tests_subactions;
 #[cfg(test)]
 mod tests_success;

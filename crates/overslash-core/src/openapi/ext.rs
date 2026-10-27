@@ -77,6 +77,7 @@ pub enum Ext {
     Upload,
     Pagination,
     Test,
+    Subactions,
     // Parameters, body properties, tool properties, platform-action params
     Resolve,
     Aliases,
@@ -125,6 +126,7 @@ impl Ext {
             Ext::Upload => "x-overslash-upload",
             Ext::Pagination => "x-overslash-pagination",
             Ext::Test => "x-overslash-test",
+            Ext::Subactions => "x-overslash-subactions",
             Ext::Resolve => "x-overslash-resolve",
             Ext::Aliases => "x-overslash-aliases",
             Ext::InstanceConfig => "x-overslash-instance-config",
@@ -186,6 +188,7 @@ pub(super) const ALL: &[Ext] = &[
     Ext::Upload,
     Ext::Pagination,
     Ext::Test,
+    Ext::Subactions,
     Ext::Resolve,
     Ext::Aliases,
     Ext::InstanceConfig,
@@ -423,6 +426,14 @@ pub(super) const READS: &[(Ext, &[Pos])] = &[
         Ext::Test,
         &[Pos::Operation, Pos::McpTool, Pos::McpToolDiscovered],
     ),
+    // subactions.rs (via actions.rs · mcp.rs). Variants of an overloaded
+    // action, classified per call from its params. Not on a platform action:
+    // those take a param set we own, so there is nothing overloaded to split.
+    // `McpToolDiscovered` for the shared-`lower_mcp_tool` reason above.
+    (
+        Ext::Subactions,
+        &[Pos::Operation, Pos::McpTool, Pos::McpToolDiscovered],
+    ),
     // params.rs:31,129 · mcp.rs:436. NOT on a platform-action param:
     // `parse_platform_params` reads the other four and no resolver.
     (
@@ -557,7 +568,7 @@ mod tests {
     fn every_variant_is_in_all() {
         // `ALL` drives name resolution and did-you-mean suggestions, so a
         // variant missing from it is invisible to the lint.
-        assert_eq!(ALL.len(), 38, "ALL has drifted from the enum");
+        assert_eq!(ALL.len(), 39, "ALL has drifted from the enum");
         let mut keys: Vec<&str> = ALL.iter().map(|e| e.key()).collect();
         keys.sort_unstable();
         let before = keys.len();

@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM org_oauth_signin_overrides WHERE org_id = $1 AND provider_key = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "1500eaea480a2e67719f8ba7ddc894169b9f373e08721b2159debfd7e792ad0f"
+}

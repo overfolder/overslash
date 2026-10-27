@@ -546,9 +546,9 @@ impl Config {
     }
 
     /// Returns env-var-based auth credentials for a given provider key, if configured.
-    /// These are a fallback for IdP login: `resolve_auth_credentials` prefers a
-    /// dedicated IdP config and then org-level OAuth App Credentials, using these
-    /// env vars only when no org/dedicated credentials are configured.
+    /// These back Overslash-managed IdP login. A dedicated IdP config wins over
+    /// them; org-level OAuth App Credentials win only when the org opted the
+    /// provider into sign-in (see `services::org_signin`).
     pub fn env_auth_credentials(&self, provider_key: &str) -> Option<(String, String)> {
         match provider_key {
             "google" => self

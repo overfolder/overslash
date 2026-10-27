@@ -79,6 +79,25 @@ export function scopeArgSummary(keys: DerivedKey[], max = 2): string {
 }
 
 /**
+ * Render one key's action segment for a human. A subaction key's action is
+ * `parent/variant` (`manage_crm_objects/create_contact`); it reads as
+ * `manage_crm_objects › create_contact`, so the variant is what stands out.
+ */
+export function operationDisplay(action: string): string {
+	const slash = action.indexOf('/');
+	return slash < 0 ? action : `${action.slice(0, slash)} › ${action.slice(slash + 1)}`;
+}
+
+/**
+ * The distinct operations an approval's keys name, in key order. One call to
+ * an overloaded action can classify into several variants — a batch creating
+ * a contact and a deal — and each is a separate thing being granted.
+ */
+export function operationsOf(keys: DerivedKey[]): string[] {
+	return [...new Set(keys.map((k) => operationDisplay(k.action)))];
+}
+
+/**
  * How many permission keys a surface renders before offering a "show more"
  * toggle. Generous on purpose: the keys are short, few (one per recipient),
  * and are exactly what the approver is being asked to grant — a bare "+1"

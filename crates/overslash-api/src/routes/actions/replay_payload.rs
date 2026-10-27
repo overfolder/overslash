@@ -133,6 +133,7 @@ mod tests {
             platform_target: None,
             instance_id: None,
             binding: Default::default(),
+            subactions: Vec::new(),
         }
     }
 

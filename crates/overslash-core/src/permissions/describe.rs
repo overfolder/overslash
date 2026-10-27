@@ -5,6 +5,8 @@ use super::matching::{broadening_ladder, derive_keys, parse_derived_key};
 /// Convert a snake_case action name to human-readable form.
 /// e.g., "create_pull_request" → "Create pull request"
 fn humanize_action(action: &str) -> String {
+    // A subaction (`manage_crm_objects/create_contact`) reads as its own name.
+    let action = action.rsplit('/').next().unwrap_or(action);
     let mut s = action.replace('_', " ");
     if let Some(first) = s.get_mut(0..1) {
         first.make_ascii_uppercase();

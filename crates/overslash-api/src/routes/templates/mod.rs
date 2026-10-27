@@ -179,6 +179,9 @@ fn parse_normalize_compile_and_check_disclose(
                 ));
             }
         }
+        if let Some(spec) = &action.subactions {
+            extra.extend(subaction_jq_issues(action_key, spec));
+        }
     }
     extra.extend(template_endpoint_issues(&def));
     if extra.is_empty() {
@@ -190,6 +193,67 @@ fn parse_normalize_compile_and_check_disclose(
             warnings: Vec::new(),
         })
     }
+}
+
+/// Syntax-check every jq expression an `x-overslash-subactions` block carries,
+/// each on its own so the error names the field, then the composed classifier
+/// so a fragment that parses alone but breaks the program around it (an
+/// unbalanced `)` closing the wrapper early) is caught too.
+fn subaction_jq_issues(
+    action_key: &str,
+    spec: &overslash_core::types::SubactionSpec,
+) -> Vec<ValidationIssue> {
+    let base = format!("actions.{action_key}.subactions");
+    let mut exprs: Vec<(String, &str)> = Vec::new();
+    if let Some(each) = &spec.each {
+        exprs.push((format!("{base}.each"), each));
+    }
+    for v in &spec.variants {
+        let vbase = format!("{base}.{}", v.key);
+        exprs.push((format!("{vbase}.match"), &v.matches));
+        for (name, expr) in &v.vars {
+            exprs.push((format!("{vbase}.vars.{name}"), expr));
+        }
+        if let Some(t) = &v.transform {
+            exprs.push((format!("{vbase}.transform"), t));
+        }
+        for (i, f) in v.disclose.iter().enumerate() {
+            exprs.push((format!("{vbase}.disclose[{i}].filter"), &f.filter));
+        }
+        for (i, r) in v.scope_param.refs().iter().enumerate() {
+            if let Some(e) = r.extract.as_deref() {
+                exprs.push((format!("{vbase}.scope_param[{i}].extract"), e));
+            }
+        }
+    }
+    let mut issues: Vec<ValidationIssue> = exprs
+        .into_iter()
+        .filter_map(|(path, expr)| {
+            response_filter::validate_syntax(&response_filter::ResponseFilter::Jq {
+                expr: expr.to_string(),
+            })
+            .err()
+            .map(|msg| {
+                ValidationIssue::new(
+                    "subactions_invalid_jq",
+                    format!("not a valid jq expression: {msg}"),
+                    path,
+                )
+            })
+        })
+        .collect();
+    if issues.is_empty()
+        && let Err(msg) = response_filter::validate_syntax(&response_filter::ResponseFilter::Jq {
+            expr: spec.classifier_program(),
+        })
+    {
+        issues.push(ValidationIssue::new(
+            "subactions_invalid_jq",
+            format!("the expressions parse alone but not together: {msg}"),
+            base,
+        ));
+    }
+    issues
 }
 
 pub fn router() -> Router<AppState> {
@@ -323,6 +387,8 @@ fn actions_from_definition_inner(
                 missing_scopes,
                 wait_mode: a.wait_mode,
                 pagination: super::templates::dto::PaginationSummary::of(a),
+                subactions: super::templates::dto::SubactionSummary::of(a),
+                subaction_of: a.subaction_of.as_ref().map(|r| r.parent.clone()),
             }
         })
         .collect();

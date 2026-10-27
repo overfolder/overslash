@@ -18,6 +18,7 @@ pub mod secret_injection;
 pub mod service_icon;
 pub mod service_layer;
 pub mod sql_policy;
+pub mod subactions;
 pub mod tags;
 pub mod template_validation;
 pub mod template_vars;
