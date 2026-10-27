@@ -445,4 +445,253 @@ mod tests {
         .await;
         assert!(out.is_err());
     }
+
+    use serde_json::json;
+
+    const T: Duration = Duration::from_secs(5);
+
+    /// A CRM-shaped parent: two write variants scoped by label, one delete
+    /// variant with its own disclosure, redaction, scope and timeout.
+    fn crm_spec() -> overslash_core::types::SubactionSpec {
+        serde_json::from_value(json!({
+            "each": ".objects[]",
+            "variants": [
+                {"key": "create_contact", "match": ".objectType == \"contacts\"",
+                 "description": "", "risk": "write", "verb": "create",
+                 "phrase": "contact '{item.label}'", "scope_param": "label",
+                 "vars": {"label": ".email"}, "redact": ["$.objects"],
+                 "required_scopes": ["crm.contacts"], "timeout_ms": 1000},
+                {"key": "purge_deal", "match": ".objectType == \"deals\"",
+                 "description": "Purge deals", "risk": "delete",
+                 "disclose": [{"label": "Deals", "filter": "[.items[].id] | join(\", \")"}],
+                 "redact": ["$.objects", "$.reason"],
+                 "required_scopes": ["crm.contacts", "crm.admin"], "timeout_ms": 9000}
+            ]
+        }))
+        .unwrap()
+    }
+
+    fn meta(spec: Option<overslash_core::types::SubactionSpec>) -> ActionMetadata {
+        ActionMetadata {
+            validation_params: HashMap::new(),
+            additional_properties: false,
+            service_scope: Some(ServiceScope {
+                service_key: "crm".into(),
+                action_key: "manage".into(),
+                scope_param: Default::default(),
+                http_verb: None,
+            }),
+            risk: Some(Risk::Write.into()),
+            raw_method: String::new(),
+            raw_url: String::new(),
+            needs_gate: true,
+            subactions: spec.map(|spec| SubactionContext {
+                spec,
+                label_template: "Manage CRM records".into(),
+                service_display_name: "CRM".into(),
+            }),
+            subaction_of: None,
+        }
+    }
+
+    fn params(v: Value) -> HashMap<String, Value> {
+        serde_json::from_value(v).unwrap()
+    }
+
+    fn key_strings(keys: &[PermissionKey]) -> Vec<&str> {
+        keys.iter().map(|k| k.0.as_str()).collect()
+    }
+
+    #[tokio::test]
+    async fn a_mixed_batch_folds_every_matched_variants_controls() {
+        let m = meta(Some(crm_spec()));
+        let p = params(json!({"objects": [
+            {"objectType": "contacts", "email": "a@x.com"},
+            {"objectType": "contacts", "email": "a@x.com"},
+            {"objectType": "deals", "id": "d1"},
+            {"objectType": "deals", "id": "d2"}
+        ]}));
+        let out = classify(T, &m, &p, None).await.unwrap().unwrap();
+
+        assert_eq!(out.variants, ["create_contact", "purge_deal"]);
+        assert_eq!(out.risk, Risk::Delete, "the most severe variant wins");
+        assert!(!out.unclaimed);
+        assert_eq!(
+            key_strings(&out.keys),
+            [
+                "crm:manage/create_contact:label=a@x.com",
+                "crm:manage/purge_deal:*"
+            ],
+            "one key per distinct scope value, however many items carry it"
+        );
+        assert_eq!(out.redact, ["$.objects", "$.reason"]);
+        assert_eq!(out.required_scopes, ["crm.contacts", "crm.admin"]);
+        assert_eq!(out.timeout_ms, Some(9000));
+
+        // The variant's filter reads its own items, bound as a literal.
+        assert_eq!(out.disclose.len(), 1);
+        let filter = &out.disclose[0].filter;
+        assert!(
+            filter.contains("as $__items | .items = $__items"),
+            "{filter}"
+        );
+        let shown = run_jq(filter.clone(), "{}".into(), T).await.unwrap();
+        assert_eq!(shown, [json!("d1, d2")]);
+
+        assert_eq!(
+            out.describe(&p, &HashMap::new()),
+            "Create contact 'a@x.com' and contact 'a@x.com'; Purge deals (CRM)"
+        );
+        let parent = vec![PermissionKey("crm:manage:*".into())];
+        assert_eq!(
+            key_strings(&out.merge_keys(parent)),
+            [
+                "crm:manage/create_contact:label=a@x.com",
+                "crm:manage/purge_deal:*"
+            ],
+            "a fully claimed call does not need the parent's key"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unclaimed_item_keeps_the_parent_key_and_risk() {
+        let mut m = meta(Some(crm_spec()));
+        m.risk = Some(Risk::Delete.into());
+        let p = params(json!({"objects": [
+            {"objectType": "contacts", "email": "a@x.com"},
+            {"objectType": "notes"}
+        ]}));
+        let out = classify(T, &m, &p, None).await.unwrap().unwrap();
+        assert!(out.unclaimed);
+        assert_eq!(
+            out.risk,
+            Risk::Delete,
+            "the parent's risk floors an unclaimed call"
+        );
+        assert_eq!(
+            key_strings(&out.merge_keys(vec![
+                PermissionKey("crm:manage:*".into()),
+                PermissionKey("crm:manage/create_contact:label=a@x.com".into()),
+            ])),
+            ["crm:manage:*", "crm:manage/create_contact:label=a@x.com"],
+            "the parent's keys first, without repeats"
+        );
+        assert_eq!(
+            out.describe(&p, &HashMap::new()),
+            "Create contact 'a@x.com'; Manage CRM records (CRM)"
+        );
+    }
+
+    #[tokio::test]
+    async fn without_a_declared_risk_an_unclaimed_item_is_a_write() {
+        let mut m = meta(Some(crm_spec()));
+        m.risk = None;
+        let out = classify(
+            T,
+            &m,
+            &params(json!({"objects": [{"objectType": "notes"}]})),
+            None,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(out.risk, Risk::Write);
+    }
+
+    #[tokio::test]
+    async fn nothing_to_classify_leaves_the_call_as_the_parent() {
+        let p = params(json!({"objects": []}));
+        assert!(classify(T, &meta(None), &p, None).await.unwrap().is_none());
+
+        let mut unscoped = meta(Some(crm_spec()));
+        unscoped.service_scope = None;
+        assert!(classify(T, &unscoped, &p, None).await.unwrap().is_none());
+
+        let m = meta(Some(crm_spec()));
+        assert!(
+            classify(T, &m, &p, None).await.unwrap().is_none(),
+            "a call with no items is gated as the parent"
+        );
+        // `each` over a non-array errors: coarse, not refused.
+        let bad = params(json!({"objects": 5}));
+        assert!(classify(T, &m, &bad, None).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_direct_call_must_classify_entirely_as_its_variant() {
+        let m = meta(Some(crm_spec()));
+        let contact = params(json!({"objects": [{"objectType": "contacts", "email": "a@x.com"}]}));
+        let out = classify(T, &m, &contact, Some("create_contact"))
+            .await
+            .unwrap();
+        assert_eq!(out.unwrap().variants, ["create_contact"]);
+
+        for p in [
+            json!({"objects": [{"objectType": "contacts", "email": "a@x.com"}, {"objectType": "deals"}]}),
+            json!({"objects": [{"objectType": "notes"}]}),
+            json!({"objects": []}),
+            json!({"objects": 5}),
+        ] {
+            let err = classify(T, &m, &params(p.clone()), Some("create_contact"))
+                .await
+                .err()
+                .unwrap_or_else(|| panic!("{p} must be refused"));
+            assert!(
+                matches!(&err, AppError::BadRequest(msg) if msg.contains("does not classify as 'create_contact'")),
+                "{p}: {err:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_call_without_subaction_of_is_not_lowered() {
+        let mut m = meta(None);
+        let mut req: CallRequest = serde_json::from_value(json!({
+            "service": "crm", "action": "manage", "params": {"a": 1}
+        }))
+        .unwrap();
+        assert_eq!(
+            lower_direct_call(T, &mut m, None, &mut req).await.unwrap(),
+            None
+        );
+        assert_eq!(req.action.as_deref(), Some("manage"));
+
+        m.subaction_of = Some(overslash_core::types::SubactionRef {
+            parent: "manage".into(),
+            variant: "create_contact".into(),
+        });
+        assert!(
+            matches!(
+                lower_direct_call(T, &mut m, None, &mut req).await,
+                Err(AppError::Internal(_))
+            ),
+            "a callable variant always comes with its resolved service"
+        );
+    }
+
+    #[tokio::test]
+    async fn jq_failures_are_reported_not_raised() {
+        assert!(
+            run_jq("error(\"boom\")".into(), "{}".into(), T)
+                .await
+                .unwrap_err()
+                .contains("boom")
+        );
+        assert_eq!(
+            run_jq(".".into(), "not json".into(), T).await.unwrap_err(),
+            "jq evaluation failed",
+            "anything but a runtime error is summarized, not echoed"
+        );
+        assert_eq!(
+            // Finite, so the abandoned blocking thread winds down on its own.
+            run_jq(
+                "reduce range(1e6) as $i (0; . + 1)".into(),
+                "{}".into(),
+                Duration::ZERO
+            )
+            .await
+            .unwrap_err(),
+            "jq timed out"
+        );
+    }
 }

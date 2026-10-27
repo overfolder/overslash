@@ -229,3 +229,116 @@ fn classifier_program_wraps_every_expression() {
     assert!(prog.contains("if __ovs_m(true) then 0 elif __ovs_m(true) then 1"));
     assert!(prog.contains("if $s == 1 then {\"label\": ([.properties.dealname] | first)}"));
 }
+
+#[test]
+fn malformed_classifier_entries_are_tolerated_or_refused() {
+    let spec = hubspot_spec();
+    let items = parse_classifier_output(&spec, &json!([{"sub": 1}])).unwrap();
+    assert_eq!(items[0].variant, Some(1));
+    assert!(
+        items[0].item.is_empty(),
+        "an entry without `item` is an empty item"
+    );
+    assert!(
+        parse_classifier_output(&spec, &json!([{"item": {}, "sub": "0"}])).is_err(),
+        "`sub` must be an index"
+    );
+}
+
+#[test]
+fn an_enumerate_not_closed_by_a_brace_is_unclosed() {
+    assert!(find_enumerations("Create {enumerate(contact) now").is_err());
+    let (p, r) = none();
+    // At runtime the lint's error degrades to plain interpolation.
+    assert_eq!(
+        render_group("Create {enumerate(contact", &[], &p, &r),
+        "Create {enumerate(contact"
+    );
+}
+
+#[test]
+fn a_variant_without_verb_and_phrase_contributes_its_label_once() {
+    let (p, r) = none();
+    let mut spec = hubspot_spec();
+    spec.variants.push(variant("archive_note", None, None));
+    spec.variants
+        .push(variant("purge_thing", Some("purge"), None));
+    spec.variants[4].summary = Some("Purge {count} things".into());
+    let items = vec![
+        item(Some(3), json!({})),
+        item(Some(0), json!({"label": "jane@acme.com"})),
+        item(Some(3), json!({})),
+        item(Some(4), json!({})),
+        item(Some(4), json!({})),
+    ];
+    assert_eq!(
+        describe_call(&spec, &items, "parent", &p, &r),
+        "archive_note description; create contact jane@acme.com; Purge 2 things",
+        "a verb without a phrase is not composable, the summary renders over its group, \
+         and only the first clause is capitalized"
+    );
+}
+
+#[test]
+fn a_parent_verb_and_phrase_compose_unclaimed_items() {
+    let (p, r) = none();
+    let mut spec = hubspot_spec();
+    spec.verb = Some("touch".into());
+    spec.phrase = Some("{item.objectType}".into());
+    let items = vec![
+        item(None, json!({"objectType": "notes"})),
+        item(Some(0), json!({"label": "jane@acme.com"})),
+        item(None, json!({"objectType": "tasks"})),
+    ];
+    assert_eq!(
+        describe_call(&spec, &items, "parent", &p, &r),
+        "Touch notes and tasks; create contact jane@acme.com"
+    );
+}
+
+#[test]
+fn no_items_describe_as_the_parent() {
+    let (p, r) = none();
+    assert_eq!(
+        describe_call(&hubspot_spec(), &[], "Create or update CRM records", &p, &r),
+        "Create or update CRM records"
+    );
+}
+
+#[test]
+fn a_call_summary_marks_unclaimed_and_unphrased_items() {
+    let (p, r) = none();
+    let mut spec = hubspot_spec();
+    spec.variants.push(variant("archive_note", None, None));
+    spec.summary = Some("{enumerate(<[{item.subaction}][ {item.verb}]>)}".into());
+    let items = vec![
+        item(Some(3), json!({})),
+        item(None, json!({})),
+        item(Some(0), json!({"label": "a@x.com"})),
+    ];
+    assert_eq!(
+        describe_call(&spec, &items, "parent", &p, &r),
+        "<archive_note>, <> and <create_contact create>",
+        "an item without a verb renders none; an unclaimed one has a null subaction"
+    );
+}
+
+#[test]
+fn item_params_flatten_the_item() {
+    let it = item(Some(0), json!({"objectType": "contacts", "n": 1}));
+    let p = item_params(&it.item);
+    assert_eq!(p.len(), 2);
+    assert_eq!(p["objectType"], json!("contacts"));
+}
+
+#[test]
+fn the_spec_finds_variants_and_builds_with_none() {
+    let spec = hubspot_spec();
+    assert_eq!(spec.variant("update_deal").unwrap().key, "update_deal");
+    assert!(spec.variant("nope").is_none());
+
+    let empty = SubactionSpec::default();
+    let prog = empty.classifier_program();
+    assert!(prog.contains("(null)"), "{prog}");
+    assert!(prog.contains("({})"), "{prog}");
+}

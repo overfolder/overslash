@@ -144,3 +144,7 @@ fn check_label(
         }
     }
 }
+
+#[cfg(test)]
+#[path = "subactions_tests.rs"]
+mod tests;

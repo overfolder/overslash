@@ -147,6 +147,43 @@ fn malformed_blocks_are_refused_with_a_reason() {
             json!({"risk": "dynamic", "subactions": {"variants": [{"name": "x", "match": "true"}]}}),
             "subactions_on_dynamic_risk",
         ),
+        (
+            json!({"subactions": "create_contact"}),
+            "subactions_malformed",
+        ),
+        (json!({"subactions": {}}), "subactions_malformed"),
+        (
+            json!({"subactions": {"each": 5, "variants": [{"name": "x", "match": "true"}]}}),
+            "subactions_malformed",
+        ),
+        (
+            json!({"subactions": {"variants": ["create_contact"]}}),
+            "subactions_malformed",
+        ),
+        (
+            json!({"subactions": {"variants": [{"match": "true"}]}}),
+            "subactions_malformed",
+        ),
+        (
+            json!({"subactions": {"variants": [{"name": "x", "match": "true", "vars": {"Bad-Name": ".x"}}]}}),
+            "subactions_malformed",
+        ),
+        (
+            json!({"subactions": {"variants": [{"name": "x", "match": "true", "vars": {"label": 1}}]}}),
+            "subactions_malformed",
+        ),
+        (
+            json!({"subactions": {"variants": [{"name": "x", "match": "true", "vars": ".x"}]}}),
+            "subactions_malformed",
+        ),
+        (
+            json!({"subactions": {"variants": [{"name": "x", "match": "true", "scope_param": 5}]}}),
+            "invalid_scope_param",
+        ),
+        (
+            json!({"subactions": {"variants": [{"name": "x", "match": "true", "required_scopes": "admin"}]}}),
+            "subactions_malformed",
+        ),
     ];
     for (extra, code) in cases {
         let errs = compile(mcp_doc(extra.clone())).expect_err(&extra.to_string());
@@ -205,5 +242,30 @@ fn the_spec_round_trips_through_serde() {
     assert_eq!(
         back.actions["create_contact"].subaction_of,
         svc.actions["create_contact"].subaction_of
+    );
+}
+
+#[test]
+fn a_callable_variant_adds_its_scopes_to_the_parents() {
+    let mut variant = create_contact();
+    variant["required_scopes"] = json!(["crm.write", "crm.contacts"]);
+    let svc = compile(mcp_doc(json!({
+        "required_scopes": ["crm.write"],
+        "subactions": {"variants": [variant]}
+    })))
+    .unwrap();
+    assert_eq!(
+        svc.actions["create_contact"].required_scopes,
+        vec!["crm.write".to_string(), "crm.contacts".to_string()],
+        "the parent's first, then the variant's, without repeats"
+    );
+    assert_eq!(
+        svc.actions["manage_crm_objects"]
+            .subactions
+            .as_ref()
+            .unwrap()
+            .variants[0]
+            .required_scopes,
+        vec!["crm.write".to_string(), "crm.contacts".to_string()]
     );
 }
