@@ -409,6 +409,12 @@ fn lower_mcp_tool(
         });
 
     let test = parse_test(ext::get(obj, Pos::McpTool, Ext::Test), &base, errors);
+    let subactions = super::subactions::parse_subactions(
+        ext::get(obj, Pos::McpTool, Ext::Subactions),
+        risk,
+        &base,
+        errors,
+    );
 
     // The upstream MCP tool name defaults to the action key, but may be
     // overridden with `mcp_tool` when the server's tool name isn't a valid
@@ -439,6 +445,7 @@ fn lower_mcp_tool(
         download,
         upload,
         test,
+        subactions,
         additional_properties,
         // Everything else defaults — notably `request_body`, since MCP tool
         // calls are framed by the MCP client (which sets its own JSON-RPC

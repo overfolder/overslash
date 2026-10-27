@@ -36,6 +36,7 @@ mod params;
 mod schemes;
 mod shape;
 mod staged_upload;
+mod subactions;
 
 pub use mcp::overlay_discovered_tools;
 
@@ -43,6 +44,7 @@ pub(super) use actions::{extract_http_action, extract_platform_action};
 pub(super) use auth::{CompiledCredentials, extract_auth};
 pub(super) use mcp::{extract_mcp_actions, extract_mcp_spec};
 use params::parse_resolver;
+pub(super) use subactions::emit_callable_subactions;
 
 /// Lower `x-overslash-scope_param` — a param name, a `param:label` pair, or a
 /// list of either — into [`ScopeParams`].

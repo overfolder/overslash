@@ -14,12 +14,14 @@ mod mcp;
 mod resolver;
 pub(crate) mod service_shape;
 mod sql_policy;
+mod subactions;
 
 use action::{check_action, check_platform_action};
 use auth::check_auth;
 use mcp::check_mcp;
 use resolver::check_resolver_targets;
 use service_shape::check_service_shape;
+use subactions::check_subactions;
 
 /// Validate a parsed [`ServiceDefinition`].
 ///
@@ -52,6 +54,7 @@ pub fn validate_service_definition(
             check_platform_action(key, action, &mut issues);
         } else {
             check_action(key, action, &mut issues);
+            check_subactions(key, action, &mut issues);
         }
     }
 
@@ -156,6 +159,8 @@ mod tests {
                 m.insert(
                     "list".into(),
                     ServiceAction {
+                        subactions: None,
+                        subaction_of: None,
                         additional_properties: false,
                         success: None,
                         wait_mode: None,
@@ -229,6 +234,8 @@ mod tests {
         actions.insert(
             "search".into(),
             ServiceAction {
+                subactions: None,
+                subaction_of: None,
                 additional_properties: false,
                 success: None,
                 wait_mode: None,

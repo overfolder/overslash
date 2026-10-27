@@ -211,6 +211,7 @@ pub(super) async fn resolve_request(
                 platform_target: None,
                 instance_id: Some(instance.id),
                 binding: BindingFacts::new(Some(&instance), &svc, resolved_auth.principal),
+                subactions: Vec::new(),
             },
         ));
     }
@@ -423,6 +424,7 @@ pub(super) async fn resolve_request(
                     // there.
                     instance_id: Some(instance.id),
                     binding: BindingFacts::new(Some(&instance), &svc, mcp_principal),
+                    subactions: Vec::new(),
                 },
             ));
         }
@@ -489,6 +491,7 @@ pub(super) async fn resolve_request(
                     }),
                     instance_id: None,
                     binding: BindingFacts::new(Some(&instance), &svc, None),
+                    subactions: Vec::new(),
                 },
             ));
         }
@@ -968,6 +971,7 @@ pub(super) async fn resolve_request(
                 platform_target: None,
                 instance_id: Some(instance.id),
                 binding: BindingFacts::new(Some(&instance), &svc, resolved_auth.principal),
+                subactions: Vec::new(),
             },
         ));
     }

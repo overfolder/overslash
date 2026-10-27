@@ -67,7 +67,7 @@ fn crm_scopes() -> Vec<String> {
 }
 
 /// Every `tools/call` the fake MCP server received: `{tool, auth, arguments}`.
-type CallLog = Arc<Mutex<Vec<Value>>>;
+pub(crate) type CallLog = Arc<Mutex<Vec<Value>>>;
 
 /// Start a local MCP fake that speaks Streamable-HTTP JSON-RPC on `POST /`
 /// (the root, matching `https://mcp.hubspot.com`). It records each
@@ -75,7 +75,7 @@ type CallLog = Arc<Mutex<Vec<Value>>>;
 /// arguments back in `structuredContent` for known catalog names, and returns
 /// the real server's -32603 error for unknown ones. Returns
 /// `(base_url, call_log)`.
-async fn start_mcp_fake() -> (String, CallLog) {
+pub(crate) async fn start_mcp_fake() -> (String, CallLog) {
     start_mcp_fake_with(LIVE_CATALOG).await
 }
 
@@ -144,7 +144,7 @@ async fn mcp_rpc(
 
 /// Boot the API with the bundled registry and route `mcp.hubspot.com` at the
 /// local fake. Returns the same tuple `bootstrap_org_identity` yields.
-async fn start_with_hubspot_mcp(
+pub(crate) async fn start_with_hubspot_mcp(
     pool: sqlx::PgPool,
     mock_host: String,
 ) -> (String, reqwest::Client) {
@@ -157,7 +157,7 @@ async fn start_with_hubspot_mcp(
 
 /// Seed a BYOC credential + a future-dated OAuth connection for `hubspot` at
 /// the owner identity so the resolver injects the token without a refresh.
-async fn seed_hubspot_connection(
+pub(crate) async fn seed_hubspot_connection(
     pool: &sqlx::PgPool,
     org_id: uuid::Uuid,
     ident_id: uuid::Uuid,

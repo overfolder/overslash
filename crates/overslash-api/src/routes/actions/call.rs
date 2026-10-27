@@ -28,9 +28,10 @@ use overslash_core::{
     types::{ResolvedActionRequest, service::Risk},
 };
 
+use super::resolve_metadata::prepare_args;
 use super::upstream_error::{log_transport_error_audit, map_call_error};
 use super::*;
-use super::{approval_detail::*, resolve::*, service_resolve::*, validate::*};
+use super::{approval_detail::*, resolve::*, service_resolve::*};
 
 /// Marker inserted into the Response's extensions when the transport
 /// succeeded but the *upstream* reported failure — an MCP tool's in-band
@@ -118,7 +119,7 @@ pub(super) async fn call_action_impl(
     // The service shapes thread the resolved `(svc, instance)` into
     // `resolve_request` below so the call hot path doesn't re-fetch
     // the template / instance from the DB.
-    let (pre_meta, pre_resolved_mode_c) =
+    let (mut pre_meta, pre_resolved_mode_c) =
         resolve_action_metadata(&state, &ext, &auth, &scope, ceiling_user_id, &req).await?;
     // Rejections that only become visible once the template is known — a
     // platform action has nothing to defer, and a binary body would be
@@ -127,46 +128,22 @@ pub(super) async fn call_action_impl(
     // structurally-impossible answer first.
     let resolved_blockers = super::flags::validate_resolved(&req, pre_resolved_mode_c.as_ref())?;
 
-    // Rewrite template-declared parameter aliases (e.g. `to` → `recipient`) to
-    // their canonical names first, so defaults, coercion, validation, the
-    // approval replay payload, and resolution all see canonical keys only.
-    overslash_core::openapi::validate_input::apply_aliases(
-        &pre_meta.validation_params,
-        &mut req.params,
-    );
-    // Apply the pinned config (e.g. `X-Mailbox-Imap` on a self-hosted mailbox
-    // gateway) *after* aliases so it lands on canonical keys, and *before*
-    // defaults so a pin beats the template default while an explicit caller arg
-    // still beats the pin. Precedence, high to low: caller arg > instance config
-    // > org-layer default > template default.
-    apply_instance_config(
-        &pre_meta.validation_params,
+    // Canonicalize and validate the arguments (aliases, pins, defaults,
+    // coercion, `validate_args`) — see `prepare_args` for the order and why.
+    prepare_args(&pre_meta, pre_resolved_mode_c.as_ref(), &mut req.params)?;
+    // A callable subaction is the parent called with rewritten arguments:
+    // rewrite it now, before anything reads the metadata, and validate the
+    // result as the parent — the parent's schema is the one the upstream holds
+    // the call to.
+    let direct_subaction = super::subactions::lower_direct_call(
+        std::time::Duration::from_millis(state.config.filter_timeout_ms),
+        &mut pre_meta,
         pre_resolved_mode_c.as_ref(),
-        &mut req.params,
-    );
-    // Fill in template-declared defaults (e.g. `calendarId: primary`) before
-    // validation so a `required` param with a default isn't rejected as
-    // missing, and before resolution so the default flows into the outgoing
-    // path/query/body like a caller-supplied value.
-    overslash_core::openapi::validate_input::apply_defaults(
-        &pre_meta.validation_params,
-        &mut req.params,
-    );
-    // Repair fixable shape problems (int→string, enum case) in place before
-    // validating — the coerced value is what gets approved and executed.
-    overslash_core::openapi::validate_input::coerce_args(
-        &pre_meta.validation_params,
-        &mut req.params,
-    );
-    if let Err(errors) = overslash_core::openapi::validate_input::validate_args(
-        &pre_meta.validation_params,
-        &req.params,
-        pre_meta.additional_properties,
-    ) {
-        return Err(invalid_action_args_error(
-            &pre_meta.validation_params,
-            errors,
-        ));
+        &mut req,
+    )
+    .await?;
+    if direct_subaction.is_some() {
+        prepare_args(&pre_meta, pre_resolved_mode_c.as_ref(), &mut req.params)?;
     }
 
     // ── D42 SQL content policy ────────────────────────────────────────
@@ -209,6 +186,31 @@ pub(super) async fn call_action_impl(
     )
     .await?;
 
+    // ── x-overslash-subactions ───────────────────────────────────────
+    //
+    // Params are final, so the call can be classified into its variants. Done
+    // before resolution because the variants' own `required_scopes` are
+    // checked against the instance's connection, and `resolve_request`
+    // consumes the instance — its own scope gate only ever sees the parent.
+    let subaction = super::subactions::classify(
+        std::time::Duration::from_millis(state.config.filter_timeout_ms),
+        &pre_meta,
+        &req.params,
+        direct_subaction.as_deref(),
+    )
+    .await?;
+    if let Some(outcome) = &subaction {
+        outcome
+            .check_scopes(
+                &state,
+                &scope,
+                ceiling_user_id,
+                pre_resolved_mode_c.as_ref(),
+                req.return_url.as_deref(),
+            )
+            .await?;
+    }
+
     // Resolve the request to a concrete ActionRequest. Passing `ceiling_user_id` reuses
     // the identity lookup above so service-name resolution doesn't re-fetch it.
     // The live OAuth credential (when one resolved) rides separately on
@@ -228,6 +230,14 @@ pub(super) async fn call_action_impl(
         request: action_req,
         auth_header,
     } = resolved;
+    let mut meta = meta;
+    // Folded into `meta` here, above every reader of risk, description,
+    // disclosure, tags and keys, so the ceiling, the approval and the audit
+    // all see the classified call. The description renders now because the
+    // resolvers' display names only exist from here.
+    if let Some(outcome) = &subaction {
+        outcome.apply(&mut meta, &req.params);
+    }
 
     // ── The execution-mode cascade ──────────────────────────────────
     //
@@ -331,6 +341,13 @@ pub(super) async fn call_action_impl(
     };
     // D42: per-table keys join (or, for the bare `:*` fallback, replace)
     // the scope_param keys; column keys ride separately as deny-screen.
+    // Subaction keys replace the parent's, unless an item went unclaimed. They
+    // go in *before* the D42 table keys, which must never be the ones
+    // replaced: a per-table gate is not something a variant can stand in for.
+    let perm_keys = match &subaction {
+        Some(outcome) => outcome.merge_keys(perm_keys),
+        None => perm_keys,
+    };
     let perm_keys = merge_sql_keys(perm_keys, scope_meta, sql_policy.as_ref());
     let deny_screen_keys: Vec<PermissionKey> = sql_policy
         .as_ref()

@@ -208,6 +208,31 @@ pub(super) struct AdminTemplateSummary {
     pub(super) warnings: usize,
 }
 
+/// One `x-overslash-subactions` variant, as listings show it under its parent.
+#[derive(Serialize, Clone)]
+pub(crate) struct SubactionSummary {
+    pub(super) key: String,
+    pub(super) description: String,
+    pub(super) risk: overslash_core::types::Risk,
+    /// Whether the variant is also an action of its own, callable by `key`.
+    pub(super) callable: bool,
+}
+
+impl SubactionSummary {
+    pub(super) fn of(a: &overslash_core::types::ServiceAction) -> Vec<Self> {
+        a.subactions
+            .iter()
+            .flat_map(|s| &s.variants)
+            .map(|v| Self {
+                key: v.key.clone(),
+                description: v.description.clone(),
+                risk: v.risk,
+                callable: v.is_callable(),
+            })
+            .collect()
+    }
+}
+
 #[derive(Serialize, Clone)]
 pub(crate) struct ActionSummary {
     pub(super) key: String,
@@ -263,6 +288,13 @@ pub(crate) struct ActionSummary {
     /// right one — so it carries enough to write a sentence with.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) pagination: Option<PaginationSummary>,
+    /// `x-overslash-subactions`: the variants a call to this action is
+    /// classified into. Empty for every action without them.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(super) subactions: Vec<SubactionSummary>,
+    /// Set on a callable variant: the parent action it rewrites into.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) subaction_of: Option<String>,
 }
 
 /// The dashboard-facing projection of an action's pagination declaration.
@@ -351,6 +383,12 @@ pub(super) struct ActionDetail {
     /// exactly the constraint the server stopped enforcing.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub(super) additional_properties: bool,
+    /// See [`ActionSummary::subactions`].
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(super) subactions: Vec<SubactionSummary>,
+    /// See [`ActionSummary::subaction_of`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) subaction_of: Option<String>,
 }
 
 // -- Request types --

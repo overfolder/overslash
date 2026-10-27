@@ -157,6 +157,8 @@ pub(crate) mod fixtures {
 
     pub(crate) fn action(risk: Risk) -> ServiceAction {
         ServiceAction {
+            subactions: None,
+            subaction_of: None,
             additional_properties: false,
             success: None,
             wait_mode: None,
