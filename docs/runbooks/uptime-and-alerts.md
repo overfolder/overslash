@@ -57,6 +57,20 @@ by zero, plus an explicit `and` that requires a minimum sample in the window:
 The two matching dashboard charts on *Actions & OAuth* had the same clamp, so they showed
 ratios close to zero. They now use the same `0.001` floor.
 
+### What `/health` reports, and dev at night
+
+`/health` returns 503 when Postgres is unreachable (D-NEXT in DECISIONS.md), so
+`[P0] API Down` covers the API's database as well as the process. Cloud Run's
+own startup and liveness probes are TCP probes and never read `/health`, so a
+503 never restarts a container. Before that change, an HTTP liveness probe on
+`/health` timed out (1 s default, against a 2 s DB check) once the database was
+gone, and it shut the instance down about 90 s after each dev stop.
+
+Dev stops Cloud SQL from 23:00 to 07:00 Europe/Madrid (`infra-scheduler`), so dev's
+check fails every night and `[P0] overslash-dev API Down` emails
+alert@overspiral.com nightly. That is deliberate: it tests the alert path
+end to end. Prod has no scheduler.
+
 ### Relationship to the status page
 
 [status.overslash.com](status-page.md) (Better Stack) probes the same `/health` URL from

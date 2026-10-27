@@ -320,14 +320,22 @@ defect: the OAuth, upstream and (deployed) webhook ratios divided by
 `clamp_min(rate, 1)`, which at prod volume (well under 1/s) pins the denominator to 1. They
 could not fire, so the deployed webhook policy was counted as coverage it did not provide.
 
-**Remediation, in code, pending apply** ([uptime-and-alerts.md](../../runbooks/uptime-and-alerts.md)):
+**Remediation, applied 2026-10-27 on both projects** ([uptime-and-alerts.md](../../runbooks/uptime-and-alerts.md)):
 `infra/main.tf` feeds the monitoring module `api_host_suffix` (`api.overslash.com`, served
 by the GCLB) when `domain` is empty and the LB is on. That creates the uptime check and
-`[P0] API Down` (PagerDuty + email) in prod. All three gates are `true` in both tfvars,
-and the ratio queries take a `0.001` divide-by-zero floor plus an explicit minimum-sample
-guard. A `-refresh=false -target=module.monitoring` plan from the agent sandbox showed the
-expected creates. After apply, the expected count is **14 policies and 1 uptime check** in
-prod; re-measure with the runbook's *Verify* commands and record them here.
+`[P0] API Down` in prod. All three gates are `true` in both tfvars, and the ratio queries
+take a `0.001` divide-by-zero floor plus an explicit minimum-sample guard.
+
+Re-measured after the apply (2026-10-27, prod):
+
+| | |
+|---|---|
+| Alert policies deployed | **14**, all enabled. `[P0] API Down` and `[P0] API High 5xx Rate` route to both channels |
+| Uptime checks deployed | **1**: `overslash-prod-api-health` → `api.overslash.com/health`, 60s. `check_passed` true from all 6 regions (usa-virginia, usa-oregon, usa-iowa, eur-belgium, apac-singapore, sa-brazil-sao_paulo) |
+
+Follow-up, in code, pending a Cloud Run apply and an API deploy: `/health` returns 503
+when Postgres is down, and the Cloud Run probes are TCP, so `[P0] API Down` also covers
+the database (D-NEXT in DECISIONS.md).
 
 ### Storage — production
 

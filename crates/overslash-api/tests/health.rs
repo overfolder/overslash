@@ -1,14 +1,11 @@
 //! Integration tests for `/health` and `/ready`.
 //!
-//! These pin the split that the endpoints exist to encode:
+//! Both return 200 when Postgres answers and 503 `degraded` when it does not;
+//! `/health` is what the uptime check and Better Stack probe. Cloud Run's own
+//! probes are TCP (`infra/modules/cloud-run/main.tf`), so neither endpoint can
+//! restart a container.
 //!
-//!   1. `/health` is liveness. It reports database state in the *body* and
-//!      always returns 200, because Cloud Run's startup and liveness probes
-//!      point at it — a 503 there would recycle containers mid-outage and
-//!      block redeploys (see `infra/modules/cloud-run/main.tf`).
-//!   2. `/ready` is readiness. It returns 503 when Postgres is unreachable.
-//!
-//! The unreachable-database branch is covered by a unit test in
+//! The unreachable-database branch is covered by unit tests in
 //! `src/routes/health.rs`, which can point a lazy pool at a dead port without
 //! disturbing the Postgres instance this suite shares across threads.
 
