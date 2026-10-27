@@ -579,10 +579,11 @@ resource "google_secret_manager_secret_version" "otel_config" {
 # secret rule (modules/secret-manager).
 
 resource "google_cloud_run_v2_service" "api" {
-  name     = "${var.base_prefix}-api"
-  location = var.region
-  project  = var.project_id
-  ingress  = var.ingress
+  name                 = "${var.base_prefix}-api"
+  location             = var.region
+  project              = var.project_id
+  ingress              = var.ingress
+  invoker_iam_disabled = true
 
   template {
     service_account = var.service_account_email
@@ -761,12 +762,13 @@ resource "google_cloud_run_v2_service" "api" {
   }
 }
 
-resource "google_cloud_run_v2_service_iam_member" "public" {
-  project  = var.project_id
-  location = var.region
-  name     = google_cloud_run_v2_service.api.name
-  role     = "roles/run.invoker"
-  member   = "allUsers"
+# Public via `invoker_iam_disabled` on the service rather than an `allUsers`
+# invoker binding, which the overspiral.com org's domain-restricted sharing
+# policy (iam.allowedPolicyMemberDomains) rejects. `removed` forgets the old
+# binding without deleting it, so the service never flips to IAM-gated
+# mid-apply; drop the leftover binding by hand afterwards.
+removed {
+  from = google_cloud_run_v2_service_iam_member.public
 }
 
 resource "google_cloud_run_domain_mapping" "domain" {
