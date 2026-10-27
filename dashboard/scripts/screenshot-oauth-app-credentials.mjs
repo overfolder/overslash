@@ -6,9 +6,12 @@
 // overridden from the dashboard (the row's action is "Override", and the form
 // explains the override).
 //
+// It also covers the sign-in opt-in: e2e sets GOOGLE_AUTH_*, so a Google org
+// override keeps the built-in sign-in app until "Use for sign-in" is clicked.
+//
 // Prereq: `make e2e-up`. Output: dashboard/screenshots/oauth-app-credentials*.png.
 
-import { login, makeSnapper } from '../tests/scenarios/index.mjs';
+import { api, login, makeSnapper } from '../tests/scenarios/index.mjs';
 
 const session = await login('admin');
 const snap = await makeSnapper(session);
@@ -44,6 +47,37 @@ try {
 	await page.waitForTimeout(300);
 	await card.screenshot({ path: 'screenshots/oauth-app-credentials-google-setup.png' });
 	console.log('[scenarios] wrote screenshots/oauth-app-credentials-google-setup.png');
+
+	// The sign-in checkbox on the Google form defaults off.
+	await card.getByText('Also use these credentials for sign-in').scrollIntoViewIfNeeded();
+	await card.screenshot({ path: 'screenshots/oauth-app-credentials-signin-checkbox.png' });
+	console.log('[scenarios] wrote screenshots/oauth-app-credentials-signin-checkbox.png');
+	await card.getByRole('button', { name: 'Cancel' }).first().click();
+
+	// A saved Google override offers "Use for sign-in" in Actions; clicking it
+	// adds the sign-in badge.
+	await api(session, '/v1/org-oauth-credentials/google', {
+		method: 'PUT',
+		body: {
+			client_id: '72939999999-screenshotclient.apps.googleusercontent.com',
+			client_secret: 'GOCSPX-screenshot'
+		}
+	});
+	try {
+		await page.reload();
+		await card.waitFor({ timeout: 15_000 });
+		await card.getByRole('button', { name: 'Use for sign-in' }).waitFor({ timeout: 15_000 });
+		await card.scrollIntoViewIfNeeded();
+		await card.screenshot({ path: 'screenshots/oauth-app-credentials-signin-action.png' });
+		console.log('[scenarios] wrote screenshots/oauth-app-credentials-signin-action.png');
+
+		await card.getByRole('button', { name: 'Use for sign-in' }).click();
+		await card.getByRole('button', { name: 'Stop using for sign-in' }).waitFor({ timeout: 15_000 });
+		await card.screenshot({ path: 'screenshots/oauth-app-credentials-signin-on.png' });
+		console.log('[scenarios] wrote screenshots/oauth-app-credentials-signin-on.png');
+	} finally {
+		await api(session, '/v1/org-oauth-credentials/google', { method: 'DELETE' });
+	}
 
 	await ctx.close();
 	console.log('[oauth-app-credentials] done');

@@ -815,12 +815,9 @@ async fn test_login_returns_clear_error_when_deferred_idp_has_no_org_creds() {
     );
 }
 
-#[tokio::test]
-async fn test_login_prefers_org_creds_over_env_on_managed_signin() {
-    // Managed-signin path with no dedicated IdP config: org OAuth App
-    // Credentials are an override and must win over the shared GOOGLE_AUTH_*
-    // env creds at login time. The env creds are only the fallback when no org
-    // credentials are configured.
+/// Managed sign-in on, env `GOOGLE_AUTH_*` creds present, no dedicated IdP
+/// row. Returns `(base, client, admin_key, slug)`.
+async fn managed_signin_with_env_google() -> (String, Client, String, String) {
     let (pool, fx) = common::test_pool_bootstrapped().await;
     let (addr, client) = common::start_api_with(pool.clone(), |cfg| {
         cfg.google_auth_client_id = Some("env-google-id".into());
@@ -831,7 +828,6 @@ async fn test_login_prefers_org_creds_over_env_on_managed_signin() {
     let org_id = fx.org_id;
     let admin_key = fx.org_key.clone();
 
-    // Managed signin on, and (deliberately) no IdP config for google.
     overslash_db::repos::org::set_allow_overslash_managed_signin(&pool, org_id, true)
         .await
         .unwrap();
@@ -846,9 +842,11 @@ async fn test_login_prefers_org_creds_over_env_on_managed_signin() {
         .await
         .unwrap();
     let slug = orgs["slug"].as_str().unwrap().to_string();
+    (base, client, admin_key, slug)
+}
 
-    put_google_creds(&base, &client, &admin_key).await;
-
+/// The `location` of `/auth/login/google` for the org.
+async fn google_login_location(base: &str, slug: &str) -> String {
     let no_redirect = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()
@@ -863,20 +861,147 @@ async fn test_login_prefers_org_creds_over_env_on_managed_signin() {
         "expected redirect: {:?}",
         login_resp.status()
     );
-    let location = login_resp
+    login_resp
         .headers()
         .get("location")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
-        .to_string();
+        .to_string()
+}
+
+async fn patch_signin_override(
+    base: &str,
+    client: &Client,
+    admin_key: &str,
+    provider: &str,
+    enabled: bool,
+) -> reqwest::Response {
+    client
+        .patch(format!("{base}/v1/org-oauth-credentials/{provider}"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({ "override_signin": enabled }))
+        .send()
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn test_managed_signin_keeps_env_creds_despite_org_override() {
+    // Org OAuth App Credentials saved for service connections must not move
+    // managed sign-in off the built-in GOOGLE_AUTH_* app by default.
+    let (base, client, admin_key, slug) = managed_signin_with_env_google().await;
+    let row = put_google_creds(&base, &client, &admin_key).await;
+    assert_eq!(row["overrides_signin"], false);
+    assert_eq!(row["signin_env_available"], true);
+
+    let location = google_login_location(&base, &slug).await;
+    assert!(
+        location.contains("env-google-id"),
+        "managed sign-in should keep the env client_id: {location}"
+    );
+    assert!(
+        !location.contains("72939999999-fakegoogleclientid"),
+        "org creds must not serve sign-in without the opt-in: {location}"
+    );
+}
+
+#[tokio::test]
+async fn test_managed_signin_uses_org_creds_when_override_enabled() {
+    let (base, client, admin_key, slug) = managed_signin_with_env_google().await;
+    put_google_creds(&base, &client, &admin_key).await;
+
+    let resp = patch_signin_override(&base, &client, &admin_key, "google", true).await;
+    assert_eq!(resp.status(), 200);
+    let row: Value = resp.json().await.unwrap();
+    assert_eq!(row["overrides_signin"], true);
+    assert_eq!(row["source"], "db");
+
+    let location = google_login_location(&base, &slug).await;
     assert!(
         location.contains("72939999999-fakegoogleclientid"),
-        "managed-signin login should embed the org-override client_id: {location}"
+        "opted-in sign-in should embed the org-override client_id: {location}"
     );
+    assert!(!location.contains("env-google-id"), "{location}");
+
+    // Listing reflects the flag; turning it back off restores the env app.
+    let rows = list_creds(&base, &client, &admin_key).await;
+    let google = rows.iter().find(|r| r["provider_key"] == "google").unwrap();
+    assert_eq!(google["overrides_signin"], true);
+    assert_eq!(google["signin_env_available"], true);
+
+    let resp = patch_signin_override(&base, &client, &admin_key, "google", false).await;
+    assert_eq!(resp.status(), 200);
+    let location = google_login_location(&base, &slug).await;
+    assert!(location.contains("env-google-id"), "{location}");
+}
+
+#[tokio::test]
+async fn test_put_with_override_signin_sets_flag() {
+    let (base, client, admin_key, slug) = managed_signin_with_env_google().await;
+    let resp = client
+        .put(format!("{base}/v1/org-oauth-credentials/google"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({
+            "client_id": "72939999999-fakegoogleclientid.apps.googleusercontent.com",
+            "client_secret": "GOCSPX-fakegooglesecret12345",
+            "override_signin": true,
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let row: Value = resp.json().await.unwrap();
+    assert_eq!(row["overrides_signin"], true);
+
+    // A later PUT without the field leaves the flag alone.
+    let row = put_google_creds(&base, &client, &admin_key).await;
+    assert_eq!(row["overrides_signin"], true);
+
+    let location = google_login_location(&base, &slug).await;
     assert!(
-        !location.contains("env-google-id"),
-        "env creds must not win over the org override: {location}"
+        location.contains("72939999999-fakegoogleclientid"),
+        "{location}"
     );
+}
+
+#[tokio::test]
+async fn test_signin_override_patch_rejects_non_managed_provider() {
+    let (pool, fx) = common::test_pool_bootstrapped().await;
+    let (addr, client) = common::start_api(pool).await;
+    let base = format!("http://{addr}");
+    let resp = patch_signin_override(&base, &client, &fx.org_key, "slack", true).await;
+    assert_eq!(resp.status(), 400);
+}
+
+#[tokio::test]
+async fn test_signin_override_patch_requires_existing_creds() {
+    let (pool, fx) = common::test_pool_bootstrapped().await;
+    let (addr, client) = common::start_api(pool).await;
+    let base = format!("http://{addr}");
+    let resp = patch_signin_override(&base, &client, &fx.org_key, "google", true).await;
+    assert_eq!(resp.status(), 404);
+}
+
+#[tokio::test]
+async fn test_delete_credentials_clears_signin_override() {
+    let (base, client, admin_key, slug) = managed_signin_with_env_google().await;
+    put_google_creds(&base, &client, &admin_key).await;
+    let resp = patch_signin_override(&base, &client, &admin_key, "google", true).await;
+    assert_eq!(resp.status(), 200);
+
+    let resp = client
+        .delete(format!("{base}/v1/org-oauth-credentials/google"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    // Re-adding the credentials starts from the default (off).
+    let row = put_google_creds(&base, &client, &admin_key).await;
+    assert_eq!(row["overrides_signin"], false);
+    let location = google_login_location(&base, &slug).await;
+    assert!(location.contains("env-google-id"), "{location}");
 }
 
 #[tokio::test]

@@ -1004,6 +1004,17 @@ CREATE TABLE public.org_idp_configs (
 
 
 --
+-- Name: org_oauth_signin_overrides; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.org_oauth_signin_overrides (
+    org_id uuid NOT NULL,
+    provider_key text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
 -- Name: org_subscriptions; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -2021,6 +2032,14 @@ ALTER TABLE ONLY public.org_idp_configs
 
 ALTER TABLE ONLY public.org_idp_configs
     ADD CONSTRAINT org_idp_configs_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: org_oauth_signin_overrides org_oauth_signin_overrides_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.org_oauth_signin_overrides
+    ADD CONSTRAINT org_oauth_signin_overrides_pkey PRIMARY KEY (org_id, provider_key);
 
 
 --
@@ -3669,6 +3688,22 @@ ALTER TABLE ONLY public.org_idp_configs
 
 ALTER TABLE ONLY public.org_idp_configs
     ADD CONSTRAINT org_idp_configs_provider_key_fkey FOREIGN KEY (provider_key) REFERENCES public.oauth_providers(key);
+
+
+--
+-- Name: org_oauth_signin_overrides org_oauth_signin_overrides_org_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.org_oauth_signin_overrides
+    ADD CONSTRAINT org_oauth_signin_overrides_org_id_fkey FOREIGN KEY (org_id) REFERENCES public.orgs(id) ON DELETE CASCADE;
+
+
+--
+-- Name: org_oauth_signin_overrides org_oauth_signin_overrides_provider_key_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.org_oauth_signin_overrides
+    ADD CONSTRAINT org_oauth_signin_overrides_provider_key_fkey FOREIGN KEY (provider_key) REFERENCES public.oauth_providers(key);
 
 
 --

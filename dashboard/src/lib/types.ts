@@ -154,6 +154,10 @@ export interface OAuthCredential {
   display_name: string;
   source: 'env' | 'db';
   client_id_preview: string;
+  /** A built-in `{PROVIDER}_AUTH_*` sign-in app exists for this provider. */
+  signin_env_available?: boolean;
+  /** These org credentials also serve Overslash-managed sign-in. */
+  overrides_signin?: boolean;
 }
 
 export interface McpClient {
