@@ -30,3 +30,15 @@ reason = "paste is unmaintained, not vulnerable; build-time proc-macro via faste
 id = "RUSTSEC-2024-0449"
 ignoreUntil = 2026-12-22
 reason = "unsafe-libyaml is unmaintained, not vulnerable; template parsing via serde_yaml. No maintained release; fix is migrating off serde_yaml. See deny.toml."
+
+# GHSA-only (no RustSec ID, so cargo-deny does not see it and deny.toml has no
+# entry). The 0.12 line is bumped to the fixed 0.12.1; only 0.10.4 is excepted.
+[[IgnoredVulns]]
+id = "GHSA-qwgh-2vcv-g2f7"
+ignoreUntil = 2027-01-25
+reason = "block-buffer 0.10.4 (via digest 0.10: sha2, hmac 0.12, rsa, ecdsa): needs a panicking compress callback whose panic is caught while the buffer stays in use. The callbacks are the hash crates' own compression functions, which do not panic, and no catch_unwind wraps a hasher. No 0.10.x fix; 0.12 is bumped to 0.12.1."
+
+[[IgnoredVulns]]
+id = "GHSA-gcqx-w48m-w2h4"
+ignoreUntil = 2027-01-25
+reason = "deepmerge 4.3.1 prototype poisoning: dev-only, via @sveltejs/vite-plugin-svelte merging our own build config. No attacker-supplied input reaches it and it ships in no bundle. No fixed release."
