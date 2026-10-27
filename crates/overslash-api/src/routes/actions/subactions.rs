@@ -31,18 +31,31 @@ use crate::error::AppError;
 use super::resolve_metadata::action_metadata;
 use super::*;
 
+/// Why a template jq program produced nothing usable.
+#[derive(Debug, PartialEq)]
+enum JqFailure {
+    /// The program ran and failed on this input: the arguments or the
+    /// template are at fault, and retrying the same call fails the same way.
+    Failed(String),
+    /// The program never finished — a timeout or a panicked task. Nothing
+    /// is known about the input, so the caller is not told it is wrong.
+    Unavailable(&'static str),
+}
+
 /// Run one jq program over `input` off the async runtime, under the same
 /// timeout every other template jq gets.
-async fn run_jq(expr: String, input: String, timeout: Duration) -> Result<Vec<Value>, String> {
+async fn run_jq(expr: String, input: String, timeout: Duration) -> Result<Vec<Value>, JqFailure> {
     let join = tokio::task::spawn_blocking(move || {
         crate::services::response_filter::run_jq_blocking(&expr, &input)
     });
     match tokio::time::timeout(timeout, join).await {
         Ok(Ok(Ok((out, _)))) => Ok(out),
-        Ok(Ok(Err(crate::services::response_filter::JqErr::RuntimeError(e)))) => Err(e),
-        Ok(Ok(Err(_))) => Err("jq evaluation failed".into()),
-        Ok(Err(_)) => Err("jq task panicked".into()),
-        Err(_) => Err("jq timed out".into()),
+        Ok(Ok(Err(crate::services::response_filter::JqErr::RuntimeError(e)))) => {
+            Err(JqFailure::Failed(e))
+        }
+        Ok(Ok(Err(_))) => Err(JqFailure::Failed("jq evaluation failed".into())),
+        Ok(Err(_)) => Err(JqFailure::Unavailable("jq task panicked")),
+        Err(_) => Err(JqFailure::Unavailable("jq timed out")),
     }
 }
 
@@ -85,7 +98,13 @@ pub(super) async fn lower_direct_call(
             // The jq message can quote the caller's arguments; it goes to the
             // caller (whose arguments they are) but never to the log.
             let why = match outcome {
-                Err(e) => e,
+                Err(JqFailure::Unavailable(e)) => {
+                    return Err(AppError::Internal(format!(
+                        "subaction `{}` transform did not finish: {e}",
+                        of.variant
+                    )));
+                }
+                Err(JqFailure::Failed(e)) => e,
                 Ok(out) => format!("expected one object, got {} value(s)", out.len()),
             };
             tracing::warn!(
@@ -152,9 +171,18 @@ pub(super) async fn classify(
     let spec = &ctx.spec;
 
     let input = serde_json::to_string(params).unwrap_or_else(|_| "{}".into());
-    let items: Option<Vec<ClassifiedItem>> = match run_jq(spec.classifier_program(), input, timeout)
-        .await
+    let ran = run_jq(spec.classifier_program(), input, timeout).await;
+    if direct.is_some()
+        && let Err(JqFailure::Unavailable(why)) = &ran
     {
+        // A direct call's keys come from its classification, so it cannot
+        // fall back to the parent's — but a timeout says nothing about the
+        // caller's arguments, so it is not their 400 either.
+        return Err(AppError::Internal(format!(
+            "subaction classifier did not finish: {why}"
+        )));
+    }
+    let items: Option<Vec<ClassifiedItem>> = match ran {
         Ok(out) if out.len() == 1 => match parse_classifier_output(spec, &out[0]) {
             Ok(items) => Some(items),
             Err(e) => {
@@ -643,6 +671,32 @@ mod tests {
         }
     }
 
+    /// Only a program that ran and failed is the caller's 400; one that never
+    /// finished is ours.
+    #[tokio::test]
+    async fn a_direct_call_whose_classifier_times_out_is_not_a_bad_request() {
+        let mut spec = crm_spec();
+        // Slow enough that a zero timeout always fires first.
+        spec.each = Some("(reduce range(1e6) as $i (0; .) | empty), .objects[]".into());
+        let m = meta(Some(spec));
+        let p = params(json!({"objects": [{"objectType": "contacts", "email": "a@x.com"}]}));
+        let err = classify(Duration::ZERO, &m, &p, Some("create_contact"))
+            .await
+            .err()
+            .expect("refused");
+        assert!(
+            matches!(&err, AppError::Internal(msg) if msg.contains("did not finish")),
+            "{err:?}"
+        );
+        // The same timeout on a classified call stays coarse: gated as the parent.
+        assert!(
+            classify(Duration::ZERO, &m, &p, None)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
     #[tokio::test]
     async fn a_call_without_subaction_of_is_not_lowered() {
         let mut m = meta(None);
@@ -671,15 +725,13 @@ mod tests {
 
     #[tokio::test]
     async fn jq_failures_are_reported_not_raised() {
-        assert!(
-            run_jq("error(\"boom\")".into(), "{}".into(), T)
-                .await
-                .unwrap_err()
-                .contains("boom")
-        );
+        assert!(matches!(
+            run_jq("error(\"boom\")".into(), "{}".into(), T).await,
+            Err(JqFailure::Failed(e)) if e.contains("boom")
+        ));
         assert_eq!(
             run_jq(".".into(), "not json".into(), T).await.unwrap_err(),
-            "jq evaluation failed",
+            JqFailure::Failed("jq evaluation failed".into()),
             "anything but a runtime error is summarized, not echoed"
         );
         assert_eq!(
@@ -691,7 +743,7 @@ mod tests {
             )
             .await
             .unwrap_err(),
-            "jq timed out"
+            JqFailure::Unavailable("jq timed out")
         );
     }
 }
