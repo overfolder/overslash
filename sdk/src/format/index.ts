@@ -15,7 +15,13 @@ import type {
   Resolution,
 } from '../types/approvals.js';
 
+/**
+ * Expiry choices for "Allow & remember". `default` sends no `ttl`, so the
+ * gateway applies the org's default expiry (7 days unless an admin changed
+ * it); `forever` is sent as-is and means no expiry.
+ */
 export const TTL_OPTIONS = [
+  { value: 'default', label: 'Org default' },
   { value: 'forever', label: 'Never' },
   { value: '1h', label: '1 hour' },
   { value: '24h', label: '24 hours' },

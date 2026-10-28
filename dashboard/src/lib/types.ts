@@ -107,6 +107,11 @@ export interface ExecutionSettings {
   /** Ceiling on any resolved call timeout, in ms. `null` inherits the
    * deployment maximum. A caller asking for more is rejected. */
   max_call_timeout_ms: number | null;
+  /** Expiry, in seconds, of a rule written by "Allow & Remember" when the
+   * resolver picks none: tagged as the default in the approval's Allow menu, and
+   * applied to API/MCP resolves that omit `ttl`. `null` = forever. Default
+   * 7 days. */
+  default_remember_ttl_secs: number | null;
 }
 
 /** Org-level capture mode for upstream response bodies on

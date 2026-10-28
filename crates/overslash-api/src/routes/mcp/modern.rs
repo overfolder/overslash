@@ -31,7 +31,7 @@ use base64::Engine as _;
 use sha2::{Digest, Sha256};
 
 use super::elicitation::{
-    elicit_result, elicitation_eligible, elicitation_params, remember_params,
+    elicit_result, elicitation_eligible, elicitation_params, org_remember_ttl_secs, remember_params,
 };
 use super::initialize::{server_info, server_instructions, tools_list_result};
 use super::tools_call::{Reply, pending_approval_result, tools_call};
@@ -430,6 +430,7 @@ pub(super) async fn begin_elicitation(
         Ok(request_state) => Reply::Result(input_required(
             STEP_DECISION,
             pending_outcome,
+            None,
             &request_state,
         )),
         Err(e) => {
@@ -534,9 +535,15 @@ pub(super) async fn continue_elicitation(
         .and_then(|r| r.get(claims.step.as_str()))
         .filter(|a| a.is_object());
     let Some(answer) = answer else {
+        let ttl = if claims.step == STEP_REMEMBER {
+            org_remember_ttl_secs(state, ext, auth.org_id).await
+        } else {
+            None
+        };
         return Reply::Result(input_required(
             &claims.step,
             &claims.envelope,
+            ttl,
             request_state,
         ));
     };
@@ -569,7 +576,13 @@ pub(super) async fn continue_elicitation(
                 &claims.envelope,
             ) {
                 Ok(next_state) => {
-                    Reply::Result(input_required(STEP_REMEMBER, &claims.envelope, &next_state))
+                    let ttl = org_remember_ttl_secs(state, ext, auth.org_id).await;
+                    Reply::Result(input_required(
+                        STEP_REMEMBER,
+                        &claims.envelope,
+                        ttl,
+                        &next_state,
+                    ))
                 }
                 Err(e) => {
                     tracing::error!(next_id, "mint mcp request state failed: {e}");
@@ -629,9 +642,16 @@ async fn answer_stale(
 }
 
 /// An `input_required` result asking one dialog, keyed by its step.
-fn input_required(step: &str, pending_outcome: &Value, request_state: &str) -> Value {
+/// `remember_ttl_secs` (the org default, `None` = forever) only shapes the
+/// remember step.
+fn input_required(
+    step: &str,
+    pending_outcome: &Value,
+    remember_ttl_secs: Option<i32>,
+    request_state: &str,
+) -> Value {
     let mut params = if step == STEP_REMEMBER {
-        remember_params(pending_outcome)
+        remember_params(pending_outcome, remember_ttl_secs)
     } else {
         let action_summary = pending_outcome
             .get("action_description")
@@ -909,7 +929,7 @@ mod tests {
     #[test]
     fn input_required_names_the_dialog_by_its_step_and_marks_it_form() {
         let env = json!({ "action_description": "send an email", "suggested_tiers": [] });
-        let r = input_required(STEP_DECISION, &env, "state");
+        let r = input_required(STEP_DECISION, &env, None, "state");
         assert_eq!(r["resultType"], "input_required");
         assert_eq!(r["requestState"], "state");
         let ask = &r["inputRequests"][STEP_DECISION];
@@ -920,10 +940,10 @@ mod tests {
             "Allow this agent to: send an email?"
         );
 
-        let r = input_required(STEP_REMEMBER, &env, "state");
-        assert!(
-            r["inputRequests"][STEP_REMEMBER]["params"]["requestedSchema"]["properties"]["ttl"]
-                .is_object()
+        let r = input_required(STEP_REMEMBER, &env, Some(604_800), "state");
+        assert_eq!(
+            r["inputRequests"][STEP_REMEMBER]["params"]["requestedSchema"]["properties"]["ttl"]["default"],
+            "7d"
         );
     }
 

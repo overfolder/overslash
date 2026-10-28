@@ -386,6 +386,7 @@ async fn tools_call_overslash_call(
     Reply::Stream(sse_elicitation_response(
         state.clone(),
         ext.clone(),
+        auth.org_id,
         req.id.clone(),
         elicit_id,
         action_summary,

@@ -234,18 +234,23 @@ pub(super) async fn resolve_approval(
     let mut parsed_expires_at: Option<time::OffsetDateTime> = None;
     let mut remember_keys_to_store: Option<Vec<String>> = None;
     if remember {
-        if let Some(t) = req.ttl.as_deref() {
-            let dur = overslash_core::types::duration::parse_ttl(t)
-                .ok_or_else(|| AppError::BadRequest(format!("invalid ttl: {t}")))?;
-            if dur.as_secs() > 365 * 86400 {
-                return Err(AppError::BadRequest("ttl must not exceed 365 days".into()));
+        // An explicit `ttl` wins (`"forever"` = no expiry); an omitted one
+        // falls back to the org's default, which starts at 7 days.
+        let ttl_secs: Option<i64> = match req.ttl.as_deref() {
+            Some(t) => overslash_core::types::duration::parse_rule_ttl(t)
+                .map_err(|e| AppError::BadRequest(e.to_string()))?
+                .map(|d| d.as_secs() as i64),
+            None => {
+                overslash_db::repos::org::get_default_remember_ttl_secs(state.db(&ext), auth.org_id)
+                    .await?
+                    .ok_or_else(|| AppError::NotFound("org not found".into()))?
+                    .map(i64::from)
             }
-            let secs: i64 = dur
-                .as_secs()
-                .try_into()
-                .map_err(|_| AppError::BadRequest("ttl value too large".into()))?;
+        };
+        if let Some(secs) = ttl_secs {
+            // `parse_rule_ttl` and the column CHECK both cap this at 365 days.
             parsed_expires_at =
-                time::OffsetDateTime::now_utc().checked_add(time::Duration::new(secs, 0));
+                time::OffsetDateTime::now_utc().checked_add(time::Duration::seconds(secs));
         }
         let approval = &approval_pre;
 

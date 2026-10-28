@@ -273,19 +273,13 @@ struct UpdatePermissionRequest {
 /// clears the expiry.
 fn ttl_to_expires_at(ttl: Option<&str>) -> Result<Option<OffsetDateTime>> {
     let Some(t) = ttl else { return Ok(None) };
-    if t == "forever" {
+    let Some(dur) = overslash_core::types::duration::parse_rule_ttl(t)
+        .map_err(|e| AppError::BadRequest(e.to_string()))?
+    else {
         return Ok(None);
-    }
-    let dur = overslash_core::types::duration::parse_ttl(t)
-        .ok_or_else(|| AppError::BadRequest(format!("invalid ttl: {t}")))?;
-    if dur.as_secs() > 365 * 86400 {
-        return Err(AppError::BadRequest("ttl must not exceed 365 days".into()));
-    }
-    let secs: i64 = dur
-        .as_secs()
-        .try_into()
-        .map_err(|_| AppError::BadRequest("ttl value too large".into()))?;
-    Ok(OffsetDateTime::now_utc().checked_add(time::Duration::new(secs, 0)))
+    };
+    // Capped at 365 days by `parse_rule_ttl`, so this cannot overflow.
+    Ok(OffsetDateTime::now_utc().checked_add(time::Duration::seconds(dur.as_secs() as i64)))
 }
 
 async fn update_permission(

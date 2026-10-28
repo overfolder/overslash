@@ -100,6 +100,7 @@ pub(super) fn supports_form_elicitation(capabilities: &Value) -> bool {
 pub(super) fn sse_elicitation_response(
     state: AppState,
     ext: axum::http::Extensions,
+    org_id: Uuid,
     rpc_id: Value,
     elicit_id: String,
     action_summary: String,
@@ -115,6 +116,7 @@ pub(super) fn sse_elicitation_response(
     let stream = elicitation_event_stream(
         state,
         ext,
+        org_id,
         rpc_id,
         elicit_id,
         elicit_request,
@@ -138,6 +140,7 @@ enum StreamStep {
 fn elicitation_event_stream(
     state: AppState,
     ext: axum::http::Extensions,
+    org_id: Uuid,
     rpc_id: Value,
     elicit_id: String,
     elicit_request: Value,
@@ -171,11 +174,12 @@ fn elicitation_event_stream(
             let outcome = mcp_session::await_completion(&state, &ext, &elicit_id).await;
             let (frame, next) = match outcome {
                 mcp_session::ElicitOutcome::FollowUp(next_id) if follow_ups_left > 0 => {
+                    let default_ttl = org_remember_ttl_secs(&state, &ext, org_id).await;
                     let frame = json!({
                         "jsonrpc": "2.0",
                         "id": next_id,
                         "method": "elicitation/create",
-                        "params": remember_params(&pending_outcome),
+                        "params": remember_params(&pending_outcome, default_ttl),
                     });
                     let next = StreamStep::Poll {
                         elicit_id: next_id,
@@ -299,7 +303,10 @@ pub(super) fn elicitation_params(action_summary: &str, pending_outcome: &Value) 
 /// them against the approval, so nothing here is trusted. The narrowest tier
 /// is the default. With no tiers the scope field is left out and the
 /// approval's own keys are remembered.
-pub(super) fn remember_params(pending_outcome: &Value) -> Value {
+///
+/// `default_ttl_secs` is the org's default expiry (`None` = forever), from
+/// [`org_remember_ttl_secs`]; it pre-selects the duration field.
+pub(super) fn remember_params(pending_outcome: &Value, default_ttl_secs: Option<i32>) -> Value {
     let action_summary = pending_outcome
         .get("action_description")
         .and_then(Value::as_str)
@@ -347,19 +354,28 @@ pub(super) fn remember_params(pending_outcome: &Value) -> Value {
             }),
         );
     }
+    let mut ttl_options: Vec<Value> = TTL_PRESETS
+        .iter()
+        .map(|(value, _, title)| json!({ "const": value, "title": title }))
+        .collect();
+    let default_ttl = match TTL_PRESETS.iter().find(|(_, s, _)| *s == default_ttl_secs) {
+        Some((value, _, _)) => value.to_string(),
+        // An org default set through the API to an off-menu duration still
+        // has to be selectable, or the dialog would pre-select nothing.
+        None => {
+            let secs = default_ttl_secs.unwrap_or_default();
+            let value = format!("{secs}s");
+            ttl_options.push(json!({ "const": value, "title": humanize_secs(secs) }));
+            value
+        }
+    };
     properties.insert(
         "ttl".into(),
         json!({
             "type": "string",
             "title": "For how long",
-            "oneOf": [
-                { "const": "forever", "title": "Forever" },
-                { "const": "1h",      "title": "1 hour" },
-                { "const": "24h",     "title": "24 hours" },
-                { "const": "7d",      "title": "7 days" },
-                { "const": "30d",     "title": "30 days" }
-            ],
-            "default": "forever"
+            "oneOf": ttl_options,
+            "default": default_ttl
         }),
     );
 
@@ -371,6 +387,48 @@ pub(super) fn remember_params(pending_outcome: &Value) -> Value {
         },
         "_meta": dialog_meta(pending_outcome)
     })
+}
+
+/// The remember dialog's duration menu: `(ttl value, seconds, title)`, in the
+/// order the dashboard's `ExpiryControl` lists them. `None` seconds = forever.
+const TTL_PRESETS: [(&str, Option<i32>, &str); 5] = [
+    ("forever", None, "Forever"),
+    ("1h", Some(3_600), "1 hour"),
+    ("24h", Some(86_400), "24 hours"),
+    ("7d", Some(604_800), "7 days"),
+    ("30d", Some(2_592_000), "30 days"),
+];
+
+/// What the remember dialog pre-selects when the org's setting cannot be
+/// read — the column's own default.
+const FALLBACK_REMEMBER_TTL_SECS: i32 = 604_800;
+
+/// The org's default "Allow & remember" expiry (`None` = forever). A failed
+/// lookup falls back to 7 days rather than failing the dialog: it is only a
+/// pre-selection, and `/resolve` re-reads the setting for an omitted `ttl`.
+pub(super) async fn org_remember_ttl_secs(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    org_id: Uuid,
+) -> Option<i32> {
+    match overslash_db::repos::org::get_default_remember_ttl_secs(state.db(ext), org_id).await {
+        Ok(Some(secs)) => secs,
+        Ok(None) => Some(FALLBACK_REMEMBER_TTL_SECS),
+        Err(e) => {
+            tracing::warn!(%org_id, "read default_remember_ttl_secs failed: {e}");
+            Some(FALLBACK_REMEMBER_TTL_SECS)
+        }
+    }
+}
+
+/// "2 days", "90 minutes" — the largest whole unit an off-menu duration fits.
+fn humanize_secs(secs: i32) -> String {
+    let (n, unit) = [(86_400, "day"), (3_600, "hour"), (60, "minute")]
+        .into_iter()
+        .find(|(size, _)| secs % size == 0)
+        .map(|(size, unit)| (secs / size, unit))
+        .unwrap_or((secs, "second"));
+    format!("{n} {unit}{}", if n == 1 { "" } else { "s" })
 }
 
 /// The descriptive render-form fields the envelope carries, so either dialog
@@ -493,7 +551,7 @@ mod tests {
             { "keys": ["gmail:send:to=bob@x"], "description": "Emails to bob@x" },
             { "keys": ["gmail:send:*", "gmail:read:*"], "description": "Any send or read" },
         ]);
-        let p = remember_params(&env);
+        let p = remember_params(&env, Some(604_800));
         let props = &p["requestedSchema"]["properties"];
 
         let scope = &props["scope"];
@@ -505,13 +563,39 @@ mod tests {
             vec!["gmail:send:*", "gmail:read:*"],
             "a multi-key tier must round-trip through its string value"
         );
-        assert_eq!(props["ttl"]["default"], "forever");
+        assert_eq!(props["ttl"]["default"], "7d");
         assert_eq!(p["message"], "Remember permission to: send an email");
+    }
+
+    /// The org default pre-selects the duration; "forever" stays a choice,
+    /// and an off-menu default is appended so it can still be the default.
+    #[test]
+    fn remember_dialog_defaults_to_the_org_ttl() {
+        let ttl = |secs| {
+            remember_params(&envelope(), secs)["requestedSchema"]["properties"]["ttl"].clone()
+        };
+
+        assert_eq!(ttl(None)["default"], "forever");
+        assert_eq!(ttl(Some(3_600))["default"], "1h");
+        assert_eq!(ttl(Some(3_600))["oneOf"].as_array().unwrap().len(), 5);
+
+        let custom = ttl(Some(172_800));
+        assert_eq!(custom["default"], "172800s");
+        let last = custom["oneOf"].as_array().unwrap().last().unwrap().clone();
+        assert_eq!(last, json!({ "const": "172800s", "title": "2 days" }));
+    }
+
+    #[test]
+    fn humanize_secs_picks_the_largest_whole_unit() {
+        assert_eq!(humanize_secs(86_400), "1 day");
+        assert_eq!(humanize_secs(5_400), "90 minutes");
+        assert_eq!(humanize_secs(7_200), "2 hours");
+        assert_eq!(humanize_secs(61), "61 seconds");
     }
 
     #[test]
     fn remember_dialog_without_tiers_asks_only_for_duration() {
-        let p = remember_params(&envelope());
+        let p = remember_params(&envelope(), Some(604_800));
         let props = p["requestedSchema"]["properties"].as_object().unwrap();
         assert_eq!(props.keys().collect::<Vec<_>>(), vec!["ttl"]);
     }

@@ -24,8 +24,11 @@
 		utf8ByteLength,
 		splitDisclosed,
 		rememberKeys,
-		resolutionToast
+		resolutionToast,
+		ttlFromSecs,
+		DEFAULT_REMEMBER_TTL
 	} from '#lib/approvals/format.ts';
+	import type { ExecutionSettings } from '#lib/types.ts';
 	import { onMount } from 'svelte';
 
 	let {
@@ -65,6 +68,10 @@
 	let customKey = $state('');
 	// 'once' or a TTL_OPTIONS value — what the Allow split button runs.
 	let dur = $state('once');
+	// The org's default expiry for "Allow & Remember" — what the gateway applies
+	// to a resolve that omits `ttl`. Tagged in the Allow menu, not preselected:
+	// the split button still defaults to Once.
+	let defaultTtl = $state(DEFAULT_REMEMBER_TTL);
 	let formError = $state<string | null>(null);
 	const submitting = $derived(ctrl.submitting);
 	const error = $derived(formError ?? ctrl.error);
@@ -94,6 +101,19 @@
 		customKey = '';
 		dur = 'once';
 		formError = null;
+	});
+
+	const orgId = $derived((page.data as { user?: { org_id?: string } })?.user?.org_id ?? null);
+	onMount(async () => {
+		if (!orgId) return;
+		try {
+			const settings = await session.get<ExecutionSettings>(
+				`/v1/orgs/${orgId}/execution-settings`
+			);
+			defaultTtl = ttlFromSecs(settings.default_remember_ttl_secs);
+		} catch {
+			// Keep the 7-day fallback; it only labels the menu.
+		}
 	});
 
 	const riskMeta = {
@@ -175,7 +195,8 @@
 				return;
 			}
 			body.remember_keys = keys;
-			if (dur !== 'forever') body.ttl = dur;
+			// Always explicit: an omitted ttl means the org default, not "Always".
+			body.ttl = dur;
 		}
 		const updated = await ctrl.resolve(body);
 		if (!updated) return;
@@ -235,7 +256,7 @@
 					<button class="ovs-btn ovs-btn-danger" disabled={submitting} onclick={() => resolve('deny')}
 						>Deny</button
 					>
-					<AllowSplit bind:dur {canRemember} disabled={submitting} onallow={allow} />
+					<AllowSplit bind:dur {defaultTtl} {canRemember} disabled={submitting} onallow={allow} />
 				</div>
 			</div>
 			{#if willRunInBackground}

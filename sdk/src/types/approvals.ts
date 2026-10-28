@@ -195,7 +195,10 @@ export interface ResolveApprovalRequest {
    * Rules are only written once the call actually replays.
    */
   remember_keys?: string[];
-  /** e.g. `24h`, `7d`, `30d`. Absent means forever. Capped at 365 days. */
+  /**
+   * e.g. `24h`, `7d`, `30d`, or `forever` for no expiry. Capped at 365 days.
+   * Absent means the org's default expiry (7 days unless an admin changed it).
+   */
   ttl?: string;
 }
 

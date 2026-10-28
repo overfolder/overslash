@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT default_deferred_execution, default_agent_self_setup, call_timeout_ms, max_call_timeout_ms\n           FROM orgs WHERE id = $1 FOR UPDATE",
+  "query": "SELECT default_deferred_execution, default_agent_self_setup, call_timeout_ms, max_call_timeout_ms,\n                default_remember_ttl_secs\n           FROM orgs WHERE id = $1 FOR UPDATE",
   "describe": {
     "columns": [
       {
@@ -46,6 +46,17 @@
             "name": "max_call_timeout_ms"
           }
         }
+      },
+      {
+        "ordinal": 4,
+        "name": "default_remember_ttl_secs",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "orgs",
+            "name": "default_remember_ttl_secs"
+          }
+        }
       }
     ],
     "parameters": {
@@ -57,8 +68,9 @@
       false,
       false,
       true,
+      true,
       true
     ]
   },
-  "hash": "1dd2e60c7b39789db4fd126784dccc7a27080a5f7dea5d42af0afc77b77877db"
+  "hash": "0390276a145cf74b5d8e3e2f85b2e6056319d5d685559a97f5d43e02ec73d8e5"
 }

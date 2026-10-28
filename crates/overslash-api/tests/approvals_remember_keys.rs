@@ -7,6 +7,10 @@
 //! the dashboard's "Custom… (advanced)" field produces, while still rejecting
 //! an unrelated grant. Rules are written once per distinct key — a multi-key
 //! approval whose tier collapses onto one key must not write it N times.
+//!
+//! The rule's expiry: an explicit `ttl` wins (`"forever"` = none), and an
+//! omitted one takes the org's `default_remember_ttl_secs` — 7 days unless an
+//! admin changed it.
 
 use crate::common;
 
@@ -255,5 +259,201 @@ async fn repeated_remember_keys_write_one_rule() {
         written_rules(&base, &org_key, agent_id).await,
         [key],
         "one distinct key must write exactly one rule"
+    );
+}
+
+/// Resolve "Allow & Remember" on the approval's own keys with the given
+/// `ttl` (omitted when `None`), replay it, and return the written rule's
+/// `expires_at` as seconds from now (`None` = forever).
+async fn remember_and_read_expiry(
+    base: &str,
+    org_key: &str,
+    agent_key: &str,
+    approval_id: Uuid,
+    agent_id: Uuid,
+    ttl: Option<&str>,
+) -> Option<i64> {
+    let mut body = json!({"resolution": "allow_remember"});
+    if let Some(ttl) = ttl {
+        body["ttl"] = json!(ttl);
+    }
+    let resp = reqwest::Client::new()
+        .post(format!("{base}/v1/approvals/{approval_id}/resolve"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        200,
+        "{}",
+        resp.text().await.unwrap_or_default()
+    );
+
+    let resp = reqwest::Client::new()
+        .post(format!("{base}/v1/approvals/{approval_id}/call"))
+        .header("Authorization", format!("Bearer {agent_key}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let rows: Value = reqwest::Client::new()
+        .get(format!("{base}/v1/permissions?identity_id={agent_id}"))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let rule = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| {
+            !r["action_pattern"]
+                .as_str()
+                .unwrap()
+                .starts_with("overslash:")
+        })
+        .expect("the remembered rule");
+    rule["expires_at"].as_str().map(|at| {
+        let at = time::OffsetDateTime::parse(at, &time::format_description::well_known::Rfc3339)
+            .unwrap();
+        (at - time::OffsetDateTime::now_utc()).whole_seconds()
+    })
+}
+
+async fn patch_remember_ttl(base: &str, key: &str, org_id: Uuid, secs: Value) -> reqwest::Response {
+    reqwest::Client::new()
+        .patch(format!("{base}/v1/orgs/{org_id}/execution-settings"))
+        .header("Authorization", format!("Bearer {key}"))
+        .json(&json!({"default_remember_ttl_secs": secs}))
+        .send()
+        .await
+        .unwrap()
+}
+
+/// Within a minute of `expected` seconds from now — the resolve and the read
+/// are a few round trips apart.
+fn assert_expires_in(got: Option<i64>, expected: i64) {
+    let got = got.expect("rule should expire");
+    assert!(
+        (expected - 60..=expected).contains(&got),
+        "expected ~{expected}s to expiry, got {got}s"
+    );
+}
+
+#[tokio::test]
+async fn omitted_ttl_takes_the_seven_day_org_default() {
+    let (pool, fx) = common::test_pool_bootstrapped().await;
+    let (base, org_key, agent_key, approval_id, agent_id, _mock_addr) =
+        pending_approval(pool, &fx).await;
+
+    let settings: Value = reqwest::Client::new()
+        .get(format!("{base}/v1/orgs/{}/execution-settings", fx.org_id))
+        .header("Authorization", format!("Bearer {org_key}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(settings["default_remember_ttl_secs"], 604_800);
+
+    let expiry =
+        remember_and_read_expiry(&base, &org_key, &agent_key, approval_id, agent_id, None).await;
+    assert_expires_in(expiry, 604_800);
+}
+
+/// "forever" used to be spelled by leaving `ttl` out. Now that an omission
+/// means the org default, it has to be accepted as an explicit value.
+#[tokio::test]
+async fn explicit_forever_writes_a_permanent_rule() {
+    let (pool, fx) = common::test_pool_bootstrapped().await;
+    let (base, org_key, agent_key, approval_id, agent_id, _mock_addr) =
+        pending_approval(pool, &fx).await;
+
+    let expiry = remember_and_read_expiry(
+        &base,
+        &org_key,
+        &agent_key,
+        approval_id,
+        agent_id,
+        Some("forever"),
+    )
+    .await;
+    assert_eq!(expiry, None);
+}
+
+#[tokio::test]
+async fn explicit_ttl_beats_the_org_default() {
+    let (pool, fx) = common::test_pool_bootstrapped().await;
+    let (base, org_key, agent_key, approval_id, agent_id, _mock_addr) =
+        pending_approval(pool, &fx).await;
+
+    let expiry = remember_and_read_expiry(
+        &base,
+        &org_key,
+        &agent_key,
+        approval_id,
+        agent_id,
+        Some("1h"),
+    )
+    .await;
+    assert_expires_in(expiry, 3_600);
+}
+
+#[tokio::test]
+async fn a_changed_org_default_applies_to_omitted_ttl() {
+    let (pool, fx) = common::test_pool_bootstrapped().await;
+    let (base, org_key, agent_key, approval_id, agent_id, _mock_addr) =
+        pending_approval(pool, &fx).await;
+
+    let resp = patch_remember_ttl(&base, &org_key, fx.org_id, json!(86_400)).await;
+    assert_eq!(resp.status(), 200);
+    assert_eq!(
+        resp.json::<Value>().await.unwrap()["default_remember_ttl_secs"],
+        86_400
+    );
+
+    let expiry =
+        remember_and_read_expiry(&base, &org_key, &agent_key, approval_id, agent_id, None).await;
+    assert_expires_in(expiry, 86_400);
+}
+
+#[tokio::test]
+async fn a_forever_org_default_writes_permanent_rules() {
+    let (pool, fx) = common::test_pool_bootstrapped().await;
+    let (base, org_key, agent_key, approval_id, agent_id, _mock_addr) =
+        pending_approval(pool, &fx).await;
+
+    let resp = patch_remember_ttl(&base, &org_key, fx.org_id, Value::Null).await;
+    assert_eq!(resp.status(), 200);
+    assert!(resp.json::<Value>().await.unwrap()["default_remember_ttl_secs"].is_null());
+
+    let expiry =
+        remember_and_read_expiry(&base, &org_key, &agent_key, approval_id, agent_id, None).await;
+    assert_eq!(expiry, None);
+}
+
+#[tokio::test]
+async fn org_default_ttl_is_bounded_and_admin_only() {
+    let (pool, fx) = common::test_pool_bootstrapped().await;
+    let (base, org_key, agent_key, _approval_id, _agent_id, _mock_addr) =
+        pending_approval(pool, &fx).await;
+
+    for secs in [0, 59, 31_536_001] {
+        let resp = patch_remember_ttl(&base, &org_key, fx.org_id, json!(secs)).await;
+        assert_eq!(resp.status(), 400, "{secs}s must be rejected");
+    }
+
+    let resp = patch_remember_ttl(&base, &agent_key, fx.org_id, json!(3_600)).await;
+    assert!(
+        resp.status().is_client_error(),
+        "a non-admin must not change the org default: {}",
+        resp.status()
     );
 }

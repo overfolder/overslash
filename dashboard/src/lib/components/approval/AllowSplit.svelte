@@ -5,30 +5,44 @@
 	// duration as the rule's expiry — so once-vs-remember and the expiry are one
 	// decision instead of two buttons plus a clock menu.
 
-	import { TTL_OPTIONS } from '#lib/approvals/format.ts';
+	import { TTL_OPTIONS, ttlLabel } from '#lib/approvals/format.ts';
 
 	let {
 		dur = $bindable('once'),
+		defaultTtl,
 		disabled = false,
 		canRemember = true,
 		onallow
 	}: {
 		dur?: string;
+		/** The org's default remember expiry, tagged "default" in the menu. */
+		defaultTtl?: string;
 		disabled?: boolean;
 		canRemember?: boolean;
 		onallow: (dur: string) => void;
 	} = $props();
 
-	// `forever` sits last as "Always"; the rest read "For <ttl>".
-	const DURS = [
+	// `forever` sits last as "Always"; the rest read "For <ttl>". An org
+	// default set through the API to an off-menu duration gets its own entry,
+	// so the menu can always name it.
+	const DURS = $derived([
 		{ value: 'once', label: 'Once', btn: 'once' },
 		...TTL_OPTIONS.filter((o) => o.value !== 'forever').map((o) => ({
 			value: o.value as string,
 			label: `For ${o.label}`,
 			btn: `for ${o.label}`
 		})),
+		...(defaultTtl && !TTL_OPTIONS.some((o) => o.value === defaultTtl)
+			? [
+					{
+						value: defaultTtl,
+						label: `For ${ttlLabel(defaultTtl)}`,
+						btn: `for ${ttlLabel(defaultTtl)}`
+					}
+				]
+			: []),
 		{ value: 'forever', label: 'Always', btn: 'always' }
-	];
+	]);
 
 	let open = $state(false);
 	let root: HTMLDivElement | undefined = $state();
@@ -86,7 +100,10 @@
 						open = false;
 					}}
 				>
-					<span>{d.label}</span>
+					<span
+						>{d.label}{#if d.value === defaultTtl}{' '}<span class="aq-default">· default</span
+							>{/if}</span
+					>
 					{#if d.value === dur}<span class="chk">✓</span>{/if}
 				</button>
 			{/each}
@@ -95,6 +112,10 @@
 </div>
 
 <style>
+	.aq-default {
+		color: var(--color-text-muted);
+		font-size: 12px;
+	}
 	.aq-split {
 		position: relative;
 		display: inline-flex;

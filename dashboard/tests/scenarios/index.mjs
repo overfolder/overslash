@@ -45,6 +45,7 @@ export {
 	seedExecution,
 	setAuditResponseBodyMode,
 	setAgentSelfSetup,
+	setDefaultRememberTtl,
 	setCallTimeouts,
 	setManagedSignin,
 	setTemplateSettings,

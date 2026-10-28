@@ -28,6 +28,7 @@
 	import CopyCommand from '#lib/components/CopyCommand.svelte';
 	import { orgAppGuideUrl } from '#lib/docs.ts';
 	import { absoluteTime } from '#lib/utils/time.ts';
+	import { TTL_OPTIONS, ttlFromSecs, ttlLabel } from '#lib/approvals/format.ts';
 	import { invalidateAllowedDomains } from '#lib/orgDomains.ts';
 	import { goto } from '$app/navigation';
 	import { leaveOrg } from '#lib/api/account.ts';
@@ -775,6 +776,19 @@
 		}
 	}
 
+	// The select's values are menu `ttl`s; the endpoint takes seconds, with
+	// null for "Never". An off-menu value (set via the API) is shown as its own
+	// option, so it never silently snaps to a menu entry.
+	const currentTtl = $derived(
+		executionSettings ? ttlFromSecs(executionSettings.default_remember_ttl_secs) : ''
+	);
+	function commitRememberTtl(value: string) {
+		if (!executionSettings) return;
+		const preset = TTL_OPTIONS.find((o) => o.value === value);
+		if (!preset || preset.secs === executionSettings.default_remember_ttl_secs) return;
+		return patchExecutionSettings({ default_remember_ttl_secs: preset.secs });
+	}
+
 	// Blank clears the override; anything else must parse to a positive
 	// integer. Reject locally rather than round-tripping a 400 for a typo.
 	function commitTimeout(
@@ -1263,6 +1277,35 @@
 							/>
 						</label>
 					</div>
+				</div>
+
+				<!-- Not a creation-time default like the rows above: it applies to
+				     every remember resolve from the moment it changes. -->
+				<div class="timeout-rows toggle-row">
+					<div class="toggle-body">
+						<div class="toggle-label">Default "Allow &amp; Remember" expiry</div>
+						<div class="toggle-help">
+							How long a rule written by Allow &amp; Remember lasts unless the
+							reviewer picks otherwise. It is marked as the default in the
+							approval's Allow menu, and applied to API and MCP resolves that omit
+							<code>ttl</code>. Takes effect immediately; rules already
+							written keep their expiry.
+						</div>
+					</div>
+					<select
+						class="policy-select"
+						value={currentTtl}
+						onchange={(e) => commitRememberTtl(e.currentTarget.value)}
+						disabled={executionSaving}
+						aria-label="Default Allow & Remember expiry"
+					>
+						{#each TTL_OPTIONS as o (o.value)}
+							<option value={o.value}>{o.label}</option>
+						{/each}
+						{#if !TTL_OPTIONS.some((o) => o.value === currentTtl)}
+							<option value={currentTtl}>{ttlLabel(currentTtl)}</option>
+						{/if}
+					</select>
 				</div>
 
 				{#if executionError}
