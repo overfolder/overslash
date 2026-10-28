@@ -101,7 +101,7 @@
 					}}
 				>
 					<span
-						>{d.label}{#if d.value === defaultTtl}<span class="aq-default"> · default</span
+						>{d.label}{#if d.value === defaultTtl}{' '}<span class="aq-default">· default</span
 							>{/if}</span
 					>
 					{#if d.value === dur}<span class="chk">✓</span>{/if}

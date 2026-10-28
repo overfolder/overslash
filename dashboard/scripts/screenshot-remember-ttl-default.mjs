@@ -57,6 +57,7 @@ try {
 	await aPage
 		.getByRole('menuitemradio', { name: /For 30 days · default/ })
 		.waitFor({ timeout: 10_000 });
+	await aPage.waitForTimeout(400); // let the menu's fade-in finish
 	// The menu drops below the action bar, so clip a region covering both.
 	const bar = await aPage.locator('.aq-actionbar').first().boundingBox();
 	await aPage.screenshot({
