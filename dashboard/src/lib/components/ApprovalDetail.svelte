@@ -10,7 +10,7 @@
 	import RiskBadge from './approval/RiskBadge.svelte';
 	import ServiceTile from './approval/ServiceTile.svelte';
 	import RememberControl from './approval/RememberControl.svelte';
-	import ExpiryControl from './approval/ExpiryControl.svelte';
+	import AllowSplit from './approval/AllowSplit.svelte';
 	import { relativeTime } from '#lib/utils/time.ts';
 	import { shortEmail } from '#lib/identityDisplay.ts';
 	import { createResolution } from '#lib/approvals/resolution.svelte.ts';
@@ -63,7 +63,8 @@
 	let selectedTier = $state(0);
 	let useCustomKey = $state(false);
 	let customKey = $state('');
-	let ttl = $state('forever');
+	// 'once' or a TTL_OPTIONS value — what the Allow split button runs.
+	let dur = $state('once');
 	let formError = $state<string | null>(null);
 	const submitting = $derived(ctrl.submitting);
 	const error = $derived(formError ?? ctrl.error);
@@ -91,7 +92,7 @@
 		selectedTier = 0;
 		useCustomKey = false;
 		customKey = '';
-		ttl = 'forever';
+		dur = 'once';
 		formError = null;
 	});
 
@@ -174,12 +175,16 @@
 				return;
 			}
 			body.remember_keys = keys;
-			if (ttl !== 'forever') body.ttl = ttl;
+			if (dur !== 'forever') body.ttl = dur;
 		}
 		const updated = await ctrl.resolve(body);
 		if (!updated) return;
 		pushToast('success', resolutionToast(resolution, before, updated, body.remember_keys));
 		onResolved?.(updated);
+	}
+
+	function allow(d: string) {
+		void resolve(d === 'once' ? 'allow' : 'allow_remember');
 	}
 </script>
 
@@ -217,8 +222,8 @@
 		</div>
 
 		{#if isPending}
-			<!-- prominent action bar: scope + expiry + the three resolutions,
-			     merged into one control strip above the fold -->
+			<!-- prominent action bar: the scope to remember, then Deny and the
+			     Allow split button (whose caret picks once vs. remember-for) -->
 			<div class="aq-actionbar">
 				<RememberControl
 					tiers={current.suggested_tiers}
@@ -226,21 +231,11 @@
 					bind:useCustomKey
 					bind:customKey
 				/>
-				<ExpiryControl bind:value={ttl} />
 				<div class="aq-ab-btns">
 					<button class="ovs-btn ovs-btn-danger" disabled={submitting} onclick={() => resolve('deny')}
 						>Deny</button
 					>
-					<button
-						class="ovs-btn ovs-btn-secondary"
-						disabled={submitting}
-						onclick={() => resolve('allow')}>Allow once</button
-					>
-					<button
-						class="ovs-btn ovs-btn-primary aq-ab-primary"
-						disabled={submitting || !canRemember}
-						onclick={() => resolve('allow_remember')}>Allow &amp; Remember</button
-					>
+					<AllowSplit bind:dur {canRemember} disabled={submitting} onallow={allow} />
 				</div>
 			</div>
 			{#if willRunInBackground}
@@ -672,9 +667,6 @@
 	}
 	.ovs-btn-danger:not(:disabled):hover {
 		background: var(--badge-bg-danger);
-	}
-	.aq-ab-primary {
-		font-weight: 500;
 	}
 
 	/* status bars (non-pending states) */
@@ -1117,15 +1109,12 @@
 			align-items: stretch;
 			gap: 10px;
 		}
-		/* stack the merged bar: scope, then expiry, then the buttons */
+		/* stack the merged bar: scope, then the buttons */
 		.aq-actionbar :global(.aq-remember) {
 			order: 1;
 		}
-		.aq-actionbar :global(.aq-expctl) {
-			order: 2;
-		}
 		.aq-ab-btns {
-			order: 3;
+			order: 2;
 		}
 		.aq-ab-btns .ovs-btn {
 			flex: 1;
