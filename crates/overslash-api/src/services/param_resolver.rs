@@ -87,6 +87,19 @@ fn project(
     (display, canonical)
 }
 
+/// A top-level `error` code from a resolver response, when it looks like one:
+/// a short identifier, not a sentence that could echo the request back.
+fn upstream_error_code(body: &serde_json::Value) -> Option<&str> {
+    body.get("error")
+        .and_then(serde_json::Value::as_str)
+        .filter(|code| {
+            code.len() <= 64
+                && code
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'))
+        })
+}
+
 /// Resolve display names for params that declare `source:` — answered from the
 /// gateway's own records rather than from the upstream.
 ///
@@ -225,12 +238,47 @@ pub async fn resolve_display_params(
                     for (key, value) in &headers {
                         req = req.header(key, value);
                     }
-                    let resp = req.send().await.ok()?;
-                    if !resp.status().is_success() {
+                    // Each miss is logged, as on the MCP path: an approval
+                    // quoting a raw id is otherwise undiagnosable. `get` is the
+                    // unsubstituted template path, never the URL, so the
+                    // caller's argument stays out of the log.
+                    let resp = match req.send().await {
+                        Ok(resp) => resp,
+                        Err(e) => {
+                            tracing::warn!(
+                                get = %get,
+                                param = %name,
+                                error = %e,
+                                "display-param resolver request failed; using the raw argument"
+                            );
+                            return None;
+                        }
+                    };
+                    let status = resp.status();
+                    if !status.is_success() {
+                        tracing::warn!(
+                            get = %get,
+                            param = %name,
+                            status = status.as_u16(),
+                            "display-param resolver got an error status; using the raw argument"
+                        );
                         return None;
                     }
                     let json: serde_json::Value = resp.json().await.ok()?;
-                    Some(project(&resolver, &json))
+                    let projected = project(&resolver, &json);
+                    if projected.0.is_none() {
+                        // Providers that answer failures in-band (Slack's
+                        // `200 {"ok": false, "error": "missing_scope"}`) land
+                        // here. Their error code is a short enum, safe to log
+                        // and the one thing that says *why*.
+                        tracing::info!(
+                            get = %get,
+                            param = %name,
+                            upstream_error = upstream_error_code(&json).unwrap_or_default(),
+                            "display-param resolver projected nothing; using the raw argument"
+                        );
+                    }
+                    Some(projected)
                 }
                 .await;
                 (name, fetched)
@@ -473,7 +521,7 @@ fn resolver_body(
 
 #[cfg(test)]
 mod tests {
-    use super::{project, resolver_body};
+    use super::{project, resolver_body, upstream_error_code};
     use crate::services::mcp_client::ToolCallResult;
     use overslash_core::types::ParamResolver;
     use serde_json::json;
@@ -546,5 +594,21 @@ mod tests {
             project(&resolver, &body),
             (Some("Peluquería canina".to_string()), None)
         );
+    }
+
+    #[test]
+    fn upstream_error_code_takes_only_a_short_identifier() {
+        assert_eq!(
+            upstream_error_code(&json!({"ok": false, "error": "missing_scope"})),
+            Some("missing_scope")
+        );
+        // A sentence could quote the request back, so it is not logged.
+        assert_eq!(
+            upstream_error_code(&json!({"error": "no channel named C1 for alice"})),
+            None
+        );
+        // `error` as an object (OAuth-style APIs) carries no flat code.
+        assert_eq!(upstream_error_code(&json!({"error": {"code": 404}})), None);
+        assert_eq!(upstream_error_code(&json!({"ok": true})), None);
     }
 }
