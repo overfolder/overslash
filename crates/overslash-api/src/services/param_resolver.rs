@@ -245,10 +245,12 @@ pub async fn resolve_display_params(
                     let resp = match req.send().await {
                         Ok(resp) => resp,
                         Err(e) => {
+                            // reqwest's Display quotes the URL, which carries
+                            // the substituted argument.
                             tracing::warn!(
                                 get = %get,
                                 param = %name,
-                                error = %e,
+                                error = %e.without_url(),
                                 "display-param resolver request failed; using the raw argument"
                             );
                             return None;
