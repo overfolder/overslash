@@ -294,7 +294,7 @@ A button with two halves joined seamlessly — left side is the default action, 
 
 **Structure**: left half has rounded left corners, right half (▾) has rounded right corners. No gap between them — they share a continuous border.
 
-**Approval variant**: Left = runs the selected duration, labelled "Allow once" / "Allow for 24 hours" / "Allow always". Right dropdown = duration menu: **Once** (plain allow), then an "Allow & remember" section with **For 1 hour / 24 hours / 7 days / 30 days** and **Always** (remember at the scope chosen in the action bar's "Remember as" dropdown, with that expiry). Picking a duration only changes the selection; the left half resolves. Defaults to Once.
+**Approval variant**: Left = runs the selected duration, labelled "Allow once" / "Allow for 24 hours" / "Allow always". Right dropdown = duration menu: **Once** (plain allow), then an "Allow & remember" section with **For 1 hour / 24 hours / 7 days / 30 days** and **Always** (remember at the scope chosen in the action bar's "Remember as" dropdown, with that expiry). Picking a duration only changes the selection; the left half resolves. Defaults to Once. The org's default remember expiry (`default_remember_ttl_secs`) is tagged "· default" in the menu, and gets its own "For …" entry when it is not one of the listed durations. Every remember choice sends `ttl` explicitly, so "Always" is `forever`, not an omission.
 
 ### Notifications Dropdown
 
@@ -657,9 +657,6 @@ User-level preferences. Changes take effect immediately.
 - **Format**: Relative ("2m ago") / Absolute local / Absolute UTC
 - **Timezone**: auto-detected from browser, overridable
 
-**Approvals:**
-- **Default approval TTL**: pre-filled expiry when clicking "Allow & Remember" (1h, 24h, 7d, 30d, never)
-
 **Notifications:**
 - **Notification preferences**: how to receive approval requests and secret requests — email, webhook URL, or dashboard-only
 
@@ -859,7 +856,6 @@ Features
 Allow user-created templates        [✓]     Users can create personal service templates
 Allow user-created services         [✓]     Users can create personal service instances
 Show API Explorer                   [✓]     API Explorer visible in nav for all users
-Default approval TTL                [24h ▾] Pre-filled expiry for "Allow & Remember"
 ```
 
 Each with a toggle or dropdown. Settings configured via environment variables are shown as read-only with an "env" badge.
@@ -900,8 +896,9 @@ One card, admin-only, holding the org policies applied to an agent **at creation
 - **New agents can set up their own services** (`default_agent_self_setup`, default **on**) — a first-level agent is seeded with the four `overslash:*_own` self-setup rules. The help text names what it does *not* include (the `_share`/`_publish` half) and warns that an agent owned by an org admin inherits admin reach through its owner's groups regardless.
 - **Deferred execution by default for new agents** (`default_deferred_execution`, default off).
 - **Upstream call timeouts** — default and maximum, blank to inherit the deployment value.
+- **Default "Allow & Remember" expiry** (`default_remember_ttl_secs`, default **7 days**; Never / 1h / 24h / 7d / 30d). Unlike the rows above it is not a creation-time default: it applies to every remember resolve from the moment it changes. It is what an API or MCP resolve that omits `ttl` gets, and the approval's Allow menu tags that duration "· default" (the split button itself still starts on Once). Sits below the timeouts behind a divider so the card's "applied at creation time" description doesn't read as covering it.
 
-All three patch the same `PATCH /v1/orgs/{id}/execution-settings` endpoint, one key at a time.
+All of these patch the same `PATCH /v1/orgs/{id}/execution-settings` endpoint, one key at a time.
 
 **Backfill control.** Because the self-setup default applies at agent-creation time only, an org that predates it has agents the policy never reached. A row under that toggle says how many (`agents_missing_self_setup`, carried on the same settings response) and offers a button labelled *Grant to N agents*, which `POST`s to `/v1/orgs/{id}/agent-self-setup/backfill` behind a confirm dialog. It is **disabled while the toggle is off**, with a tooltip saying to turn the default on first — granting against a declined policy would hand out what the org just opted out of. When nothing is pending the row reads "Every first-level agent in this org already has these rules" and offers no button. There is no bulk undo; the confirm dialog says so, and revocation stays per agent in the Permission Rules table.
 

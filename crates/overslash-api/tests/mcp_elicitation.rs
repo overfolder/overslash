@@ -955,7 +955,8 @@ async fn remember_dialog_saves_the_picked_tier_with_its_ttl() {
 }
 
 /// No scope picked (a client that skips defaults) remembers the approval's
-/// own keys — the narrowest rule — with no expiry.
+/// own keys — the narrowest rule — and no duration picked takes the org's
+/// default expiry, 7 days out of the box.
 #[tokio::test]
 async fn remember_dialog_without_scope_saves_the_exact_keys() {
     let fx = bootstrap_mcp(true).await;
@@ -980,7 +981,14 @@ async fn remember_dialog_without_scope_saves_the_exact_keys() {
     );
     let rules = new_rules(&fx, &before).await;
     assert!(!rules.is_empty(), "expected a remembered rule");
-    assert!(rules.iter().all(|(_, e)| e.is_none()), "{rules:?}");
+    let in_a_week = time::OffsetDateTime::now_utc() + time::Duration::days(7);
+    for (pattern, expires) in rules {
+        let expires = expires.expect("org default should set an expiry");
+        assert!(
+            (expires - in_a_week).abs() < time::Duration::minutes(2),
+            "{pattern} expires at {expires}, want ≈ {in_a_week}"
+        );
+    }
 }
 
 /// Declining the follow-up is backing out of the details after saying

@@ -22,13 +22,45 @@ export function pickApiError(e: unknown, fallback = 'Something went wrong.'): st
 	return e instanceof Error ? e.message : fallback;
 }
 
+// `secs` is the same duration as the org's `default_remember_ttl_secs`
+// (null = forever), so the org default maps onto a menu entry.
 export const TTL_OPTIONS = [
-	{ value: 'forever', label: 'Never' },
-	{ value: '1h', label: '1 hour' },
-	{ value: '24h', label: '24 hours' },
-	{ value: '7d', label: '7 days' },
-	{ value: '30d', label: '30 days' }
+	{ value: 'forever', label: 'Never', secs: null },
+	{ value: '1h', label: '1 hour', secs: 3600 },
+	{ value: '24h', label: '24 hours', secs: 86400 },
+	{ value: '7d', label: '7 days', secs: 604800 },
+	{ value: '30d', label: '30 days', secs: 2592000 }
 ] as const;
+
+/** The org default assumed before the real one has loaded (the column default). */
+export const DEFAULT_REMEMBER_TTL = '7d';
+
+/**
+ * The org's `default_remember_ttl_secs` as a `ttl` the resolver accepts: the
+ * matching menu value, or `"{n}s"` for a duration set through the API that is
+ * not on the menu.
+ */
+export function ttlFromSecs(secs: number | null): string {
+	return TTL_OPTIONS.find((o) => o.secs === secs)?.value ?? `${secs}s`;
+}
+
+/** Display label for a `ttl` value — the menu label, or "2 days" off-menu. */
+export function ttlLabel(value: string): string {
+	const preset = TTL_OPTIONS.find((o) => o.value === value);
+	if (preset) return preset.label;
+	const secs = Number(value.match(/^(\d+)s$/)?.[1]);
+	if (!secs) return value;
+	const [size, unit] = (
+		[
+			[86400, 'day'],
+			[3600, 'hour'],
+			[60, 'minute'],
+			[1, 'second']
+		] as const
+	).find(([size]) => secs % size === 0)!;
+	const n = secs / size;
+	return `${n} ${unit}${n === 1 ? '' : 's'}`;
+}
 
 const HUMANIZED: Record<string, string> = {
 	github: 'GitHub',

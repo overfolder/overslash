@@ -42,9 +42,49 @@ pub fn parse_ttl(s: &str) -> Option<Duration> {
     }
 }
 
+/// Longest expiry a remembered permission rule may carry.
+pub const MAX_RULE_TTL_SECS: u64 = 365 * 86400;
+
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
+pub enum RuleTtlError {
+    #[error("invalid ttl: {0}")]
+    Invalid(String),
+    #[error("ttl must not exceed 365 days")]
+    TooLong,
+}
+
+/// Parse the `ttl` a permission rule is written with: `"forever"` is no
+/// expiry (`None`), anything else is a [`parse_ttl`] duration capped at
+/// [`MAX_RULE_TTL_SECS`].
+pub fn parse_rule_ttl(s: &str) -> Result<Option<Duration>, RuleTtlError> {
+    if s == "forever" {
+        return Ok(None);
+    }
+    let dur = parse_ttl(s).ok_or_else(|| RuleTtlError::Invalid(s.to_string()))?;
+    if dur.as_secs() > MAX_RULE_TTL_SECS {
+        return Err(RuleTtlError::TooLong);
+    }
+    Ok(Some(dur))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_parse_rule_ttl() {
+        assert_eq!(parse_rule_ttl("forever"), Ok(None));
+        assert_eq!(parse_rule_ttl("7d"), Ok(Some(Duration::from_secs(604800))));
+        assert_eq!(
+            parse_rule_ttl("365d"),
+            Ok(Some(Duration::from_secs(MAX_RULE_TTL_SECS)))
+        );
+        assert_eq!(parse_rule_ttl("366d"), Err(RuleTtlError::TooLong));
+        assert_eq!(
+            parse_rule_ttl("never"),
+            Err(RuleTtlError::Invalid("never".into()))
+        );
+    }
 
     #[test]
     fn test_parse_ttl() {

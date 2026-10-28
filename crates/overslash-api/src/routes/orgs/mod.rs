@@ -101,6 +101,10 @@ const MIN_RETENTION_DAYS: i32 = 1;
 const MIN_CALL_TIMEOUT_MS: i32 = 1_000;
 const MAX_CALL_TIMEOUT_MS: i32 = 600_000;
 const MAX_RETENTION_DAYS: i32 = 60;
+/// Bounds for `default_remember_ttl_secs`: one minute to the 365-day cap any
+/// remembered rule carries (mirrors the `orgs_default_remember_ttl_bounds` CHECK).
+const MIN_REMEMBER_TTL_SECS: i32 = 60;
+const MAX_REMEMBER_TTL_SECS: i32 = 365 * 86_400;
 
 #[derive(Serialize)]
 pub(super) struct OrgResponse {

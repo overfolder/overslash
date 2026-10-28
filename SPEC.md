@@ -497,7 +497,7 @@ The flow above expanded as discrete steps:
 2. **Group check (Layer 1)**: is the service + access level within the owner-user's group grants? If not → **deny** (not approvable)
 3. **Auto-approve bypass**: if the matching grant's `auto_approve_level` permits this action's risk, skip Layer 2 and call immediately (a deny rule still applies to mutating calls)
 4. **Permission key check (Layer 2)**: are all derived keys covered by existing rules for this identity? If yes → **auto-approve**
-5. If not → **create approval request** → user decides → "Allow & Remember" stores keys with optional TTL
+5. If not → **create approval request** → user decides → "Allow & Remember" stores keys with a TTL (the org default — 7 days unless changed — or `forever` when asked for explicitly)
 
 ### Hierarchical Resolution
 
@@ -608,6 +608,8 @@ Approval and secret requests are **not notified immediately**. Only requests tha
 ### Remembered Approvals
 
 "Allow & Remember" on an approval creates permission key rules with optional TTL. These rules auto-approve matching future requests. Permission rules and remembered approvals are the same concept — "permission rules" is the storage format, "remembered approvals" is the user-facing term. Users can view and revoke them per identity via the dashboard.
+
+**Expiry.** The resolver may pass `ttl` (`1h`, `7d`, … up to 365 days, or `forever`). An omitted `ttl` takes the org's `default_remember_ttl_secs` (`PATCH /v1/orgs/{id}/execution-settings`; NULL = forever; **default 7 days**). The MCP remember dialog preselects that default; the dashboard's Allow menu tags it (the button itself starts on Once). Changing it never touches rules already written.
 
 The rule is stored **only after a successful `POST /v1/approvals/{id}/call`** — a cancelled, expired, or failed replay leaves no rule behind. This prevents a reviewer from being silently committed to auto-approving an action they never saw succeed.
 

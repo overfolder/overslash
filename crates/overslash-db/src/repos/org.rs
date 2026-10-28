@@ -346,6 +346,22 @@ pub async fn get_default_deferred_execution(
     Ok(row.map(|r| r.default_deferred_execution))
 }
 
+/// Read the org's default expiry, in seconds, for rules written by
+/// "Allow & Remember" when the resolver passes no `ttl`. The inner `None`
+/// means forever; the outer `None` means the org doesn't exist.
+pub async fn get_default_remember_ttl_secs(
+    pool: &PgPool,
+    id: Uuid,
+) -> Result<Option<Option<i32>>, sqlx::Error> {
+    let row = sqlx::query!(
+        "SELECT default_remember_ttl_secs FROM orgs WHERE id = $1",
+        id,
+    )
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|r| r.default_remember_ttl_secs))
+}
+
 /// Update the `default_deferred_execution` setting for an org.
 pub async fn set_default_deferred_execution(
     pool: &PgPool,
@@ -454,6 +470,7 @@ pub enum ExecutionSettingsUpdate {
         default_agent_self_setup: bool,
         call_timeout_ms: Option<i32>,
         max_call_timeout_ms: Option<i32>,
+        default_remember_ttl_secs: Option<i32>,
     },
 }
 
@@ -484,6 +501,8 @@ pub struct ExecutionSettingsPatch {
     pub call_timeout_ms: Option<Option<i32>>,
     /// Same three-valued shape as `call_timeout_ms`.
     pub max_call_timeout_ms: Option<Option<i32>>,
+    /// Same three-valued shape; `Some(None)` means "remember forever".
+    pub default_remember_ttl_secs: Option<Option<i32>>,
 }
 
 pub async fn update_execution_settings(
@@ -496,16 +515,22 @@ pub async fn update_execution_settings(
         default_agent_self_setup,
         call_timeout_ms,
         max_call_timeout_ms,
+        default_remember_ttl_secs,
     } = patch;
     let (set_call_timeout, call_timeout_ms) =
         (call_timeout_ms.is_some(), call_timeout_ms.flatten());
     let (set_max_call_timeout, max_call_timeout_ms) =
         (max_call_timeout_ms.is_some(), max_call_timeout_ms.flatten());
+    let (set_remember_ttl, default_remember_ttl_secs) = (
+        default_remember_ttl_secs.is_some(),
+        default_remember_ttl_secs.flatten(),
+    );
 
     let mut tx = pool.begin().await?;
 
     let Some(current) = sqlx::query!(
-        "SELECT default_deferred_execution, default_agent_self_setup, call_timeout_ms, max_call_timeout_ms
+        "SELECT default_deferred_execution, default_agent_self_setup, call_timeout_ms, max_call_timeout_ms,
+                default_remember_ttl_secs
            FROM orgs WHERE id = $1 FOR UPDATE",
         id,
     )
@@ -524,6 +549,11 @@ pub async fn update_execution_settings(
         max_call_timeout_ms
     } else {
         current.max_call_timeout_ms
+    };
+    let next_remember_ttl = if set_remember_ttl {
+        default_remember_ttl_secs
+    } else {
+        current.default_remember_ttl_secs
     };
     let next_deferred = default_deferred_execution.unwrap_or(current.default_deferred_execution);
     let next_self_setup = default_agent_self_setup.unwrap_or(current.default_agent_self_setup);
@@ -544,6 +574,7 @@ pub async fn update_execution_settings(
                 default_agent_self_setup = $3,
                 call_timeout_ms = $4,
                 max_call_timeout_ms = $5,
+                default_remember_ttl_secs = $6,
                 updated_at = now()
           WHERE id = $1",
         id,
@@ -551,6 +582,7 @@ pub async fn update_execution_settings(
         next_self_setup,
         next_call,
         next_max,
+        next_remember_ttl,
     )
     .execute(&mut *tx)
     .await?;
@@ -561,6 +593,7 @@ pub async fn update_execution_settings(
         default_agent_self_setup: next_self_setup,
         call_timeout_ms: next_call,
         max_call_timeout_ms: next_max,
+        default_remember_ttl_secs: next_remember_ttl,
     })
 }
 

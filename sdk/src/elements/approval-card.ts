@@ -31,7 +31,7 @@ export class OverslashApprovalCard extends OverslashElement {
   private seed: ApprovalResponse | null = null;
   private showPayload = false;
   private rememberTier: number | null = null;
-  private ttl = 'forever';
+  private ttl = 'default';
 
   static get observedAttributes(): string[] {
     return ['approval-id', 'readonly', 'hide-payload'];
@@ -349,8 +349,8 @@ export class OverslashApprovalCard extends OverslashElement {
     const updated = await this.controller.resolve({
       resolution,
       ...(keys ? { remember_keys: keys } : {}),
-      // `forever` is the absence of a TTL, not a value the API knows.
-      ...(keys && this.ttl !== 'forever' ? { ttl: this.ttl } : {}),
+      // `default` leaves `ttl` out so the org's default expiry applies.
+      ...(keys && this.ttl !== 'default' ? { ttl: this.ttl } : {}),
     });
 
     if (!updated) {

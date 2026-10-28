@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE orgs\n            SET default_deferred_execution = $2,\n                default_agent_self_setup = $3,\n                call_timeout_ms = $4,\n                max_call_timeout_ms = $5,\n                default_remember_ttl_secs = $6,\n                updated_at = now()\n          WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Bool",
+        "Bool",
+        "Int4",
+        "Int4",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e3412d889cff77af86f7441ec2abbabd9b87734dc6b5798d6a5493599b83be5e"
+}

@@ -329,6 +329,11 @@ pub(super) struct ExecutionSettingsResponse {
     /// inherits `CALL_TIMEOUT_MAX_MS`. A caller asking for more is
     /// rejected; a template or org *default* above it is clamped.
     max_call_timeout_ms: Option<i32>,
+    /// Expiry, in seconds, of a rule written by "Allow & Remember" when the
+    /// resolver passes no `ttl`. Tagged as the default in the dashboard's
+    /// Allow menu, and preselected in the MCP remember dialog. `null` =
+    /// forever. Default: 7 days.
+    default_remember_ttl_secs: Option<i32>,
 }
 
 /// Partial patch: an absent key leaves the setting alone.
@@ -348,6 +353,8 @@ pub(super) struct PatchExecutionSettingsRequest {
     call_timeout_ms: Option<Option<i32>>,
     #[serde(default, deserialize_with = "double_option")]
     max_call_timeout_ms: Option<Option<i32>>,
+    #[serde(default, deserialize_with = "double_option")]
+    default_remember_ttl_secs: Option<Option<i32>>,
 }
 
 /// Distinguish an absent key from an explicit `null`.
@@ -380,6 +387,9 @@ pub(super) async fn get_execution_settings(
     let timeouts = overslash_db::repos::org::get_call_settings(state.db(&ext), id)
         .await?
         .ok_or_else(|| AppError::NotFound("org not found".into()))?;
+    let remember_ttl = overslash_db::repos::org::get_default_remember_ttl_secs(state.db(&ext), id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("org not found".into()))?;
     let missing =
         overslash_db::repos::org_bootstrap::count_agents_missing_self_setup(state.db(&ext), id)
             .await?;
@@ -389,6 +399,7 @@ pub(super) async fn get_execution_settings(
         agents_missing_self_setup: Some(missing),
         call_timeout_ms: timeouts.call_timeout_ms,
         max_call_timeout_ms: timeouts.max_call_timeout_ms,
+        default_remember_ttl_secs: remember_ttl,
     }))
 }
 
@@ -421,6 +432,15 @@ pub(super) async fn patch_execution_settings(
         }
     }
 
+    if let Some(Some(secs)) = req.default_remember_ttl_secs
+        && !(MIN_REMEMBER_TTL_SECS..=MAX_REMEMBER_TTL_SECS).contains(&secs)
+    {
+        return Err(AppError::BadRequest(format!(
+            "default_remember_ttl_secs must be between {MIN_REMEMBER_TTL_SECS} and \
+             {MAX_REMEMBER_TTL_SECS} seconds (1 minute to 365 days), or null for forever"
+        )));
+    }
+
     // The cross-field rule spans a value this patch may not mention, so the
     // read, the check and the write happen together under a row lock inside
     // the repo — validating here against a separate read would let two
@@ -434,12 +454,13 @@ pub(super) async fn patch_execution_settings(
             default_agent_self_setup: req.default_agent_self_setup,
             call_timeout_ms: req.call_timeout_ms,
             max_call_timeout_ms: req.max_call_timeout_ms,
+            default_remember_ttl_secs: req.default_remember_ttl_secs,
         },
     )
     .await?;
 
     use overslash_db::repos::org::ExecutionSettingsUpdate;
-    let (next_deferred, next_self_setup, next_call, next_max) = match outcome {
+    let (next_deferred, next_self_setup, next_call, next_max, next_remember_ttl) = match outcome {
         ExecutionSettingsUpdate::NotFound => {
             return Err(AppError::NotFound("org not found".into()));
         }
@@ -458,11 +479,13 @@ pub(super) async fn patch_execution_settings(
             default_agent_self_setup,
             call_timeout_ms,
             max_call_timeout_ms,
+            default_remember_ttl_secs,
         } => (
             default_deferred_execution,
             default_agent_self_setup,
             call_timeout_ms,
             max_call_timeout_ms,
+            default_remember_ttl_secs,
         ),
     };
 
@@ -478,6 +501,7 @@ pub(super) async fn patch_execution_settings(
                 "default_agent_self_setup": next_self_setup,
                 "call_timeout_ms": next_call,
                 "max_call_timeout_ms": next_max,
+                "default_remember_ttl_secs": next_remember_ttl,
             }),
             description: None,
             ip_address: ip.0.as_deref(),
@@ -498,6 +522,7 @@ pub(super) async fn patch_execution_settings(
         agents_missing_self_setup: missing,
         call_timeout_ms: next_call,
         max_call_timeout_ms: next_max,
+        default_remember_ttl_secs: next_remember_ttl,
     }))
 }
 
