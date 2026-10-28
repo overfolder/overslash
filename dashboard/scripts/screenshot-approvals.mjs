@@ -44,7 +44,7 @@ try {
 			const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
 			const page = await ctx.newPage();
 			await page.goto(`${session.dashboardUrl}/approvals/${approval.id}`, {
-				waitUntil: 'networkidle'
+				waitUntil: 'load'
 			});
 			await page.waitForURL(/\/login\?return_to=/, { timeout: 10_000 });
 			await page.waitForTimeout(500);
@@ -159,7 +159,7 @@ try {
 			body: '{"n":2}'
 		});
 		const { page: p, ctx } = await snap.page({ viewport: { width: 1280, height: 800 } });
-		await p.goto(`${session.dashboardUrl}/approvals`, { waitUntil: 'networkidle' });
+		await p.goto(`${session.dashboardUrl}/approvals`, { waitUntil: 'load' });
 		await p.getByRole('button', { name: 'Approve once', exact: true }).first().waitFor({ timeout: 15_000 });
 		await p.getByRole('button', { name: 'Approve once', exact: true }).first().click();
 		await p.getByRole('status').waitFor({ timeout: 10_000 });
