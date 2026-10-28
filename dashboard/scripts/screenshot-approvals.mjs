@@ -44,7 +44,7 @@ try {
 			const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
 			const page = await ctx.newPage();
 			await page.goto(`${session.dashboardUrl}/approvals/${approval.id}`, {
-				waitUntil: 'networkidle'
+				waitUntil: 'load'
 			});
 			await page.waitForURL(/\/login\?return_to=/, { timeout: 10_000 });
 			await page.waitForTimeout(500);
@@ -115,9 +115,9 @@ try {
 		}
 	});
 
-	// 7. The merged action bar's two dropdowns, open. Picking a tier here is
-	//    what "Allow & Remember" writes — the scope ladder and the expiry menu
-	//    live in the bar, not in a side panel.
+	// 7. The merged action bar's two dropdowns, open. The scope ladder is what
+	//    a remembering allow writes; the Allow split button's menu picks once
+	//    vs. remember-for-<ttl> — both live in the bar, not in a side panel.
 	{
 		const { page: p, ctx } = await snap.navigateAndSnap(
 			'detail-remember-open',
@@ -134,10 +134,14 @@ try {
 			}
 		);
 		await p.keyboard.press('Escape');
-		await p.getByRole('button', { name: /Rule expires/ }).click();
-		await p.getByRole('listbox', { name: /Rule expiry/i }).waitFor({ timeout: 5_000 });
+		// The Allow split button's caret picks once vs. remember-for-<ttl>.
+		await p.getByRole('button', { name: 'More allow options' }).click();
+		await p.getByRole('menu', { name: /Allow duration/i }).waitFor({ timeout: 5_000 });
 		await p.waitForTimeout(300);
-		await snap.snap(p, 'detail-expiry-open');
+		await snap.snap(p, 'detail-allow-open');
+		await p.getByRole('menuitemradio', { name: /For 24 hours/ }).click();
+		await p.getByRole('button', { name: 'Allow for 24 hours', exact: true }).waitFor({ timeout: 5_000 });
+		await snap.snap(p, 'detail-allow-24h');
 		await ctx.close();
 	}
 
@@ -155,7 +159,7 @@ try {
 			body: '{"n":2}'
 		});
 		const { page: p, ctx } = await snap.page({ viewport: { width: 1280, height: 800 } });
-		await p.goto(`${session.dashboardUrl}/approvals`, { waitUntil: 'networkidle' });
+		await p.goto(`${session.dashboardUrl}/approvals`, { waitUntil: 'load' });
 		await p.getByRole('button', { name: 'Approve once', exact: true }).first().waitFor({ timeout: 15_000 });
 		await p.getByRole('button', { name: 'Approve once', exact: true }).first().click();
 		await p.getByRole('status').waitFor({ timeout: 10_000 });
