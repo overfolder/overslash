@@ -71,7 +71,7 @@ paths:
                   description: Channel ID (e.g. C0123456789), or a user ID for a DM.
                   resolve:
                     get: /api/conversations.info?channel={channel}
-                    pick: channel.name
+                    display: '#{channel.name}'
                 text:
                   type: string
                   minLength: 1
@@ -110,7 +110,7 @@ paths:
                   description: Channel ID the message is in.
                   resolve:
                     get: /api/conversations.info?channel={channel}
-                    pick: channel.name
+                    display: '#{channel.name}'
                 ts:
                   type: string
                   description: The message's `ts`.
@@ -148,7 +148,7 @@ paths:
                   description: Channel ID the message is in.
                   resolve:
                     get: /api/conversations.info?channel={channel}
-                    pick: channel.name
+                    display: '#{channel.name}'
                 timestamp:
                   type: string
                   description: The message's `ts`.
@@ -233,7 +233,7 @@ paths:
             minLength: 1
           resolve:
             get: /api/conversations.info?channel={channel}
-            pick: channel.name
+            display: '#{channel.name}'
         - name: limit
           in: query
           schema:
@@ -282,6 +282,9 @@ paths:
           schema:
             type: string
             minLength: 1
+          resolve:
+            get: /api/conversations.info?channel={channel}
+            display: '#{channel.name}'
         - name: ts
           in: query
           required: true
@@ -318,6 +321,9 @@ paths:
           schema:
             type: string
             minLength: 1
+          resolve:
+            get: /api/users.info?user={user}
+            display: '{user.real_name}[ (@{user.name})]'
   /api/users.list:
     get:
       operationId: list_users
