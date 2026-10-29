@@ -28,6 +28,7 @@
 openapi: 3.1.0
 info:
   title: Holded
+  summary: Invoices, contacts, payments, and bookkeeping in Holded ERP
   key: holded
   category: Finance
   description: >-

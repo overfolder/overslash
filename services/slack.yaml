@@ -1,6 +1,7 @@
 openapi: 3.1.0
 info:
   title: Slack
+  summary: Read channels, search, and send messages in Slack as yourself
   key: slack
   category: Communication
   description: >

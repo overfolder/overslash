@@ -1,6 +1,7 @@
 openapi: 3.1.0
 info:
   title: Test Mail
+  summary: Test mailbox for end-to-end evals
   # Description is weighted by keyword search, so phrase it around the actions
   # the eval scenarios ask for ("send an email", "list messages").
   description: Test email service for end-to-end evals — send an email message and list recent messages.

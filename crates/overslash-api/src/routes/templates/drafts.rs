@@ -59,6 +59,8 @@ struct TemplatePreview {
     key: String,
     display_name: String,
     description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    summary: Option<String>,
     category: Option<String>,
     hosts: Vec<String>,
     auth: Vec<serde_json::Value>,
@@ -516,6 +518,7 @@ fn preview_from_compiled(def: &ServiceDefinition) -> TemplatePreview {
         key: def.key.clone(),
         display_name: def.display_name.clone(),
         description: def.description.clone(),
+        summary: def.summary.clone(),
         category: def.category.clone(),
         hosts: def.hosts.clone(),
         auth: serde_json::to_value(&def.auth)

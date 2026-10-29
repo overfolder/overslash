@@ -35,7 +35,7 @@ pub mod json;
 #[cfg(feature = "yaml")]
 pub mod yaml;
 
-pub(crate) use core::service_shape::check_service_icon;
+pub(crate) use core::service_shape::{check_service_icon, summary_warnings};
 pub use core::validate_service_definition;
 pub use json::{parse_template_parts, validate_template_parts};
 #[cfg(feature = "yaml")]

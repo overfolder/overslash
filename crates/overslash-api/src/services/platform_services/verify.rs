@@ -94,6 +94,7 @@ mod create_status_tests {
             key: "resend".into(),
             display_name: "Resend".into(),
             description: None,
+            summary: None,
             url_promoted: false,
             hosts: vec!["api.resend.test".into()],
             category: None,

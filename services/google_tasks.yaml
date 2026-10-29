@@ -1,6 +1,7 @@
 openapi: 3.1.0
 info:
   title: Google Tasks
+  summary: Manage task lists and to-dos in Google Tasks
   key: google_tasks
   category: Productivity
 servers:

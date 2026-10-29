@@ -171,6 +171,7 @@ pub fn apply_delta(
             .description
             .clone()
             .or_else(|| base.description.clone()),
+        summary: delta.summary.clone().or_else(|| base.summary.clone()),
         url_promoted: false,
         hosts,
         category: base.category.clone(),
@@ -634,6 +635,22 @@ mod tests {
             def.key, "github",
             "effective key stays the base key (walker overrides for distinct-key layers)"
         );
+    }
+
+    #[test]
+    fn summary_relabel_overrides_and_otherwise_inherits() {
+        let mut base = base_with(&[("a", Risk::Read)]);
+        base.summary = Some("Base tagline".into());
+
+        let (def, _) = apply_delta(&Delta::default(), &base);
+        assert_eq!(def.summary.as_deref(), Some("Base tagline"));
+
+        let delta = Delta {
+            summary: Some("Acme's GitHub".into()),
+            ..Default::default()
+        };
+        let (def, _) = apply_delta(&delta, &base);
+        assert_eq!(def.summary.as_deref(), Some("Acme's GitHub"));
     }
 
     #[test]

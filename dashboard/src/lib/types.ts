@@ -285,6 +285,8 @@ export interface TemplateSummary {
   key: string;
   display_name: string;
   description?: string | null;
+  /** `info.summary` — one-line catalog tagline; prefer it over `description`. */
+  summary?: string | null;
   category?: string | null;
   hosts: string[];
   action_count: number;
@@ -374,6 +376,7 @@ export interface Delta {
   /** Relabel the template / description. */
   display_name?: string;
   description?: string;
+  summary?: string;
   /** Keep only these action keys (∩). `[]` = expose nothing; omit = keep all. */
   allowlist?: string[];
   /** Drop these action keys (\). */
@@ -417,6 +420,8 @@ export interface TemplateDetail {
   key: string;
   display_name: string;
   description?: string | null;
+  /** `info.summary` — one-line catalog tagline; prefer it over `description`. */
+  summary?: string | null;
   category?: string | null;
   hosts: string[];
   /** Absolute URL of the catalog icon, resolved server-side (a built-in asset

@@ -26,6 +26,9 @@ pub struct Delta {
     /// Relabel the description. `None` → inherit the base's description.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Relabel the catalog tagline. `None` → inherit the base's summary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
     /// Rebrand the template. `None` → inherit the base's icon, including one
     /// the base got implicitly from its key — a layer's own key rarely matches
     /// a shipped asset, so inheritance is what keeps it looking like the

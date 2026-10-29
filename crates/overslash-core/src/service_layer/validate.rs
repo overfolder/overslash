@@ -30,6 +30,13 @@ pub fn validate_delta(
     // hold here too or the derived-layer write path is an unvalidated back door
     // into it.
     crate::template_validation::check_service_icon(delta.icon.as_ref(), "icon", &mut issues);
+    // `summary` is inert too, but takes the same one-line/length warnings as
+    // `info.summary` so a relabel can't put a paragraph back on a catalog tile.
+    if let Some(summary) = &delta.summary {
+        for w in crate::template_validation::summary_warnings(summary, "summary") {
+            issues.warn(w.code, w.message, w.path);
+        }
+    }
 
     // The base's FULL keyset (there is no hidden-vs-visible split once compiled;
     // every base action key is off-limits for an extension).
@@ -241,6 +248,22 @@ mod tests {
             assert!(!report.valid, "{raw} should be rejected");
             assert!(report.errors.iter().any(|e| e.code == "invalid_icon"));
         }
+    }
+
+    #[test]
+    fn validate_warns_on_a_multi_line_delta_summary() {
+        let base = base_with(&[("a", Risk::Read)]);
+        let delta = Delta {
+            summary: Some("One\ntwo".into()),
+            ..Default::default()
+        };
+        let report = validate_delta(&delta, &base, false);
+        assert!(report.valid, "a summary warning never refuses the layer");
+        assert!(
+            report.warnings.iter().any(|w| w.path == "summary"),
+            "{:?}",
+            report.warnings
+        );
     }
 
     #[test]

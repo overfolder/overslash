@@ -16,6 +16,7 @@
 openapi: 3.1.0
 info:
   title: GitHub
+  summary: Repositories, issues, pull requests, and code on GitHub
   key: github
   category: Development
   description: >-

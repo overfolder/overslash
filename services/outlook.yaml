@@ -1,6 +1,7 @@
 openapi: 3.1.0
 info:
   title: Outlook
+  summary: Send, read, search, and organize Outlook mail, drafts, and folders
   description: Microsoft Outlook mail via the Graph API — send, read, search, and manage email messages, drafts, and mail folders.
   key: outlook
   category: Communication

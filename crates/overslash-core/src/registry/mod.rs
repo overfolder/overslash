@@ -40,6 +40,7 @@ fn http_pseudo_service() -> ServiceDefinition {
         description: Some(
             "Raw HTTP — caller supplies the full URL. Per-call secrets injection only.".to_string(),
         ),
+        summary: Some("Call any HTTP API by full URL, with secrets injected per call".to_string()),
         url_promoted: false,
         hosts: Vec::new(),
         category: Some("Platform".to_string()),

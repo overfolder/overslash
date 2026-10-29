@@ -10,6 +10,10 @@ pub(super) struct TemplateSummary {
     pub(super) key: String,
     pub(super) display_name: String,
     pub(super) description: Option<String>,
+    /// `info.summary` — one-line catalog tagline. UI catalogs show it in
+    /// place of `description`, which is written for agents. Omitted when unset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) summary: Option<String>,
     pub(super) category: Option<String>,
     pub(super) hosts: Vec<String>,
     pub(super) action_count: usize,
@@ -41,6 +45,10 @@ pub(super) struct TemplateDetail {
     pub(super) key: String,
     pub(super) display_name: String,
     pub(super) description: Option<String>,
+    /// `info.summary` — one-line catalog tagline. UI catalogs show it in
+    /// place of `description`, which is written for agents. Omitted when unset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) summary: Option<String>,
     pub(super) category: Option<String>,
     pub(super) hosts: Vec<String>,
     /// Absolute URL of the catalog icon, resolved from the template's
@@ -179,6 +187,9 @@ pub(super) struct AdminTemplateSummary {
     pub(super) key: String,
     pub(super) display_name: String,
     pub(super) description: Option<String>,
+    /// See [`TemplateSummary::summary`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) summary: Option<String>,
     pub(super) category: Option<String>,
     pub(super) hosts: Vec<String>,
     pub(super) action_count: usize,

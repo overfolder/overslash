@@ -39,7 +39,7 @@ mod yaml;
 // ── Public API ───────────────────────────────────────────────────────
 
 pub use alias::normalize_aliases;
-pub use compile::compile_service;
+pub use compile::{SUMMARY_MAX_CHARS, compile_service};
 pub use extract::overlay_discovered_tools;
 pub use extract::url_to_host;
 pub use lint::{LINT_CODES, lint_extensions};
