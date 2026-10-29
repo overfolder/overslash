@@ -171,6 +171,15 @@ pub fn apply_delta(
             .description
             .clone()
             .or_else(|| base.description.clone()),
+        // Trimmed like `info.summary`; a blank relabel inherits rather than
+        // blanking the base's tagline.
+        summary: delta
+            .summary
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .or_else(|| base.summary.clone()),
         url_promoted: false,
         hosts,
         category: base.category.clone(),
@@ -633,6 +642,40 @@ mod tests {
         assert_eq!(
             def.key, "github",
             "effective key stays the base key (walker overrides for distinct-key layers)"
+        );
+    }
+
+    #[test]
+    fn summary_relabel_overrides_and_otherwise_inherits() {
+        let mut base = base_with(&[("a", Risk::Read)]);
+        base.summary = Some("Base tagline".into());
+
+        let (def, _) = apply_delta(&Delta::default(), &base);
+        assert_eq!(def.summary.as_deref(), Some("Base tagline"));
+
+        let delta = Delta {
+            summary: Some("Acme's GitHub".into()),
+            ..Default::default()
+        };
+        let (def, _) = apply_delta(&delta, &base);
+        assert_eq!(def.summary.as_deref(), Some("Acme's GitHub"));
+
+        let delta = Delta {
+            summary: Some("  Padded  ".into()),
+            ..Default::default()
+        };
+        let (def, _) = apply_delta(&delta, &base);
+        assert_eq!(def.summary.as_deref(), Some("Padded"));
+
+        let delta = Delta {
+            summary: Some("   ".into()),
+            ..Default::default()
+        };
+        let (def, _) = apply_delta(&delta, &base);
+        assert_eq!(
+            def.summary.as_deref(),
+            Some("Base tagline"),
+            "a blank relabel inherits instead of blanking the base"
         );
     }
 

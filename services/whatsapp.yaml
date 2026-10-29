@@ -20,6 +20,7 @@
 openapi: 3.1.0
 info:
   title: WhatsApp
+  summary: Read and send WhatsApp messages from your paired phone
   key: whatsapp
   category: Communication
   description: >

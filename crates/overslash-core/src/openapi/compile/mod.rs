@@ -62,6 +62,8 @@ pub fn compile_service(
         .and_then(Value::as_str)
         .map(str::to_string);
 
+    let summary = parse_summary(info.and_then(|i| i.get("summary")), &mut warnings);
+
     let category = info
         .and_then(|i| ext::get(i, Pos::Info, Ext::Category))
         .and_then(Value::as_str)
@@ -345,6 +347,7 @@ pub fn compile_service(
             key,
             display_name,
             description,
+            summary,
             hosts,
             url_promoted,
             category,
@@ -367,6 +370,35 @@ pub fn compile_service(
     ))
 }
 
+/// Longest `info.summary` that renders on a catalog tile without truncation.
+pub const SUMMARY_MAX_CHARS: usize = 80;
+
+/// `info.summary` — standard OpenAPI 3.1, read here as the dashboard tagline.
+/// Warnings, not errors, for the same reason as `hidden`: an imported spec
+/// whose summary runs long should still load. An over-long or multi-line value
+/// is kept (the consumer can clamp it); only a non-string is dropped.
+fn parse_summary(raw: Option<&Value>, warnings: &mut Vec<ValidationIssue>) -> Option<String> {
+    let s = match raw? {
+        Value::String(s) => s.trim(),
+        other => {
+            warnings.push(ValidationIssue::new(
+                "openapi_invalid",
+                format!("summary must be a string (got {other})"),
+                "info.summary",
+            ));
+            return None;
+        }
+    };
+    if s.is_empty() {
+        return None;
+    }
+    warnings.extend(crate::template_validation::summary_warnings(
+        s,
+        "info.summary",
+    ));
+    Some(s.to_string())
+}
+
 // ── End-to-end tests (public API, YAML ↔ compile round-trips) ──────────
 
 #[cfg(test)]
@@ -377,3 +409,5 @@ mod tests_relaxed_args;
 mod tests_subactions;
 #[cfg(test)]
 mod tests_success;
+#[cfg(test)]
+mod tests_summary;

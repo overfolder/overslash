@@ -1,6 +1,7 @@
 openapi: 3.1.0
 info:
   title: LinkedIn
+  summary: Read your LinkedIn profile, publish posts, and look up organizations
   description: >-
     LinkedIn Marketing & member APIs — read the authenticated member's profile
     (OpenID Connect), publish member shares (UGC Posts), and look up

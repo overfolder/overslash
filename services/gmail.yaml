@@ -1,6 +1,7 @@
 openapi: 3.1.0
 info:
   title: Gmail
+  summary: Send, read, search, and organize Gmail messages, labels, and drafts
   description: Gmail API — send, read, search, and manage email messages, labels, and drafts.
   key: gmail
   category: Communication

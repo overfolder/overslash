@@ -183,6 +183,7 @@ mod tests {
             key: "t".into(),
             display_name: "T".into(),
             description: None,
+            summary: None,
             url_promoted: false,
             hosts: vec!["api.example.com".into()],
             category: None,

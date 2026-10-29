@@ -1,6 +1,7 @@
 openapi: 3.1.0
 info:
   title: Google Drive
+  summary: Find, read, share, and organize files and folders in Google Drive
   description: Google Drive API — files, folders, permissions, and sharing.
   key: google_drive
   category: Storage

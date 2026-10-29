@@ -23,6 +23,7 @@ pub(super) async fn list_templates(
             key: svc.key.clone(),
             display_name: svc.display_name.clone(),
             description: svc.description.clone(),
+            summary: svc.summary.clone(),
             category: svc.category.clone(),
             hosts: svc.hosts.clone(),
             action_count: svc.actions.len(),
@@ -51,6 +52,7 @@ pub(super) async fn list_templates(
             key: t.key,
             display_name: s.display_name,
             description: s.description,
+            summary: s.summary,
             category: s.category,
             hosts: s.hosts,
             action_count: s.action_count,
@@ -116,6 +118,7 @@ pub(super) async fn search_templates(
             key: svc.key.clone(),
             display_name: svc.display_name.clone(),
             description: svc.description.clone(),
+            summary: svc.summary.clone(),
             category: svc.category.clone(),
             hosts: svc.hosts.clone(),
             action_count: svc.actions.len(),
@@ -149,12 +152,18 @@ pub(super) async fn search_templates(
                 .unwrap_or("")
                 .to_lowercase()
                 .contains(&q)
+            || s.summary
+                .as_deref()
+                .unwrap_or("")
+                .to_lowercase()
+                .contains(&q)
         {
             let tier = if is_user_tier { "user" } else { "org" };
             results.push(TemplateSummary {
                 key: t.key,
                 display_name: s.display_name,
                 description: s.description,
+                summary: s.summary,
                 category: s.category,
                 hosts: s.hosts,
                 action_count: s.action_count,
@@ -226,6 +235,7 @@ pub(super) async fn get_template(
         key: svc.key.clone(),
         display_name: svc.display_name.clone(),
         description: svc.description.clone(),
+        summary: svc.summary.clone(),
         category: svc.category.clone(),
         hosts: svc.hosts.clone(),
         icon_url: resolve_icon_url(svc.icon.as_ref(), &state.config.public_url),

@@ -432,6 +432,7 @@ async fn db_row_to_detail(
         key: t.key,
         display_name: def.display_name.clone(),
         description: def.description.clone().filter(|s| !s.is_empty()),
+        summary: def.summary.clone().filter(|s| !s.is_empty()),
         category: def.category.clone().filter(|s| !s.is_empty()),
         hosts: def.hosts.clone(),
         icon_url: resolve_icon_url(def.icon.as_ref(), &state.config.public_url),
@@ -585,6 +586,7 @@ fn mcp_detail_from(def: &ServiceDefinition, openapi: &serde_json::Value) -> Opti
 struct RowSummary {
     display_name: String,
     description: Option<String>,
+    summary: Option<String>,
     category: Option<String>,
     hosts: Vec<String>,
     action_count: usize,
@@ -604,6 +606,7 @@ async fn resolved_summary(
             RowSummary {
                 display_name: d.display_name,
                 description: d.description.filter(|s| !s.is_empty()),
+                summary: d.summary.filter(|s| !s.is_empty()),
                 category: d.category.filter(|s| !s.is_empty()),
                 hosts: d.hosts,
                 action_count: d.actions.len(),
@@ -616,6 +619,8 @@ async fn resolved_summary(
         Err(_) => RowSummary {
             display_name: t.display_name.clone(),
             description: Some(t.description.clone()).filter(|s| !s.is_empty()),
+            // No denormalized column: the summary lives only in the openapi doc.
+            summary: None,
             category: Some(t.category.clone()).filter(|s| !s.is_empty()),
             hosts: t.hosts.clone(),
             action_count: 0,

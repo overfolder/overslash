@@ -86,6 +86,7 @@
 openapi: 3.1.0
 info:
   title: Langfuse
+  summary: LLM traces, cost and latency metrics, evaluation scores, and prompts
   key: langfuse
   category: Analytics
   # Folded into the text every action is scored against, so the wording is a

@@ -295,6 +295,7 @@ mod tests {
             key: "acme".into(),
             display_name: "Acme".into(),
             description: None,
+            summary: None,
             url_promoted: false,
             hosts: vec!["api.acme.test".into()],
             category: None,

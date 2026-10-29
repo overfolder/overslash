@@ -1,6 +1,7 @@
 openapi: 3.1.0
 info:
   title: Stripe
+  summary: List customers and charges, and create charges, in Stripe
   key: stripe
   category: Payments
 servers:

@@ -1,6 +1,7 @@
 openapi: 3.1.0
 info:
   title: Metabase
+  summary: Run saved questions and SQL queries against your Metabase instance
   key: metabase
   category: Analytics
   description: >-

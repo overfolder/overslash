@@ -20,6 +20,7 @@
 openapi: 3.1.0
 info:
   title: HubSpot
+  summary: Contacts, companies, deals, tickets, and campaign analytics in HubSpot CRM
   key: hubspot
   category: CRM
   description: >-

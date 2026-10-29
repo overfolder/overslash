@@ -1,6 +1,7 @@
 openapi: 3.1.0
 info:
   title: Telegram
+  summary: Read and send Telegram messages from your own account
   key: telegram
   category: Communication
   description: >
