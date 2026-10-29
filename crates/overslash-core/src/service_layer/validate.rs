@@ -33,7 +33,7 @@ pub fn validate_delta(
     // `summary` is inert too, but takes the same one-line/length warnings as
     // `info.summary` so a relabel can't put a paragraph back on a catalog tile.
     if let Some(summary) = &delta.summary {
-        for w in crate::template_validation::summary_warnings(summary, "summary") {
+        for w in crate::template_validation::summary_warnings(summary.trim(), "summary") {
             issues.warn(w.code, w.message, w.path);
         }
     }

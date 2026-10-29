@@ -171,7 +171,15 @@ pub fn apply_delta(
             .description
             .clone()
             .or_else(|| base.description.clone()),
-        summary: delta.summary.clone().or_else(|| base.summary.clone()),
+        // Trimmed like `info.summary`; a blank relabel inherits rather than
+        // blanking the base's tagline.
+        summary: delta
+            .summary
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .or_else(|| base.summary.clone()),
         url_promoted: false,
         hosts,
         category: base.category.clone(),
@@ -651,6 +659,24 @@ mod tests {
         };
         let (def, _) = apply_delta(&delta, &base);
         assert_eq!(def.summary.as_deref(), Some("Acme's GitHub"));
+
+        let delta = Delta {
+            summary: Some("  Padded  ".into()),
+            ..Default::default()
+        };
+        let (def, _) = apply_delta(&delta, &base);
+        assert_eq!(def.summary.as_deref(), Some("Padded"));
+
+        let delta = Delta {
+            summary: Some("   ".into()),
+            ..Default::default()
+        };
+        let (def, _) = apply_delta(&delta, &base);
+        assert_eq!(
+            def.summary.as_deref(),
+            Some("Base tagline"),
+            "a blank relabel inherits instead of blanking the base"
+        );
     }
 
     #[test]
