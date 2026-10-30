@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.26.0](https://github.com/overfolder/overslash/compare/v0.25.0...v0.26.0) (2026-10-30)
+
+
+### Features
+
+* **approvals:** org-configurable default Allow & Remember expiry (7 days) ([#846](https://github.com/overfolder/overslash/issues/846)) ([489e684](https://github.com/overfolder/overslash/commit/489e684d30a2d6ebdfa66af1fd674bf945c512e1))
+* **dashboard:** single Allow split button with duration menu on approval detail ([#844](https://github.com/overfolder/overslash/issues/844)) ([eb94af6](https://github.com/overfolder/overslash/commit/eb94af661410a15af82d2e6b3085d88ac2b2c2b1))
+* **infra:** make Cloud Run services public via invoker_iam_disabled ([#840](https://github.com/overfolder/overslash/issues/840)) ([72eecab](https://github.com/overfolder/overslash/commit/72eecab0ec529e7d970e4c9ce9d2ff36efcfb25f))
+* **infra:** prod uptime check + [P0] API Down; /health fails on DB down, TCP probes ([#843](https://github.com/overfolder/overslash/issues/843)) ([9376ce7](https://github.com/overfolder/overslash/commit/9376ce7d632c0056674e950d5b048c1ea31e0ac1))
+* **infra:** remove default-SA Editor and set project org policies ([#841](https://github.com/overfolder/overslash/issues/841)) ([050d5ec](https://github.com/overfolder/overslash/commit/050d5ecfed9a4529763bfeb51ee08c40881f64ed))
+* **templates:** info.summary as a one-line catalog tagline ([#847](https://github.com/overfolder/overslash/issues/847)) ([7b5b9ea](https://github.com/overfolder/overslash/commit/7b5b9ea7a137cd4d1fec10382f1ff9006ceba238))
+
+
+### Bug Fixes
+
+* **deps:** bump block-buffer 0.12.1, except 0.10.4 and deepmerge ([#842](https://github.com/overfolder/overslash/issues/842)) ([5fab14f](https://github.com/overfolder/overslash/commit/5fab14f4ccb97813f4ca63f8e8d073bf2132b5b2))
+* **slack:** name channels in approval summaries, log resolver misses ([#845](https://github.com/overfolder/overslash/issues/845)) ([04489f8](https://github.com/overfolder/overslash/commit/04489f81c0e4d47785842fd6d2e2f70e827b4ccf))
+
 ## [0.25.0](https://github.com/overfolder/overslash/compare/v0.24.0...v0.25.0) (2026-10-27)
 
 
