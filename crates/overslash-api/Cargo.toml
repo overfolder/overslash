@@ -61,8 +61,8 @@ futures-util = "0.3"
 redis = { workspace = true }
 rustls = { workspace = true }
 dashmap = { workspace = true }
-jaq-core = "=3.1.1"
-jaq-std = "=3.0.3"
+jaq-core = "=3.1.2"
+jaq-std = "=3.0.4"
 jaq-json = { version = "=2.0.3", features = ["serde"] }
 
 [dev-dependencies]
