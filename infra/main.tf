@@ -12,6 +12,11 @@ resource "google_project_service" "apis" {
       "monitoring.googleapis.com",
       "logging.googleapis.com",
       "billingbudgets.googleapis.com",
+      "orgpolicy.googleapis.com",
+      # The provider bills quota to this project (user_project_override), so
+      # its own reads go through here. Enable by hand on a fresh project:
+      # this list can't be read without it.
+      "cloudresourcemanager.googleapis.com",
     ],
     var.use_private_vpc ? [
       "servicenetworking.googleapis.com",
@@ -52,6 +57,27 @@ module "iam" {
   enable_overfwd   = var.enable_overfwd
 
   depends_on = [google_project_service.apis]
+}
+
+# --- Project guardrails: default-SA Editor removal + project org policies
+#     (CASA 3.1.1; docs/runbooks/project-guardrails.md) ---
+module "project_guardrails" {
+  source     = "./modules/project-guardrails"
+  project_id = var.project_id
+
+  vpc_connector_enabled              = var.use_private_vpc
+  restrict_sql_public_ip             = var.use_private_vpc
+  allow_service_account_key_creation = var.allow_service_account_key_creation
+
+  depends_on = [google_project_service.apis]
+}
+
+# Adopt the key-creation override set by hand on dev (2026-10-27). A no-op once
+# it is in state; prod has no hand-set policy, so it imports nothing there.
+import {
+  for_each = var.allow_service_account_key_creation ? toset(["adopt"]) : toset([])
+  to       = module.project_guardrails.google_org_policy_policy.service_account_key_creation
+  id       = "projects/${var.project_id}/policies/iam.managed.disableServiceAccountKeyCreation"
 }
 
 # --- Artifact Registry ---
@@ -287,11 +313,16 @@ module "monitoring" {
   upstream_error_alert_enabled = var.upstream_error_alert_enabled
   api_latency_alert_enabled    = var.api_latency_alert_enabled
   integrity_alert_enabled      = var.integrity_alert_enabled
-  api_domain                   = var.domain
-  api_service_name             = module.cloud_run.service_name
-  cloud_sql_instance_name      = module.cloud_sql.instance_name
-  monthly_budget_usd           = var.monthly_budget_usd
-  billing_account_id           = var.billing_account_id
+  # The host the uptime check probes. Prod leaves `domain` empty (the GCLB
+  # serves `api_host_suffix` and its wildcard instead of a Cloud Run domain
+  # mapping), which used to leave this empty too and silently drop both the
+  # uptime check and `[P0] API Down`. Without the LB and without `domain`
+  # nothing public answers on `api_host_suffix`, so it stays empty there.
+  api_domain              = var.domain != "" ? var.domain : (var.enable_api_lb ? var.api_host_suffix : "")
+  api_service_name        = module.cloud_run.service_name
+  cloud_sql_instance_name = module.cloud_sql.instance_name
+  monthly_budget_usd      = var.monthly_budget_usd
+  billing_account_id      = var.billing_account_id
 
   depends_on = [
     google_project_service.apis,

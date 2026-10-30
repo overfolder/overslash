@@ -2,6 +2,7 @@ openapi: 3.1.0
 x-overslash-runtime: platform
 info:
   title: Overslash Platform
+  summary: Manage identities, secrets, services, and permissions in your org
   description: Administrative access to the Overslash platform
   key: overslash
   category: Platform

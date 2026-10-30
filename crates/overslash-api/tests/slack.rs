@@ -10,7 +10,10 @@
 //!   * Slack's in-band failure (`200 {"ok": false}`) comes back as `is_error`
 //!     and is audited as one, with the status left at 200;
 //!   * a paged read offers the next cursor, and stops on an in-band failure;
-//!   * a gated write discloses the channel by name, through the resolver;
+//!   * a gated write names the channel (`#general`) in its title and
+//!     disclosure, through the resolver, and falls back to the raw id when
+//!     Slack can't name it;
+//!   * read summaries name the thread's channel and the looked-up user;
 //!   * no connection → a clean error before any upstream call.
 //!
 //! Nothing reaches the network.
@@ -152,7 +155,17 @@ async fn start_fake_slack() -> (String, SeenLog) {
             "/api/chat.postMessage" => {
                 json!({ "ok": true, "channel": body["channel"], "ts": "1700000000.000100" })
             }
-            "/api/conversations.info" => json!({ "ok": true, "channel": { "name": "general" } }),
+            // Only `C1` exists. Anything else is Slack's in-band miss, which a
+            // resolver must survive by falling back to the raw id.
+            "/api/conversations.info" if query == "channel=C1" => {
+                json!({ "ok": true, "channel": { "name": "general" } })
+            }
+            "/api/conversations.info" => json!({ "ok": false, "error": "channel_not_found" }),
+            "/api/conversations.replies" => json!({ "ok": true, "messages": [] }),
+            "/api/users.info" => json!({
+                "ok": true,
+                "user": { "name": "alice", "real_name": "Alice Liddell" }
+            }),
             // Page one offers a cursor. Following it hits an in-band failure,
             // which must end the walk rather than offer the cursor again.
             "/api/conversations.list" if query.contains("cursor=") => {
@@ -385,6 +398,11 @@ async fn a_gated_send_discloses_the_channel_by_name() {
     )
     .await;
     assert_eq!(body["status"], "pending_approval", "{body}");
+    let title = body["action_description"].as_str().unwrap_or_default();
+    assert!(
+        title.contains("to '#general'"),
+        "the approval title must name the channel: {title}"
+    );
     let disclosed: std::collections::HashMap<String, String> = body["disclosed_fields"]
         .as_array()
         .expect("disclosed_fields present")
@@ -398,7 +416,7 @@ async fn a_gated_send_discloses_the_channel_by_name() {
         .collect();
     assert_eq!(
         disclosed.get("Channel").map(String::as_str),
-        Some("general")
+        Some("#general")
     );
     assert_eq!(
         disclosed.get("Message").map(String::as_str),
@@ -408,6 +426,63 @@ async fn a_gated_send_discloses_the_channel_by_name() {
         calls_to(&h.seen, "/api/chat.postMessage").is_empty(),
         "a gated write must not reach Slack"
     );
+}
+
+/// Slack can't name the channel (a DM, a private channel, a token without
+/// `channels:read`): the approval still goes up, quoting the raw id.
+#[tokio::test]
+async fn an_unresolvable_channel_falls_back_to_its_id() {
+    let h = setup(common::test_pool().await, false).await;
+    seed_slack_connection(&h).await;
+
+    let (status, body) = call(
+        &h,
+        "send_message",
+        json!({ "channel": "D0PRIVATE", "text": "psst" }),
+    )
+    .await;
+    assert_eq!(status, 202, "{body}");
+    assert_eq!(body["status"], "pending_approval", "{body}");
+    let title = body["action_description"].as_str().unwrap_or_default();
+    assert!(title.contains("to D0PRIVATE"), "{title}");
+    assert!(!title.contains('#'), "{title}");
+}
+
+/// Reads aren't gated, but their audit rows are what a human scans later.
+#[tokio::test]
+async fn read_summaries_name_the_channel_and_the_user() {
+    let h = setup(common::test_pool().await, true).await;
+    seed_slack_connection(&h).await;
+
+    for (action, params, expected) in [
+        (
+            "get_thread_replies",
+            json!({ "channel": "C1", "ts": "1700000000.000100" }),
+            "in '#general'",
+        ),
+        (
+            "get_user",
+            json!({ "user": "U1" }),
+            "'Alice Liddell (@alice)'",
+        ),
+    ] {
+        let (status, body) = call(&h, action, params).await;
+        assert_eq!(status, 200, "{action}: {body}");
+        let description: Option<String> = sqlx::query_scalar(
+            "SELECT description FROM audit_log
+              WHERE org_id = $1 AND action = 'action.executed'
+              ORDER BY created_at DESC LIMIT 1",
+        )
+        .bind(h.org_id)
+        .fetch_one(&h.pool)
+        .await
+        .expect("the call must write an audit row");
+        let description = description.unwrap_or_default();
+        assert!(
+            description.contains(expected),
+            "{action}: expected {expected:?} in {description:?}"
+        );
+    }
 }
 
 // ============================================================================

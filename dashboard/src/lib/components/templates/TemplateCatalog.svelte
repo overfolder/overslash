@@ -119,7 +119,7 @@
 			for (const expr of filterTerms(searchValue)) {
 				if (!matchesExpression(t, expr)) return false;
 			}
-			return matchesAllText([t.key, t.display_name, t.description ?? ''], searchValue);
+			return matchesAllText([t.key, t.display_name, t.summary ?? '', t.description ?? ''], searchValue);
 		})
 	);
 

@@ -1,6 +1,7 @@
 openapi: 3.1.0
 info:
   title: Resend
+  summary: Send email and list sending domains with Resend
   key: resend
   category: Communication
 servers:

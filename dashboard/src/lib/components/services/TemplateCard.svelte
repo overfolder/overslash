@@ -31,8 +31,10 @@
 		</span>
 	</div>
 	<div class="key">{template.key}</div>
-	{#if template.description}
-		<p class="desc">{template.description}</p>
+	{#if template.summary ?? template.description}
+		<p class="desc" title={template.summary ? template.description : undefined}>
+			{template.summary ?? template.description}
+		</p>
 	{/if}
 	<div class="meta">
 		<span>{template.action_count} action{template.action_count === 1 ? '' : 's'}</span>

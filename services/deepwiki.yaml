@@ -1,6 +1,7 @@
 openapi: 3.1.0
 info:
   title: DeepWiki
+  summary: Browse wikis and ask questions about public GitHub repositories
   key: deepwiki
   category: Documentation
   description: >

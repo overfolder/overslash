@@ -197,11 +197,19 @@ resource "google_monitoring_alert_policy" "oauth_refresh_failure_rate" {
     display_name = "OAuth refresh failure ratio > 10%"
 
     condition_prometheus_query_language {
+      # The floor is a divide-by-zero guard only (see `api_slow_requests`). A
+      # `clamp_min(..., 1)` here, as this used to be, pins the denominator at 1
+      # whenever traffic is under 1/s — always, in prod — so the "ratio" was
+      # failures per second and never reached 0.10. The `and` requires ~10
+      # refreshes in the window instead.
       query               = <<-PROMQL
-        sum(rate(overslash_oauth_events_total{flow="refresh",status="failure"}[15m]))
-          /
-        clamp_min(sum(rate(overslash_oauth_events_total{flow="refresh"}[15m])), 1)
-        > 0.10
+        (
+          sum(rate(overslash_oauth_events_total{flow="refresh",status="failure"}[15m]))
+            /
+          clamp_min(sum(rate(overslash_oauth_events_total{flow="refresh"}[15m])), 0.001)
+        ) > 0.10
+        and
+        sum(rate(overslash_oauth_events_total{flow="refresh"}[15m])) > 0.011
       PROMQL
       duration            = "900s"
       evaluation_interval = "60s"
@@ -235,11 +243,16 @@ resource "google_monitoring_alert_policy" "upstream_error_rate" {
     display_name = "Upstream error ratio > 20%"
 
     condition_prometheus_query_language {
+      # Same floor + sample guard as the OAuth alert above: ~20 upstream
+      # responses in the window.
       query               = <<-PROMQL
-        sum(rate(overslash_upstream_responses_total{job="${var.api_service_name}",status_class=~"5xx|error"}[15m]))
-          /
-        clamp_min(sum(rate(overslash_upstream_responses_total{job="${var.api_service_name}"}[15m])), 1)
-        > 0.20
+        (
+          sum(rate(overslash_upstream_responses_total{job="${var.api_service_name}",status_class=~"5xx|error"}[15m]))
+            /
+          clamp_min(sum(rate(overslash_upstream_responses_total{job="${var.api_service_name}"}[15m])), 0.001)
+        ) > 0.20
+        and
+        sum(rate(overslash_upstream_responses_total{job="${var.api_service_name}"}[15m])) > 0.022
       PROMQL
       duration            = "900s"
       evaluation_interval = "60s"
@@ -270,11 +283,16 @@ resource "google_monitoring_alert_policy" "webhook_failure_rate" {
     display_name = "Webhook terminal failure ratio > 5%"
 
     condition_prometheus_query_language {
+      # Same floor + sample guard as the OAuth alert above: ~10 terminal
+      # deliveries in the window.
       query               = <<-PROMQL
-        sum(rate(overslash_webhook_deliveries_total{status="failed",final="true"}[30m]))
-          /
-        clamp_min(sum(rate(overslash_webhook_deliveries_total{final="true"}[30m])), 1)
-        > 0.05
+        (
+          sum(rate(overslash_webhook_deliveries_total{status="failed",final="true"}[30m]))
+            /
+          clamp_min(sum(rate(overslash_webhook_deliveries_total{final="true"}[30m])), 0.001)
+        ) > 0.05
+        and
+        sum(rate(overslash_webhook_deliveries_total{final="true"}[30m])) > 0.0056
       PROMQL
       duration            = "1800s"
       evaluation_interval = "60s"
@@ -322,11 +340,11 @@ resource "google_monitoring_alert_policy" "api_slow_requests" {
     display_name = "More than 5% of gateway requests slower than 2.5s"
 
     condition_prometheus_query_language {
-      # Note the departure from this module's `clamp_min(..., 1)` idiom: at prod
-      # volume the denominator is a per-second rate that is legitimately below
-      # 1, and clamping there would silently deflate the ratio toward zero. The
-      # floor is only a divide-by-zero guard; the explicit `and` rate guard is
-      # what enforces a meaningful sample size, legibly.
+      # Never `clamp_min(..., 1)` a per-second rate: at prod volume the
+      # denominator is legitimately below 1, and clamping there would silently
+      # deflate the ratio toward zero. The floor is only a divide-by-zero
+      # guard; the explicit `and` rate guard is what enforces a meaningful
+      # sample size, legibly. Every ratio alert in this file follows it.
       query               = <<-PROMQL
         (
           1 - (

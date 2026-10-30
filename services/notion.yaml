@@ -1,6 +1,7 @@
 openapi: 3.1.0
 info:
   title: Notion
+  summary: Search Notion, query databases, and create or extend pages
   key: notion
   category: Productivity
 servers:

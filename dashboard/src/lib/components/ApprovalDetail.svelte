@@ -10,7 +10,7 @@
 	import RiskBadge from './approval/RiskBadge.svelte';
 	import ServiceTile from './approval/ServiceTile.svelte';
 	import RememberControl from './approval/RememberControl.svelte';
-	import ExpiryControl from './approval/ExpiryControl.svelte';
+	import AllowSplit from './approval/AllowSplit.svelte';
 	import { relativeTime } from '#lib/utils/time.ts';
 	import { shortEmail } from '#lib/identityDisplay.ts';
 	import { createResolution } from '#lib/approvals/resolution.svelte.ts';
@@ -24,8 +24,11 @@
 		utf8ByteLength,
 		splitDisclosed,
 		rememberKeys,
-		resolutionToast
+		resolutionToast,
+		ttlFromSecs,
+		DEFAULT_REMEMBER_TTL
 	} from '#lib/approvals/format.ts';
+	import type { ExecutionSettings } from '#lib/types.ts';
 	import { onMount } from 'svelte';
 
 	let {
@@ -63,7 +66,12 @@
 	let selectedTier = $state(0);
 	let useCustomKey = $state(false);
 	let customKey = $state('');
-	let ttl = $state('forever');
+	// 'once' or a TTL_OPTIONS value — what the Allow split button runs.
+	let dur = $state('once');
+	// The org's default expiry for "Allow & Remember" — what the gateway applies
+	// to a resolve that omits `ttl`. Tagged in the Allow menu, not preselected:
+	// the split button still defaults to Once.
+	let defaultTtl = $state(DEFAULT_REMEMBER_TTL);
 	let formError = $state<string | null>(null);
 	const submitting = $derived(ctrl.submitting);
 	const error = $derived(formError ?? ctrl.error);
@@ -91,8 +99,21 @@
 		selectedTier = 0;
 		useCustomKey = false;
 		customKey = '';
-		ttl = 'forever';
+		dur = 'once';
 		formError = null;
+	});
+
+	const orgId = $derived((page.data as { user?: { org_id?: string } })?.user?.org_id ?? null);
+	onMount(async () => {
+		if (!orgId) return;
+		try {
+			const settings = await session.get<ExecutionSettings>(
+				`/v1/orgs/${orgId}/execution-settings`
+			);
+			defaultTtl = ttlFromSecs(settings.default_remember_ttl_secs);
+		} catch {
+			// Keep the 7-day fallback; it only labels the menu.
+		}
 	});
 
 	const riskMeta = {
@@ -174,12 +195,17 @@
 				return;
 			}
 			body.remember_keys = keys;
-			if (ttl !== 'forever') body.ttl = ttl;
+			// Always explicit: an omitted ttl means the org default, not "Always".
+			body.ttl = dur;
 		}
 		const updated = await ctrl.resolve(body);
 		if (!updated) return;
 		pushToast('success', resolutionToast(resolution, before, updated, body.remember_keys));
 		onResolved?.(updated);
+	}
+
+	function allow(d: string) {
+		void resolve(d === 'once' ? 'allow' : 'allow_remember');
 	}
 </script>
 
@@ -217,8 +243,8 @@
 		</div>
 
 		{#if isPending}
-			<!-- prominent action bar: scope + expiry + the three resolutions,
-			     merged into one control strip above the fold -->
+			<!-- prominent action bar: the scope to remember, then Deny and the
+			     Allow split button (whose caret picks once vs. remember-for) -->
 			<div class="aq-actionbar">
 				<RememberControl
 					tiers={current.suggested_tiers}
@@ -226,21 +252,11 @@
 					bind:useCustomKey
 					bind:customKey
 				/>
-				<ExpiryControl bind:value={ttl} />
 				<div class="aq-ab-btns">
 					<button class="ovs-btn ovs-btn-danger" disabled={submitting} onclick={() => resolve('deny')}
 						>Deny</button
 					>
-					<button
-						class="ovs-btn ovs-btn-secondary"
-						disabled={submitting}
-						onclick={() => resolve('allow')}>Allow once</button
-					>
-					<button
-						class="ovs-btn ovs-btn-primary aq-ab-primary"
-						disabled={submitting || !canRemember}
-						onclick={() => resolve('allow_remember')}>Allow &amp; Remember</button
-					>
+					<AllowSplit bind:dur {defaultTtl} {canRemember} disabled={submitting} onallow={allow} />
 				</div>
 			</div>
 			{#if willRunInBackground}
@@ -672,9 +688,6 @@
 	}
 	.ovs-btn-danger:not(:disabled):hover {
 		background: var(--badge-bg-danger);
-	}
-	.aq-ab-primary {
-		font-weight: 500;
 	}
 
 	/* status bars (non-pending states) */
@@ -1117,15 +1130,12 @@
 			align-items: stretch;
 			gap: 10px;
 		}
-		/* stack the merged bar: scope, then expiry, then the buttons */
+		/* stack the merged bar: scope, then the buttons */
 		.aq-actionbar :global(.aq-remember) {
 			order: 1;
 		}
-		.aq-actionbar :global(.aq-expctl) {
-			order: 2;
-		}
 		.aq-ab-btns {
-			order: 3;
+			order: 2;
 		}
 		.aq-ab-btns .ovs-btn {
 			flex: 1;

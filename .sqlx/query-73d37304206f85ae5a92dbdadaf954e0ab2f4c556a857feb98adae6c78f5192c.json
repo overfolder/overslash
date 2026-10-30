@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT default_remember_ttl_secs FROM orgs WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "default_remember_ttl_secs",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "orgs",
+            "name": "default_remember_ttl_secs"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "73d37304206f85ae5a92dbdadaf954e0ab2f4c556a857feb98adae6c78f5192c"
+}

@@ -156,6 +156,7 @@ mod risk_tests {
             key: key.into(),
             display_name: key.into(),
             description: None,
+            summary: None,
             url_promoted: false,
             hosts: vec![],
             category: None,

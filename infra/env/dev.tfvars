@@ -148,15 +148,21 @@ terraform_operators = [
 # where <metric> is the series named against each flag below. Verify before
 # flipping, one flag at a time.
 
+# All three descriptors were measured present in both projects on 2026-10-27
+# (`.../overslash_http_request_duration_seconds/histogram`,
+# `.../overslash_oauth_events_total/counter`,
+# `.../overslash_upstream_responses_total/counter`), so all three are on.
+# The two ratio queries were fixed in the same change: they clamped a
+# per-second denominator to 1, which at our volume made them unable to fire.
+# Runbook: docs/runbooks/uptime-and-alerts.md.
+
 # `overslash_http_request_duration_seconds` must be live as a *histogram*, not
 # the summary it rendered as before the bucket set landed.
-api_latency_alert_enabled = false
+api_latency_alert_enabled = true
 
-# `overslash_oauth_events_total` and `overslash_upstream_responses_total`. Both
-# have most likely been emitted by now; verify the descriptors and flip these on
-# in a follow-up.
-oauth_refresh_alert_enabled  = false
-upstream_error_alert_enabled = false
+# `overslash_oauth_events_total` and `overslash_upstream_responses_total`.
+oauth_refresh_alert_enabled  = true
+upstream_error_alert_enabled = true
 
 # `custom.googleapis.com/overslash/business/integrity_violations` — written by
 # the metrics exporter, not GMP, but the descriptor rule is the same. gcloud has
@@ -190,4 +196,8 @@ audit_log_retention_days = 400
 audit_log_bucket_locked  = false
 
 enable_google_directory_sync = true
+
+# The org enforces iam.managed.disableServiceAccountKeyCreation; dev opts out so
+# the Directory-sync key can be minted (docs/runbooks/project-guardrails.md).
+allow_service_account_key_creation = true
 

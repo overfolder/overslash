@@ -50,6 +50,29 @@ nothing of the sort. Both bindings are project-creation defaults, invisible to T
 and there is no `constraints/iam.automaticIamGrantsForDefaultServiceAccounts` to stop them
 being recreated.
 
+**Remediation (2026-10-27).** Nothing depends on the default Compute SA: every Cloud Run
+service and job, Cloud Build trigger and Scheduler job runs as its own account, there are no
+instances, keys or `actAs` grants on it, and the one build ever run as it was the manual
+submit of 2026-04-29. The cloudservices agent's 12 exercised permissions are all
+`compute.instanceGroupManagers.*` / `instanceTemplates.*` / `instances.*` / `subnetworks.use`,
+which is the prod VPC connector's managed instance group. Dev has no connector and its agent
+holds no Editor.
+
+- Dev's default-SA binding was **removed by hand on 2026-10-27**, and `overslash-dev-api`
+  `/health` still returned 200.
+- Prod was **applied on 2026-10-27**. `infra/modules/project-guardrails/` removes both
+  bindings with `google_project_iam_member_remove` and grants the cloudservices agent
+  `roles/compute.editor` first, but only where `use_private_vpc` (that is, where the
+  connector exists). Re-measured the same day: prod's only Editor-class binding is
+  `roles/compute.editor` on the cloudservices agent; dev has none. Prod `tofu plan` is clean.
+- Both projects have since moved into the overspiral.com organization, which enforces
+  `iam.automaticIamGrantsForDefaultServiceAccounts` and
+  `iam.managed.preventPrivilegedBasicRolesForDefaultServiceAccounts` at org level. The
+  module also pins both at project level, so the grants can come back neither by creation
+  nor by a later grant, and a change of parent does not lift them.
+
+Operator step: [project-guardrails.md](../../runbooks/project-guardrails.md).
+
 ---
 
 ## Measured configuration
@@ -267,23 +290,52 @@ age, which is the shape of evidence 6.7.1 asks for.
 
 ### Monitoring — the count-gate, confirmed
 
+| | 2026-09-22 | 2026-10-27 |
+|---|---|---|
+| Alert policies deployed (prod) | **8**, all enabled | **10**, all enabled |
+| Uptime checks deployed (prod) | **0** | **0** |
+| Uptime checks deployed (dev) | 1 | 1 (`overslash-dev-api-health` → `api.dev.overslash.com/health`) |
+
+The 2026-09-22 arithmetic matched `infra/` exactly: 12 policies declared, minus the 3
+disabled in `infra/env/prod.tfvars` (`api_latency`, `oauth_refresh`, `upstream_error`),
+minus `[P0] API Down`, which is `count`-gated on `api_domain != ""` while prod sets
+`domain = ""`. **So production has no GCM uptime check and no API-down page**. The only
+deployed P0 is `API High 5xx Rate`, which cannot fire when the service is returning
+nothing at all. Better Stack ([status-page.md](../../runbooks/status-page.md)) detects the
+outage out-of-band, but it is console-managed, outside the reviewable configuration, and
+does not page. The two policies added since are `[P1] Data Integrity Violation` and
+`[P1] Unexpected Secret Access` (audit-logging module).
+
+Deployed on 2026-10-27: `[P0] API High 5xx Rate`, `[P1]` API High CPU / API High Memory /
+Cloud SQL High CPU / Cloud SQL High Disk / Background Task Stale / Webhook Delivery Failure
+Rate / Data Integrity Violation / Unexpected Secret Access, `[P2] API High 4xx Rate`. Both
+notification channels exist and are enabled: `overslash-prod PagerDuty (EU)`
+(`webhook_tokenauth`) and `overslash-prod Email Alerts`. The 5xx P0 routes to both.
+
+**The three disabled gates no longer have a reason to stay disabled.** Their descriptors
+were measured present in both projects on 2026-10-27:
+`overslash_http_request_duration_seconds/histogram`, `overslash_oauth_events_total/counter`,
+`overslash_upstream_responses_total/counter`. Reading the queries turned up a second
+defect: the OAuth, upstream and (deployed) webhook ratios divided by
+`clamp_min(rate, 1)`, which at prod volume (well under 1/s) pins the denominator to 1. They
+could not fire, so the deployed webhook policy was counted as coverage it did not provide.
+
+**Remediation, applied 2026-10-27 on both projects** ([uptime-and-alerts.md](../../runbooks/uptime-and-alerts.md)):
+`infra/main.tf` feeds the monitoring module `api_host_suffix` (`api.overslash.com`, served
+by the GCLB) when `domain` is empty and the LB is on. That creates the uptime check and
+`[P0] API Down` in prod. All three gates are `true` in both tfvars, and the ratio queries
+take a `0.001` divide-by-zero floor plus an explicit minimum-sample guard.
+
+Re-measured after the apply (2026-10-27, prod):
+
 | | |
 |---|---|
-| Alert policies deployed | **8**, all enabled |
-| Uptime checks deployed | **0** |
+| Alert policies deployed | **14**, all enabled. `[P0] API Down` and `[P0] API High 5xx Rate` route to both channels |
+| Uptime checks deployed | **1**: `overslash-prod-api-health` → `api.overslash.com/health`, 60s. `check_passed` true from all 6 regions (usa-virginia, usa-oregon, usa-iowa, eur-belgium, apac-singapore, sa-brazil-sao_paulo) |
 
-The arithmetic matches `infra/` exactly: 12 policies declared, minus the 3 disabled at
-`infra/env/prod.tfvars:113-119` (`api_latency`, `oauth_refresh`, `upstream_error`), minus
-`[P0] API Down`, which is `count`-gated on `api_domain != ""` while prod sets
-`domain = ""`. **So production has no GCM uptime check and no API-down page**; the only
-deployed P0 is `API High 5xx Rate`, which cannot fire when the service is returning
-nothing at all. Better Stack covers the detection out-of-band, but it is console-managed
-and outside the reviewable configuration.
-
-Deployed: `[P0] API High 5xx Rate`, `[P1]` API High CPU / API High Memory / Cloud SQL High
-CPU / Cloud SQL High Disk / Background Task Stale / Webhook Delivery Failure Rate,
-`[P2] API High 4xx Rate`. Every one is an availability or capacity signal — there is no
-alert on any security event.
+Follow-up, in code, pending a Cloud Run apply and an API deploy: `/health` returns 503
+when Postgres is down, and the Cloud Run probes are TCP, so `[P0] API Down` also covers
+the database (D141 in DECISIONS.md).
 
 ### Storage — production
 
@@ -326,6 +378,47 @@ Organization policy constraints set on either project: **none**.
 `storage.publicAccessPrevention` · `iam.automaticIamGrantsForDefaultServiceAccounts` are
 all unset. Every guardrail in this stack is convention expressed in HCL, so a `gcloud`
 command or a console click moves the project outside it without failing anything.
+
+**Update 2026-10-27: both projects now sit in the overspiral.com organization, and the
+baseline is applied.** The organization enforces a policy set at org level, and
+`infra/modules/project-guardrails/` ([project-guardrails.md](../../runbooks/project-guardrails.md))
+pins the Overslash-specific ones per project. Both applied on 2026-10-27; `tofu plan` is
+clean in both environments. Effective policy, measured the same day with
+`gcloud org-policies describe <constraint> --project=<p> --effective`:
+
+| Constraint | `overslash` | `overslash-dev` | Set at | CASA |
+|---|---|---|---|---|
+| `iam.allowedPolicyMemberDomains` | org customer only | same | org | 3.1.1 |
+| `iam.automaticIamGrantsForDefaultServiceAccounts` | enforced | enforced | org + project | 3.1.1 |
+| `iam.managed.preventPrivilegedBasicRolesForDefaultServiceAccounts` | enforced | enforced | org + project | 3.1.1 |
+| `iam.managed.disableServiceAccountKeyCreation` | enforced | **off** (Directory-sync key) | org; dev project opt-out | 6.7.1 |
+| `iam.disableServiceAccountKeyUpload` | enforced | enforced | org | 6.7.1 |
+| `iam.disableAuditLoggingExemption` | enforced | enforced | org + project | 6.7.1 |
+| `sql.managed.restrictPublicIp` | enforced | **off** (public IP, no authorized networks) | org; dev project opt-out | 6.2.1 |
+| `sql.managed.restrictAuthorizedNetworks` | enforced | **off** | org; dev project opt-out | 6.2.1 |
+| `storage.publicAccessPrevention` | enforced | enforced | org + project | 6.2.1 |
+| `storage.uniformBucketLevelAccess` | enforced | enforced | org | 6.2.1 |
+| `storage.secureHttpTransport` | enforced | enforced | org | 4.1.1 |
+| `compute.managed.requireOsLogin` | enforced | enforced | org | 3.1.1 |
+| `compute.managed.disableSerialPortAccess` | enforced | enforced | org | 3.1.1 |
+| `compute.skipDefaultNetworkCreation` | enforced | enforced | org | — |
+| `compute.managed.restrictProtocolForwardingCreationForTypes` | `INTERNAL` only | same | org | — |
+| `essentialcontacts.managed.allowedContactDomains` | `@overspiral.com` | same | org | — |
+| `run.allowedIngress` | **unset** (allow all) | **unset** | — | 6.2.1 |
+
+So the closing sentence above no longer holds: a `gcloud` command or console click that
+would make a bucket public, add a public IP or an authorized network to the prod database,
+mint or upload a service-account key, grant a default SA a basic role, or add an IAM member
+from outside the organization now **fails** instead of drifting silently.
+
+`iam.allowedPolicyMemberDomains` is why the public Cloud Run services moved to
+`invoker_iam_disabled` instead of an `allUsers` binding. The old `allUsers` invoker
+bindings were removed by hand on 2026-10-27; no Cloud Run service in either project has an
+`allUsers` or `allAuthenticatedUsers` member, and `api.overslash.com/health`, the
+shortener and `overslash-dev-api` still answer 200.
+
+**Still open:** `run.allowedIngress` — it applies project-wide, so it can only be tightened
+once overfwd and the shortener stop running with `INGRESS_TRAFFIC_ALL`.
 
 ---
 
@@ -379,7 +472,7 @@ No verdict is overturned. It does three things:
    service accounts; the unmanaged `_cloudbuild` bucket holding repository source archives
    without uniform bucket-level access (fixed and applied 2026-10-23 —
    [cloud-build-bucket.md](../../runbooks/cloud-build-bucket.md)); and the confirmation that production runs 8 alert
-   policies and **zero** uptime checks, so the `[P0] API Down` page does not exist.
+   policies and **zero** uptime checks, so the `[P0] API Down` page does not exist. (Root cause and fix, pending apply: [uptime-and-alerts.md](../../runbooks/uptime-and-alerts.md).)
 
 And it supplies better evidence than prose: "Google's own Recommender rates this P2, with a
 HIGH-severity insight behind it" is a stronger line in a submission than "we read our

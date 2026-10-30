@@ -194,6 +194,7 @@ mod template_endpoint_fields;
 mod template_validation;
 mod templates;
 mod templates_import;
+mod templates_summary;
 mod trial;
 mod uploads;
 mod upstream_credential_echo;

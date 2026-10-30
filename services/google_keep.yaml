@@ -1,6 +1,7 @@
 openapi: 3.1.0
 info:
   title: Google Keep
+  summary: Create, read, and delete Google Keep notes and checklists
   description: Google Keep — create, list, read, and delete notes (text or checklist).
   key: google_keep
   category: Productivity

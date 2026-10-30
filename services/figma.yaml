@@ -16,6 +16,7 @@
 openapi: 3.1.0
 info:
   title: Figma
+  summary: Read Figma files, renders, and design systems; leave comments and dev links
   key: figma
   category: Design
   description: >-

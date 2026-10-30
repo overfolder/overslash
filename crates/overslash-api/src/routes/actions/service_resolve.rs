@@ -413,6 +413,7 @@ mod verb_host_path_tests {
             key: "github".into(),
             display_name: "GitHub".into(),
             description: None,
+            summary: None,
             url_promoted: false,
             hosts: hosts.into_iter().map(String::from).collect(),
             category: None,

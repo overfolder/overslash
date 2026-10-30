@@ -30,9 +30,21 @@ terraform {
 provider "google" {
   project = var.project_id
   region  = var.region
+
+  # Bill API quota to the managed project instead of the ADC client's
+  # project. Org Policy (project-guardrails) rejects user ADC calls
+  # without a quota project.
+  user_project_override = true
+  billing_project       = var.project_id
 }
 
 provider "google-beta" {
   project = var.project_id
   region  = var.region
+
+  # Bill API quota to the managed project instead of the ADC client's
+  # project. Org Policy (project-guardrails) rejects user ADC calls
+  # without a quota project.
+  user_project_override = true
+  billing_project       = var.project_id
 }

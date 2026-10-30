@@ -1,6 +1,7 @@
 openapi: 3.1.0
 info:
   title: Email
+  summary: Read and send mail on any IMAP/SMTP mailbox, like Fastmail, iCloud, or Zoho
   key: email
   category: Communication
   # Folded into the text every action is scored against

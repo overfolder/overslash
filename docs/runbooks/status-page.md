@@ -8,13 +8,12 @@ Public URL: <https://status.overslash.com>
 - **Components**: `api.overslash.com` and `app.overslash.com`, each backed by
   an HTTPS check on 180s cadence across the `eu`/`us`/`as`/`au` regions.
 - **Monitors** (managed in the Better Stack console, not IaC):
-  - `api.overslash.com/health` — plain `status` (HTTP up) check. The body also
-    carries `"db": "up" | "down"` (plus `db_latency_ms` when up), but
-    `/health` returns **200 even when `db` is `down`** — by design. It backs the
-    Cloud Run startup *and* liveness probes, so failing it on a Cloud SQL blip
-    would recycle every container mid-outage and block redeploys until the
-    database recovered. Use `/ready` for a check that 503s on an unreachable
-    database; no probe or monitor points at it yet.
+  - `api.overslash.com/health` — plain `status` (HTTP up) check. `/health`
+    returns **503 when the database is unreachable** (`"db": "down"`,
+    `"status": "degraded"`), so this monitor goes red on a Cloud SQL outage as
+    well as a dead process. It no longer backs the Cloud Run probes, which are
+    TCP (`infra/modules/cloud-run/main.tf`), so a 503 here never recycles a
+    container.
   - `app.overslash.com` — `keyword` check for `_app/immutable`. The dashboard is
     a SvelteKit SPA shell with no SSR text, so this marker confirms the real app
     shell is served rather than a Fastly/router error page (e.g.
@@ -27,9 +26,11 @@ Public URL: <https://status.overslash.com>
   — if GCM itself has an outage the public page stays truthful.
 
 The Better Stack monitors mirror the *target* of the GCM uptime check in
-`infra/modules/monitoring/uptime.tf`. The GCM `[P0] api_down` alert
-(`infra/modules/monitoring/alerts_p0.tf`) continues to page on-call
-independently.
+`infra/modules/monitoring/uptime.tf`. The GCM `[P0] API Down` alert
+(`infra/modules/monitoring/alerts_p0.tf`) is what pages on-call. Until the change
+in [uptime-and-alerts.md](uptime-and-alerts.md) is applied, **prod has neither**:
+both were `count`-gated on a `domain` that prod leaves empty, so a total prod outage
+shows here and pages no one.
 
 ## Who has access
 
@@ -65,9 +66,9 @@ is structural.
 
 ## On-call
 
-Page is wired only as a status signal. Paging is via the GCM P0 alert pipeline
-(PagerDuty integration tracked in TODO.md §1.4, first bullet). When that lands,
-link the rotation schedule from this page.
+Page is wired only as a status signal. Paging is via the GCM P0 alert pipeline,
+which routes to PagerDuty (EU) and email in prod. The API-down half of that
+pipeline is [uptime-and-alerts.md](uptime-and-alerts.md).
 
 ## Verifying after changes
 
@@ -78,8 +79,9 @@ To sanity-check the monitor without faking an outage:
 - The Better Stack monitor page shows the last probe time and HTTP response.
 
 During an incident, `/health` distinguishes "the process is wedged" (no
-response, or a slow one) from "the process is fine but can't reach Postgres"
-(`"db":"down"`) without shelling into the container. The body deliberately
+response, a slow one, or Cloud Run's own 500 *"the instance could not start
+successfully"*) from "the process is fine but can't reach Postgres" (503 with
+`"db":"down"`) without shelling into the container. The body deliberately
 omits the database error — the endpoint is unauthenticated, and a sqlx error
 names hosts and roles (CASA 6.2.1) — so read the cause from the API's logs
 (`health probe: database query failed`). The probe is bounded at 2s, so a hung

@@ -170,7 +170,7 @@ pub(super) async fn tools_list_result(
             },
             "ttl": {
                 "type": "string",
-                "description": "Duration the remembered rule stays live (e.g. `24h`, `30d`). Only meaningful with `allow_remember`."
+                "description": "Duration the remembered rule stays live (e.g. `24h`, `30d`), or `forever` for no expiry. Omitted, the org's default applies (7 days unless an admin changed it). Only meaningful with `allow_remember`."
             }
         },
         "required": ["approval_id", "resolution"],

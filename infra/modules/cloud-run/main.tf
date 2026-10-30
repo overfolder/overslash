@@ -579,10 +579,11 @@ resource "google_secret_manager_secret_version" "otel_config" {
 # secret rule (modules/secret-manager).
 
 resource "google_cloud_run_v2_service" "api" {
-  name     = "${var.base_prefix}-api"
-  location = var.region
-  project  = var.project_id
-  ingress  = var.ingress
+  name                 = "${var.base_prefix}-api"
+  location             = var.region
+  project              = var.project_id
+  ingress              = var.ingress
+  invoker_iam_disabled = true
 
   template {
     service_account = var.service_account_email
@@ -693,9 +694,16 @@ resource "google_cloud_run_v2_service" "api" {
           mount_path = "/cloudsql"
         }
 
+        # TCP, not `/health`: the probes ask only "is the process up", never
+        # "are its dependencies up". `/health` checks Postgres and 503s when it
+        # is down, and an HTTP liveness probe on it killed every instance
+        # within ~90s of a Cloud SQL stop (dev, nightly) — a replacement then
+        # cannot boot either, so the probe turned a DB outage into an API one.
+        # The startup probe loses nothing: the listener binds only after
+        # `create_app` has connected, migrated and preflighted.
+        # Dependency health is the uptime check's job (modules/monitoring).
         startup_probe {
-          http_get {
-            path = "/health"
+          tcp_socket {
             port = var.container_port
           }
           initial_delay_seconds = 5
@@ -704,8 +712,7 @@ resource "google_cloud_run_v2_service" "api" {
         }
 
         liveness_probe {
-          http_get {
-            path = "/health"
+          tcp_socket {
             port = var.container_port
           }
           period_seconds    = 30
@@ -761,12 +768,17 @@ resource "google_cloud_run_v2_service" "api" {
   }
 }
 
-resource "google_cloud_run_v2_service_iam_member" "public" {
-  project  = var.project_id
-  location = var.region
-  name     = google_cloud_run_v2_service.api.name
-  role     = "roles/run.invoker"
-  member   = "allUsers"
+# Public via `invoker_iam_disabled` on the service rather than an `allUsers`
+# invoker binding, which the overspiral.com org's domain-restricted sharing
+# policy (iam.allowedPolicyMemberDomains) rejects. `removed` forgets the old
+# binding without deleting it, so the service never flips to IAM-gated
+# mid-apply; drop the leftover binding by hand afterwards.
+removed {
+  from = google_cloud_run_v2_service_iam_member.public
+
+  lifecycle {
+    destroy = false
+  }
 }
 
 resource "google_cloud_run_domain_mapping" "domain" {

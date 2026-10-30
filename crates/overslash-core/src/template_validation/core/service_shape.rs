@@ -1,5 +1,6 @@
+use crate::openapi::SUMMARY_MAX_CHARS;
 use crate::service_icon::{MAX_ICON_LEN, ServiceIcon};
-use crate::template_validation::Issues;
+use crate::template_validation::{Issues, ValidationIssue};
 use crate::types::{Runtime, ServiceDefinition};
 
 // --- service-level ---------------------------------------------------------
@@ -46,6 +47,29 @@ pub(super) fn check_service_shape(def: &ServiceDefinition, issues: &mut Issues) 
 /// and `javascript:` are refused outright rather than dropped silently: a
 /// dropped value teaches the author it worked, and a reviewer reading the
 /// validation report wants the attempt named.
+/// Shape warnings for a catalog tagline (`info.summary`, or a derived layer's
+/// `summary` relabel). Warnings, not errors: the dashboard can clamp a long
+/// value, and refusing a whole template over its tagline is the worse failure.
+pub(crate) fn summary_warnings(summary: &str, path: &str) -> Vec<ValidationIssue> {
+    let mut out = Vec::new();
+    if summary.contains(['\n', '\r']) {
+        out.push(ValidationIssue::new(
+            "openapi_invalid",
+            "summary must be a single line (put longer text in `description`)",
+            path,
+        ));
+    }
+    let len = summary.chars().count();
+    if len > SUMMARY_MAX_CHARS {
+        out.push(ValidationIssue::new(
+            "openapi_invalid",
+            format!("summary must be at most {SUMMARY_MAX_CHARS} characters (got {len})"),
+            path,
+        ));
+    }
+    out
+}
+
 pub(crate) fn check_service_icon(icon: Option<&ServiceIcon>, path: &str, issues: &mut Issues) {
     let Some(icon) = icon else {
         return;

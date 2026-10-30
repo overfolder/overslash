@@ -71,6 +71,11 @@ pub struct ServiceDefinition {
     pub display_name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// `info.summary` — a one-line tagline for UI catalogs (at most
+    /// [`SUMMARY_MAX_CHARS`](crate::openapi::SUMMARY_MAX_CHARS) chars).
+    /// Agents keep `description`; this is never put on `/v1/search` or MCP.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
     pub hosts: Vec<String>,
     /// `servers[0].x-overslash-promoted`: the instance form shows the endpoint
     /// URL in its main section instead of behind "Show more options". Every
@@ -598,6 +603,7 @@ mod tests {
             key: "slack".into(),
             display_name: "Slack".into(),
             description: None,
+            summary: None,
             url_promoted: false,
             hosts: vec!["slack.com".into()],
             category: None,
@@ -661,6 +667,7 @@ mod tests {
             key: "linear_mcp".into(),
             display_name: "Linear".into(),
             description: None,
+            summary: None,
             url_promoted: false,
             hosts: vec![],
             category: Some("Development".into()),

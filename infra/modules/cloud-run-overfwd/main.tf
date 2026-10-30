@@ -129,10 +129,11 @@ resource "google_secret_manager_secret_iam_member" "env_secrets" {
 }
 
 resource "google_cloud_run_v2_service" "overfwd" {
-  name     = "${var.base_prefix}-overfwd"
-  location = var.region
-  project  = var.project_id
-  ingress  = "INGRESS_TRAFFIC_ALL"
+  name                 = "${var.base_prefix}-overfwd"
+  location             = var.region
+  project              = var.project_id
+  ingress              = "INGRESS_TRAFFIC_ALL"
+  invoker_iam_disabled = true
 
   template {
     service_account = var.service_account_email
@@ -231,12 +232,18 @@ resource "google_cloud_run_v2_service" "overfwd" {
 # (OVERFWD_REQUIRE_API_KEY above), and orgs running their own overfwd reach a
 # different deployment entirely. IAM-gating this would not help — the API calls
 # it as an ordinary upstream HTTP service, not as an authenticated GCP client.
-resource "google_cloud_run_v2_service_iam_member" "public" {
-  project  = var.project_id
-  location = var.region
-  name     = google_cloud_run_v2_service.overfwd.name
-  role     = "roles/run.invoker"
-  member   = "allUsers"
+#
+# Public via `invoker_iam_disabled` on the service rather than an `allUsers`
+# invoker binding, which the overspiral.com org's domain-restricted sharing
+# policy (iam.allowedPolicyMemberDomains) rejects. `removed` forgets the old
+# binding without deleting it, so the service never flips to IAM-gated
+# mid-apply; drop the leftover binding by hand afterwards.
+removed {
+  from = google_cloud_run_v2_service_iam_member.public
+
+  lifecycle {
+    destroy = false
+  }
 }
 
 resource "google_cloud_run_domain_mapping" "domain" {

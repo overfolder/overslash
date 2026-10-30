@@ -466,6 +466,10 @@ pub async fn complete_from_elicitation(
 /// the narrowest safe default. No trust is placed in the value: `/resolve`
 /// refuses any key that is neither a suggested tier nor covers a requested
 /// key, so a forged `scope` fails there.
+///
+/// `ttl` is forwarded verbatim, `"forever"` included: an omitted `ttl` means
+/// the org's default expiry, so dropping "forever" would quietly turn it into
+/// 7 days.
 fn remember_resolve_body(content: &Value) -> Value {
     let mut body = json!({ "resolution": "allow_remember" });
     let keys: Vec<String> = content
@@ -478,9 +482,7 @@ fn remember_resolve_body(content: &Value) -> Value {
     if !keys.is_empty() {
         body["remember_keys"] = json!(keys);
     }
-    if let Some(ttl) = content.get("ttl").and_then(Value::as_str)
-        && ttl != "forever"
-    {
+    if let Some(ttl) = content.get("ttl").and_then(Value::as_str) {
         body["ttl"] = json!(ttl);
     }
     body
@@ -535,17 +537,23 @@ mod tests {
     /// approval's own keys" — the resolver's default when the field is
     /// absent, and a 400 if we forwarded `[]` instead.
     #[test]
-    fn remember_body_omits_keys_it_cannot_use_and_forever_ttl() {
-        for content in [
-            json!({ "ttl": "forever" }),
-            json!({ "scope": "not json" }),
-            json!({ "scope": "[]" }),
-        ] {
+    fn remember_body_omits_keys_it_cannot_use() {
+        for content in [json!({ "scope": "not json" }), json!({ "scope": "[]" })] {
             assert_eq!(
                 remember_resolve_body(&content),
                 json!({ "resolution": "allow_remember" }),
                 "content: {content}"
             );
         }
+    }
+
+    /// "forever" is an explicit choice; omitting it would hand the resolver
+    /// the org default instead.
+    #[test]
+    fn remember_body_forwards_forever() {
+        assert_eq!(
+            remember_resolve_body(&json!({ "ttl": "forever" })),
+            json!({ "resolution": "allow_remember", "ttl": "forever" })
+        );
     }
 }

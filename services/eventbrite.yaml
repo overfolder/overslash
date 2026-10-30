@@ -1,6 +1,7 @@
 openapi: 3.1.0
 info:
   title: Eventbrite
+  summary: Look up events, ticket classes, attendees, and your orders on Eventbrite
   key: eventbrite
   category: Events
 servers:

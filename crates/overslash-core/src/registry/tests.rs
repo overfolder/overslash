@@ -280,6 +280,31 @@ fn every_shipped_template_resolves_to_a_shipped_icon() {
 }
 
 #[test]
+fn every_shipped_template_has_a_short_summary() {
+    // `info.summary` is what a catalog tile shows; `description` is written
+    // for agents and runs to paragraphs. Every shipped template carries one,
+    // and it has to fit the tile.
+    let reg = ServiceRegistry::load_from_dir(&shipped_services_dir(), Vars::for_tests()).unwrap();
+
+    for def in reg.all() {
+        let key = def.key.as_str();
+        let summary = def
+            .summary
+            .as_deref()
+            .unwrap_or_else(|| panic!("template '{key}' has no info.summary"));
+        assert!(
+            !summary.contains(['\n', '\r']),
+            "template '{key}' summary must be one line: {summary:?}"
+        );
+        assert!(
+            summary.chars().count() <= crate::openapi::SUMMARY_MAX_CHARS,
+            "template '{key}' summary is over {} chars: {summary:?}",
+            crate::openapi::SUMMARY_MAX_CHARS
+        );
+    }
+}
+
+#[test]
 fn shipped_email_host_comes_from_the_deployment_variable() {
     // The whole point of D44: `hosts[0]` — which is what
     // `Config::platform_credential_for` compares the outgoing URL against

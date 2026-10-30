@@ -201,6 +201,12 @@ variable "enable_google_directory_sync" {
   default     = false
 }
 
+variable "allow_service_account_key_creation" {
+  description = "Opt this project out of the org's iam.managed.disableServiceAccountKeyCreation, so a Directory-sync key can be minted with gcloud (docs/runbooks/google-directory.md). Applied by modules/project-guardrails; docs/runbooks/project-guardrails.md."
+  type        = bool
+  default     = false
+}
+
 variable "enable_bi" {
   description = "Provision the BI surface: a BigQuery connection + overslash_bi dataset over the Postgres `bi` schema (docs/runbooks/bi.md)."
   type        = bool

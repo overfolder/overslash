@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict IU7gGYzzNTd60ELJcMnX68xk6MwIMaSwIk56fgOPGg3Phe56vVK1sb2CM7pgn1c
+\restrict Ima6egLcgrnJ79TnxwblysVaIC9DjWdCHPDn0FnJXFFtcuWvCqfvYirq9Tx4HXW
 
 -- Dumped from database version 16.14 (Debian 16.14-1.pgdg12+1)
 -- Dumped by pg_dump version 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1)
@@ -1064,9 +1064,11 @@ CREATE TABLE public.orgs (
     call_timeout_ms integer,
     max_call_timeout_ms integer,
     default_agent_self_setup boolean DEFAULT true NOT NULL,
+    default_remember_ttl_secs integer DEFAULT 604800,
     CONSTRAINT orgs_approval_auto_bubble_secs_check CHECK ((approval_auto_bubble_secs >= 0)),
     CONSTRAINT orgs_audit_response_body_mode_check CHECK ((audit_response_body_mode = ANY (ARRAY['off'::text, 'errors_only'::text, 'all'::text]))),
     CONSTRAINT orgs_call_timeout_bounds CHECK ((((call_timeout_ms IS NULL) OR ((call_timeout_ms >= 1000) AND (call_timeout_ms <= 600000))) AND ((max_call_timeout_ms IS NULL) OR ((max_call_timeout_ms >= 1000) AND (max_call_timeout_ms <= 600000))) AND ((call_timeout_ms IS NULL) OR (max_call_timeout_ms IS NULL) OR (call_timeout_ms <= max_call_timeout_ms)))),
+    CONSTRAINT orgs_default_remember_ttl_bounds CHECK (((default_remember_ttl_secs IS NULL) OR ((default_remember_ttl_secs >= 60) AND (default_remember_ttl_secs <= 31536000)))),
     CONSTRAINT orgs_plan_check CHECK ((plan = ANY (ARRAY['standard'::text, 'free_unlimited'::text, 'trial'::text]))),
     CONSTRAINT orgs_user_template_policy_check CHECK ((user_template_policy = ANY (ARRAY['none'::text, 'restrictive'::text, 'full'::text])))
 );
@@ -1105,6 +1107,13 @@ COMMENT ON COLUMN public.orgs.max_call_timeout_ms IS 'Ceiling on any resolved ca
 --
 
 COMMENT ON COLUMN public.orgs.default_agent_self_setup IS 'When true (default), a newly-created first-level agent (depth = 1) is seeded with the four overslash:*_own self-setup permission rules: manage_services_own, manage_templates_own, manage_connections_own, request_secrets_own. Existing agents are not touched when this flips.';
+
+
+--
+-- Name: COLUMN orgs.default_remember_ttl_secs; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.orgs.default_remember_ttl_secs IS 'Default expiry in seconds for rules written by Allow & Remember when the resolver does not pass a ttl. NULL = forever.';
 
 
 --
@@ -4046,5 +4055,5 @@ ALTER TABLE ONLY public.webhook_subscriptions
 -- PostgreSQL database dump complete
 --
 
-\unrestrict IU7gGYzzNTd60ELJcMnX68xk6MwIMaSwIk56fgOPGg3Phe56vVK1sb2CM7pgn1c
+\unrestrict Ima6egLcgrnJ79TnxwblysVaIC9DjWdCHPDn0FnJXFFtcuWvCqfvYirq9Tx4HXW
 

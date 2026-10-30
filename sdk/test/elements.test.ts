@@ -155,9 +155,28 @@ describe('<overslash-approval-card>', () => {
     card.shadowRoot?.querySelector<HTMLButtonElement>('[data-action="allow"]')?.click();
     await tick();
 
+    // "Org default" is preselected and leaves `ttl` out for the gateway to fill.
     expect(bodies[1]).toEqual({
       resolution: 'allow_remember',
       remember_keys: ['email:send:*'],
+    });
+
+    // "Never" is explicit — omitting it would mean the org default instead.
+    card.approval = approvalFixture();
+    await tick();
+    card.shadowRoot?.querySelector<HTMLInputElement>('[data-action="tier-0"]')?.click();
+    await tick();
+    const ttl = card.shadowRoot?.querySelector<HTMLSelectElement>('[data-action="ttl"]');
+    if (ttl) {
+      ttl.value = 'forever';
+      ttl.dispatchEvent(new Event('change'));
+    }
+    card.shadowRoot?.querySelector<HTMLButtonElement>('[data-action="allow"]')?.click();
+    await tick();
+    expect(bodies[2]).toEqual({
+      resolution: 'allow_remember',
+      remember_keys: ['email:send:*'],
+      ttl: 'forever',
     });
   });
 

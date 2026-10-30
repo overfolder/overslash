@@ -530,6 +530,20 @@ export async function setAgentSelfSetup(session, enabled) {
 }
 
 /**
+ * Set the org's default "Allow & Remember" expiry, in seconds (`null` =
+ * forever). Tagged as the default in the approval's Allow menu and applied to resolves
+ * that omit `ttl`.
+ * @param {import('./auth.mjs').Session} session
+ * @param {number | null} secs
+ */
+export async function setDefaultRememberTtl(session, secs) {
+	return api(session, `/v1/orgs/${session.orgId}/execution-settings`, {
+		method: 'PATCH',
+		body: { default_remember_ttl_secs: secs }
+	});
+}
+
+/**
  * Patch the org's managed sign-in admission settings (migration 066/092).
  * Any field left undefined is omitted so the partial PATCH leaves it as-is.
  * @param {import('./auth.mjs').Session} session
