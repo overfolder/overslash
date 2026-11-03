@@ -210,7 +210,7 @@ jobs:
       # (full rebuild every run) and never saves the new ones because the
       # primary key already exists. -deps-opt1 dates from the
       # [profile.dev.package."*"] opt-level bump.
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: lint-deps-opt1
       # cdn.pyke.io (ort-sys prebuilt binaries) 403s from CI runners; seed
@@ -218,7 +218,7 @@ jobs:
       - uses: ./.github/actions/seed-ort-cache
       # Pin sqlx-cli to 0.9 so the CLI's offline-cache format matches the
       # workspace sqlx 0.9 (the .sqlx/ files it verifies).
-      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
           tool: sqlx-cli@0.9
 
@@ -344,7 +344,7 @@ jobs:
           components: rustfmt, clippy, llvm-tools-preview
       # See the lint job for why the key carries a -deps-opt1 suffix (and
       # must be rotated again on the next [profile.*] change).
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: coverage-deps-opt1
       # cdn.pyke.io (ort-sys prebuilt binaries) 403s from CI runners; seed
@@ -354,7 +354,7 @@ jobs:
       # artifacts stay valid). Linking ~99 instrumented test binaries is
       # the bulk of a warm-cache "compile" phase; mold cuts it sharply.
       - uses: rui314/setup-mold@da13e0b42e392e3a45d1215033a2270b849d7d36 # v1 (mutable tag)
-      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
           tool: cargo-llvm-cov,cargo-nextest
 
@@ -421,7 +421,7 @@ jobs:
           # Listing them keeps that cost in the setup step instead of buried,
           # untimed, inside the first build.
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: sql-policy-deps
       - uses: ./.github/actions/seed-ort-cache
@@ -568,14 +568,14 @@ jobs:
           components: rustfmt, clippy
       # See the lint job for why the key carries a -deps-opt1 suffix (and
       # must be rotated again on the next [profile.*] change).
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: e2e-deps-opt1
       # cdn.pyke.io (ort-sys prebuilt binaries) 403s from CI runners; seed
       # its cache from a release asset so cold-cache builds don't touch it.
       - uses: ./.github/actions/seed-ort-cache
       - uses: rui314/setup-mold@da13e0b42e392e3a45d1215033a2270b849d7d36 # v1 (mutable tag)
-      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
           tool: sqlx-cli@0.9
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
