@@ -10,6 +10,12 @@ interface Provider {
 	is_default?: boolean;
 }
 
+// Same-origin paths only — mirrors the API's `sanitize_next`.
+function safePath(raw: string | null): string | null {
+	if (!raw || !raw.startsWith('/') || raw.startsWith('//')) return null;
+	return raw;
+}
+
 export const load: PageLoad = async ({ url, fetch }) => {
 	const org = url.searchParams.get('org');
 	const qs = org ? `?org=${encodeURIComponent(org)}` : '';
@@ -31,7 +37,10 @@ export const load: PageLoad = async ({ url, fetch }) => {
 		providers,
 		scope,
 		next,
-		returnTo: url.searchParams.get('return_to') ?? '/agents',
+		// Set by the root layout when an unauthenticated visitor hits a deep
+		// link (e.g. an approval URL from oversla.sh). Kept null when absent so
+		// the IdP callback falls back to the API's `dashboard_url`.
+		returnTo: safePath(url.searchParams.get('return_to')),
 		reason: url.searchParams.get('reason')
 	};
 };
