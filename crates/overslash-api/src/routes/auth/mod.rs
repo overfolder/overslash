@@ -189,12 +189,12 @@ fn slug_host_url(state: &AppState, slug: &str, apex: &str, path: &str) -> String
 }
 
 /// If login originated on a corp subdomain, build an absolute redirect to
-/// the org's app host so the user lands back where they started. Returns
-/// `path` unchanged when there's no subdomain context.
+/// the org's app host so the user lands back where they started. Without a
+/// subdomain context, see [`landing_url`].
 fn absolute_redirect_for_org(state: &AppState, headers: &HeaderMap, path: &str) -> String {
     let Some(slug) = cookies::read(headers, state, cookies::AUTH_ORG).filter(|s| s != "none")
     else {
-        return path.to_string();
+        return landing_url(&state.config, path);
     };
     org_app_url(state, &slug, path).unwrap_or_else(|| path.to_string())
 }
@@ -242,10 +242,44 @@ pub(crate) fn session_cookie(
     .map_err(|e| AppError::Internal(format!("build session cookie: {e}")))
 }
 
+/// Post-login targets the API itself serves: the MCP authorization server
+/// resuming (`/oauth/authorize`) and the OAuth-connect gates. Everything else
+/// a `next` carries is a dashboard page — including `/oauth/consent`.
+const API_LANDINGS: &[&str] = &[
+    "/oauth/authorize",
+    "/connect-authorize",
+    "/gated-authorize",
+    "/auth/",
+];
+
+/// Where a post-login `next` path lands when there's no org subdomain to
+/// return to. A dashboard page (e.g. an approval deep link the login page
+/// carried over from `return_to`) must resolve against `dashboard_url`: on a
+/// split-host deployment that's a different origin from the API host the
+/// callback landed on, and a bare path would 404 there. API routes stay
+/// relative to the API. A relative `dashboard_url` means one host serves
+/// both, so the path is already right; absolute URLs (the `dashboard_url`
+/// fallback itself) pass through too.
+fn landing_url(config: &crate::config::Config, path: &str) -> String {
+    let dash = &config.dashboard_url;
+    let split_host = dash.starts_with("http://") || dash.starts_with("https://");
+    let api_route = API_LANDINGS.iter().any(|p| path.starts_with(p));
+    if split_host && path.starts_with('/') && !api_route {
+        config.dashboard_url_for(path)
+    } else {
+        path.to_string()
+    }
+}
+
 /// Only allow same-origin path redirects to prevent open-redirect abuse
-/// via the `?next=` parameter on IdP login.
+/// via the `?next=` parameter on IdP login. Browsers read a backslash in a
+/// `Location` as a slash, so `/\evil.com` would leave the site like
+/// `//evil.com` — reject backslashes and control characters outright.
 fn sanitize_next(raw: &str) -> Option<String> {
-    if raw.starts_with('/') && !raw.starts_with("//") && !raw.contains('\r') && !raw.contains('\n')
+    if raw.starts_with('/')
+        && !raw.starts_with("//")
+        && !raw.contains('\\')
+        && !raw.chars().any(char::is_control)
     {
         Some(raw.to_string())
     } else {
@@ -255,4 +289,70 @@ fn sanitize_next(raw: &str) -> Option<String> {
 
 pub(crate) fn signing_key_bytes(signing_key: &str) -> Vec<u8> {
     crate::services::jwt::signing_key_bytes(signing_key)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{landing_url, sanitize_next};
+    use crate::config::tests::empty_test_config;
+
+    fn split_host() -> crate::config::Config {
+        let mut c = empty_test_config();
+        c.public_url = "http://api.test".into();
+        c.dashboard_url = "http://app.test".into();
+        c
+    }
+
+    #[test]
+    fn dashboard_pages_land_on_the_dashboard_host() {
+        let c = split_host();
+        assert_eq!(
+            landing_url(&c, "/approvals/abc?org=x"),
+            "http://app.test/approvals/abc?org=x"
+        );
+        assert_eq!(
+            landing_url(&c, "/oauth/consent?request_id=r"),
+            "http://app.test/oauth/consent?request_id=r"
+        );
+    }
+
+    #[test]
+    fn api_routes_stay_on_the_api_host() {
+        let c = split_host();
+        for path in ["/oauth/authorize?client_id=c", "/connect-authorize?id=1"] {
+            assert_eq!(landing_url(&c, path), path);
+        }
+    }
+
+    #[test]
+    fn single_host_and_absolute_targets_are_untouched() {
+        let mut c = empty_test_config();
+        c.dashboard_url = "/".into();
+        assert_eq!(landing_url(&c, "/approvals/abc"), "/approvals/abc");
+        let c = split_host();
+        assert_eq!(landing_url(&c, "http://app.test"), "http://app.test");
+    }
+
+    #[test]
+    fn next_accepts_same_origin_paths() {
+        assert_eq!(
+            sanitize_next("/approvals/abc?org=x").as_deref(),
+            Some("/approvals/abc?org=x")
+        );
+    }
+
+    #[test]
+    fn next_rejects_off_site_targets() {
+        for raw in [
+            "https://evil.com",
+            "//evil.com",
+            "/\\evil.com",
+            "/\\/evil.com",
+            "/a\r\nSet-Cookie: x=1",
+            "/a\tb",
+            "evil.com",
+        ] {
+            assert_eq!(sanitize_next(raw), None, "{raw:?}");
+        }
+    }
 }

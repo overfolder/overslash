@@ -42,3 +42,29 @@ test.describe('dev login', () => {
 		expect(memberMe.org).toBe(adminMe.org);
 	});
 });
+
+test.describe('signed-out deep link', () => {
+	// An oversla.sh short link resolves to `/approvals/<id>`; a signed-out
+	// visitor is bounced to `/login?return_to=…` and must land back on the
+	// approval after signing in — not on the dashboard root (`/agents`). The
+	// dev button always honored `return_to` client-side, so this drives the
+	// magic link, whose landing rides the API's `next` round-trip like every
+	// real IdP does.
+	test('magic-link sign-in returns to the approval it was bounced from', async ({
+		page,
+		baseURL
+	}) => {
+		const approvalPath = '/approvals/00000000-0000-0000-0000-000000000000';
+		await page.goto(approvalPath);
+		await expect(page).toHaveURL(/\/login\?return_to=/);
+
+		await page.getByTestId('magic-link-email').fill(`deeplink-${Date.now()}@example.com`);
+		await page.getByTestId('magic-link-submit').click();
+		await page.getByTestId('magic-link-dev-url').click();
+
+		// Origin too, not just the path: the API and dashboard run on separate
+		// hosts here, and a path-only redirect from the API's verify endpoint
+		// would resolve against the API host.
+		await expect(page).toHaveURL(new URL(approvalPath, baseURL).toString());
+	});
+});
