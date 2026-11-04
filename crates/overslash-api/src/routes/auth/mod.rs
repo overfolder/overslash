@@ -243,9 +243,14 @@ pub(crate) fn session_cookie(
 }
 
 /// Only allow same-origin path redirects to prevent open-redirect abuse
-/// via the `?next=` parameter on IdP login.
+/// via the `?next=` parameter on IdP login. Browsers read a backslash in a
+/// `Location` as a slash, so `/\evil.com` would leave the site like
+/// `//evil.com` — reject backslashes and control characters outright.
 fn sanitize_next(raw: &str) -> Option<String> {
-    if raw.starts_with('/') && !raw.starts_with("//") && !raw.contains('\r') && !raw.contains('\n')
+    if raw.starts_with('/')
+        && !raw.starts_with("//")
+        && !raw.contains('\\')
+        && !raw.chars().any(char::is_control)
     {
         Some(raw.to_string())
     } else {
@@ -255,4 +260,32 @@ fn sanitize_next(raw: &str) -> Option<String> {
 
 pub(crate) fn signing_key_bytes(signing_key: &str) -> Vec<u8> {
     crate::services::jwt::signing_key_bytes(signing_key)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sanitize_next;
+
+    #[test]
+    fn next_accepts_same_origin_paths() {
+        assert_eq!(
+            sanitize_next("/approvals/abc?org=x").as_deref(),
+            Some("/approvals/abc?org=x")
+        );
+    }
+
+    #[test]
+    fn next_rejects_off_site_targets() {
+        for raw in [
+            "https://evil.com",
+            "//evil.com",
+            "/\\evil.com",
+            "/\\/evil.com",
+            "/a\r\nSet-Cookie: x=1",
+            "/a\tb",
+            "evil.com",
+        ] {
+            assert_eq!(sanitize_next(raw), None, "{raw:?}");
+        }
+    }
 }

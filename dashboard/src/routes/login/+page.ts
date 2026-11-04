@@ -10,9 +10,11 @@ interface Provider {
 	is_default?: boolean;
 }
 
-// Same-origin paths only — mirrors the API's `sanitize_next`.
+// Same-origin paths only — mirrors the API's `sanitize_next`. Browsers read
+// `\` as `/`, so `/\evil.com` is as off-site as `//evil.com`.
 function safePath(raw: string | null): string | null {
 	if (!raw || !raw.startsWith('/') || raw.startsWith('//')) return null;
+	if (/[\\\u0000-\u001f\u007f]/.test(raw)) return null;
 	return raw;
 }
 
