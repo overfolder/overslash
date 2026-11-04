@@ -220,5 +220,9 @@ pub(super) async fn verify_magic_link(
     let next_path = row
         .next_path
         .unwrap_or_else(|| state.config.dashboard_url.clone());
-    Ok((resp_headers, Redirect::to(&next_path)).into_response())
+    Ok((
+        resp_headers,
+        Redirect::to(&landing_url(&state.config, &next_path)),
+    )
+        .into_response())
 }
