@@ -2,6 +2,7 @@ use crate::services::identity_ref;
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
+    http::HeaderMap,
     routing::{get, post, put},
 };
 use overslash_core::identity_path::IdentityRef;
@@ -17,6 +18,7 @@ use crate::{
     AppState,
     error::{AppError, Result},
     extractors::{AdminAcl, AuthContext, ClientIp, ReqExt, SessionAuth, WriteAcl},
+    services::admin_step_up::{self, Target},
 };
 use overslash_core::crypto;
 
@@ -434,12 +436,14 @@ async fn list_secrets(
     Ok(Json(response))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn reveal_version(
     State(state): State<AppState>,
     ReqExt(ext): ReqExt,
     session: SessionAuth,
     scope: OrgScope,
     ip: ClientIp,
+    headers: HeaderMap,
     Path((name, version)): Path<(String, i32)>,
     Query(q): Query<NamespaceQuery>,
 ) -> Result<Json<RevealResponse>> {
@@ -449,6 +453,11 @@ async fn reveal_version(
         .await?
         .ok_or_else(|| not_found(&name))?
         .path(&*name);
+
+    // After the vault check, so a caller who could never read this vault is
+    // told so instead of being sent through a sign-in first; before the
+    // lookup, so the 403 says nothing about which names and versions exist.
+    admin_step_up::require_fresh(&state, &ext, &headers, Target::Org(session.org_id)).await?;
 
     let row = scope
         .get_secret_value_at_version(&path, version)

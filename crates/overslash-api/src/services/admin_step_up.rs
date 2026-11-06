@@ -30,8 +30,13 @@
 //! `step_up=1`, which asks the IdP to re-authenticate (`max_age=0`) and
 //! starts a new session.
 //!
-//! Out of scope by construction: safe methods (reading an admin page is not
-//! an admin action), personal orgs (their only member is their admin, and
+//! One read is in scope: revealing a secret's plaintext (`require_fresh`,
+//! D143). It is a member's own action, not an admin one, and the same three
+//! rules apply to it: a cookie that outlived its sign-in should not read a
+//! credential out of the vault.
+//!
+//! Out of scope by construction: other safe-method requests (reading an admin
+//! page is not an admin action), personal orgs (their only member is their admin, and
 //! nothing there reaches anyone else), API keys and MCP tokens (bearer
 //! credentials: an API key is minted only through `AdminAcl`, and an MCP
 //! token for an org admin's agent — which passes `AdminAcl` through its
@@ -63,10 +68,10 @@ pub struct StepUpProvider {
     pub login_path: String,
 }
 
-/// What the admin action is scoped to.
+/// What the gated action is scoped to.
 #[derive(Debug, Clone, Copy)]
 pub enum Target {
-    /// An org admin acting in `org_id`.
+    /// An org admin, or a member revealing a secret, acting in `org_id`.
     Org(Uuid),
     /// An instance admin — any IdP will do, but a magic link will not.
     Instance,
@@ -85,7 +90,8 @@ pub enum Allowed {
     NoIdp,
 }
 
-/// Refuse the request unless it is a step-up-fresh session, or out of scope.
+/// Refuse an admin-class request unless it is a step-up-fresh session, or out
+/// of scope. Reads pass: this is the gate for mutations.
 pub async fn require(
     state: &AppState,
     ext: &Extensions,
@@ -96,6 +102,19 @@ pub async fn require(
     if is_safe(method) {
         return Ok(());
     }
+    require_fresh(state, ext, headers, target).await
+}
+
+/// [`require`] without the method guard, for a sensitive read: the caller
+/// decides the operation is gated, whatever verb it travels on and whoever
+/// (member or admin) performs it. Every other exemption stands — no session
+/// `jti`, a personal org, `dev` under `DEV_AUTH`.
+pub async fn require_fresh(
+    state: &AppState,
+    ext: &Extensions,
+    headers: &HeaderMap,
+    target: Target,
+) -> Result<(), AppError> {
     let Some(jti) = session_jti(state, headers) else {
         return Ok(());
     };
