@@ -25,7 +25,7 @@ snippets and the policies, because those are the parts it cannot test for. Assum
 | 5.2.1 | "Overslash stores and serves no uploads." One-shot capability token, bytes forwarded to a pinned upstream, nothing written to disk, nothing served back | `need` | `routes/uploads.rs:15-24,58-67` |
 | 6.4.1 | Subdomain inventory: every record under `overslash.com`, its owning service, and a dangling-CNAME check | `have` | [subdomain-inventory.md](subdomain-inventory.md); checked daily by `scripts/check-subdomains.sh` (Dependency audit, job `subdomains`) — attach a green run's log. The dev `*.api.dev` wildcard is an accepted risk, reasoning in the inventory's Findings |
 | 7.1.1 / 7.1.2 / 7.3.1 | The webhook-provider posture — this is one document covering scheme enforcement, ownership verification and SSRF mitigation on callback URLs. Scheme enforcement, the ownership handshake, SSRF mitigation and replay protection (7.2.3) have all landed | `need` | `gap-assessment.md` §7 |
-| 5.1.5 | The SSRF scoping memo — the single most important piece of evidence in the pack | `need` | [dast-readiness.md](dast-readiness.md) |
+| 5.1.5 | The SSRF scoping memo — the single most important piece of evidence in the pack | `have` | [ssrf-scoping-memo.md](ssrf-scoping-memo.md) (lab-facing; distils [dast-readiness.md](dast-readiness.md)) |
 | 3.3.1 | MFA by IdP delegation: no factor of our own; admin mutations reachable only through a fresh sign-in at the org's IdP; each org's IdP enforces MFA, Overslash's own operators per the runbook policy | `need` | D136 ("Admin-class mutations need a fresh IdP sign-in"); [admin-step-up.md](../../runbooks/admin-step-up.md) |
 
 ## Code snippets
