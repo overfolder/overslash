@@ -73,6 +73,29 @@ variable "encryption_key_secret_id" {
   type = string
 }
 
+variable "encryption_key_version" {
+  type        = string
+  default     = "latest"
+  description = "Secret version mounted as SECRETS_ENCRYPTION_KEY. Pinned to a number in env/*.tfvars: under `latest`, adding the next key would reach any instance that starts before the rotation deploy, and that instance would write under the wrong key."
+}
+
+variable "encryption_key_active_id" {
+  type        = number
+  default     = 1
+  description = "SECRETS_ENCRYPTION_KEY_ACTIVE_ID: the key id stamped on new ciphertext. Goes up by one on every rotation and never comes back down."
+
+  validation {
+    condition     = var.encryption_key_active_id >= 1 && var.encryption_key_active_id <= 255
+    error_message = "encryption_key_active_id is a u8 and must be at least 1."
+  }
+}
+
+variable "encryption_key_previous_version" {
+  type        = string
+  default     = ""
+  description = "Secret version mounted as SECRETS_ENCRYPTION_KEY_PREVIOUS, decrypt-only, while `overslash admin reencrypt` runs. Empty outside a rotation. The API derives the previous id as active id - 1."
+}
+
 variable "signing_key_secret_id" {
   type = string
 }
@@ -470,6 +493,8 @@ locals {
       # MAGIC_LINK_ENABLED, so each env's state is visible in the plan.
       # Off means `execution: "async"` is rejected and no worker is spawned.
       ASYNC_EXECUTION_ENABLED = var.enable_async_execution ? "1" : "0"
+
+      SECRETS_ENCRYPTION_KEY_ACTIVE_ID = tostring(var.encryption_key_active_id)
     },
     var.dashboard_url != "/" ? { PUBLIC_URL = var.dashboard_url } : {},
     var.enable_dev_auth ? { DEV_AUTH = "1" } : {},
@@ -549,7 +574,16 @@ locals {
       OVERSLASH_TRUSTED_PROXY_SECRET = var.trusted_proxy_secret_secret_id
     } : {},
     var.redis_host != "" && var.redis_ca_cert_secret_id != "" ? { REDIS_CA_CERT = var.redis_ca_cert_secret_id } : {},
+    var.encryption_key_previous_version != "" ? { SECRETS_ENCRYPTION_KEY_PREVIOUS = var.encryption_key_secret_id } : {},
   )
+
+  # Every other secret follows `latest`, so a rotation is a new version and a
+  # revision roll. The master key is the exception: the keyring needs the key,
+  # its id and the previous key to change together, in one revision.
+  env_secret_versions = {
+    SECRETS_ENCRYPTION_KEY          = var.encryption_key_version
+    SECRETS_ENCRYPTION_KEY_PREVIOUS = var.encryption_key_previous_version
+  }
 }
 
 # OTel collector config — generated from a template, stored in Secret Manager,
@@ -559,6 +593,10 @@ resource "google_secret_manager_secret" "otel_config" {
   count     = var.enable_metrics_sidecar ? 1 : 0
   project   = var.project_id
   secret_id = "${var.base_prefix}-otel-collector-config"
+
+  # A rendered config file with no credential in it. Secret Manager is only how
+  # it reaches the sidecar as a file.
+  labels = { rotation-class = "exempt" }
 
   replication {
     auto {}
@@ -683,7 +721,7 @@ resource "google_cloud_run_v2_service" "api" {
             value_source {
               secret_key_ref {
                 secret  = env.value
-                version = "latest"
+                version = lookup(local.env_secret_versions, env.key, "latest")
               }
             }
           }

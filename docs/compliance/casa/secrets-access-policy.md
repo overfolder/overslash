@@ -15,7 +15,9 @@ Adopted 2026-09-28. The retention, lock and alerting choices are recorded as D11
 > logging and alerting sections describe the configuration in the repo, not the live
 > projects. The per-workload grants below **are** applied (2026-10-23, both projects,
 > verified per [least-privilege-iam.md](../../runbooks/least-privilege-iam.md)).
-> [gcp-posture.md](gcp-posture.md) records what was measured live.
+> [gcp-posture.md](gcp-posture.md) records what was measured live. The
+> [Rotation](#rotation) section is also written and not yet applied: its apply and verify
+> steps are in [secret-rotation.md](../../runbooks/secret-rotation.md).
 
 ---
 
@@ -44,9 +46,9 @@ metadata is not a payload read and is not restricted beyond project IAM.
 | `overslash-<env>-run@` — **the API** | `roles/secretmanager.secretAccessor` on the project, under the IAM condition **every secret named `overslash-<env>-*` except the operator-only list** (today: `overslash-<env>-pagerduty-integration-key`) | Cloud Run resolves `secret_key_ref` env vars and secret volumes as the revision's identity when an instance starts. No payload is ever placed in a plaintext env var or in the service spec | The API reads nearly every platform secret, including ones other modules create (BI password, cache CA, OTel config), so its grant is a naming rule rather than a list. `infra/modules/secret-manager` (`api_secret_accessor`) |
 | `overslash-<env>-shortener@` — oversla.sh | `secretAccessor` on `overslash-<env>-shortener-api-key` and `<cache instance>-server-ca`, nothing else | Same | `infra/modules/cloud-run-shortener` (one grant per `env_secrets` entry). Prod only |
 | `overslash-<env>-overfwd@` — Mailbox Gateway | `secretAccessor` on `overslash-<env>-overfwd-gateway-key`, nothing else | Same | `infra/modules/cloud-run-overfwd` |
-| `overslash-<env>-exporter@` — metrics-exporter job | `secretAccessor` on `overslash-<env>-db-password`, nothing else | Same | `infra/modules/metrics-exporter-job` |
+| `overslash-<env>-exporter@` — metrics-exporter job | `secretAccessor` on `overslash-<env>-db-password`, nothing else. Also `roles/secretmanager.viewer` on the project, which is metadata only and reads no payload | Same. The viewer role backs the hourly [rotation age sweep](#how-age-is-watched) | `infra/modules/metrics-exporter-job`, `infra/modules/iam` |
 | Project Owners (humans) | Implicit via `roles/owner` | `tofu plan`/`apply` — the provider refreshes each `google_secret_manager_secret_version` by reading it, and reads the PagerDuty key as a data source. `bin/db-shell.sh` reads the database password. `gcloud secrets versions access` for break-glass | Operating the platform. **Every such read notifies** (below), except Terraform reads by a listed `terraform_operators` principal |
-| Everyone else | **None** | — | `roles/viewer` excludes `secretmanager.versions.access`. No role is project-wide without a condition. The Cloud Build and Scheduler service accounts hold no Secret Manager role. The BigQuery connection stores its own copy of the `bi` credential and never reads the secret |
+| Everyone else | **None** | — | `roles/viewer` excludes `secretmanager.versions.access`. No payload-reading role is project-wide without a condition. The Cloud Build and Scheduler service accounts hold no Secret Manager role. The BigQuery connection stores its own copy of the `bi` credential and never reads the secret |
 
 **Writes.** A new version is added either by Terraform (generated values: DB password,
 master key, signing key, BI password, OTel config) or by an Owner with
@@ -54,7 +56,8 @@ master key, signing key, BI password, OTel config) or by an Owner with
 PagerDuty, gateway keys). `AddSecretVersion`, `DisableSecretVersion`, `DestroySecretVersion`
 and every IAM change are Admin Activity audit logs, which GCP always writes.
 
-**Adding a secret.** A secret the API reads is named `overslash-<env>-<name>`: the name
+**Adding a secret.** Give it a `rotation-class` label and the matching `rotation` block
+([Rotation](#rotation)), or the age sweep reports it as unmeasured. A secret the API reads is named `overslash-<env>-<name>`: the name
 alone grants it, and no IAM change is needed. A secret only Terraform or an operator reads
 is also named `overslash-<env>-*`, so it must be added to `operator_only_secrets` in
 [`infra/modules/secret-manager/main.tf`](../../../infra/modules/secret-manager/main.tf) in
@@ -152,14 +155,322 @@ to ignore the alert.
 1. **Recognise it.** Was it a `tofu plan`/`apply` by a non-operator, your own
    `db-shell.sh` or Console view, or a documented break-glass read, at the time shown? Note that on the incident and close it.
 2. **If not**, treat the secret as exposed:
-   1. Rotate it — add a new version, roll the consumers (a new Cloud Run revision picks
-      up `latest`), then disable the old version. For the master key, follow the
-      two-slot keyring rotation (`services/key_rotation.rs`).
+   1. Rotate it now, by its class in [Rotation procedures](#rotation-procedures). Do not
+      wait for its period.
    2. Find how the principal obtained access: `gcloud projects get-iam-policy` and the
       Admin Activity logs for `SetIamPolicy` in the audit bucket.
    3. Remove the grant, and record the incident.
 3. If the principal is a new, legitimate runtime service account, the alert was right: it
    was granted without being declared. Add it to `expected_secret_accessors` in a PR.
+
+---
+
+## Rotation
+
+Secret Manager does not rotate anything. At a secret's `next_rotation_time` it publishes a
+`SECRET_ROTATE` event and moves the time on by `rotation_period`, and that is all. So
+rotation here has three parts: metadata that declares each secret's period, a reminder when
+the calendar date arrives, and an age sweep that checks whether anyone actually rotated.
+The settings are in [`infra/modules/secret-manager/rotation.tf`](../../../infra/modules/secret-manager/rotation.tf).
+The reasoning is recorded as a decision in [DECISIONS.md](../../../DECISIONS.md).
+
+**No platform secret rotates unattended.** Each stored credential has a consumer that must
+change with it, and an unattended rotator would need write access to the vault master key,
+the database and the Cloud Run services, in a repository where infrastructure is applied by
+hand. What is automatic is the part that protects against forgetting: the reminder and the
+alert. The only credentials that really rotate themselves are the ones no longer stored,
+below.
+
+### Classes and periods
+
+| Class | Period | Who rotates it | Why this period |
+|-------|--------|----------------|-----------------|
+| `root-key` | 365 days | Operator. Value generated, never seen by anyone | A key's cryptoperiod, and each rotation is a planned operation: re-encrypting every tenant credential, or signing every user out |
+| `database` | 180 days | Operator, with `tofu apply -replace`. Value generated by Terraform | One command, but a short window where new connections fail |
+| `internal-key` | 180 days | Operator. Value generated, no third party | Shared by two of our own services, so it is cheap and only needs a back-to-back roll |
+| `third-party` | 365 days | Operator, at the issuer's console | Needs a human at each issuer, and each issuer allows an overlap, so it is low risk and low frequency |
+| `sa-key` | 90 days | Operator | A long-lived Google service-account private key, Google's recommended ceiling |
+| `exempt` | None | Nobody | Not a credential, or nothing reads it. Labelled so the sweep skips it on purpose |
+
+CASA 6.7.1 sets no period, so these are ours to set and defend.
+
+### Every secret
+
+`<env>` is `dev` or `prod`, in the `overslash-dev` and `overslash` projects.
+
+| Secret (`overslash-<env>-…`) | Class | Procedure | Consumers |
+|------------------------------|-------|-----------|-----------|
+| `encryption-key` | `root-key` | [Master key](#master-key) | API |
+| `signing-key` | `root-key` | [Signing key](#signing-key) | API |
+| `db-password` | `database` | [Database passwords](#database-passwords) | API, metrics exporter, `bin/db-shell.sh` |
+| `bi-db-password` (prod) | `database` | [Database passwords](#database-passwords) | API at boot, BigQuery connection |
+| `overfwd-gateway-key` | `internal-key` | [Shared internal keys](#shared-internal-keys) | API, overfwd |
+| `shortener-api-key` | `internal-key` | [Shared internal keys](#shared-internal-keys) | API, oversla.sh (prod only; dev's API uses a copy of prod's key) |
+| `trusted-proxy-secret` | `internal-key` | [Trusted-proxy secret](#trusted-proxy-secret) | API, Vercel middleware |
+| `oauth-client-secret`, `github-auth-client-secret` | `third-party` | [Issued keys](#issued-keys) | API (login) |
+| `<provider>-services-client-secret` (google, github, notion, slack, hubspot) | `third-party` | [Issued keys](#issued-keys) | API (system OAuth clients) |
+| `stripe-secret-key`, `stripe-webhook-secret` | `third-party` | [Issued keys](#issued-keys) | API |
+| `email-api-key` | `third-party` | [Issued keys](#issued-keys) | API |
+| `pagerduty-integration-key` (prod) | `third-party` | [PagerDuty key](#pagerduty-key) | Terraform only, into the notification channel |
+| `google-directory-sa-key` | `sa-key` | [Directory key](#directory-key) | API |
+| `oauth-client-id`, `github-auth-client-id`, `<provider>-services-client-id` | `exempt` | Public identifiers, sent in every authorize URL. They change only if the client is replaced | API |
+| `otel-collector-config` | `exempt` | A rendered config file with no credential in it | OTel sidecar |
+| `<cache instance>-server-ca` (prod) | `exempt` | Public CA material, issued and rotated by Memorystore. A re-apply picks up a new CA | API, oversla.sh |
+| `pagerduty-integration-key` (dev) | `exempt` | Holds `REPLACE_ME`; `pagerduty_enabled` is off, so nothing reads it | None |
+
+**Memorystore has no stored credential to rotate.** The cache moved to IAM auth
+([memorystore-valkey.md](../../runbooks/memorystore-valkey.md)): each client presents a
+one-hour access token for its service account, refreshed automatically. There is no
+`valkey-auth` secret in Terraform. The `overslash-prod-valkey-auth` and
+`-valkey-server-ca` secrets still in the prod project are leftovers of the deleted Redis
+instance, with no owner in Terraform and no metadata. The sweep reports both as unmeasured
+until step 8 of that runbook deletes them.
+
+`expire_time` and `ttl` are not used on any secret. They delete the secret when they
+elapse, which would take the API down instead of telling someone.
+
+### How age is watched
+
+Two signals, because they answer different questions.
+
+| Signal | Asks | Mechanism |
+|--------|------|-----------|
+| `[P2] Secret Rotation Due` | Has the calendar date arrived? | `SECRET_ROTATE` lands on topic `overslash-<env>-secret-rotation` and waits on subscription `overslash-<env>-secret-rotation-due`, which keeps only those events, for 7 days. The alert fires while one waits |
+| `[P2] Secret Rotation Overdue` | Is the secret really older than its period? | The metrics exporter ([`secret_rotation.rs`](../../../crates/overslash-metrics-exporter/src/secret_rotation.rs)) reads each secret's period and the create time of its newest enabled version, once an hour, and writes `secret_version_age_days{secret,rotation_class}` and `secret_rotation_overdue_days{secret,rotation_class}`. It fires, one incident per secret, on any non-zero value, and stays open until a new version exists |
+
+The calendar and the age are independent. The reminder ignores real rotations: rotating
+early does not move `next_rotation_time`, and the first reminder is counted from the apply,
+not from the version's date. **The overdue alert is the control. The due alert is a nudge.**
+
+The same policy fires on `secret_rotation_unmeasured` above zero: a secret with no class, no
+period, or no enabled version, each named in the exporter's `secret cannot be measured`
+WARN log. That catches a secret made by hand or added without a class. It also fires if the
+sweep stops reporting for 3 hours. A failed sweep logs `Secret rotation sweep failed` and
+leaves the other business metrics alone.
+
+Both alerts are P2, email only. A secret past its period is a schedule slip, not an
+exposure. An exposure is `[P1] Unexpected Secret Access`, which needs an immediate rotation
+whatever the age.
+
+**What age cannot see.** It reads the newest version's date, not its value, because the
+sweep cannot read payloads. A version that was added with the same value looks fresh. A
+placeholder looks like a credential: `REPLACE_ME` versions count from the day Terraform
+wrote them.
+
+### Rotation procedures
+
+Dev first, every time. Set the variables once:
+
+```bash
+ENV=dev; P=overslash-dev   # or ENV=prod; P=overslash
+R=europe-west1
+# Force a fresh revision, so instances re-resolve `latest`. Removing the label afterwards
+# keeps the next plan clean, at the cost of a second revision.
+roll() {
+  gcloud run services update "overslash-$ENV-$1" --project=$P --region=$R --update-labels=rotated-at=$(date +%s)
+  gcloud run services update "overslash-$ENV-$1" --project=$P --region=$R --remove-labels=rotated-at
+}
+```
+
+Every consumer except the master key mounts `latest`, and Cloud Run resolves it when an
+instance starts. So a new version reaches a running service only after a roll, while any
+instance that autoscales up in between already has it. Roll straight after adding a
+version, off-peak.
+
+**Finish every rotation** by disabling the old version:
+`gcloud secrets versions disable <n> --secret=<id> --project=$P`. Until then the old value
+stays readable. Terraform ignores `enabled` on the generated
+versions it created, so it will not re-enable one.
+
+#### Master key
+
+`SECRETS_ENCRYPTION_KEY` is the only secret pinned to a version number. Under `latest`, a
+new version would reach any instance that starts before the deploy, and that instance would
+stamp the old key id on ciphertext written under the new key. The keyring has two slots: the
+active key, and a decrypt-only previous key. Every ciphertext carries the id of the key that
+wrote it. [`tests/key_rotation.rs`](../../../crates/overslash-api/tests/key_rotation.rs)
+exercises this flow against Postgres, but **it has not been run on a deployed environment**:
+drill it on dev before prod.
+
+The three values below are in `infra/env/<env>.tfvars`. Assume today's are version `1`, id
+`1`, and substitute the real ones.
+
+1. Add the new key. Nothing reads it yet, because every revision is pinned:
+
+   ```bash
+   openssl rand -hex 32 | tr -d '\n' | \
+     gcloud secrets versions add overslash-$ENV-encryption-key --project=$P --data-file=-
+   ```
+
+   It goes straight into Secret Manager, so unlike the first key it is not in Terraform
+   state. The first rotation therefore also takes the live master key out of state.
+
+2. Switch to the new key, keeping the old one for reads, and apply:
+
+   ```hcl
+   encryption_key_version          = "2"
+   encryption_key_active_id        = 2
+   encryption_key_previous_version = "1"
+   ```
+
+   Expect one revision. While traffic moves, an old-revision instance cannot read ciphertext
+   the new revision has just written, so that request fails until the old instance drains.
+   Reads of anything older keep working. Do this off-peak. Confirm `/health` is 200 and a
+   stored secret still resolves.
+
+3. Re-encrypt from a host with the Auth Proxy and the `overslash` CLI (the path
+   `bin/db-shell.sh` uses). This reads both keys and the DB password, so it fires
+   `[P1] Unexpected Secret Access` on purpose. Note it on the incident.
+
+   ```bash
+   cloud-sql-proxy --port=15432 $P:$R:overslash-$ENV-db &
+   read_secret() { gcloud secrets versions access "$2" --secret="overslash-$ENV-$1" --project=$P; }
+   export DATABASE_URL="postgres://overslash:$(read_secret db-password latest)@127.0.0.1:15432/overslash"
+   export SECRETS_ENCRYPTION_KEY=$(read_secret encryption-key 2)
+   export SECRETS_ENCRYPTION_KEY_PREVIOUS=$(read_secret encryption-key 1)
+   export SECRETS_ENCRYPTION_KEY_ACTIVE_ID=2
+   cargo build --release -p overslash-cli && PATH=target/release:$PATH
+   overslash admin reencrypt --dry-run   # expect 0 errors
+   overslash admin reencrypt
+   overslash admin reencrypt --dry-run   # expect 0 re-encrypted, 0 errors
+   ```
+
+   The walker compare-and-swaps each row, so it is safe beside live traffic and safe to
+   re-run. Any error means a row it cannot decrypt, perhaps tagged with a third key. Stop
+   there and investigate: step 4 would strand that row.
+
+4. Drop the old key from the keyring, and apply:
+
+   ```hcl
+   encryption_key_previous_version = ""
+   ```
+
+   `encryption_key_active_id` stays at `2` forever. It only ever goes up.
+
+5. Disable version 1. **Do not destroy it** while any Cloud SQL backup from before step 3
+   exists (7 are kept, plus 7 days of point-in-time recovery): those hold ciphertext only
+   that key can read, so restoring one needs it. Add it back as the previous key to do so.
+
+#### Signing key
+
+`SIGNING_KEY` has one slot: no previous key is accepted. Every HS256 token dies with it. That
+is dashboard sessions, MCP access tokens, secret-request links and in-flight MCP request
+state. Users sign in again; MCP clients go through their refresh path. Stored data is not
+affected, because nothing at rest is derived from this key. Announce it, and do it off-peak.
+
+```bash
+openssl rand -hex 32 | tr -d '\n' | \
+  gcloud secrets versions add overslash-$ENV-signing-key --project=$P --data-file=-
+roll api
+gcloud secrets versions disable <old> --secret=overslash-$ENV-signing-key --project=$P
+```
+
+#### Database passwords
+
+Terraform owns both, so the value is generated and applied in one step, with nobody seeing
+it. Cloud SQL does not drop open connections when a password changes, but the API's pool
+cannot open new ones until the roll, so roll immediately after the apply. Expect brief
+errors if an instance needs a new connection in that window. The metrics exporter reads
+`latest` on each run and needs nothing.
+
+```bash
+# db-password
+cd infra && tofu workspace select $ENV
+tofu apply -var-file=env/$ENV.tfvars -replace=module.secret_manager.random_password.db_password
+cd .. && roll api
+
+# bi-db-password (prod). The API sets the role's password at boot, and the BigQuery
+# connection takes it from the same apply. Reports fail until the roll finishes.
+cd infra && tofu apply -var-file=env/prod.tfvars -replace='module.bi[0].random_password.bi'
+cd .. && roll api
+```
+
+Read the plan first. It must replace the password and its secret version, and update the
+`google_sql_user` or BigQuery connection, and nothing else. The old version is disabled, not
+destroyed (`deletion_policy = "DISABLE"`). These two values stay in Terraform state.
+
+#### Shared internal keys
+
+The two services hold one value, so roll them back to back. Calls between them fail with 401
+until both are up. For `overfwd-gateway-key`, the steps are in
+[mailbox-gateway.md](../../runbooks/mailbox-gateway.md#rotation).
+
+`shortener-api-key` crosses projects: prod runs the only oversla.sh, and dev's API calls it
+with a copy of prod's key. So there is one value, in two secrets. Rotate prod, then copy it.
+The copy reads a payload, so it fires `[P1] Unexpected Secret Access`. Dev's short links fail
+until its roll.
+
+```bash
+ENV=prod; P=overslash
+openssl rand -base64 32 | tr -d '\n' | \
+  gcloud secrets versions add overslash-prod-shortener-api-key --project=$P --data-file=-
+roll shortener
+roll api
+
+gcloud secrets versions access latest --secret=overslash-prod-shortener-api-key --project=overslash | \
+  gcloud secrets versions add overslash-dev-shortener-api-key --project=overslash-dev --data-file=-
+ENV=dev; P=overslash-dev
+roll api
+```
+
+#### Trusted-proxy secret
+
+Shared with the dashboard's Vercel middleware. Until both sides match, the API does not trust
+that hop, so audit rows and per-IP throttles see Vercel's address instead of the client's.
+Nothing fails outright. It must be at least 32 bytes, or the API refuses to boot.
+
+```bash
+NEW=$(openssl rand -hex 32)
+printf %s "$NEW" | gcloud secrets versions add overslash-$ENV-trusted-proxy-secret --project=$P --data-file=-
+# Set the same value in the Vercel project's env for this environment, and redeploy it.
+roll api
+unset NEW
+```
+
+#### Issued keys
+
+OAuth client secrets, Stripe and the email key are issued by someone else, and each issuer
+can hold the old and new value at once. So nothing breaks if you go in this order: create
+the new value, add the version, roll, then revoke the old value.
+
+```bash
+# Create the new value at the issuer, then, without it touching your shell history:
+gcloud secrets versions add <secret> --project=$P --data-file=-   # paste, Enter, Ctrl-D
+roll api
+# Confirm a login, a connect, a charge or an email, per the secret. Then revoke the old value.
+```
+
+| Secret | Where to issue it | Overlap |
+|--------|-------------------|---------|
+| `oauth-client-secret`, `google-services-client-secret` | Google Cloud Console → Credentials → the client → Add secret | Two secrets at once |
+| `github-auth-client-secret`, `github-services-client-secret` | GitHub → the OAuth App → Generate a new client secret | Two at once |
+| `notion-`, `slack-`, `hubspot-services-client-secret` | The provider's app settings. Check first whether the provider allows an overlap; if not, expect failed token refreshes until the roll | Varies |
+| `stripe-secret-key` | Stripe → Developers → API keys → Roll key, with an expiry | Set by you |
+| `stripe-webhook-secret` | Stripe → the webhook endpoint → Roll secret | Up to 24 hours |
+| `email-api-key` | Resend → API Keys. Create a new key, then delete the old | Until you delete it |
+
+#### PagerDuty key
+
+Nothing reads this at runtime: Terraform copies it into the notification channel, so a
+rotation needs an apply, not a roll. Add a new integration key in PagerDuty, add the version,
+then `make tofu-plan ENV=prod && make tofu-apply ENV=prod`. Prove it end to end by firing a
+test alert before you delete the old integration key, because a broken key means P0s stop
+paging, silently.
+
+#### Directory key
+
+The steps are in [google-directory.md](../../runbooks/google-directory.md#rotation). In prod,
+key creation is **blocked** by the org's `iam.managed.disableServiceAccountKeyCreation`, and
+prod has no opt-out. Setting one needs `orgpolicy.policy.set`, which a project Owner does not
+have ([project-guardrails.md](../../runbooks/project-guardrails.md)). So each prod rotation
+needs an org policy admin for the temporary opt-out, or the period will be missed.
+
+### Evidence
+
+A rotation is recorded without extra work: `AddSecretVersion` and `DisableSecretVersion` are
+Admin Activity logs in the audit bucket, and the create times are in
+`gcloud secrets versions list`. See
+[secret-rotation.md](../../runbooks/secret-rotation.md#evidence).
 
 ---
 
@@ -205,13 +516,17 @@ These are tracked in [TODO.md §1.6](../../../TODO.md) and are **not** closed by
   future secret that is not added to `operator_only_secrets`. The alert does not cover this:
   any read by the API's account counts as expected. The narrower grants for the other three
   workloads are what keep a compromise of one of them from reaching the master key.
-- **No rotation metadata.** No secret declares `rotation`, `next_rotation_time` or
-  `expire_time`, and nothing alerts on rotation age.
+- **Rotation is operator-driven, and untested in production.** The metadata and alerts are
+  written but not applied. Nothing rotates unattended, the master-key procedure has not been
+  drilled on a deployed environment, and the signing key has one slot, so rotating it signs
+  everyone out. See [Rotation](#rotation).
 - **Generated secrets live in Terraform state.** The DB password, the signing key and the
   master key are generated by `random_*` resources and so appear in plaintext in the
   `overslash-tfstate` bucket (versioned, 90-day history, no CMEK). Reading state is a path
   to those values that no Secret Manager audit log records; it is recorded only as a GCS
-  object read, and only if GCS Data Access logs are on — they are not.
+  object read, and only if GCS Data Access logs are on — they are not. Rotating the master
+  key and the signing key with `gcloud secrets versions add` takes the live values out of
+  state. The two database passwords rotate through Terraform and stay in it.
 - **Memorystore** ran without AUTH or transit encryption (`overslash-prod-valkey`). Fixed
   with AUTH + TLS ([memorystore-auth-tls.md](../../runbooks/memorystore-auth-tls.md)), and
   then moved to Memorystore for Valkey with **IAM auth**

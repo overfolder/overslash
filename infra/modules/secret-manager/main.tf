@@ -35,13 +35,36 @@ variable "oauth_service_providers" {
   description = "OAuth provider keys (as in services/*.yaml `provider:`) to provision a services OAuth client secret pair for."
 }
 
+variable "pubsub_api" {
+  description = "The Pub/Sub API's google_project_service. Orders the rotation topic after it without putting it in the module's depends_on, which would defer the module's data sources."
+  type        = string
+}
+
+variable "pagerduty_enabled" {
+  type        = bool
+  default     = false
+  description = "Whether the monitoring module reads the PagerDuty key. Where it does not, the secret holds only REPLACE_ME, so it is exempt from rotation instead of alerting on the placeholder's age."
+}
+
 # --- Database password ---
 
 resource "google_secret_manager_secret" "db_password" {
   secret_id = "${var.base_prefix}-db-password"
   project   = var.project_id
+  labels    = local.rotation["database"].labels
+  topics {
+    name = local.rotation["database"].topic
+  }
+  rotation {
+    rotation_period    = local.rotation["database"].period
+    next_rotation_time = local.rotation["database"].next_rotation_time
+  }
   replication {
     auto {}
+  }
+
+  lifecycle {
+    ignore_changes = [rotation[0].next_rotation_time]
   }
 }
 
@@ -53,6 +76,16 @@ resource "random_password" "db_password" {
 resource "google_secret_manager_secret_version" "db_password" {
   secret      = google_secret_manager_secret.db_password.id
   secret_data = random_password.db_password.result
+
+  # Rotated with `tofu apply -replace=...random_password.db_password`. The new
+  # version lands before the old one goes, so `latest` always resolves, and the
+  # old one is disabled rather than destroyed, so it can be restored.
+  deletion_policy = "DISABLE"
+
+  lifecycle {
+    create_before_destroy = true
+    ignore_changes        = [enabled]
+  }
 }
 
 # --- Encryption key (AES-256 = 32 bytes = 64 hex chars) ---
@@ -60,8 +93,20 @@ resource "google_secret_manager_secret_version" "db_password" {
 resource "google_secret_manager_secret" "encryption_key" {
   secret_id = "${var.base_prefix}-encryption-key"
   project   = var.project_id
+  labels    = local.rotation["root-key"].labels
+  topics {
+    name = local.rotation["root-key"].topic
+  }
+  rotation {
+    rotation_period    = local.rotation["root-key"].period
+    next_rotation_time = local.rotation["root-key"].next_rotation_time
+  }
   replication {
     auto {}
+  }
+
+  lifecycle {
+    ignore_changes = [rotation[0].next_rotation_time]
   }
 }
 
@@ -72,6 +117,17 @@ resource "random_id" "encryption_key" {
 resource "google_secret_manager_secret_version" "encryption_key" {
   secret      = google_secret_manager_secret.encryption_key.id
   secret_data = random_id.encryption_key.hex
+
+  # This version decrypts every tenant credential written before the first
+  # rotation. Rotation adds versions with `gcloud secrets versions add`, so the
+  # value here must never be regenerated: a `-replace` of the random_id would
+  # replace this version and lose the old key. secret_data is ignored for that
+  # reason, and `enabled` so that disabling it after a rotation is not undone.
+  deletion_policy = "DISABLE"
+
+  lifecycle {
+    ignore_changes = [secret_data, enabled]
+  }
 }
 
 # --- Signing key (HMAC for API tokens = 32 bytes = 64 hex chars) ---
@@ -79,8 +135,20 @@ resource "google_secret_manager_secret_version" "encryption_key" {
 resource "google_secret_manager_secret" "signing_key" {
   secret_id = "${var.base_prefix}-signing-key"
   project   = var.project_id
+  labels    = local.rotation["root-key"].labels
+  topics {
+    name = local.rotation["root-key"].topic
+  }
+  rotation {
+    rotation_period    = local.rotation["root-key"].period
+    next_rotation_time = local.rotation["root-key"].next_rotation_time
+  }
   replication {
     auto {}
+  }
+
+  lifecycle {
+    ignore_changes = [rotation[0].next_rotation_time]
   }
 }
 
@@ -91,6 +159,15 @@ resource "random_id" "signing_key" {
 resource "google_secret_manager_secret_version" "signing_key" {
   secret      = google_secret_manager_secret.signing_key.id
   secret_data = random_id.signing_key.hex
+
+  # Rotated with `gcloud secrets versions add`, which keeps the new value out
+  # of Terraform state. `enabled` is ignored so that disabling this version
+  # afterwards is not undone by the next apply.
+  deletion_policy = "DISABLE"
+
+  lifecycle {
+    ignore_changes = [secret_data, enabled]
+  }
 }
 
 # --- Google LOGIN OAuth client (Sign-in with Google, openid/email/profile).
@@ -101,6 +178,7 @@ resource "google_secret_manager_secret" "oauth_client_id" {
   count     = var.enable_google_login ? 1 : 0
   secret_id = "${var.base_prefix}-oauth-client-id"
   project   = var.project_id
+  labels    = local.rotation_exempt_labels
   replication {
     auto {}
   }
@@ -120,8 +198,20 @@ resource "google_secret_manager_secret" "oauth_client_secret" {
   count     = var.enable_google_login ? 1 : 0
   secret_id = "${var.base_prefix}-oauth-client-secret"
   project   = var.project_id
+  labels    = local.rotation["third-party"].labels
+  topics {
+    name = local.rotation["third-party"].topic
+  }
+  rotation {
+    rotation_period    = local.rotation["third-party"].period
+    next_rotation_time = local.rotation["third-party"].next_rotation_time
+  }
   replication {
     auto {}
+  }
+
+  lifecycle {
+    ignore_changes = [rotation[0].next_rotation_time]
   }
 }
 
@@ -164,6 +254,7 @@ resource "google_secret_manager_secret" "github_auth_client_id" {
   count     = var.enable_github_login ? 1 : 0
   secret_id = "${var.base_prefix}-github-auth-client-id"
   project   = var.project_id
+  labels    = local.rotation_exempt_labels
   replication {
     auto {}
   }
@@ -183,8 +274,20 @@ resource "google_secret_manager_secret" "github_auth_client_secret" {
   count     = var.enable_github_login ? 1 : 0
   secret_id = "${var.base_prefix}-github-auth-client-secret"
   project   = var.project_id
+  labels    = local.rotation["third-party"].labels
+  topics {
+    name = local.rotation["third-party"].topic
+  }
+  rotation {
+    rotation_period    = local.rotation["third-party"].period
+    next_rotation_time = local.rotation["third-party"].next_rotation_time
+  }
   replication {
     auto {}
+  }
+
+  lifecycle {
+    ignore_changes = [rotation[0].next_rotation_time]
   }
 }
 
@@ -215,6 +318,7 @@ resource "google_secret_manager_secret" "oauth_service_client_id" {
   for_each  = toset(var.oauth_service_providers)
   secret_id = "${var.base_prefix}-${replace(each.key, "_", "-")}-services-client-id"
   project   = var.project_id
+  labels    = local.rotation_exempt_labels
   replication {
     auto {}
   }
@@ -234,8 +338,20 @@ resource "google_secret_manager_secret" "oauth_service_client_secret" {
   for_each  = toset(var.oauth_service_providers)
   secret_id = "${var.base_prefix}-${replace(each.key, "_", "-")}-services-client-secret"
   project   = var.project_id
+  labels    = local.rotation["third-party"].labels
+  topics {
+    name = local.rotation["third-party"].topic
+  }
+  rotation {
+    rotation_period    = local.rotation["third-party"].period
+    next_rotation_time = local.rotation["third-party"].next_rotation_time
+  }
   replication {
     auto {}
+  }
+
+  lifecycle {
+    ignore_changes = [rotation[0].next_rotation_time]
   }
 }
 
@@ -286,8 +402,20 @@ resource "google_secret_manager_secret" "google_directory_sa_key" {
   count     = var.enable_google_directory_sync ? 1 : 0
   secret_id = "${var.base_prefix}-google-directory-sa-key"
   project   = var.project_id
+  labels    = local.rotation["sa-key"].labels
+  topics {
+    name = local.rotation["sa-key"].topic
+  }
+  rotation {
+    rotation_period    = local.rotation["sa-key"].period
+    next_rotation_time = local.rotation["sa-key"].next_rotation_time
+  }
   replication {
     auto {}
+  }
+
+  lifecycle {
+    ignore_changes = [rotation[0].next_rotation_time]
   }
 }
 
@@ -304,8 +432,20 @@ resource "google_secret_manager_secret_version" "google_directory_sa_key" {
 resource "google_secret_manager_secret" "shortener_api_key" {
   secret_id = "${var.base_prefix}-shortener-api-key"
   project   = var.project_id
+  labels    = local.rotation["internal-key"].labels
+  topics {
+    name = local.rotation["internal-key"].topic
+  }
+  rotation {
+    rotation_period    = local.rotation["internal-key"].period
+    next_rotation_time = local.rotation["internal-key"].next_rotation_time
+  }
   replication {
     auto {}
+  }
+
+  lifecycle {
+    ignore_changes = [rotation[0].next_rotation_time]
   }
 }
 
@@ -332,8 +472,20 @@ resource "google_secret_manager_secret_version" "shortener_api_key" {
 resource "google_secret_manager_secret" "overfwd_gateway_key" {
   secret_id = "${var.base_prefix}-overfwd-gateway-key"
   project   = var.project_id
+  labels    = local.rotation["internal-key"].labels
+  topics {
+    name = local.rotation["internal-key"].topic
+  }
+  rotation {
+    rotation_period    = local.rotation["internal-key"].period
+    next_rotation_time = local.rotation["internal-key"].next_rotation_time
+  }
   replication {
     auto {}
+  }
+
+  lifecycle {
+    ignore_changes = [rotation[0].next_rotation_time]
   }
 }
 
@@ -350,9 +502,12 @@ resource "google_secret_manager_secret_version" "overfwd_gateway_key" {
   secret_data = random_password.overfwd_gateway_key.result
 
   # A rotation is `gcloud secrets versions add` out-of-band; terraform must not
-  # drag the secret back to its generated value on the next apply.
+  # drag the secret back to its generated value on the next apply, nor re-enable
+  # this version once it has been disabled.
+  deletion_policy = "DISABLE"
+
   lifecycle {
-    ignore_changes = [secret_data]
+    ignore_changes = [secret_data, enabled]
   }
 }
 
@@ -362,8 +517,20 @@ resource "google_secret_manager_secret_version" "overfwd_gateway_key" {
 resource "google_secret_manager_secret" "stripe_secret_key" {
   secret_id = "${var.base_prefix}-stripe-secret-key"
   project   = var.project_id
+  labels    = local.rotation["third-party"].labels
+  topics {
+    name = local.rotation["third-party"].topic
+  }
+  rotation {
+    rotation_period    = local.rotation["third-party"].period
+    next_rotation_time = local.rotation["third-party"].next_rotation_time
+  }
   replication {
     auto {}
+  }
+
+  lifecycle {
+    ignore_changes = [rotation[0].next_rotation_time]
   }
 }
 
@@ -379,8 +546,20 @@ resource "google_secret_manager_secret_version" "stripe_secret_key" {
 resource "google_secret_manager_secret" "stripe_webhook_secret" {
   secret_id = "${var.base_prefix}-stripe-webhook-secret"
   project   = var.project_id
+  labels    = local.rotation["third-party"].labels
+  topics {
+    name = local.rotation["third-party"].topic
+  }
+  rotation {
+    rotation_period    = local.rotation["third-party"].period
+    next_rotation_time = local.rotation["third-party"].next_rotation_time
+  }
   replication {
     auto {}
+  }
+
+  lifecycle {
+    ignore_changes = [rotation[0].next_rotation_time]
   }
 }
 
@@ -401,8 +580,26 @@ resource "google_secret_manager_secret_version" "stripe_webhook_secret" {
 resource "google_secret_manager_secret" "pagerduty_integration_key" {
   secret_id = "${var.base_prefix}-pagerduty-integration-key"
   project   = var.project_id
+  labels    = var.pagerduty_enabled ? local.rotation["third-party"].labels : local.rotation_exempt_labels
+  dynamic "topics" {
+    for_each = var.pagerduty_enabled ? [1] : []
+    content {
+      name = local.rotation["third-party"].topic
+    }
+  }
+  dynamic "rotation" {
+    for_each = var.pagerduty_enabled ? [1] : []
+    content {
+      rotation_period    = local.rotation["third-party"].period
+      next_rotation_time = local.rotation["third-party"].next_rotation_time
+    }
+  }
   replication {
     auto {}
+  }
+
+  lifecycle {
+    ignore_changes = [rotation[0].next_rotation_time]
   }
 }
 
@@ -422,8 +619,20 @@ resource "google_secret_manager_secret_version" "pagerduty_integration_key" {
 resource "google_secret_manager_secret" "email_api_key" {
   secret_id = "${var.base_prefix}-email-api-key"
   project   = var.project_id
+  labels    = local.rotation["third-party"].labels
+  topics {
+    name = local.rotation["third-party"].topic
+  }
+  rotation {
+    rotation_period    = local.rotation["third-party"].period
+    next_rotation_time = local.rotation["third-party"].next_rotation_time
+  }
   replication {
     auto {}
+  }
+
+  lifecycle {
+    ignore_changes = [rotation[0].next_rotation_time]
   }
 }
 
@@ -445,8 +654,20 @@ resource "google_secret_manager_secret_version" "email_api_key" {
 resource "google_secret_manager_secret" "trusted_proxy_secret" {
   secret_id = "${var.base_prefix}-trusted-proxy-secret"
   project   = var.project_id
+  labels    = local.rotation["internal-key"].labels
+  topics {
+    name = local.rotation["internal-key"].topic
+  }
+  rotation {
+    rotation_period    = local.rotation["internal-key"].period
+    next_rotation_time = local.rotation["internal-key"].next_rotation_time
+  }
   replication {
     auto {}
+  }
+
+  lifecycle {
+    ignore_changes = [rotation[0].next_rotation_time]
   }
 }
 
