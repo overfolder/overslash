@@ -2,11 +2,15 @@
 	import {
 		stepUp,
 		dismissStepUp,
+		persistStepUpResume,
 		type StepUpChallenge,
 		type StepUpProvider
 	} from '#lib/stores/stepUp.svelte.ts';
 
 	const challenge = $derived(stepUp.pending);
+	const context = $derived(stepUp.context);
+	const needs = $derived(context ? `${context.subject} needs` : 'Admin changes need');
+	const inOrg = $derived(context ? `${context.subject} in this org needs` : 'Admin changes in this org need');
 
 	function minutes(secs: number): string {
 		const m = Math.round(secs / 60);
@@ -16,13 +20,13 @@
 	function explain(c: StepUpChallenge): string {
 		switch (c.reason) {
 			case 'stale':
-				return `Admin changes need a sign-in from the last ${minutes(c.max_age_secs)}. Sign in again to continue.`;
+				return `${needs} a sign-in from the last ${minutes(c.max_age_secs)}. Sign in again to continue.`;
 			case 'auth_time_missing':
 				return "Your identity provider signed you in but didn't say when it last checked your password or second factor, so Overslash can't treat the sign-in as recent. Signing in again with it won't help until it does.";
 			case 'provider_not_allowed':
-				return "Admin changes in this org need a sign-in through one of the org's own identity providers.";
+				return `${inOrg} a sign-in through one of the org's own identity providers.`;
 			default:
-				return "Admin changes in this org need a sign-in through an identity provider, so its multi-factor check applies. An email link isn't enough.";
+				return `${inOrg} a sign-in through an identity provider, so its multi-factor check applies. An email link isn't enough.`;
 		}
 	}
 
@@ -57,7 +61,7 @@
 			{#if challenge.providers.length > 0}
 				<div class="providers">
 					{#each challenge.providers as p (p.key)}
-						<a class="btn btn-primary" href={href(p)}>
+						<a class="btn btn-primary" href={href(p)} onclick={persistStepUpResume}>
 							{p.key === 'email' ? 'Sign in again with an email link' : `Continue with ${p.display_name}`}
 						</a>
 					{/each}
@@ -68,7 +72,7 @@
 					provider.
 				</p>
 			{/if}
-			<p class="hint">You'll come back to this page. Then repeat the change.</p>
+			<p class="hint">You'll come back to this page. {context?.after ?? 'Then repeat the change.'}</p>
 			<div class="actions">
 				<button class="btn" onclick={dismissStepUp}>Cancel</button>
 			</div>

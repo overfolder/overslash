@@ -27,9 +27,13 @@ mutations need a fresh IdP sign-in"*.
 - Account → Sessions shows each session's sign-in method and the `amr` the IdP reported.
 - `/v1/org-idp-configs` create, update, delete and discover now require `AdminAcl`.
   Before this, any credential in the org could call them, including an agent key.
+- Revealing a secret (`POST /v1/secrets/{name}/versions/{version}/reveal`) is under the
+  same rule for **every** session in a shared org, members included
+  (`admin_step_up::require_fresh`). The prompt says it is for the reveal, and the
+  dashboard repeats the reveal when the human is back.
 
-Out of scope: personal orgs, API keys and MCP tokens, reads, and the API's own stateless
-loopback token.
+Out of scope: personal orgs, API keys and MCP tokens, reads other than a secret reveal,
+and the API's own stateless loopback token.
 
 The migration runs in-process on deploy, like every other migration. No backfill is
 needed: sessions created before it have NULLs, and their admins see the prompt once.
@@ -79,13 +83,17 @@ SELECT column_name FROM information_schema.columns
 # 4. A step-up clears it. Continue with the org's IdP; the IdP must challenge
 #    (password and/or second factor), you land back on the page, and the change
 #    succeeds. Account → Sessions now shows the session "with Google" (or the org's IdP).
+
+# 5. The same holds for a member's reveal. As a non-admin in a shared org, with a session
+#    over an hour old or from an email link, open a secret and press Reveal. Expect the
+#    prompt and the same 403. Sign in, and the value opens without pressing Reveal again.
 ```
 
 ### Google must send `auth_time`
 
-**Required before this ships to an environment whose admins sign in with Google.**
-Without it, every Google session has no sign-in time and its admins see
-`auth_time_missing` on every admin change. Google adds `auth_time` only for an app that is
+**Required before this ships to an environment whose users sign in with Google.**
+Without it, every Google session has no sign-in time. Its admins see `auth_time_missing`
+on every admin change, and in a shared org its members see it on every secret reveal. Google adds `auth_time` only for an app that is
 published, verified and has the security bundle enabled. For each OAuth client in
 `GOOGLE_AUTH_CLIENT_ID` (prod and dev), go to Google Auth Platform → *Settings* →
 *Advanced settings* and enable **Session age claims**. See Google's
@@ -119,7 +127,8 @@ delegation is only true if the IdP actually enforces MFA. For each population:
 For [evidence-index.md](../compliance/casa/evidence-index.md), 3.3.1:
 
 1. The step-up prompt from verify step 3. `dashboard/scripts/screenshot-step-up.mjs`
-   produces it against the e2e stack (`step-up-modal.png`).
+   produces it against the e2e stack (`step-up-modal.png`). For 2.4.1,
+   `dashboard/scripts/screenshot-secret-reveal-step-up.mjs` does the same for verify step 5.
 2. The IdP's MFA challenge from verify step 4, on prod, with an operator account.
 3. Account → Sessions after that sign-in, showing the IdP and the `amr` line (Google
    sends `amr` only sometimes; capture it when present).
@@ -141,7 +150,11 @@ For [evidence-index.md](../compliance/casa/evidence-index.md), 3.3.1:
   step-up is then only a fresh round-trip.
 - **The prompt is too frequent.** Raise `admin_step_up_max_age_secs` (at most 86400) and
   re-apply. Anything above a working day weakens the 2.4.1 answer. Say so in the
-  assessment if you change it.
+  assessment if you change it. The window is shared, so this also loosens secret reveal.
+- **A member can't pass the prompt to reveal a value.** A member who has only used email
+  links has to sign in through the org's IdP, or through a root IdP with the same email if
+  the org has none. If that isn't possible, an admin who has stepped up can reveal it with
+  `?owner=` or rotate it. Agents are unaffected, because values are injected at execution.
 - **Self-hosted, no IdP at all.** With no Google/GitHub credentials and no org IdP, a
   fresh magic link qualifies instead and the prompt offers an email link. Adding an IdP
   removes that fallback automatically.
