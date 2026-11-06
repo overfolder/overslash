@@ -1,0 +1,95 @@
+# Container image vulnerability check — CASA 6.1.1. Policy:
+# docs/compliance/casa/dependency-vulnerability-policy.md. Runbook:
+# docs/runbooks/image-scanning.md.
+#
+# Artifact Analysis scans images in GCP and keeps findings current as advisories
+# are published, but tells nobody. This reads what is deployed in each project,
+# and a failure opens (or bumps) a triage issue like the Dependency audit's.
+#
+# Not part of deps-audit.yml: ci.yml calls that file, and a job there asking
+# for `id-token: write` would make every PR run grant it. This workflow has no
+# PR trigger, so the report job can live here too.
+#
+# Each environment is checked against the ignores on the branch it deploys from.
+name: Container image scan
+
+on:
+  schedule:
+    # 06:47 UTC — off the top of the hour, and clear of the Dependency audit.
+    - cron: "47 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    name: Image scan (${{ matrix.env }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - env: dev
+            project: overslash-dev
+            project_number: "13553719731"
+            prefix: overslash-dev
+            ref: dev
+          - env: prod
+            project: overslash
+            project_number: "212015650448"
+            prefix: overslash-prod
+            ref: master
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ matrix.ref }}
+      # Values are `tofu output image_scan_workload_identity_provider` and
+      # `image_scan_service_account`. Neither is a secret.
+      - id: auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: projects/${{ matrix.project_number }}/locations/global/workloadIdentityPools/github-actions/providers/image-scan
+          service_account: ${{ matrix.prefix }}-imgscan@${{ matrix.project }}.iam.gserviceaccount.com
+          token_format: access_token
+          create_credentials_file: false
+      - name: Check deployed images
+        env:
+          GCP_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+        run: bash scripts/check-image-vulns.sh --project "${{ matrix.project }}"
+
+  report:
+    needs: scan
+    if: always() && needs.scan.result == 'failure'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      TITLE: "Container image scan failing (scheduled scan)"
+    steps:
+      - name: Open or update the triage issue
+        run: |
+          body=$(cat <<EOF
+          The scheduled container image scan failed: $RUN_URL
+
+          Triage per [the dependency vulnerability policy](https://github.com/$GH_REPO/blob/dev/docs/compliance/casa/dependency-vulnerability-policy.md):
+          read the failing job's log or summary, then fix each finding or add a
+          justified, time-boxed entry to \`image-scan-ignores.json\`. A failed
+          sign-in, or an image that is stale or was never scanned, shows up
+          here too. Fixes and diagnosis are in the
+          [image scanning runbook](https://github.com/$GH_REPO/blob/dev/docs/runbooks/image-scanning.md).
+          EOF
+          )
+          existing=$(gh issue list --state open --search "\"$TITLE\" in:title" \
+            --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "Still failing: $RUN_URL"
+          else
+            gh issue create --title "$TITLE" --label needs-triage --label dependencies --body "$body"
+          fi

@@ -13,6 +13,15 @@ resource "google_project_service" "apis" {
       "logging.googleapis.com",
       "billingbudgets.googleapis.com",
       "orgpolicy.googleapis.com",
+      # Scans every image pushed to this project's Artifact Registry repos and
+      # stores the findings. Billed per new digest from the moment it is on.
+      # docs/runbooks/image-scanning.md.
+      "containerscanning.googleapis.com",
+      "containeranalysis.googleapis.com",
+      # Workload Identity Federation, for the scheduled image check.
+      "iam.googleapis.com",
+      "iamcredentials.googleapis.com",
+      "sts.googleapis.com",
       # The provider bills quota to this project (user_project_override), so
       # its own reads go through here. Enable by hand on a fresh project:
       # this list can't be read without it.
@@ -90,6 +99,20 @@ module "artifact_registry" {
   # overfwd is the one image we deploy but do not build; the mirror keeps its
   # pull off Docker Hub's availability and rate limits.
   enable_docker_hub_remote = var.enable_overfwd
+
+  depends_on = [google_project_service.apis]
+}
+
+# --- Scheduled container image check (CASA 6.1.1) ---
+module "image_scanning" {
+  source      = "./modules/image-scanning"
+  project_id  = var.project_id
+  region      = var.region
+  base_prefix = local.base_prefix
+
+  github_owner     = var.github_owner
+  github_repo      = var.github_repo
+  repository_names = module.artifact_registry.repository_names
 
   depends_on = [google_project_service.apis]
 }
