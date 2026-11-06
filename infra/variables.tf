@@ -611,3 +611,15 @@ variable "enable_metrics_sidecar" {
   type        = bool
   default     = true
 }
+
+variable "otel_collector_image" {
+  description = "OTel collector image path *relative to the Docker Hub mirror*, digest-pinned."
+  type        = string
+  # 0.120.0, multi-arch index digest.
+  default = "otel/opentelemetry-collector-contrib@sha256:85ac41c2db88d0df9bd6145e608a3cb023f5d8443868adbfbbf66efb51087917"
+
+  validation {
+    condition     = can(regex("@sha256:[0-9a-f]{64}$", var.otel_collector_image))
+    error_message = "otel_collector_image must be digest-pinned (…@sha256:<64 hex chars>)."
+  }
+}

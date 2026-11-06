@@ -373,6 +373,30 @@ dependency tree is now scanned in CI (6.1.1, see
 [dependency-vulnerability-policy.md](dependency-vulnerability-policy.md)), but the built
 image — its base-layer OS packages in particular — is still scanned nowhere.
 
+**Update 2026-11-06: image scanning is written, not applied.** Re-measured on both projects:
+none of these APIs is on, and all four repositories report `SCANNING_DISABLED`.
+[image-scanning.md](../../runbooks/image-scanning.md) enables `containerscanning` and
+`containeranalysis` on both projects, and a daily check files a `needs-triage` issue for HIGH
+and CRITICAL findings on deployed images. Expect about $34 to $71 a month, nearly all of it
+dev; the runbook has the measured push counts.
+
+The other two stay off, on purpose:
+
+- **Binary Authorization: P3, not now.** It costs nothing on Cloud Run, so price isn't the
+  reason. It adds little today. Nothing in the CASA requirements we mapped asks for it. Only
+  Cloud Build deploys, from the protected branches, and the images are tagged by commit. An
+  attestor needs a KMS key, a signing step in all three build pipelines, a `binary_authorization`
+  block on every service and job, and an exemption or attestation for overfwd and the OTel
+  sidecar, which we don't build. And a misconfigured attestor stops deploys, including an urgent fix. Scanning also
+  answers the question an assessor asks, whether a known-vulnerable image is running; Binary
+  Authorization answers a different one, whether this image came from our pipeline. The
+  attacker it stops holds `run.developer`, and tightening Cloud Build's project-wide
+  `iam.serviceAccountUser` (open in TODO.md) reduces that risk more cheaply. Revisit it
+  alongside artifact signing and provenance, which are P3 for the same reason, or if a lab asks.
+- **Security Command Center: P3.** The daily check reads Artifact Analysis directly, so
+  nothing here depends on it. Standard tier can be activated per project. Its pricing and
+  whether it surfaces these findings are unverified, so check both before relying on it.
+
 Organization policy constraints set on either project: **none**.
 `sql.restrictPublicIp` · `iam.disableServiceAccountKeyCreation` · `run.allowedIngress` ·
 `storage.publicAccessPrevention` · `iam.automaticIamGrantsForDefaultServiceAccounts` are

@@ -57,3 +57,13 @@ output "api_lb_ipv6" {
   description = "API LB IPv6 address (AAAA record for `api_host_suffix` and `*.<suffix>`). Empty unless enable_api_lb and api_lb_enable_ipv6."
   value       = var.enable_api_lb ? module.api_lb[0].lb_ipv6 : ""
 }
+
+output "image_scan_workload_identity_provider" {
+  description = "WIF provider .github/workflows/image-scan.yml signs in through."
+  value       = module.image_scanning.workload_identity_provider
+}
+
+output "image_scan_service_account" {
+  description = "Read-only service account of the scheduled image check."
+  value       = module.image_scanning.service_account_email
+}

@@ -28,7 +28,7 @@ variable "cleanup_dry_run" {
 }
 
 # Provision a pull-through cache of Docker Hub. Needed for third-party images
-# we deploy but do not build (overfwd), so Cloud Run pulls from Artifact
+# we deploy but do not build (overfwd, the OTel sidecar), so Cloud Run pulls from Artifact
 # Registry rather than depending on Docker Hub's availability and rate limits
 # at revision-deploy time. Digest pins stay valid: a remote repository serves
 # the upstream manifest unchanged.
@@ -45,6 +45,12 @@ resource "google_artifact_registry_repository" "repo" {
   project       = var.project_id
 
   cleanup_policy_dry_run = var.cleanup_dry_run
+
+  # Follow the project's Container Scanning API. Pinned so that turning a repo
+  # off by hand shows up as drift (CASA 6.1.1; docs/runbooks/image-scanning.md).
+  vulnerability_scanning_config {
+    enablement_config = "INHERITED"
+  }
 
   # Protect the 10 most recent versions of every package (images and the
   # BuildKit cache) from deletion regardless of age. Safety net for rollbacks,
@@ -89,6 +95,11 @@ resource "google_artifact_registry_repository" "docker_hub" {
   mode          = "REMOTE_REPOSITORY"
   project       = var.project_id
 
+  # overfwd and the OTel sidecar deploy from here, so they must be scanned too.
+  vulnerability_scanning_config {
+    enablement_config = "INHERITED"
+  }
+
   remote_repository_config {
     description = "Docker Hub"
     docker_repository {
@@ -103,6 +114,14 @@ output "repository_id" {
 
 output "repository_name" {
   value = google_artifact_registry_repository.repo.repository_id
+}
+
+# Every repository in this module, for grants that cover all deployed images.
+output "repository_names" {
+  value = concat(
+    [google_artifact_registry_repository.repo.repository_id],
+    google_artifact_registry_repository.docker_hub[*].repository_id,
+  )
 }
 
 output "repository_url" {
