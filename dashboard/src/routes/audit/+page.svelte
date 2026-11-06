@@ -18,6 +18,7 @@
 		type AuditFilters
 	} from './types';
 	import {
+		DEFAULT_RANGE,
 		rangeLabel,
 		rangeToParams,
 		resolveRange,
@@ -152,6 +153,8 @@
 
 	function applyFilters(next: AuditFilters) {
 		filters = next;
+		// The unbounded window belongs to the id lookup; it ends with it.
+		if (range.kind === 'all' && !next.uuid) range = DEFAULT_RANGE;
 		reload();
 	}
 

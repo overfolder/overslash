@@ -14,8 +14,10 @@ import { api, login, makeSnapper, seedExecution, seedSecret } from '../tests/sce
 const session = await login('admin');
 
 await seedSecret(session, { name: `audit-range-demo-${Date.now()}`, value: 'hunter2' });
-await seedExecution(session, { url: `${session.apiUrl}/health` });
-await seedExecution(session, { url: `${session.apiUrl}/v1/secrets` });
+// Unreachable on purpose: the gateway answers 502 and still writes the
+// `action.executed` row, which is all the table needs.
+await seedExecution(session, { url: 'http://127.0.0.1:9/unreachable', expect: 502 });
+await seedExecution(session, { url: 'http://127.0.0.1:9/also-unreachable', expect: 502 });
 
 const snap = await makeSnapper(session);
 const VIEWPORT = { width: 1400, height: 900 };
@@ -98,6 +100,16 @@ try {
 				}
 			}
 		);
+		await ctx.close();
+	}
+
+	// 7. An id deep link has no window: older than any preset, still found.
+	{
+		const [{ id }] = await api(session, '/v1/audit?limit=1');
+		const { page, ctx } = await snap.navigateAndSnap('audit-range-id-lookup', `/audit?uuid=${id}`, {
+			viewport: VIEWPORT
+		});
+		await page.locator('[data-test="audit-time-range"] .seg.custom', { hasText: 'whole history' }).waitFor();
 		await ctx.close();
 	}
 } finally {

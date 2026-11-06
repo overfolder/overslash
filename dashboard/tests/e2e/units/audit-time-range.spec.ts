@@ -47,6 +47,20 @@ test.describe('rangeFromSearchParams', () => {
 		});
 	});
 
+	test('an id lookup with no window searches the whole history', () => {
+		const p = new URLSearchParams('uuid=7f1c0a52-3f4e-4c55-9a0b-0d4f7c1e2a10');
+		expect(rangeFromSearchParams(p)).toEqual({ kind: 'all' });
+		expect(rangeToParams({ kind: 'all' })).toEqual({});
+		const r = resolveRange({ kind: 'all' }, NOW);
+		expect(r.since).toBeUndefined();
+		expect(r.until).toBe(NOW.toISOString());
+	});
+
+	test('an explicit window beats an id lookup', () => {
+		const p = new URLSearchParams('uuid=7f1c0a52-3f4e-4c55-9a0b-0d4f7c1e2a10&range=1h');
+		expect(rangeFromSearchParams(p)).toEqual({ kind: 'relative', preset: '1h' });
+	});
+
 	test('a garbage instant is ignored rather than sent to the API', () => {
 		expect(rangeFromSearchParams(new URLSearchParams('since=yesterday'))).toEqual(DEFAULT_RANGE);
 	});

@@ -1281,6 +1281,7 @@ Every audit query carries a time window, picked with a segmented control beside 
 
 - **Relative presets** live in the URL as `?range=24h` and mean "the last 24h from whenever this is opened", so a shared link keeps meaning what it said.
 - **Custom** opens a popover with two local-time `datetime-local` inputs (the zone is shown under them) and Apply / Cancel; Apply is disabled until the start is before the end. A custom window lives in the URL as `?since=…&until=…` (UTC ISO) and is fixed. The button then shows the window, e.g. `Oct 20, 14:00 → Oct 21, 09:30`.
+- **Id lookups** are the one exception: a `/audit?uuid=…` link naming no window (the Execution reference on a row) searches the whole history, since the row it names can be any age. The button shows "whole history". Removing the `uuid` filter returns to 24h.
 - The window is resolved to concrete bounds once per reset (load, filter change, Refresh) and held while scrolling, so infinite scroll pages one fixed window.
 - **Empty state**: "No audit events in the last 1h match the current filters" with a **Try 24h** button that steps up to the next preset.
 

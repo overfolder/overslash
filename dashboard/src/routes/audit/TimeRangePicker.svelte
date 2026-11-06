@@ -41,7 +41,7 @@
 		// Seed the draft with whatever window is showing now, so tweaking
 		// "last 24h" into a custom range starts from it rather than from blank.
 		const r = resolveRange(value);
-		draftSince = toLocalInput(r.since);
+		draftSince = r.since ? toLocalInput(r.since) : '';
 		draftUntil = toLocalInput(r.until);
 		open = !open;
 	}
@@ -89,13 +89,13 @@
 		<button
 			type="button"
 			class="seg custom"
-			class:active={value.kind === 'absolute'}
-			aria-pressed={value.kind === 'absolute'}
+			class:active={value.kind !== 'relative'}
+			aria-pressed={value.kind !== 'relative'}
 			aria-expanded={open}
 			aria-haspopup="dialog"
 			onclick={openCustom}
 		>
-			{value.kind === 'absolute' ? rangeLabel(value) : 'Custom'}
+			{value.kind === 'relative' ? 'Custom' : rangeLabel(value)}
 			<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
 				<path d="m6 9 6 6 6-6" fill="none" stroke="currentColor" stroke-width="1.5" />
 			</svg>

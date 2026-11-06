@@ -30,11 +30,15 @@ const PRESET_LABEL: Record<RangePreset, string> = {
 export type TimeRange =
 	| { kind: 'relative'; preset: RangePreset }
 	/** `until` absent means "up to now" — an old `?since=` link without one. */
-	| { kind: 'absolute'; since: string; until?: string };
+	| { kind: 'absolute'; since: string; until?: string }
+	/** An id lookup: the row it names can be any age. Comes only from a `uuid`
+	 *  in a URL naming no window, so it has no URL form of its own. */
+	| { kind: 'all' };
 
 /** Concrete bounds for one fetch session. */
 export interface ResolvedRange {
-	since: string;
+	/** Absent for an id lookup, which has no lower bound. */
+	since?: string;
 	until: string;
 }
 
@@ -56,6 +60,7 @@ export function rangeFromSearchParams(params: URLSearchParams): TimeRange {
 	if (isInstant(since)) {
 		return isInstant(until) ? { kind: 'absolute', since, until } : { kind: 'absolute', since };
 	}
+	if (params.get('uuid')) return { kind: 'all' };
 	return DEFAULT_RANGE;
 }
 
@@ -63,6 +68,7 @@ export function rangeFromSearchParams(params: URLSearchParams): TimeRange {
  *  says which window it was looking at. */
 export function rangeToParams(range: TimeRange): Record<string, string> {
 	if (range.kind === 'relative') return { range: range.preset };
+	if (range.kind === 'all') return {};
 	return range.until ? { since: range.since, until: range.until } : { since: range.since };
 }
 
@@ -70,6 +76,7 @@ export function rangeToParams(range: TimeRange): Record<string, string> {
  *  refresh) and then held: infinite scroll keeps paging the same window
  *  instead of one that slides a little further with every page. */
 export function resolveRange(range: TimeRange, now: Date = new Date()): ResolvedRange {
+	if (range.kind === 'all') return { until: now.toISOString() };
 	if (range.kind === 'absolute') {
 		return { since: range.since, until: range.until ?? now.toISOString() };
 	}
@@ -83,7 +90,7 @@ export function sameRange(a: TimeRange, b: TimeRange): boolean {
 	if (a.kind === 'relative' && b.kind === 'relative') return a.preset === b.preset;
 	if (a.kind === 'absolute' && b.kind === 'absolute')
 		return a.since === b.since && a.until === b.until;
-	return false;
+	return a.kind === 'all' && b.kind === 'all';
 }
 
 /** The next preset up, for the empty state's "try a wider range". */
@@ -103,6 +110,7 @@ const SHORT = new Intl.DateTimeFormat(undefined, {
  *  time for a custom window. */
 export function rangeLabel(range: TimeRange): string {
 	if (range.kind === 'relative') return PRESET_LABEL[range.preset];
+	if (range.kind === 'all') return 'whole history';
 	const since = SHORT.format(new Date(range.since));
 	return range.until ? `${since} → ${SHORT.format(new Date(range.until))}` : `${since} → now`;
 }
