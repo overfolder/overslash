@@ -170,6 +170,7 @@ mod search;
 mod secret_isolation;
 mod secret_namespaces;
 mod secret_requests;
+mod secret_reveal_step_up;
 mod secrets_chain_visibility;
 mod secrets_dashboard;
 mod security_headers;

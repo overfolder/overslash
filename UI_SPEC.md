@@ -963,7 +963,7 @@ v1        2026-03-10 09:00     user:alice         ○ previous
 Clicking a version row (or `[Reveal]` button) opens a modal showing:
 
 - Version number, created timestamp, created by
-- **Secret value** — masked by default. A `[Reveal]` button calls `POST /v1/secrets/{name}/versions/{version}/reveal` and shows the value inline (click-to-reveal pattern). The reveal is audit-logged as `secret.revealed`. This is the **only way** to view secret values in the dashboard — agents never receive values via API.
+- **Secret value** — masked by default. A `[Reveal]` button calls `POST /v1/secrets/{name}/versions/{version}/reveal` and shows the value inline (click-to-reveal pattern). The reveal is audit-logged as `secret.revealed`. In a shared org it needs a recent sign-in: on 403 `step_up_required` the *Confirm it's you* prompt says so, and the reveal repeats by itself when the human returns from the sign-in. This is the **only way** to view secret values in the dashboard — agents never receive values via API.
 - `[Copy]` button to copy the revealed value
 - `[Restore this version]` if not the current version — calls `POST /v1/secrets/{name}/versions/{version}/restore`, which creates a new version pointing to the old value. Audit-logged as `secret.restored`.
 
@@ -1422,7 +1422,7 @@ A top-level page scoped to the human, not any one org — always reachable from 
 - Per-row action: **End session** — `DELETE /v1/account/sessions/{id}`; that browser is signed out on its next request. On the caller's own row the button reads **Sign out**, and success navigates to `/login`.
 - **Sign out all other sessions** (card header, only when there are others) — confirms in a modal naming how many, then `POST /v1/account/sessions/revoke-others` and reloads the list.
 
-**Step-up prompt** (global, mounted in the root layout): when any API call answers 403 `step_up_required`, a *Confirm it's you* modal explains why (no IdP sign-in / not one of the org's IdPs / older than the window) and offers one **Continue with <IdP>** button per provider in the response. The button goes to the provider's `login_path` with `next` set to the current page. On an IdP-less deployment it offers **Sign in again with an email link** (`/login?reason=step_up&return_to=…`). **Cancel** dismisses it. The page that made the failed call still shows its own error.
+**Step-up prompt** (global, mounted in the root layout): when any API call answers 403 `step_up_required`, a *Confirm it's you* modal explains why (no IdP sign-in / not one of the org's IdPs / older than the window) and offers one **Continue with <IdP>** button per provider in the response. The button goes to the provider's `login_path` with `next` set to the current page. On an IdP-less deployment it offers **Sign in again with an email link** (`/login?reason=step_up&return_to=…`). **Cancel** dismisses it. The page that made the failed call still shows its own error. A secret reveal rewords the prompt for the reveal (not "Admin changes"). Clicking a sign-in option records the page and version for 10 minutes, and the secret detail page uses that to repeat the reveal once on return.
 
 **Organizations card**:
 - List of the user's memberships, one per row
