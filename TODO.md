@@ -139,7 +139,7 @@ three production alert policies disabled in `infra/env/prod.tfvars`.
 **Assessment logistics.**
 
 - [ ] Close the dev-environment deltas (public Cloud SQL IP with no `authorized_networks`; `DEV_AUTH` on) or stand up a dedicated scan environment. See [dast-readiness.md](docs/compliance/casa/dast-readiness.md).
-- [ ] Write the SSRF scoping memo **before** engaging a lab — the product looks exactly like SSRF to a DAST scanner, and the argument has to be supplied during scoping, not after the report.
+- [x] Write the SSRF scoping memo **before** engaging a lab — the product looks exactly like SSRF to a DAST scanner, and the argument has to be supplied during scoping, not after the report. [docs/compliance/casa/ssrf-scoping-memo.md](docs/compliance/casa/ssrf-scoping-memo.md).
 - [ ] Run the ADA Burp Audit Scan Configuration ourselves against the scan target and fix what it finds. At AL1 this is also the deliverable.
 - [ ] Assemble the evidence pack — [evidence-index.md](docs/compliance/casa/evidence-index.md).
 - [ ] Engage an authorized lab.
