@@ -14,7 +14,7 @@ use pg_query::protobuf::node::Node as NodeEnum;
 /// Parse `sql` and rule on it. The order of the refusals below is the order
 /// a reader should meet them: least-surprising diagnosis first.
 pub(super) fn analyze(sql: &str, extra_safe: &[String]) -> SqlAnalysis {
-    let result = match pg_query::parse(sql) {
+    let result = match pg_query::parse(sql, pg_query::ParserOptions::DEFAULT) {
         Ok(r) => r,
         Err(e) => {
             return SqlAnalysis::write(
@@ -546,7 +546,7 @@ mod tests {
             ),
         ];
         for (name, sql, want) in cases {
-            let parsed = pg_query::parse(sql).expect(name);
+            let parsed = pg_query::parse(sql, pg_query::ParserOptions::DEFAULT).expect(name);
             assert_eq!(count_func_calls(&parsed), want, "{name}");
             // And the walk agrees, which is what makes the comparison in
             // `analyze` meaningful rather than vacuous.
