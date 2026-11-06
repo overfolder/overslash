@@ -31,7 +31,7 @@
 //! starts a new session.
 //!
 //! One read is in scope: revealing a secret's plaintext (`require_fresh`,
-//! D-NEXT). It is a member's own action, not an admin one, and the same three
+//! D143). It is a member's own action, not an admin one, and the same three
 //! rules apply to it: a cookie that outlived its sign-in should not read a
 //! credential out of the vault.
 //!
