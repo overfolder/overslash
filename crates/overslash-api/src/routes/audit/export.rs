@@ -235,6 +235,11 @@ impl Drop for ExportState {
         let Some(audit) = self.audit.take() else {
             return;
         };
+        // Never polled: a `HEAD`, which axum answers from `get` and drops the
+        // body of. Nothing was exported, so there is nothing to record.
+        if !self.header_written {
+            return;
+        }
         let scope = self.scope.clone();
         let detail = serde_json::json!({
             "format": self.format.as_str(),

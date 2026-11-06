@@ -82,8 +82,6 @@ try {
 			// The export runs a moment after the list, and an export of the window
 			// itself writes a row — but only *after* `until`, so counts match.
 			if (n !== listed.length) throw new Error(`${label} export has ${n} rows, API ${listed.length}`);
-			// Reopen the menu for the next link.
-			await page.locator('[data-test="audit-export"] summary').click();
 		}
 		await ctx.close();
 	}

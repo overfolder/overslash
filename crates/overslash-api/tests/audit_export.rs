@@ -225,6 +225,15 @@ async fn test_audit_export_is_itself_audited() {
     let (org_a, ident_a, key_a, _) = bootstrap_org_identity(&base, &client).await;
     seed(&pool, org_a, OffsetDateTime::now_utc()).await;
 
+    // A `HEAD` exports nothing, so it must not add a row of its own.
+    let head = client
+        .head(format!("{base}/v1/audit/export?format=csv"))
+        .header(auth(&key_a).0, auth(&key_a).1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(head.status(), 200);
+
     export(&base, &client, &key_a, "format=csv&action=bulk.seeded")
         .await
         .text()
