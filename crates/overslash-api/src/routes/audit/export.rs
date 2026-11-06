@@ -13,6 +13,7 @@ use axum::{
     http::header,
     response::Response,
 };
+use futures_util::{Stream, StreamExt};
 use serde::Deserialize;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use uuid::Uuid;
@@ -104,9 +105,6 @@ pub(super) async fn export_audit(
             query: raw_query.unwrap_or_default(),
         }),
     };
-    let stream = futures_util::stream::unfold(state, |mut st| async move {
-        st.next_chunk().await.map(|chunk| (chunk, st))
-    });
 
     Ok(Response::builder()
         .header(header::CONTENT_TYPE, format.content_type())
@@ -117,8 +115,19 @@ pub(super) async fn export_audit(
         // A proxy that buffers would hold the whole range in memory, which is
         // the thing this endpoint exists not to do.
         .header("x-accel-buffering", "no")
-        .body(Body::from_stream(stream))
+        .body(Body::from_stream(export_stream(state)))
         .expect("static headers always build a valid response"))
+}
+
+/// Fused because hyper can poll a body past its end, and an `unfold` panics
+/// if polled after it returned `None`.
+fn export_stream(
+    state: ExportState,
+) -> impl Stream<Item = std::result::Result<Bytes, std::io::Error>> {
+    futures_util::stream::unfold(state, |mut st| async move {
+        st.next_chunk().await.map(|chunk| (chunk, st))
+    })
+    .fuse()
 }
 
 /// `20261023T140000Z`, or `start` for an open lower bound.
@@ -370,6 +379,56 @@ fn path_units(path: Option<&str>) -> (Option<&str>, Option<&str>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Nothing listens on the pool's address: a filter's first batch fails,
+    /// and a `None` filter never touches it.
+    fn state(filter: Option<AuditFilter>) -> ExportState {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .acquire_timeout(std::time::Duration::from_millis(100))
+            .connect_lazy("postgres://nobody@127.0.0.1:1/nonexistent")
+            .unwrap();
+        ExportState {
+            scope: OrgScope::new(Uuid::nil(), pool),
+            filter,
+            enricher: Enricher::default(),
+            format: ExportFormat::Csv,
+            header_written: false,
+            done: false,
+            failed: false,
+            completed: false,
+            rows: 0,
+            audit: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn export_stream_is_fused_after_the_end() {
+        let stream = export_stream(state(None));
+        futures_util::pin_mut!(stream);
+        assert!(stream.next().await.is_some(), "the CSV header");
+        assert!(stream.next().await.is_none());
+        assert!(
+            stream.next().await.is_none(),
+            "polling past the end must not panic"
+        );
+    }
+
+    #[tokio::test]
+    async fn export_completes_only_once_polled_past_the_last_chunk() {
+        let mut st = state(None);
+        assert!(st.next_chunk().await.is_some());
+        assert!(st.done && !st.completed, "the last chunk is not yet taken");
+        assert!(st.next_chunk().await.is_none());
+        assert!(st.completed);
+    }
+
+    #[tokio::test]
+    async fn a_failed_batch_never_counts_as_completed() {
+        let mut st = state(Some(AuditFilter::default()));
+        assert!(matches!(st.next_chunk().await, Some(Err(_))));
+        assert!(st.next_chunk().await.is_none(), "the error is terminal");
+        assert!(!st.completed);
+    }
 
     fn cell(v: &str) -> String {
         let mut buf = Vec::new();

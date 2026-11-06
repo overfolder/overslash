@@ -310,11 +310,14 @@ impl Enricher {
     }
 
     async fn resolve(&mut self, scope: &OrgScope, ids: &[Uuid]) {
+        // A failed lookup forgets its ids, so the export's next batch retries
+        // them instead of leaving them unresolved for the rest of the file.
         let rows = scope
             .get_identity_names_by_ids(ids)
             .await
             .unwrap_or_else(|e| {
                 tracing::warn!("failed to resolve identity names for audit response: {e}");
+                self.seen.retain(|id| !ids.contains(id));
                 Vec::new()
             });
         for (id, name, kind) in rows {
@@ -331,6 +334,7 @@ impl Enricher {
                 Ok(None) => {}
                 Err(e) => {
                     tracing::warn!("failed to build identity_path for audit identity {id}: {e}");
+                    self.seen.remove(id);
                 }
             }
         }
