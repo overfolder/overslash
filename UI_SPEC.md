@@ -278,7 +278,7 @@ A unified search component used across Services, Template Catalog, Audit Log, Ap
 **Available keys** vary by context:
 - **Services**: `owner`, `name`, `template`, `status`, `connection`
 - **Template Catalog**: `source`, `name`, `category`
-- **Audit Log**: `identity`, `event`, `service`, `result`, `time`
+- **Audit Log**: `identity`, `event`, `service`, `result` (time is not a key — the Audit Log has its own range picker, see §Audit Log view)
 - **Approvals**: `risk`, `service`, `agent`
 - **Secrets**: `name`, `owner`
 - **Connections**: `provider`, `account`
@@ -1274,6 +1274,22 @@ Org-admins see additional capabilities:
 ## Audit Log view
 
 A dedicated nav item. Filterable, searchable event stream — newest first, paginated.
+
+### Time range
+
+Every audit query carries a time window, picked with a segmented control beside the search bar: **5m · 1h · 24h · 7d · Custom ▾**. **Last 24h is preselected** when the URL names no window, so a plain `/audit` never walks the org's whole history.
+
+- **Relative presets** live in the URL as `?range=24h` and mean "the last 24h from whenever this is opened", so a shared link keeps meaning what it said.
+- **Custom** opens a popover with two local-time `datetime-local` inputs (the zone is shown under them) and Apply / Cancel; Apply is disabled until the start is before the end. A custom window lives in the URL as `?since=…&until=…` (UTC ISO) and is fixed. The button then shows the window, e.g. `Oct 20, 14:00 → Oct 21, 09:30`.
+- **Id lookups** are the one exception: a `/audit?uuid=…` link naming no window (the Execution reference on a row) searches the whole history, since the row it names can be any age. The button shows "whole history". Removing the `uuid` filter returns to 24h.
+- The window is resolved to concrete bounds once per reset (load, filter change, Refresh) and held while scrolling, so infinite scroll pages one fixed window.
+- **Empty state**: "No audit events in the last 1h match the current filters" with a **Try 24h** button that steps up to the next preset.
+
+### Export
+
+An **Export ▾** menu in the header offers **CSV** and **JSONL**. Both are plain download links to `GET /v1/audit/export?format=csv|jsonl&<filters>`: the server walks the **whole** filtered window in keyset batches and streams it, so the file covers every matching event, not just the rows scrolled into view, and is never buffered in the browser. CSV columns: `timestamp, identity_id, user, agent, action, resource_type, resource_id, description, ip_address, tags, detail` (recorded names, D59); cells that would run as a spreadsheet formula are prefixed with `'`. JSONL is one `GET /v1/audit` entry per line. Each export writes an `audit.exported` row recording the query, row count and whether it completed.
+
+An event-frequency histogram above the table is planned, pending a caching design (see the audit export decision in DECISIONS.md).
 
 ### Infinite Scroll
 

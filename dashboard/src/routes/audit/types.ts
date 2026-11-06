@@ -329,14 +329,23 @@ export function buildQuery(
 	return p.toString();
 }
 
+/** Query string for `GET /v1/audit/export`: the same filters and window as the
+ *  table, minus paging — the server walks the whole range itself. */
+export function exportQuery(filters: AuditFilters, format: 'csv' | 'jsonl'): string {
+	const p = new URLSearchParams(buildQuery(filters, PAGE_LIMIT));
+	p.delete('limit');
+	p.set('format', format);
+	return p.toString();
+}
+
+/** Search filters from the URL. `since`/`until`/`range` are not read here —
+ *  the time window is parsed by `rangeFromSearchParams` (timeRange.ts). */
 export function filtersFromSearchParams(params: URLSearchParams): AuditFilters {
 	const f: AuditFilters = {};
 	const keys = [
 		'identity_id',
 		'action',
 		'resource_type',
-		'since',
-		'until',
 		'q',
 		'uuid',
 		'action_contains',
