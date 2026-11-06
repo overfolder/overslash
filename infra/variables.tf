@@ -207,6 +207,24 @@ variable "allow_service_account_key_creation" {
   default     = false
 }
 
+variable "encryption_key_version" {
+  description = "Secret version mounted as SECRETS_ENCRYPTION_KEY. Keep it a number: see the rotation procedure in docs/compliance/casa/secrets-access-policy.md."
+  type        = string
+  default     = "latest"
+}
+
+variable "encryption_key_active_id" {
+  description = "Key id stamped on new ciphertext (SECRETS_ENCRYPTION_KEY_ACTIVE_ID). Goes up by one on every rotation and never comes back down."
+  type        = number
+  default     = 1
+}
+
+variable "encryption_key_previous_version" {
+  description = "Secret version mounted as SECRETS_ENCRYPTION_KEY_PREVIOUS while `overslash admin reencrypt` runs. Empty outside a rotation."
+  type        = string
+  default     = ""
+}
+
 variable "enable_bi" {
   description = "Provision the BI surface: a BigQuery connection + overslash_bi dataset over the Postgres `bi` schema (docs/runbooks/bi.md)."
   type        = bool
@@ -564,6 +582,12 @@ variable "oauth_refresh_alert_enabled" {
 
 variable "upstream_error_alert_enabled" {
   description = "Enable the upstream error rate P1 alert. Leave false until overslash_upstream_responses_total has been emitted at least once (GMP rejects the policy if the metric descriptor does not exist)."
+  type        = bool
+  default     = false
+}
+
+variable "secret_rotation_alert_enabled" {
+  description = "Enable the [P2] Secret Rotation Overdue and Secret Rotation Due alerts. Leave false until the metrics exporter has written custom.googleapis.com/overslash/business/secret_rotation_overdue_days at least once (Cloud Monitoring rejects the policy if the metric descriptor does not exist). See docs/runbooks/secret-rotation.md."
   type        = bool
   default     = false
 }

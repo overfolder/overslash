@@ -4,8 +4,10 @@
 //! the result to Google Cloud Monitoring as `custom.googleapis.com/overslash/business/*`
 //! gauges. The same tick runs the stored-reference integrity sweep
 //! (`overslash_db::integrity`, docs/runbooks/data-integrity.md) and emits one
-//! `integrity_violations` gauge per invariant. Exits 0 on success, non-zero on failure (Cloud Run Job records
-//! the failure for retry / alerting).
+//! `integrity_violations` gauge per invariant. Once an hour it also ages every
+//! Secret Manager secret against its rotation period (`secret_rotation`). Exits
+//! 0 on success, non-zero on failure (Cloud Run Job records the failure for
+//! retry / alerting).
 //!
 //! Dry-run mode (`EXPORTER_DRY_RUN=1`) prints the payload as JSON and skips
 //! the HTTPS POST — used for local validation and the unit tests.
@@ -14,6 +16,7 @@
 
 mod cloud_monitoring;
 mod queries;
+mod secret_rotation;
 
 use std::str::FromStr;
 
@@ -22,7 +25,8 @@ use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use tracing::{error, info, warn};
 
 use crate::cloud_monitoring::{
-    MonitoredResource, TimeSeries, business_resource, make_gauge, make_gauge_int, write_time_series,
+    MonitoredResource, TimeSeries, business_resource, get_access_token, make_gauge, make_gauge_int,
+    write_time_series,
 };
 use crate::queries::BusinessMetrics;
 
@@ -64,7 +68,19 @@ async fn main() -> Result<()> {
 
     let now = chrono::Utc::now().to_rfc3339();
     let resource = business_resource(project_id.as_deref().unwrap_or("dry-run"), &location);
-    let series = build_time_series(&metrics, &now, &resource);
+    let mut series = build_time_series(&metrics, &now, &resource);
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .context("failed to build reqwest client")?;
+    // Dry-run has no metadata server to get a token from.
+    if !dry_run
+        && let Some(project_id) = &project_id
+        && let Some(report) = run_secret_rotation_sweep(project_id, &client).await
+    {
+        series.extend(report.time_series(&now, &resource));
+    }
     info!(count = series.len(), "Built time series");
 
     if dry_run {
@@ -76,10 +92,6 @@ async fn main() -> Result<()> {
     }
 
     let project_id = project_id.expect("checked above");
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .context("failed to build reqwest client")?;
     write_time_series(&project_id, series, &client).await?;
     info!("Metrics exported");
     Ok(())
@@ -127,6 +139,41 @@ async fn run_integrity_sweep(db: &sqlx::PgPool) -> Vec<(&'static str, i64)> {
             (inv.as_str(), rows.len() as i64)
         })
         .collect()
+}
+
+/// Run the hourly secret age sweep, if this tick is the hourly one. A failure
+/// logs and returns nothing, so the business metrics still export and the
+/// alert's absence condition reports the gap.
+async fn run_secret_rotation_sweep(
+    project_id: &str,
+    client: &reqwest::Client,
+) -> Option<secret_rotation::Report> {
+    let now = chrono::Utc::now();
+    if !secret_rotation::is_due(now) {
+        return None;
+    }
+    let report = async {
+        let token = get_access_token(client).await?;
+        secret_rotation::sweep(project_id, &token, client, now).await
+    }
+    .await;
+    match report {
+        Ok(report) => {
+            for age in report.ages.iter().filter(|a| a.overdue_days > 0.0) {
+                warn!(
+                    secret = %age.secret,
+                    rotation_class = %age.class,
+                    overdue_days = age.overdue_days,
+                    "secret rotation overdue",
+                );
+            }
+            Some(report)
+        }
+        Err(e) => {
+            error!(error = format!("{e:#}"), "Secret rotation sweep failed");
+            None
+        }
+    }
 }
 
 fn log_collected(m: &BusinessMetrics) {

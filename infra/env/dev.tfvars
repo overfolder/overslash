@@ -170,6 +170,12 @@ upstream_error_alert_enabled = true
 # Runbook: docs/runbooks/data-integrity.md.
 integrity_alert_enabled = true
 
+# `[P2] Secret Rotation Overdue` / `Due` (CASA 6.7.1). Same gate: flip to true
+# once the exporter's hourly sweep has written
+# `custom.googleapis.com/overslash/business/secret_rotation_overdue_days`.
+# Runbook: docs/runbooks/secret-rotation.md.
+secret_rotation_alert_enabled = false
+
 # Transactional email. Disabled until the infra module wiring lands.
 # Uncomment in lockstep with the Secret Manager + Cloud Run variables for
 # email_provider / email_from / email_reply_to / email_api_key_secret_id.
@@ -201,3 +207,10 @@ enable_google_directory_sync = true
 # the Directory-sync key can be minted (docs/runbooks/project-guardrails.md).
 allow_service_account_key_creation = true
 
+# --- Vault master key ---------------------------------------------------------
+# Changed only by the rotation procedure in
+# docs/compliance/casa/secrets-access-policy.md, never on its own. These three
+# move together, and the active id never goes down.
+encryption_key_version          = "1"
+encryption_key_active_id        = 1
+encryption_key_previous_version = ""
