@@ -53,8 +53,8 @@ TEST_FILE_RE = re.compile(
     r"""(?x)
     ^(
         test_.*            # test_foo.py
-      | .*[._-]test\..*    # foo.test.ts, foo_test.rs
-      | .*[._-]spec\..*    # foo.spec.ts
+      | .*[._-]test(\..*)?   # foo.test.ts, foo_test.rs, foo.test.svelte.ts
+      | .*[._-]spec(\..*)?   # foo.spec.ts, foo.spec.svelte.ts
       | testing            # mock harnesses sitting next to production code
       | test_utils
       | test_helpers
