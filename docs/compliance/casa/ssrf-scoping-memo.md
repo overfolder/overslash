@@ -184,18 +184,34 @@ pinned address — with the *same* `OVERSLASH_SSRF_ALLOWED_CIDRS` escape hatch a
 knob. So a scanner's plaintext Collaborator probe is refused for want of TLS *before* the
 SSRF guard is even consulted. Tests: `tests/outbound_tls.rs`, `tests/oauth_upstream_tls.rs`.
 
-### One honest boundary
+### One honest boundary — and a residual the lab should know about
 
 The user-login OAuth path (`routes/auth/providers.rs`, `services/oauth.rs`) dials provider
 token and userinfo endpoints on the shared `state.http_client`, which is *not* the pinned
-guard client. This is not a scanner-injectable SSRF surface: those endpoints are not
-per-request caller input — they come from a provider row that an operator seeded (Google,
-GitHub) or, for a custom per-org OIDC provider, from a document fetched through the
-*guarded* `oidc_discovery` path (`org_idp_configs.rs::create_idp_config`, behind `AdminAcl`).
-A DAST scanner injects into request parameters; the parameter it could influence here is
-`issuer_url` on discovery, and that is guarded. Hardening the login-path token/userinfo
-dials onto the pinned client is tracked separately and is worth mentioning to the lab so
-the boundary is documented rather than discovered.
+guard client. For a seeded provider (Google, GitHub) the endpoints are operator config, not
+caller input, so there is nothing for a scanner to inject into. For a **custom per-org OIDC
+provider**, be precise about what "guarded discovery" does and does not buy:
+
+- An org admin supplies an `issuer_url` to `org_idp_configs.rs::create_idp_config` (behind
+  `AdminAcl`). Fetching the discovery document at that issuer **is** guarded —
+  `oidc_discovery::discover` runs every hop through `ssrf_guard` (§3).
+- But the `token_endpoint`, `userinfo_endpoint` and `authorization_endpoint` *values inside*
+  that document are stored verbatim (`oauth_provider::create_custom`) **without** re-running
+  the guard on them, and the login flow later dials `token_endpoint` and `userinfo_endpoint`
+  on the unguarded `state.http_client`. So an org admin can configure an IdP whose discovery
+  document names an internal host, and Overslash will dial it during that org's logins.
+
+This is a **real residual, not a non-issue**, and the memo states it plainly so the lab
+hears it from us rather than finding it: guarding the *fetch* of the discovery document is
+not the same as guarding the *endpoints it advertises*. What bounds it is the actor — a
+privileged, authenticated, same-org admin configuring their own sign-in, not the anonymous
+or cross-tenant caller the rest of this memo is about — which is why it is a lower-severity
+residual than a tenant-reachable SSRF rather than a 5.1.5 blocker. The fix has a precedent
+already in the tree: the MCP OAuth upstream path (`routes/oauth_upstream.rs`) string-checks
+each advertised endpoint with `outbound_tls::check_url_resolving` before registering a client
+and dials on a pinned client; the login-IdP path should do the same. It is tracked in
+[TECH_DEBT.md](../../../TECH_DEBT.md) ("Custom-OIDC login endpoints are not SSRF-checked
+before they are stored or dialed").
 
 ## 6. The permission and approval chain gates *reachability*
 
