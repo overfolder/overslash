@@ -96,6 +96,7 @@ pub(super) async fn export_audit(
         header_written: false,
         done: false,
         failed: false,
+        completed: false,
         rows: 0,
         audit: Some(ExportAudit {
             identity_id: auth.identity_id,
@@ -156,6 +157,9 @@ struct ExportState {
     done: bool,
     /// A batch errored: `done`, but the file is short.
     failed: bool,
+    /// The body was polled past the last chunk, so that chunk was taken. A
+    /// client that leaves on the final chunk, or a failed batch, never gets here.
+    completed: bool,
     rows: u64,
     /// Taken by `Drop`, which writes the `audit.exported` row.
     audit: Option<ExportAudit>,
@@ -164,6 +168,7 @@ struct ExportState {
 impl ExportState {
     async fn next_chunk(&mut self) -> Option<std::result::Result<Bytes, std::io::Error>> {
         if self.done {
+            self.completed = !self.failed;
             return None;
         }
         let mut buf = Vec::new();
@@ -228,7 +233,7 @@ impl Drop for ExportState {
             "since": self.filter.as_ref().and_then(|f| f.since).and_then(|t| t.format(&Rfc3339).ok()),
             "until": self.filter.as_ref().and_then(|f| f.until).and_then(|t| t.format(&Rfc3339).ok()),
             "row_count": self.rows,
-            "completed": self.done && !self.failed,
+            "completed": self.completed,
         });
         let description = format!(
             "Exported {} audit events as {}",
