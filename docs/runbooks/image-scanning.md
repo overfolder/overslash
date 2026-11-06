@@ -16,9 +16,11 @@ finding is open. The policy it implements is
 | Exceptions | `image-scan-ignores.json` |
 
 Scanning covers the whole project, so the API, shortener and exporter images
-(`overslash-<env>-registry`) and overfwd (`overslash-<env>-dockerhub`, a remote repository)
-are all in scope. Dev has no shortener. The check finds images from Cloud Run, so a new
-service needs no change here.
+(`overslash-<env>-registry`) and the two third-party images, overfwd and the API's
+`otel-collector` sidecar (`overslash-<env>-dockerhub`, a remote repository), are all in scope.
+Dev has no shortener. The check finds images from Cloud Run, sidecars included, so a new
+service needs no change here. An image pulled from anywhere but this project's Artifact
+Registry fails the check, because nothing would scan it.
 
 **Status: written, not applied.** Infra is never auto-applied. This page is the human half.
 
@@ -70,10 +72,23 @@ make tofu-plan ENV=dev
 make tofu-apply ENV=dev
 ```
 
-Expect, on top of any unrelated drift: 13 to add and 2 to change. That is 5
-`google_project_service.apis`, 8 in `module.image_scanning`, and an in-place
-`vulnerability_scanning_config` on each repo. `iam` and `iamcredentials` are already on, so
-those two only enter state.
+Expect, on top of any unrelated drift: 13 to add and 3 to change. That is 5
+`google_project_service.image_scanning`, 8 in `module.image_scanning`, an in-place
+`vulnerability_scanning_config` on each repo, and the API's Cloud Run service. `iam` and
+`iamcredentials` are already on, so those two only enter state.
+
+**Stop if the plan replaces `module.secret_manager.google_project_iam_member.api_secret_accessor`.**
+It shouldn't. These APIs have their own resource to avoid exactly that, because replacing the
+grant leaves the API without access to secrets for a moment.
+
+**The apply rolls a new API revision.** The `otel-collector` sidecar moves from Docker Hub to
+the mirror. It is the same image (the digest of the `0.120.0` tag already running), and the
+API container keeps its deployed image, but it is a real deploy and the first pull goes through
+the mirror. On prod, apply when you can watch it, and check metrics still arrive afterwards.
+
+That revision also carries an unrelated change, if nothing has applied it first: D141's TCP
+startup and liveness probes are committed, but both API services still ran `httpGet` probes on
+2026-11-06. They show in the same plan. To keep the two apart, apply D141 on its own first.
 
 **Known risk: the org's domain restriction.** `iam.allowedPolicyMemberDomains` allows only
 our customer ID. Google's docs don't say whether it evaluates the `principalSet://` member
@@ -120,8 +135,9 @@ gcloud artifacts docker images list \
 After a day of dev pushes, compare the Artifact Analysis SKU in Billing against the image
 count, to settle which row of the cost table applies. Update this page with the answer.
 
-Images that won't be rebuilt soon (the exporter, and overfwd in either project): pull each
-one, then give it up to 24 hours.
+The sidecar needs nothing: the apply enables scanning before it rolls the revision, so its
+first pull through the mirror is a new image. Other images that won't be rebuilt soon (the
+exporter, and overfwd in either project): pull each one, then give it up to 24 hours.
 
 ```bash
 gcloud auth configure-docker europe-west1-docker.pkg.dev
@@ -220,6 +236,7 @@ until Debian refreshes `trixie-slim`**. If a rebuild leaves the finding in place
 | `overslash-api` | Every push to the deploy branch | Any merge |
 | `overslash-metrics-exporter`, `oversla-sh` | Only when their paths change | Run the Cloud Build trigger |
 | `overfwd` | Never here | New upstream image, then a new `overfwd_image` digest ([mailbox-gateway.md](mailbox-gateway.md)) |
+| `otel-collector` sidecar | Never here | A newer upstream release, then a new `otel_collector_image` digest. Pinned at 0.120.0 today, an old release, so expect findings in it on the first run |
 
 Rust crates are the dependency audit's job. The scanner's Cargo support may report them too,
 but `cargo-deny` and OSV remain the gate for `Cargo.lock`.

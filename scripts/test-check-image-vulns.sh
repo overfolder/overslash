@@ -150,6 +150,10 @@ echo "{\"services\":[{\"template\":{\"containers\":[{\"image\":\"gcr.io/x/y:1\"}
 check "image outside the registry fails" 1 "nothing scans it" "${live[@]}"
 
 reset
+echo "{\"services\":[{\"template\":{\"containers\":[{\"image\":\"$registry/api:abc\"},{\"image\":\"otel/collector:1\"}]}}]}" >"$FIXTURES/services.json"
+check "sidecar outside the registry fails" 1 "otel/collector:1 is outside" "${live[@]}"
+
+reset
 echo '{}' >"$FIXTURES/services.json"
 echo '{}' >"$FIXTURES/jobs.json"
 check "no deployed images fails" 1 "no Cloud Run images" "${live[@]}"

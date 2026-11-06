@@ -386,8 +386,8 @@ The other two stay off, on purpose:
   reason. It adds little today. Nothing in the CASA requirements we mapped asks for it. Only
   Cloud Build deploys, from the protected branches, and the images are tagged by commit. An
   attestor needs a KMS key, a signing step in all three build pipelines, a `binary_authorization`
-  block on every service and job, and an exemption or attestation for overfwd, which we don't
-  build. And a misconfigured attestor stops deploys, including an urgent fix. Scanning also
+  block on every service and job, and an exemption or attestation for overfwd and the OTel
+  sidecar, which we don't build. And a misconfigured attestor stops deploys, including an urgent fix. Scanning also
   answers the question an assessor asks, whether a known-vulnerable image is running; Binary
   Authorization answers a different one, whether this image came from our pipeline. The
   attacker it stops holds `run.developer`, and tightening Cloud Build's project-wide

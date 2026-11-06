@@ -28,7 +28,7 @@ variable "cleanup_dry_run" {
 }
 
 # Provision a pull-through cache of Docker Hub. Needed for third-party images
-# we deploy but do not build (overfwd), so Cloud Run pulls from Artifact
+# we deploy but do not build (overfwd, the OTel sidecar), so Cloud Run pulls from Artifact
 # Registry rather than depending on Docker Hub's availability and rate limits
 # at revision-deploy time. Digest pins stay valid: a remote repository serves
 # the upstream manifest unchanged.
@@ -95,7 +95,7 @@ resource "google_artifact_registry_repository" "docker_hub" {
   mode          = "REMOTE_REPOSITORY"
   project       = var.project_id
 
-  # overfwd is deployed from here, so its image has to be scanned too.
+  # overfwd and the OTel sidecar deploy from here, so they must be scanned too.
   vulnerability_scanning_config {
     enablement_config = "INHERITED"
   }
