@@ -421,21 +421,11 @@
 		display: inline-flex;
 		align-items: center;
 		gap: 4px;
-		padding: 6px 12px;
-		border: 1px solid var(--color-border);
-		background: var(--color-bg);
-		color: var(--color-text);
-		border-radius: var(--radius-sm, 4px);
-		cursor: pointer;
 		list-style: none;
 		user-select: none;
 	}
 	.export summary::-webkit-details-marker {
 		display: none;
-	}
-	.export summary:hover,
-	.export[open] summary {
-		border-color: var(--color-primary);
 	}
 	.export-menu {
 		position: absolute;
@@ -474,16 +464,25 @@
 	.export-menu a:hover {
 		background: var(--color-surface);
 	}
-	.actions button {
-		padding: 6px 12px;
+	/* One look for the header controls, the same shape as `.btn.secondary` on
+	   the other pages. Refresh is a <button> and Export a <summary>: a button
+	   doesn't inherit `font` and a summary does, so unless it is set here the
+	   two render in different typefaces and sizes. */
+	.actions button,
+	.export summary {
+		padding: 8px 14px;
 		border: 1px solid var(--color-border);
-		background: var(--color-bg);
+		background: var(--color-surface);
 		color: var(--color-text);
-		border-radius: var(--radius-sm, 4px);
+		border-radius: 6px;
 		cursor: pointer;
+		font: var(--text-label);
+		white-space: nowrap;
 	}
-	.actions button:hover:not(:disabled) {
-		border-color: var(--color-primary);
+	.actions button:hover:not(:disabled),
+	.export summary:hover,
+	.export[open] summary {
+		background: var(--color-sidebar);
 	}
 	.actions button:disabled {
 		opacity: 0.5;
