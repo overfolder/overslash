@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.27.0](https://github.com/overfolder/overslash/compare/v0.26.0...v0.27.0) (2026-11-07)
+
+
+### Features
+
+* **audit:** time-range picker and server-side CSV/JSONL export of the whole range ([#866](https://github.com/overfolder/overslash/issues/866)) ([f7ece96](https://github.com/overfolder/overslash/commit/f7ece96e654bf29102702262772b4f932fb394d0))
+* **infra:** keep the BuildKit cache out of Container Scanning ([#871](https://github.com/overfolder/overslash/issues/871)) ([e0be343](https://github.com/overfolder/overslash/commit/e0be343464450e6280e33b06468ecb0f0011a85b))
+* **infra:** scan container images and triage findings daily ([#857](https://github.com/overfolder/overslash/issues/857)) ([b796846](https://github.com/overfolder/overslash/commit/b796846d231182efa65866be9bc1c185bb98fce6))
+* **secrets:** require a fresh sign-in to reveal a secret value ([#860](https://github.com/overfolder/overslash/issues/860)) ([0aa1e53](https://github.com/overfolder/overslash/commit/0aa1e53bbfdcc99996715ba111b8c4c4947b200b))
+
+
+### Bug Fixes
+
+* **dashboard:** return signed-out deep links to their page after login ([#855](https://github.com/overfolder/overslash/issues/855)) ([f904b15](https://github.com/overfolder/overslash/commit/f904b15752424c4f65f6c0a259ece62cef8e6b45))
+* **deps:** bump hyper to 1.9.0 to drop unmaintained pin-utils ([#867](https://github.com/overfolder/overslash/issues/867)) ([5684c96](https://github.com/overfolder/overslash/commit/5684c9698a0bc7231aa93a36b7d5f308e32b8b39)), closes [#856](https://github.com/overfolder/overslash/issues/856)
+* **deps:** bump hyper to drop unmaintained pin-utils ([#859](https://github.com/overfolder/overslash/issues/859)) ([790483d](https://github.com/overfolder/overslash/commit/790483dcd53cf770356dbc89c22eed384e57f2af))
+* **infra:** point the Cloud Run probes at a DB-free /livez ([#870](https://github.com/overfolder/overslash/issues/870)) ([7985ab1](https://github.com/overfolder/overslash/commit/7985ab129ed3e6f2ae58c60a9dceb34d9fa0056b))
+
 ## [0.26.0](https://github.com/overfolder/overslash/compare/v0.25.0...v0.26.0) (2026-10-30)
 
 
