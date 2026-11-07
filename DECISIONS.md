@@ -1567,7 +1567,7 @@ The disclosure input parses a form's body as JSON, as it does for a JSON body.
 **Decision**: Artifact Analysis scans every image in both projects. `.github/workflows/image-scan.yml` signs in through Workload Identity Federation, reads the images Cloud Run is running, and fails on any HIGH or CRITICAL `effectiveSeverity` finding not excepted in `image-scan-ignores.json`, and on any image that isn't being scanned. A failure opens a `needs-triage` issue. Binary Authorization and Security Command Center stay off, as P3.
 **Rationale**: Findings stored in GCP reach nobody, and the triage flow of D101 is a GitHub issue, so the check is shaped like the Dependency audit rather than an alert policy, which could only email. Federation because the org bans service account keys. Reading Cloud Run instead of the registry keeps rollback images and build cache, which nobody can fix, out of the triage queue. Failing on an unscanned image stops a dead scanner from passing as clean. The reasoning on Binary Authorization is in [gcp-posture.md](docs/compliance/casa/gcp-posture.md#supply-chain-and-organization-policy): it proves where an image came from, not that it's safe, and an attestor can block an urgent deploy.
 
-## D-NEXT: The BuildKit cache lives in its own unscanned repository
+## D146: The BuildKit cache lives in its own unscanned repository
 
 **Date**: 2026-11-07
 **Decision**: Amends D54's "in the same Artifact Registry repository". All three Cloud Build triggers export the layer cache to `<image>:buildcache` in `overslash-<env>-buildcache`, a repository with `enablement_config = "DISABLED"`. It keeps the image repository's cleanup policies. `infra/modules/artifact-registry/main.tf`.
