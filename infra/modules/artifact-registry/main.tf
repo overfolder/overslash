@@ -12,8 +12,8 @@ variable "base_prefix" {
 
 # Age after which artifact versions (deployed images AND the BuildKit layer
 # cache the cloud-build modules export) become eligible for deletion. Each
-# build re-pushes the `cache:buildcache` manifest, so the live cache version
-# is always newer than this threshold; what ages out is the superseded,
+# build re-pushes the `:buildcache` manifest, so the live cache version is
+# always newer than this threshold; what ages out is the superseded,
 # now-untagged versions behind it. Default 30 days.
 variable "cleanup_delete_older_than" {
   type    = string
@@ -52,11 +52,10 @@ resource "google_artifact_registry_repository" "repo" {
     enablement_config = "INHERITED"
   }
 
-  # Protect the 10 most recent versions of every package (images and the
-  # BuildKit cache) from deletion regardless of age. Safety net for rollbacks,
-  # always keeps the live :latest / newest-SHA images, and keeps the current
-  # cache manifest alive through a quiet month with no builds. KEEP takes
-  # precedence over the DELETE policy below on any overlap.
+  # Protect the 10 most recent versions of every package from deletion
+  # regardless of age. Safety net for rollbacks, and always keeps the live
+  # :latest / newest-SHA images. KEEP takes precedence over the DELETE policy
+  # below on any overlap.
   cleanup_policies {
     id     = "keep-recent"
     action = "KEEP"
@@ -67,10 +66,49 @@ resource "google_artifact_registry_repository" "repo" {
   }
 
   # Delete versions older than the threshold to bound repo growth. Without a
-  # DELETE policy a KEEP-only config deletes nothing, so the registry (and
-  # the build cache, which gets a new version per build) grows unbounded.
-  # The keep-recent policy above still protects the 10 newest versions per
-  # package even if they are older than this.
+  # DELETE policy a KEEP-only config deletes nothing, so the registry grows
+  # unbounded. The keep-recent policy above still protects the 10 newest
+  # versions per package even if they are older than this.
+  cleanup_policies {
+    id     = "delete-old"
+    action = "DELETE"
+
+    condition {
+      older_than = var.cleanup_delete_older_than
+      tag_state  = "ANY"
+    }
+  }
+}
+
+# BuildKit layer cache, kept apart from the images because scanning is set per
+# repository. `image-manifest=true` stores each export as an ordinary OCI image,
+# so Container Scanning scans and bills it like one, though nothing runs it
+# (docs/runbooks/image-scanning.md). Stays out of `repository_names`: the
+# scheduled check reads deployed images only.
+resource "google_artifact_registry_repository" "build_cache" {
+  location      = var.region
+  repository_id = "${var.base_prefix}-buildcache"
+  description   = "${var.base_prefix} BuildKit layer cache (not deployed, not scanned)"
+  format        = "DOCKER"
+  project       = var.project_id
+
+  cleanup_policy_dry_run = var.cleanup_dry_run
+
+  vulnerability_scanning_config {
+    enablement_config = "DISABLED"
+  }
+
+  # Keeps the current cache manifest alive through a quiet month with no builds.
+  cleanup_policies {
+    id     = "keep-recent"
+    action = "KEEP"
+
+    most_recent_versions {
+      keep_count = 10
+    }
+  }
+
+  # Every build adds a version, so without this the cache grows unbounded.
   cleanup_policies {
     id     = "delete-old"
     action = "DELETE"
@@ -126,6 +164,10 @@ output "repository_names" {
 
 output "repository_url" {
   value = "${var.region}-docker.pkg.dev/${var.project_id}/${google_artifact_registry_repository.repo.repository_id}"
+}
+
+output "build_cache_repository_url" {
+  value = "${var.region}-docker.pkg.dev/${var.project_id}/${google_artifact_registry_repository.build_cache.repository_id}"
 }
 
 # Base for Docker Hub images pulled through the mirror: append the upstream

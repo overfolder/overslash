@@ -377,8 +377,9 @@ image — its base-layer OS packages in particular — is still scanned nowhere.
 none of these APIs is on, and all four repositories report `SCANNING_DISABLED`.
 [image-scanning.md](../../runbooks/image-scanning.md) enables `containerscanning` and
 `containeranalysis` on both projects, and a daily check files a `needs-triage` issue for HIGH
-and CRITICAL findings on deployed images. Expect about $34 to $71 a month, nearly all of it
-dev; the runbook has the measured push counts.
+and CRITICAL findings on deployed images. Expect about $34 a month, nearly all of it dev; the
+runbook has the measured push counts. The BuildKit cache sits in its own unscanned repository,
+because scanned alongside the images it would double that.
 
 The other two stay off, on purpose:
 

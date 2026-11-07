@@ -449,7 +449,8 @@ module "cloud_build" {
   base_prefix = local.base_prefix
   env         = local.env
 
-  repository_name = module.artifact_registry.repository_name
+  repository_name      = module.artifact_registry.repository_name
+  cache_repository_url = module.artifact_registry.build_cache_repository_url
 
   cloud_build_sa_id = module.iam.cloud_build_sa_id
   cloud_run_service = module.cloud_run.service_name
@@ -512,7 +513,8 @@ module "cloud_build_metrics_exporter" {
   region      = var.region
   base_prefix = local.base_prefix
 
-  repository_name = module.artifact_registry.repository_name
+  repository_name      = module.artifact_registry.repository_name
+  cache_repository_url = module.artifact_registry.build_cache_repository_url
 
   cloud_build_sa_id  = module.iam.cloud_build_sa_id
   cloud_run_job_name = module.metrics_exporter_job.job_name
@@ -664,7 +666,8 @@ module "cloud_build_shortener" {
   region      = var.region
   base_prefix = local.base_prefix
 
-  repository_name = module.artifact_registry.repository_name
+  repository_name      = module.artifact_registry.repository_name
+  cache_repository_url = module.artifact_registry.build_cache_repository_url
 
   cloud_build_sa_id = module.iam.cloud_build_sa_id
   cloud_run_service = module.cloud_run_shortener[0].service_name

@@ -10,7 +10,7 @@ finding is open. The policy it implements is
 | Piece | Where |
 |---|---|
 | `containerscanning` + `containeranalysis` APIs, and `iam`, `iamcredentials`, `sts` for federation | `infra/main.tf` |
-| Both repos follow the project setting (`enablement_config = "INHERITED"`) | `infra/modules/artifact-registry/main.tf` |
+| Both image repos follow the project setting (`enablement_config = "INHERITED"`); the build cache repo is `DISABLED` | `infra/modules/artifact-registry/main.tf` |
 | `overslash-<env>-imgscan` service account, `github-actions` pool, `image-scan` provider | `infra/modules/image-scanning/main.tf` |
 | The check | `scripts/check-image-vulns.sh`, tested by `scripts/test-check-image-vulns.sh` |
 | Exceptions | `image-scan-ignores.json` |
@@ -37,26 +37,22 @@ New digests pushed from 2026-10-07 to 2026-11-06:
 | | `overslash-dev` | `overslash` | Total |
 |---|---|---|---|
 | Images (API, exporter, shortener) | 109 | 22 | 131 |
-| BuildKit cache manifests (`*/cache`) | 118 | 24 | 142 |
+| BuildKit cache manifests, not billed since they moved | 118 | 24 | 142 |
 
-| Case | Per month |
-|---|---|
-| Images only | about **$34** |
-| Cache manifests billed too | about **$71** |
+That makes about **$34 a month**, from the images alone. Dev pushes about five times as much
+as prod, and on every push to `dev`, so dev is about 83% of the bill.
 
-Google's cost guide counts digests pushed, and the cache is exported with
-`image-manifest=true`, so it may be billed even though it has nothing to scan. Step 3 below
-measures that. Dev pushes about five times as much as prod, and on every push to `dev`, so
-dev is about 83% of the bill.
+The build cache has its own repository, `overslash-<env>-buildcache`, with scanning off. In the
+image repository it would double the bill, about **$71** a month: `image-manifest=true` stores
+each export as an ordinary OCI image, 22 layers and 1.6 GB, and `mode=max` includes every build
+stage. Both cache pushes on dev after enablement (2026-11-07) were fully scanned, reporting 697
+findings against 82 on the image built alongside. Those are mostly build-only packages, and
+nothing reads them. Scanning is set per repository, so a separate repository is the only way
+to skip the cache.
 
-Levers, if the bill matters:
-
-- Move `cache_ref` in the three `cloud-build*` modules to a repository of its own with
-  `enablement_config = "DISABLED"`. This removes the cache half, at the cost of one cold build
-  per image.
-- Set `enablement_config = "DISABLED"` on dev's registry. This saves most of the bill, but dev
-  stops being an early warning, and the check must drop its `dev` matrix entry or it fails
-  every day on unscanned images.
+If the bill matters, set `enablement_config = "DISABLED"` on dev's registry. This saves most of
+it, but dev stops being an early warning, and the check must drop its `dev` matrix entry or it
+fails every day on unscanned images.
 
 The check itself is free: a few read calls a day, on GitHub-hosted runners.
 
@@ -125,15 +121,10 @@ The next push to `dev` covers the API image on dev. Then:
 gcloud artifacts docker images list \
   europe-west1-docker.pkg.dev/overslash-dev/overslash-dev-registry/overslash-api \
   --show-occurrences --occurrence-filter='kind="VULNERABILITY"' --include-tags --limit=5
-
-# Was a cache manifest scanned? Empty or FINISHED_UNSUPPORTED both need the bill checked.
-gcloud artifacts docker images list \
-  europe-west1-docker.pkg.dev/overslash-dev/overslash-dev-registry/overslash-api/cache \
-  --show-occurrences --occurrence-filter='kind="DISCOVERY"' --format=json --limit=1
 ```
 
 After a day of dev pushes, compare the Artifact Analysis SKU in Billing against the image
-count, to settle which row of the cost table applies. Update this page with the answer.
+count, to confirm the cost above. Update this page with the answer.
 
 The sidecar needs nothing: the apply enables scanning before it rolls the revision, so its
 first pull through the mirror is a new image. Other images that won't be rebuilt soon (the
@@ -189,6 +180,42 @@ projects, a green scheduled run, and the first triage issue. Then tick the item 
 [TODO.md](../../TODO.md), update the measured state in
 [gcp-posture.md](../compliance/casa/gcp-posture.md), and add scanning to
 [STATUS.md](../../STATUS.md).
+
+## Moving the build cache
+
+A project that has the cache in `overslash-<env>-registry` moves with a normal apply:
+
+```bash
+make tofu-plan ENV=dev
+make tofu-apply ENV=dev
+```
+
+Expect 1 to add (the repository) and the Cloud Build triggers to change in place. No service
+is touched. The build service account's `artifactregistry.writer` is project-wide, so no grant
+changes. A plan that replaces a trigger is wrong: stop.
+
+The next build of each image starts with an empty cache, so it recompiles every dependency.
+`--cache-from` on a missing ref only warns, and the triggers' 2400s timeout allows for a cold
+build. On prod that is the next release of each image.
+
+Check that a build wrote there and that nothing was scanned:
+
+```bash
+gcloud artifacts repositories describe overslash-dev-buildcache --project=overslash-dev \
+  --location=europe-west1 --format='value(vulnerabilityScanningConfig.enablementState)'
+gcloud artifacts packages list --repository=overslash-dev-buildcache --project=overslash-dev \
+  --location=europe-west1
+```
+
+The first reads `SCANNING_DISABLED`. Then delete the old cache, or the keep-recent policy holds
+its 10 newest versions forever. Nothing reads it once every image has built once. Dev has
+`overslash-api/cache` and `overslash-metrics-exporter/cache`, and prod also has
+`oversla-sh/cache`.
+
+```bash
+gcloud artifacts packages delete overslash-api/cache --repository=overslash-dev-registry \
+  --project=overslash-dev --location=europe-west1
+```
 
 ## Rollback
 
