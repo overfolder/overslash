@@ -9,6 +9,16 @@
 # the app can't revoke. Adding a report = a new sql/<name>.sql + tofu apply;
 # the crate test bi_views runs every file as `bi` in CI.
 
+variable "rotation" {
+  type = object({
+    period             = string
+    next_rotation_time = string
+    topic              = string
+    labels             = map(string)
+  })
+  description = "Rotation settings for the bi password, from modules/secret-manager's `rotation` output."
+}
+
 variable "project_id" {
   type = string
 }
@@ -60,14 +70,35 @@ resource "random_password" "bi" {
 resource "google_secret_manager_secret" "bi_db_password" {
   secret_id = "${var.base_prefix}-bi-db-password"
   project   = var.project_id
+  labels    = var.rotation.labels
+  topics {
+    name = var.rotation.topic
+  }
+  rotation {
+    rotation_period    = var.rotation.period
+    next_rotation_time = var.rotation.next_rotation_time
+  }
   replication {
     auto {}
+  }
+
+  lifecycle {
+    ignore_changes = [rotation[0].next_rotation_time]
   }
 }
 
 resource "google_secret_manager_secret_version" "bi_db_password" {
   secret      = google_secret_manager_secret.bi_db_password.id
   secret_data = random_password.bi.result
+
+  # Rotated with `tofu apply -replace=...random_password.bi`. Same shape as the
+  # database password: the new version lands first, the old one is disabled.
+  deletion_policy = "DISABLE"
+
+  lifecycle {
+    create_before_destroy = true
+    ignore_changes        = [enabled]
+  }
 }
 
 # --- BigQuery connection ---
