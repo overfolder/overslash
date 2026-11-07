@@ -86,9 +86,9 @@ the mirror. It is the same image (the digest of the `0.120.0` tag already runnin
 API container keeps its deployed image, but it is a real deploy and the first pull goes through
 the mirror. On prod, apply when you can watch it, and check metrics still arrive afterwards.
 
-That revision also carries an unrelated change, if nothing has applied it first: D141's TCP
-startup and liveness probes are committed, but both API services still ran `httpGet` probes on
-2026-11-06. They show in the same plan. To keep the two apart, apply D141 on its own first.
+That revision also carries an unrelated change, if nothing has applied it first: D141's move
+of the startup and liveness probes to `/livez` is committed, but both API services still probed
+`/health` on 2026-11-06, and the running image must serve `/livez` before this applies. They show in the same plan. To keep the two apart, apply D141 on its own first.
 
 **Known risk: the org's domain restriction.** `iam.allowedPolicyMemberDomains` allows only
 our customer ID. Google's docs don't say whether it evaluates the `principalSet://` member
