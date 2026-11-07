@@ -3,11 +3,16 @@
   POST /v1/secrets/{name}/versions/{v}/reveal lazily — the request fires
   on mount, never on hover, and the result is shown verbatim (multi-line
   values render unmasked in a scrollable <pre> per UI_SPEC).
+
+  In a shared org the API can answer 403 `step_up_required`. The root layout's
+  StepUpModal then takes over, and the secret detail page reopens this modal
+  for the same version when the human is back from the sign-in.
 -->
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { ApiError } from '#lib/session.ts';
 	import { revealSecretVersion, type SecretVault } from '#lib/api/secrets.ts';
+	import { describeStepUp, isStepUpError } from '#lib/stores/stepUp.svelte.ts';
 	import type { SecretVersionView } from '#lib/types.ts';
 
 	let {
@@ -25,6 +30,7 @@
 
 	let value = $state<string | null>(null);
 	let error = $state<string | null>(null);
+	let needsSignIn = $state(false);
 	let loading = $state(true);
 	let copied = $state(false);
 
@@ -33,7 +39,16 @@
 			const r = await revealSecretVersion(secretName, version.version, vault);
 			value = r.value;
 		} catch (e) {
-			error = e instanceof ApiError ? `Reveal failed (${e.status})` : 'Reveal failed';
+			if (isStepUpError(e)) {
+				needsSignIn = true;
+				describeStepUp({
+					subject: 'Revealing a secret',
+					after: 'The value is then revealed.',
+					resume: { kind: 'secret-reveal', version: version.version }
+				});
+			} else {
+				error = e instanceof ApiError ? `Reveal failed (${e.status})` : 'Reveal failed';
+			}
 		} finally {
 			loading = false;
 		}
@@ -90,6 +105,10 @@
 
 			{#if loading}
 				<div class="reveal-skel">Decrypting…</div>
+			{:else if needsSignIn}
+				<div class="reveal-skel" data-testid="reveal-needs-sign-in">
+					Not revealed. Sign in again to see this value.
+				</div>
 			{:else if error}
 				<div class="reveal-error">{error}</div>
 			{:else if value !== null}

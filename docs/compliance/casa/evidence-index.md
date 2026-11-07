@@ -49,6 +49,7 @@ excerpt, without calling functions or underlying libraries.
 | 2.3.1 | Cookie construction: one builder, `Secure` + `__Host-`/`__Secure-` on every cookie, prefixed-only reader | `have` | `crates/overslash-api/src/cookies.rs` |
 | 2.2.x | Server-side session lookup: the per-request gate, revocation on logout / identity change / removal, and the Sessions page | `have` | `middleware/session_gate.rs`; `services/user_sessions/`; `routes/auth/account_sessions.rs`; `tests/user_sessions.rs` |
 | 3.3.1 / 2.4.1 | The step-up rule: IdP provenance, the org's provider list, the freshness window, and the `AdminAcl` call site | `have` | `services/admin_step_up.rs::evaluate` + `require`; `extractors.rs` (`AdminAcl`, `InstanceAdminAuth`); `tests/admin_step_up.rs` |
+| 2.4.1 | Secret reveal under the same rule, for members too | `have` | `services/admin_step_up.rs::require_fresh`; `routes/secrets.rs::reveal_version`; `tests/secret_reveal_step_up.rs` |
 | 5.1.5 | `ssrf_guard` denial ranges, `.resolve()` pinning, `Policy::none()` — **and** the call sites proving it is on the execution path | `have` / `need` | `services/ssrf_guard.rs:17-43,121-129`; call sites land with P0 |
 
 ## Screenshots
@@ -57,6 +58,7 @@ excerpt, without calling functions or underlying libraries.
 |-----|-----------------|--------|
 | 1.1.1 | Anti-automation in action: the magic-link throttle tripping, and the identical opaque response before and after | `need` |
 | 3.3.1 | Our step-up prompt on an admin change from a magic-link session | `have` — `dashboard/scripts/screenshot-step-up.mjs` (`step-up-modal.png`) |
+| 2.4.1 | Our step-up prompt on a member's secret reveal, and the reveal completing after the sign-in | `have` — `dashboard/scripts/screenshot-secret-reveal-step-up.mjs` (`secret-reveal-step-up-*.png`) |
 | 3.3.1 | The IdP's MFA challenge on a step-up sign-in, and Account → Sessions showing the session's IdP and `amr` | `need` — operator capture per [admin-step-up.md](../../runbooks/admin-step-up.md) |
 | 7.1.1 | An `http://` webhook endpoint being rejected at registration | `have` — `dashboard/scripts/screenshot-webhook-https.mjs` (`webhook-https-rejected.png`) |
 | 6.2.1 | Debug surfaces absent in production — `/auth/dev/token` returning 404, `/health` with no `db_error` field | `need` |
@@ -92,6 +94,7 @@ what the product actually renders.
 | For | Artifact | Status |
 |-----|----------|--------|
 | 6.1.1 | Dependency scan output: the *Dependency audit* jobs (`cargo-deny`, `npm audit`, OSV). Take a recent scheduled run against `master`, which shows the two justified ignores filtered with their reasons | `have`: GitHub Actions, `.github/workflows/deps-audit.yml` |
+| 6.1.1 | Container image scan output: both repositories `SCANNING_ACTIVE` on both projects, a green scheduled *Container image scan* run, and the `needs-triage` issue from the first finding | `need` — the config is written (`infra/main.tf`, `infra/modules/image-scanning/`, `.github/workflows/image-scan.yml`); once applied, capture step 7 of [image-scanning.md](../../runbooks/image-scanning.md) |
 | 3.1.1 | `gcloud storage buckets describe` for `overslash_cloudbuild` and `overslash-dev_cloudbuild`: UBLA `true`, public-access prevention `enforced`, the 30-day delete rule, an empty `acl`, and no objects | `have` — measured 2026-10-23 on both projects, every field as listed. Re-capture with the verify step of [cloud-build-bucket.md](../../runbooks/cloud-build-bucket.md) |
 | 3.1.1 | `gcloud projects get-iam-policy` on both projects showing no `roles/editor` on the default Compute SA or the cloudservices agent; `gcloud org-policies describe` for the project-level constraints; the IAM Recommender's two `roles/editor` P2s closed | `need` — applied in both projects 2026-10-27 and measured: no `roles/editor` on either default account (prod's cloudservices agent holds `roles/compute.editor`), project and org-level constraints effective per the table in [gcp-posture.md](gcp-posture.md#supply-chain-and-organization-policy). Remaining: capture the outputs and the Recommender closing both P2s, with the verify block of [project-guardrails.md](../../runbooks/project-guardrails.md) |
 | 6.2.1 | `gcloud org-policies describe run.allowedIngress --effective` on both projects, restricted to `internal-and-cloud-load-balancing` | `need` — unset (allow all) in both projects, measured 2026-10-27. It applies project-wide, so it can only be set once overfwd and the shortener stop running with `INGRESS_TRAFFIC_ALL`; see [gcp-posture.md](gcp-posture.md#cloud-run) |

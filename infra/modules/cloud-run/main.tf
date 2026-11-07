@@ -694,16 +694,22 @@ resource "google_cloud_run_v2_service" "api" {
           mount_path = "/cloudsql"
         }
 
-        # TCP, not `/health`: the probes ask only "is the process up", never
-        # "are its dependencies up". `/health` checks Postgres and 503s when it
-        # is down, and an HTTP liveness probe on it killed every instance
+        # `/livez`, not `/health`: the probes ask only "is the process up",
+        # never "are its dependencies up". `/health` checks Postgres and 503s
+        # when it is down, and a liveness probe on it killed every instance
         # within ~90s of a Cloud SQL stop (dev, nightly) — a replacement then
         # cannot boot either, so the probe turned a DB outage into an API one.
+        # TCP is not an option for liveness: Cloud Run rejects it with a 400.
         # The startup probe loses nothing: the listener binds only after
         # `create_app` has connected, migrated and preflighted.
         # Dependency health is the uptime check's job (modules/monitoring).
+        #
+        # The running image must already serve `/livez` when this is applied.
+        # On an older image the startup probe fails the new revision and
+        # traffic stays on the previous one, so a wrong order fails the apply.
         startup_probe {
-          tcp_socket {
+          http_get {
+            path = "/livez"
             port = var.container_port
           }
           initial_delay_seconds = 5
@@ -712,9 +718,13 @@ resource "google_cloud_run_v2_service" "api" {
         }
 
         liveness_probe {
-          tcp_socket {
+          http_get {
+            path = "/livez"
             port = var.container_port
           }
+          # Above the 1s default, so a busy instance is not restarted for a
+          # slow answer. Only a process that stops answering should fail this.
+          timeout_seconds   = 5
           period_seconds    = 30
           failure_threshold = 3
         }

@@ -35,6 +35,27 @@ resource "google_project_service" "apis" {
   disable_on_destroy = false
 }
 
+# Kept out of `apis` on purpose. Most modules depend on that resource, so a new
+# entry there defers their data sources to apply time, and the API's conditional
+# secretAccessor grant (modules/secret-manager) is then replaced, leaving a window
+# with no access to secrets.
+resource "google_project_service" "image_scanning" {
+  for_each = toset([
+    # Scans every image pushed to this project's Artifact Registry repos and
+    # stores the findings. Billed per new digest from the moment it is on.
+    # docs/runbooks/image-scanning.md.
+    "containerscanning.googleapis.com",
+    "containeranalysis.googleapis.com",
+    # Workload Identity Federation, for the scheduled image check.
+    "iam.googleapis.com",
+    "iamcredentials.googleapis.com",
+    "sts.googleapis.com",
+  ])
+
+  service            = each.key
+  disable_on_destroy = false
+}
+
 # --- Networking (only when using private VPC) ---
 module "networking" {
   count = var.use_private_vpc ? 1 : 0
@@ -87,11 +108,28 @@ module "artifact_registry" {
   region      = var.region
   base_prefix = local.base_prefix
 
-  # overfwd is the one image we deploy but do not build; the mirror keeps its
-  # pull off Docker Hub's availability and rate limits.
-  enable_docker_hub_remote = var.enable_overfwd
+  # overfwd and the OTel sidecar are the images we deploy but do not build. The
+  # mirror keeps their pull off Docker Hub's availability and rate limits, and
+  # puts them where Container Scanning can see them.
+  enable_docker_hub_remote = var.enable_overfwd || var.enable_metrics_sidecar
 
-  depends_on = [google_project_service.apis]
+  # Scanning is on before anything is pulled through the mirror: the API's
+  # revision depends on this module, and an image cached first may never be scanned.
+  depends_on = [google_project_service.apis, google_project_service.image_scanning]
+}
+
+# --- Scheduled container image check (CASA 6.1.1) ---
+module "image_scanning" {
+  source      = "./modules/image-scanning"
+  project_id  = var.project_id
+  region      = var.region
+  base_prefix = local.base_prefix
+
+  github_owner     = var.github_owner
+  github_repo      = var.github_repo
+  repository_names = module.artifact_registry.repository_names
+
+  depends_on = [google_project_service.image_scanning]
 }
 
 # --- Secret Manager ---
@@ -267,6 +305,7 @@ module "cloud_run" {
   redis_iam_auth          = var.enable_valkey && var.use_private_vpc
 
   enable_metrics_sidecar = var.enable_metrics_sidecar
+  metrics_sidecar_image  = "${module.artifact_registry.docker_hub_repository_url}/${var.otel_collector_image}"
   rust_log               = var.rust_log
 
   read_oauth_credentials_from_env = var.read_oauth_credentials_from_env
@@ -410,7 +449,8 @@ module "cloud_build" {
   base_prefix = local.base_prefix
   env         = local.env
 
-  repository_name = module.artifact_registry.repository_name
+  repository_name      = module.artifact_registry.repository_name
+  cache_repository_url = module.artifact_registry.build_cache_repository_url
 
   cloud_build_sa_id = module.iam.cloud_build_sa_id
   cloud_run_service = module.cloud_run.service_name
@@ -473,7 +513,8 @@ module "cloud_build_metrics_exporter" {
   region      = var.region
   base_prefix = local.base_prefix
 
-  repository_name = module.artifact_registry.repository_name
+  repository_name      = module.artifact_registry.repository_name
+  cache_repository_url = module.artifact_registry.build_cache_repository_url
 
   cloud_build_sa_id  = module.iam.cloud_build_sa_id
   cloud_run_job_name = module.metrics_exporter_job.job_name
@@ -625,7 +666,8 @@ module "cloud_build_shortener" {
   region      = var.region
   base_prefix = local.base_prefix
 
-  repository_name = module.artifact_registry.repository_name
+  repository_name      = module.artifact_registry.repository_name
+  cache_repository_url = module.artifact_registry.build_cache_repository_url
 
   cloud_build_sa_id = module.iam.cloud_build_sa_id
   cloud_run_service = module.cloud_run_shortener[0].service_name

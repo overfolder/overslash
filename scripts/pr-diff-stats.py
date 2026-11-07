@@ -53,8 +53,8 @@ TEST_FILE_RE = re.compile(
     r"""(?x)
     ^(
         test_.*            # test_foo.py
-      | .*[._-]test\..*    # foo.test.ts, foo_test.rs
-      | .*[._-]spec\..*    # foo.spec.ts
+      | .*[._-]test(\..*)?   # foo.test.ts, foo_test.rs, foo.test.svelte.ts
+      | .*[._-]spec(\..*)?   # foo.spec.ts, foo.spec.svelte.ts
       | testing            # mock harnesses sitting next to production code
       | test_utils
       | test_helpers
@@ -443,6 +443,30 @@ HEAD_LIB_RS = (
 ) + (DECOYS % ("2", "2")) + "\n" + TEST_MOD % EXTRA_TEST
 
 
+# File names `is_code_path` must sort correctly under `src/`, where no test
+# directory can catch them first: (name, counted as production code).
+FILE_NAME_CASES = [
+    ("foo.test.ts", False),
+    ("foo.spec.ts", False),
+    ("foo_test.rs", False),
+    ("foo-test.ts", False),
+    ("foo.test.svelte.ts", False),
+    ("foo.spec.svelte.ts", False),
+    ("test_foo.py", False),
+    ("testing.rs", False),
+    ("test_utils.rs", False),
+    ("test_helpers.rs", False),
+    ("mock.rs", False),
+    ("mocks.ts", False),
+    ("foo.ts", True),
+    ("latest.ts", True),
+    ("contest.rs", True),
+    ("inspect.ts", True),
+    ("test.rs", True),
+    ("spec.ts", True),
+]
+
+
 def self_test() -> None:
     """Prove the pipeline on a synthetic repo covering every branch.
 
@@ -520,6 +544,9 @@ def self_test() -> None:
         "crates/overslash-core/src/lib.rs": (1, 1),
     }
     problems = []
+    for name, counted in FILE_NAME_CASES:
+        if is_code_path(f"crate/src/{name}") != counted:
+            problems.append(f"{name}: expected counted={counted}")
     if stats != expected:
         problems.append(f"stats mismatch\n  got:      {stats}\n  expected: {expected}")
     # `crate/tests/it.rs`, `docs/readme.md`, `crate/src/styles.css` and

@@ -278,7 +278,7 @@ A unified search component used across Services, Template Catalog, Audit Log, Ap
 **Available keys** vary by context:
 - **Services**: `owner`, `name`, `template`, `status`, `connection`
 - **Template Catalog**: `source`, `name`, `category`
-- **Audit Log**: `identity`, `event`, `service`, `result`, `time`
+- **Audit Log**: `identity`, `event`, `service`, `result` (time is not a key — the Audit Log has its own range picker, see §Audit Log view)
 - **Approvals**: `risk`, `service`, `agent`
 - **Secrets**: `name`, `owner`
 - **Connections**: `provider`, `account`
@@ -963,7 +963,7 @@ v1        2026-03-10 09:00     user:alice         ○ previous
 Clicking a version row (or `[Reveal]` button) opens a modal showing:
 
 - Version number, created timestamp, created by
-- **Secret value** — masked by default. A `[Reveal]` button calls `POST /v1/secrets/{name}/versions/{version}/reveal` and shows the value inline (click-to-reveal pattern). The reveal is audit-logged as `secret.revealed`. This is the **only way** to view secret values in the dashboard — agents never receive values via API.
+- **Secret value** — masked by default. A `[Reveal]` button calls `POST /v1/secrets/{name}/versions/{version}/reveal` and shows the value inline (click-to-reveal pattern). The reveal is audit-logged as `secret.revealed`. In a shared org it needs a recent sign-in: on 403 `step_up_required` the *Confirm it's you* prompt says so, and the reveal repeats by itself when the human returns from the sign-in. This is the **only way** to view secret values in the dashboard — agents never receive values via API.
 - `[Copy]` button to copy the revealed value
 - `[Restore this version]` if not the current version — calls `POST /v1/secrets/{name}/versions/{version}/restore`, which creates a new version pointing to the old value. Audit-logged as `secret.restored`.
 
@@ -1275,6 +1275,22 @@ Org-admins see additional capabilities:
 
 A dedicated nav item. Filterable, searchable event stream — newest first, paginated.
 
+### Time range
+
+Every audit query carries a time window, picked with a segmented control beside the search bar: **5m · 1h · 24h · 7d · Custom ▾**. **Last 24h is preselected** when the URL names no window, so a plain `/audit` never walks the org's whole history.
+
+- **Relative presets** live in the URL as `?range=24h` and mean "the last 24h from whenever this is opened", so a shared link keeps meaning what it said.
+- **Custom** opens a popover with two local-time `datetime-local` inputs (the zone is shown under them) and Apply / Cancel; Apply is disabled until the start is before the end. A custom window lives in the URL as `?since=…&until=…` (UTC ISO) and is fixed. The button then shows the window, e.g. `Oct 20, 14:00 → Oct 21, 09:30`.
+- **Id lookups** are the one exception: a `/audit?uuid=…` link naming no window (the Execution reference on a row) searches the whole history, since the row it names can be any age. The button shows "whole history". Removing the `uuid` filter returns to 24h.
+- The window is resolved to concrete bounds once per reset (load, filter change, Refresh) and held while scrolling, so infinite scroll pages one fixed window.
+- **Empty state**: "No audit events in the last 1h match the current filters" with a **Try 24h** button that steps up to the next preset.
+
+### Export
+
+An **Export ▾** menu in the header offers **CSV** and **JSONL**. Both are plain download links to `GET /v1/audit/export?format=csv|jsonl&<filters>`: the server walks the **whole** filtered window in keyset batches and streams it, so the file covers every matching event, not just the rows scrolled into view, and is never buffered in the browser. CSV columns: `timestamp, identity_id, user, agent, action, resource_type, resource_id, description, ip_address, tags, detail` (recorded names, D59); cells that would run as a spreadsheet formula are prefixed with `'`. JSONL is one `GET /v1/audit` entry per line. Each export writes an `audit.exported` row recording the query, row count and whether it completed.
+
+An event-frequency histogram above the table is planned, pending a caching design (see the audit export decision in DECISIONS.md).
+
 ### Infinite Scroll
 
 The audit log uses **infinite scroll** over a paginated API (cursor-based). No page numbers or "Load more" button — new events load automatically as the user scrolls near the bottom.
@@ -1422,7 +1438,7 @@ A top-level page scoped to the human, not any one org — always reachable from 
 - Per-row action: **End session** — `DELETE /v1/account/sessions/{id}`; that browser is signed out on its next request. On the caller's own row the button reads **Sign out**, and success navigates to `/login`.
 - **Sign out all other sessions** (card header, only when there are others) — confirms in a modal naming how many, then `POST /v1/account/sessions/revoke-others` and reloads the list.
 
-**Step-up prompt** (global, mounted in the root layout): when any API call answers 403 `step_up_required`, a *Confirm it's you* modal explains why (no IdP sign-in / not one of the org's IdPs / older than the window) and offers one **Continue with <IdP>** button per provider in the response. The button goes to the provider's `login_path` with `next` set to the current page. On an IdP-less deployment it offers **Sign in again with an email link** (`/login?reason=step_up&return_to=…`). **Cancel** dismisses it. The page that made the failed call still shows its own error.
+**Step-up prompt** (global, mounted in the root layout): when any API call answers 403 `step_up_required`, a *Confirm it's you* modal explains why (no IdP sign-in / not one of the org's IdPs / older than the window) and offers one **Continue with <IdP>** button per provider in the response. The button goes to the provider's `login_path` with `next` set to the current page. On an IdP-less deployment it offers **Sign in again with an email link** (`/login?reason=step_up&return_to=…`). **Cancel** dismisses it. The page that made the failed call still shows its own error. A secret reveal rewords the prompt for the reveal (not "Admin changes"). Clicking a sign-in option records the page and version for 10 minutes, and the secret detail page uses that to repeat the reveal once on return.
 
 **Organizations card**:
 - List of the user's memberships, one per row

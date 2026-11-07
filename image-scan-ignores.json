@@ -1,0 +1,4 @@
+{
+  "_comment": "Justified, time-boxed exceptions to the container image check. Rules: docs/compliance/casa/dependency-vulnerability-policy.md. Entry shape: {\"id\": \"CVE-...\", \"package\": \"...\", \"reason\": \"...\", \"reviewBy\": \"YYYY-MM-DD\"}.",
+  "ignores": []
+}

@@ -43,7 +43,7 @@ glob-match = "0.2"
 # Lexer + parser only: credential templates are analysed at compile time to
 # learn which secret slots they read. Evaluation (jaq-std/jaq-json) stays in
 # overslash-api so core never runs a jq program.
-jaq-core = "=3.1.1"
+jaq-core = "=3.1.2"
 serde_yaml = { version = "0.9", optional = true }
 tracing = { workspace = true }
 async-trait = { workspace = true }
@@ -51,7 +51,7 @@ strsim = "0.11"
 fastembed = { version = "7", optional = true }
 # Builds vendored libpg_query (C toolchain + libclang for bindgen). Kept
 # behind `sql_policy` so the default build never pays for it.
-pg_query = { version = "6", optional = true }
+pg_query = { version = "18", optional = true }
 
 [dev-dependencies]
 tempfile = "3"

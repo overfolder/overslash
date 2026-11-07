@@ -221,11 +221,16 @@ async fn token(Form(params): Form<Vec<(String, String)>>) -> Json<Value> {
 
 async fn userinfo(State(state): State<AppState>) -> Json<Value> {
     let p = &*state.profile;
+    // Every login here is a fresh authentication, so `auth_time` is now.
+    let auth_time = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
     let mut body = json!({
         "sub": p.sub,
         "email": p.email,
         "email_verified": true,
         "name": p.name,
+        "auth_time": auth_time,
     });
     if let Some(pic) = &p.picture {
         body["picture"] = json!(pic);

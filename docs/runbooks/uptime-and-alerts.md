@@ -61,8 +61,8 @@ ratios close to zero. They now use the same `0.001` floor.
 
 `/health` returns 503 when Postgres is unreachable (D141 in DECISIONS.md), so
 `[P0] API Down` covers the API's database as well as the process. Cloud Run's
-own startup and liveness probes are TCP probes and never read `/health`, so a
-503 never restarts a container. Before that change, an HTTP liveness probe on
+own startup and liveness probes hit `/livez`, which reads no dependency, so a
+503 from `/health` never restarts a container. Before that change, an HTTP liveness probe on
 `/health` timed out (1 s default, against a 2 s DB check) once the database was
 gone, and it shut the instance down about 90 s after each dev stop.
 

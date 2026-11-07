@@ -4,6 +4,7 @@
 	import { page } from '$app/state';
 	import { ApiError, session } from '#lib/session.ts';
 	import { getSecret, type SecretVault } from '#lib/api/secrets.ts';
+	import { takeStepUpResume } from '#lib/stores/stepUp.svelte.ts';
 	import type { Identity, SecretDetail, SecretVersionView } from '#lib/types.ts';
 	import OwnerCell from '#lib/components/secrets/OwnerCell.svelte';
 	import { formatIdentity } from '#lib/identityDisplay.ts';
@@ -47,6 +48,9 @@
 			]);
 			detail = d;
 			identities = ids;
+			// Back from the step-up a reveal asked for: finish that reveal.
+			const resume = takeStepUpResume('secret-reveal');
+			if (resume) revealing = d.versions.find((v) => v.version === resume.version) ?? null;
 		} catch (e) {
 			if (e instanceof ApiError && e.status === 404) {
 				error = `Secret '${name}' not found.`;

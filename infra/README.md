@@ -142,7 +142,8 @@ the GitHub button on `/auth/providers` only once both are populated.
 |--------|---------|
 | `networking` | VPC + private service access (only when `use_private_vpc = true`) |
 | `iam` | One SA per workload (API `-run`, `-exporter`, `-shortener`, `-overfwd`) plus Cloud Build and Cloud Scheduler; no unconditional project-wide Secret Manager or Cloud SQL admin role — see [docs/runbooks/least-privilege-iam.md](../docs/runbooks/least-privilege-iam.md) |
-| `artifact-registry` | Docker image repository with cleanup policy (+ optional Docker Hub pull-through mirror) |
+| `artifact-registry` | Docker image repository with cleanup policy, unscanned BuildKit cache repository (+ optional Docker Hub pull-through mirror) |
+| `image-scanning` | Read-only service account and Workload Identity Federation provider for the scheduled image check (`.github/workflows/image-scan.yml`) — see [docs/runbooks/image-scanning.md](../docs/runbooks/image-scanning.md) |
 | `secret-manager` | DB password, encryption key, Google + GitHub login + Google services OAuth secrets |
 | `cloud-sql` | PostgreSQL 16 (Auth Proxy or private IP mode). TLS-only, deletion-protected, pgAudit on — see [docs/runbooks/cloud-sql-hardening.md](../docs/runbooks/cloud-sql-hardening.md) |
 | `cloud-run` | Overslash API with health checks and secret injection |
@@ -349,6 +350,7 @@ before the prod bucket is locked.
 | Secret Manager (6 secrets) | ~$0.09 |
 | Artifact Registry | ~$0.10/GB |
 | Audit logging (Data Access + 400-day bucket + alert) | < $1 |
+| Container scanning ($0.26 per new digest; [measured](../docs/runbooks/image-scanning.md#cost) at ~$34 across both projects, so scales with pushes, not idle) | $0 idle |
 | Cloud Scheduler (2 jobs) | ~$0 |
 | **Total** | **~$9-10/month** |
 

@@ -11,7 +11,11 @@
 	);
 	const scope = $derived((data.scope as 'root' | 'org') ?? 'root');
 	const next = $derived(data.next as string | null);
-	const returnTo = $derived(data.returnTo as string);
+	const returnTo = $derived(data.returnTo as string | null);
+	// Where to land after sign-in. `next` (the OAuth-AS resumption path) wins;
+	// otherwise the deep link the layout bounced us from. Both ride the IdP
+	// round-trip as the API's `next` parameter.
+	const landing = $derived(next ?? returnTo);
 	const reason = $derived(data.reason as string | null);
 
 	// Captured in `onMount` so the login `<a href>` URLs re-render with
@@ -29,8 +33,9 @@
 		// Forward `next` so the OAuth-AS resumption path survives the IdP
 		// bounce. Without this, `/oauth/authorize` redirects here, the user
 		// signs in, and the callback dumps them at the dashboard root —
-		// breaking MCP onboarding.
-		if (next) params.set('next', next);
+		// breaking MCP onboarding. Same for a `return_to` deep link
+		// (an approval opened from an oversla.sh link while signed out).
+		if (landing) params.set('next', landing);
 		// Vercel preview-deployment OAuth handoff. We always advertise our
 		// origin; the API gates the handoff on `OVERSLASH_ENV=dev` plus its
 		// `PREVIEW_ORIGIN_ALLOWLIST` regex and silently ignores values that
@@ -48,7 +53,7 @@
 			credentials: 'include'
 		});
 		if (res.ok) {
-			await goto(next ?? returnTo);
+			await goto(landing ?? '/agents');
 		}
 	}
 
@@ -74,7 +79,7 @@
 				method: 'POST',
 				headers: { 'content-type': 'application/json' },
 				credentials: 'include',
-				body: JSON.stringify({ email, next })
+				body: JSON.stringify({ email, next: landing })
 			});
 			if (!res.ok) {
 				magicLinkError = 'Something went wrong. Please try again.';
