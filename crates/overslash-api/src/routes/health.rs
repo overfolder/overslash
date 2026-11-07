@@ -29,6 +29,7 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/health", get(health))
         .route("/ready", get(ready))
+        .route("/livez", get(livez))
 }
 
 /// Result of a bounded `SELECT 1` against the pool. `Down` carries no detail
@@ -90,7 +91,7 @@ async fn probe_db(pool: &PgPool) -> DbProbe {
 ///
 /// This is what the GCM uptime check (`[P0] API Down`) and the Better Stack
 /// monitor probe, so a database outage pages. It used to be always-200 because
-/// the Cloud Run probes pointed here; they are TCP probes now
+/// the Cloud Run probes pointed here; they use [`livez`] now
 /// (`infra/modules/cloud-run/main.tf`), so nothing restarts a container on a
 /// 503 from this endpoint.
 async fn health(State(state): State<AppState>) -> (StatusCode, Json<Value>) {
@@ -102,7 +103,18 @@ async fn ready(State(state): State<AppState>) -> (StatusCode, Json<Value>) {
     respond(probe_db(&state.db).await, "ready")
 }
 
-/// Shared body + status for both endpoints: `up_status` when the database
+/// Liveness: 200 whenever the server can run a handler. This is what Cloud Run's
+/// startup and liveness probes hit.
+///
+/// It must never read a dependency. A liveness probe that fails on a database
+/// outage restarts instances that cannot boot without that database, which
+/// turns the outage into an API one (D141). Unlike a TCP connect, which the
+/// kernel accepts for a wedged process, this needs the async runtime to answer.
+async fn livez() -> Json<Value> {
+    Json(json!({ "status": "alive" }))
+}
+
+/// Shared body + status for `/health` and `/ready`: `up_status` when the database
 /// answered, 503 `degraded` when it did not.
 fn respond(probe: DbProbe, up_status: &str) -> (StatusCode, Json<Value>) {
     let (code, status) = if probe.is_up() {
