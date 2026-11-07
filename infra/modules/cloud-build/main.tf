@@ -19,6 +19,10 @@ variable "repository_name" {
   type = string
 }
 
+variable "cache_repository_url" {
+  type = string
+}
+
 variable "cloud_build_sa_id" {
   type = string
 }
@@ -42,8 +46,8 @@ variable "github_branch" {
 locals {
   image = "${var.region}-docker.pkg.dev/${var.project_id}/${var.repository_name}/overslash-api"
 
-  # Distinct tag under the `/cache` path Kaniko used, so old blobs age out alone.
-  cache_ref = "${var.region}-docker.pkg.dev/${var.project_id}/${var.repository_name}/overslash-api/cache:buildcache"
+  # In its own repository so that it isn't scanned (modules/artifact-registry).
+  cache_ref = "${var.cache_repository_url}/overslash-api:buildcache"
 
   # Only prod claims the clean manifest version. A branch-push deploy has no
   # release tag to inject, so OVERSLASH_RELEASE tells build.rs to drop the
