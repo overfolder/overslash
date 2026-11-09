@@ -36,14 +36,15 @@ pub(super) struct ListQuery {
     limit: Option<i64>,
 }
 
+fn nonempty(v: &Option<String>) -> Option<String> {
+    v.as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
 impl ListQuery {
     fn filter(&self) -> Result<InstanceAuditFilter> {
-        let nonempty = |v: &Option<String>| {
-            v.as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(str::to_string)
-        };
         Ok(InstanceAuditFilter {
             admin: nonempty(&self.admin),
             action: nonempty(&self.action),
@@ -128,11 +129,15 @@ pub(super) async fn list(
     }))
 }
 
+/// Same filters as the list, minus paging: an export always starts at the
+/// newest row. Spelled out rather than `#[serde(flatten)]`-ing `ListQuery`,
+/// because flatten buffers query values as strings and then rejects numeric
+/// fields like `limit`, turning `?limit=50` into a 400.
 #[derive(Deserialize)]
 pub(super) struct ExportQuery {
-    #[serde(flatten)]
-    list: ListQuery,
-    #[serde(default)]
+    admin: Option<String>,
+    action: Option<String>,
+    org: Option<String>,
     format: Option<String>,
 }
 
@@ -151,8 +156,12 @@ pub(super) async fn export(
             ));
         }
     };
-    let mut filter = q.list.filter()?;
-    filter.before = None;
+    let filter = InstanceAuditFilter {
+        admin: nonempty(&q.admin),
+        action: nonempty(&q.action),
+        org: nonempty(&q.org),
+        before: None,
+    };
     let rows = instance_admin::list_audit(state.db(&ext), &filter, EXPORT_CAP).await?;
 
     let mut buf = Vec::new();

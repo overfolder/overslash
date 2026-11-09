@@ -527,4 +527,15 @@ async fn plan_and_trial_changes_write_instance_audit_with_filters_and_paging() {
     let csv = r.text().await.unwrap();
     assert!(csv.starts_with("created_at,actor_email,action,org_slug,detail,ip_address\n"));
     assert_eq!(csv.lines().count(), 4);
+
+    // The dashboard reuses the list's query string for the export link, so
+    // paging params must be accepted (and ignored), not a 400.
+    let r = get(
+        &client,
+        format!("{base}/v1/instance/audit/export?format=jsonl&limit=50&cursor=x"),
+        &admin.cookie,
+    )
+    .await;
+    assert_eq!(r.status(), 200);
+    assert_eq!(r.text().await.unwrap().lines().count(), 3);
 }

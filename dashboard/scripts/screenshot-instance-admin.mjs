@@ -1,8 +1,9 @@
 // Real-stack screenshots for the Instance Admin panel (/instance):
-//   - Orgs (light + dark + phone), with the Manage Plan and Create Org dialogs
+//   - Orgs (light + dark), with the Manage Plan and Create Org dialogs
 //   - Instance admins, with the Grant dialog and the sole-admin revoke guard
 //   - Configuration
 //   - Instance audit
+//   - Phone width (orgs, admins, audit)
 //
 // Prereq: `make e2e-up`, and DATABASE_URL pointing at the e2e Postgres. SQL is
 // used only for what has no API by design: bootstrapping the first instance
@@ -123,13 +124,23 @@ try {
 		await ctx.close();
 	}
 
-	{
-		const { page, ctx } = await snap.navigateAndSnap('instance-orgs-phone', '/instance', {
-			viewport: { width: 390, height: 844 },
-			waitFor: ready('td .slug')
+	// Phone: a tall viewport rather than fullPage, so the fixed bottom tab bar
+	// lands at the bottom instead of being painted mid-page.
+	for (const [name, path, sel] of [
+		['orgs', '/instance', 'td .slug'],
+		['admins', '/instance/admins', '.person-name'],
+		['audit', '/instance/audit', '.action']
+	]) {
+		const { page, ctx } = await snap.navigateAndSnap(`instance-${name}-phone`, path, {
+			viewport: { width: 390, height: 1400 },
+			fullPage: false,
+			waitFor: ready(sel)
 		});
+		const overflow = await page.evaluate(
+			() => document.documentElement.scrollWidth - document.documentElement.clientWidth
+		);
+		if (overflow > 0) console.warn(`[instance] ${name} phone overflows by ${overflow}px`);
 		await ctx.close();
-		void page;
 	}
 
 	{

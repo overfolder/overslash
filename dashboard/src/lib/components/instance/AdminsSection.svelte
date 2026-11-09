@@ -100,8 +100,8 @@
 									</span>
 								</span>
 							</td>
-							<td><Badge>{providerLabel(a.provider)}</Badge></td>
-							<td class="time">
+							<td data-label="Sign-in"><Badge>{providerLabel(a.provider)}</Badge></td>
+							<td class="time" data-label="Granted">
 								{#if a.granted_at}
 									{isoDate(a.granted_at)}
 									{#if a.granted_by_email}<span class="muted">by {a.granted_by_email}</span>{/if}
@@ -109,7 +109,7 @@
 									<span class="muted">Bootstrap</span>
 								{/if}
 							</td>
-							<td class="time">
+							<td class="time" data-label="Last active">
 								{#if a.last_seen_at}{relativeAgo(a.last_seen_at)}{:else}<span class="muted">—</span
 									>{/if}
 							</td>

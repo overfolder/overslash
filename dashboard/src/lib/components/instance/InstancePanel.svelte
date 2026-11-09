@@ -35,9 +35,11 @@
 				d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"
 			/></svg
 		>
-		<span><b>Instance scope.</b> Nothing here belongs to <b>{currentOrg}</b>, your current org.</span>
-		<span class="sep" aria-hidden="true">·</span>
-		<span>Changes need a recent sign-in.</span>
+		<span class="scope-text">
+			<span><b>Instance scope.</b> Nothing here belongs to <b>{currentOrg}</b>, your current org.</span>
+			<span class="sep" aria-hidden="true">·</span>
+			<span>Changes need a recent sign-in.</span>
+		</span>
 	</div>
 	<div class="docked">
 		<aside class="dock" aria-label="Instance sections">
@@ -81,12 +83,20 @@
 		display: flex;
 		align-items: center;
 		gap: 10px;
-		flex-wrap: wrap;
 		padding: 8px 32px;
 		background: var(--color-surface);
 		border-bottom: 1px solid var(--color-border);
 		font: var(--text-body-sm);
 		color: var(--color-text-secondary);
+	}
+	.scope svg {
+		flex: none;
+	}
+	.scope-text {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 2px 10px;
+		min-width: 0;
 	}
 	.scope b {
 		font-weight: 600;
@@ -376,6 +386,91 @@
 		}
 		.page {
 			padding: 20px 16px 48px;
+		}
+	}
+
+	/* Phone: every instance table becomes a stack of cards. The unlabelled
+	   cell (org, user, action) is the card's heading, each labelled cell is a
+	   label/value line, and the actions sit at the bottom. */
+	@media (max-width: 640px) {
+		.scope {
+			align-items: flex-start;
+		}
+		.scope svg {
+			margin-top: 2px;
+		}
+		.scope-text {
+			flex-direction: column;
+		}
+		.instance :global(.table-box) {
+			overflow-x: visible;
+		}
+		.instance :global(.table-box table) {
+			min-width: 0;
+		}
+		.instance :global(.table-box thead) {
+			position: absolute;
+			width: 1px;
+			height: 1px;
+			overflow: hidden;
+			clip: rect(0, 0, 0, 0);
+		}
+		.instance :global(.table-box tbody),
+		.instance :global(.table-box tr) {
+			display: block;
+		}
+		.instance :global(.table-box tbody tr) {
+			display: flex;
+			flex-direction: column;
+			gap: 6px;
+			padding: 12px 14px;
+			border-top: 1px solid var(--color-border-subtle);
+		}
+		.instance :global(.table-box tbody tr:first-child) {
+			border-top: 0;
+		}
+		.instance :global(.table-box td) {
+			display: block;
+			padding: 0;
+			border-top: 0;
+			min-width: 0;
+		}
+		.instance :global(.table-box td:not([data-label]):not(.act)) {
+			order: -1;
+			margin-bottom: 2px;
+		}
+		.instance :global(.table-box td[data-label]) {
+			display: flex;
+			justify-content: space-between;
+			align-items: baseline;
+			gap: 12px;
+			text-align: right;
+			white-space: normal;
+			overflow-wrap: anywhere;
+		}
+		.instance :global(.table-box td[data-label]::before) {
+			content: attr(data-label);
+			flex: none;
+			text-align: left;
+			font: var(--text-label-sm);
+			text-transform: uppercase;
+			letter-spacing: 0.05em;
+			color: var(--color-text-muted);
+		}
+		.instance :global(.table-box td.act) {
+			order: 1;
+			display: flex;
+			flex-wrap: wrap;
+			align-items: center;
+			justify-content: flex-start;
+			gap: 8px;
+			margin-top: 4px;
+			text-align: left;
+			white-space: normal;
+		}
+		.instance :global(.table-box td.empty) {
+			padding: 20px 0;
+			text-align: center;
 		}
 	}
 </style>

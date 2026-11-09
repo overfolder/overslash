@@ -138,17 +138,17 @@
 				{:else}
 					{#each visible as e (e.id)}
 						<tr>
-							<td class="time" title={e.created_at}
+							<td class="time" data-label="Time" title={e.created_at}
 								>{relativeAgo(Date.parse(e.created_at) / 1000)}</td
 							>
-							<td>{e.actor_email || '—'}</td>
+							<td data-label="Admin">{e.actor_email || '—'}</td>
 							<td><span class="action">{e.action}</span></td>
-							<td>
+							<td data-label="Org">
 								{#if e.org_slug}<span class="slug">{e.org_slug}</span>{:else}<span class="muted"
 										>instance</span
 									>{/if}
 							</td>
-							<td class="muted">{auditDetail(e.action, e.detail)}</td>
+							<td class="muted" data-label="Detail">{auditDetail(e.action, e.detail)}</td>
 						</tr>
 					{:else}
 						<tr><td colspan="5" class="empty">No instance-admin actions match.</td></tr>

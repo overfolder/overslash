@@ -111,23 +111,23 @@
 									<span class="slug">{o.slug}</span>
 								</div>
 							</td>
-							<td>
+							<td data-label="Plan">
 								<Badge tone={PLAN_TONE[o.plan] ?? 'neutral'}>{PLAN_LABEL[o.plan] ?? o.plan}</Badge>
 							</td>
-							<td>
+							<td data-label="Trial ends">
 								{#if trial && o.trial_ends_at}
 									<Badge tone={trial.tone} title={isoDate(o.trial_ends_at)}>{trial.label}</Badge>
 								{:else}
 									<span class="muted">—</span>
 								{/if}
 							</td>
-							<td class="num">{o.member_count}</td>
-							<td class="time">
+							<td class="num" data-label="Members">{o.member_count}</td>
+							<td class="time" data-label="Last activity">
 								{#if o.last_activity_at}{relativeAgo(o.last_activity_at)}{:else}<span
 										class="muted">—</span
 									>{/if}
 							</td>
-							<td class="time">{isoDate(o.created_at)}</td>
+							<td class="time" data-label="Created">{isoDate(o.created_at)}</td>
 							<td class="act">
 								<button class="btn btn-sm" type="button" onclick={() => (manage = o)}
 									>Manage Plan</button
