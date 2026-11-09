@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE users\n            SET is_instance_admin = false,\n                instance_admin_granted_at = NULL,\n                instance_admin_granted_by = NULL,\n                updated_at = now()\n          WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "1dd3ca91114b878b2e37f8848150790234b27b9c0150579ca3909d51f9c9443a"
+}

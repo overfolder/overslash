@@ -212,6 +212,7 @@ fn build_shared_router(state: AppState) -> axum::Router {
         .merge(routes::health::router())
         .merge(routes::version::router())
         .merge(routes::orgs::router())
+        .merge(routes::instance::router())
         .merge(routes::identities::router())
         .merge(routes::api_keys::router())
         .merge(routes::secrets::router())

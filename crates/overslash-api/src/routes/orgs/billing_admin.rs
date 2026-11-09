@@ -90,6 +90,17 @@ pub(super) async fn start_trial(
         })
         .await;
 
+    crate::services::instance_audit::log(
+        &state,
+        &ext,
+        admin.user_id,
+        "org.trial_started",
+        Some(id),
+        serde_json::json!({ "duration_days": days, "trial_ends_at": ends_at.unix_timestamp() }),
+        &ip,
+    )
+    .await;
+
     Ok(Json(TrialResponse {
         org_id: id,
         plan: "trial".into(),
@@ -144,6 +155,17 @@ pub(super) async fn extend_trial(
         })
         .await;
 
+    crate::services::instance_audit::log(
+        &state,
+        &ext,
+        admin.user_id,
+        "org.trial_extended",
+        Some(id),
+        serde_json::json!({ "extend_days": days, "trial_ends_at": ends_at.unix_timestamp() }),
+        &ip,
+    )
+    .await;
+
     Ok(Json(TrialResponse {
         org_id: id,
         plan: "trial".into(),
@@ -180,6 +202,9 @@ pub(super) async fn set_org_plan(
         ));
     }
 
+    let previous_plan = overslash_db::repos::org::get_by_id(state.db(&ext), id)
+        .await?
+        .map(|o| o.plan);
     if !overslash_db::repos::org::set_plan(state.db(&ext), id, &req.plan).await? {
         return Err(AppError::NotFound("org not found".into()));
     }
@@ -200,6 +225,17 @@ pub(super) async fn set_org_plan(
             ip_address: ip.0.as_deref(),
         })
         .await;
+
+    crate::services::instance_audit::log(
+        &state,
+        &ext,
+        admin.user_id,
+        "org.plan.updated",
+        Some(id),
+        serde_json::json!({ "plan": &req.plan, "previous_plan": previous_plan }),
+        &ip,
+    )
+    .await;
 
     Ok(Json(PlanResponse {
         org_id: id,

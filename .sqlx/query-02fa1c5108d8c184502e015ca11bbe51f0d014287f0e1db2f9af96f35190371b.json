@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT is_instance_admin, overslash_idp_provider FROM users WHERE id = $1 FOR UPDATE",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "is_instance_admin",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "is_instance_admin"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "overslash_idp_provider",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "overslash_idp_provider"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "02fa1c5108d8c184502e015ca11bbe51f0d014287f0e1db2f9af96f35190371b"
+}

@@ -21,9 +21,9 @@ pub struct UserRow {
     /// Set only for Overslash-backed users. A personal org is auto-created on
     /// first root-level login and is always 1-member.
     pub personal_org_id: Option<Uuid>,
-    /// Operator-granted flag (set only via psql). The single elevated
-    /// capability today is creating new orgs with `plan='free_unlimited'`
-    /// via `POST /v1/orgs/free-unlimited`. A CHECK constraint requires
+    /// Instance-admin flag: bootstrapped via psql, then granted and revoked
+    /// from the Instance Admin panel (`/v1/instance/admins`). Gates the
+    /// instance-wide routes (`InstanceAdminAuth`). A CHECK constraint requires
     /// `overslash_idp_provider IS NOT NULL` whenever this is true.
     pub is_instance_admin: bool,
     /// Stamped after the welcome / first-login email is successfully sent.
@@ -64,7 +64,9 @@ pub async fn is_instance_admin(pool: &PgPool, user_id: Uuid) -> Result<bool, sql
 }
 
 /// Operator-only setter, exposed for tests and any future internal tooling.
-/// **No HTTP route uses this.** The CHECK constraint
+/// Tests and tooling only: the HTTP grant/revoke go through
+/// `repos::instance_admin::{grant, revoke}`, which also stamp provenance and
+/// keep the last-admin guard. The CHECK constraint
 /// `users_instance_admin_requires_overslash_idp` will reject the UPDATE if
 /// the user has no `overslash_idp_provider`.
 pub async fn set_instance_admin(

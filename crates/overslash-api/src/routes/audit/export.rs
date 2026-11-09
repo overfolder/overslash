@@ -340,7 +340,7 @@ fn write_csv_row(buf: &mut Vec<u8>, e: &AuditEntry) {
 /// runs a cell that starts with `=`, `+`, `-` or `@` as a formula, and
 /// descriptions, names and `detail` are all user-influenced. A leading `'`
 /// makes the cell plain text in Excel, Sheets and LibreOffice alike.
-fn write_csv_cell(buf: &mut Vec<u8>, value: &str) {
+pub(crate) fn write_csv_cell(buf: &mut Vec<u8>, value: &str) {
     let formula = value.starts_with(['=', '+', '-', '@', '\t', '\r']);
     let quote = formula || value.contains([',', '"', '\r', '\n']);
     if quote {

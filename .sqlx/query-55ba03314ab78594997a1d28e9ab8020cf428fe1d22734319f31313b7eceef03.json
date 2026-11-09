@@ -1,0 +1,84 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT u.id, u.email, u.display_name, u.overslash_idp_provider, u.is_instance_admin,\n                  (SELECT o.name FROM user_org_memberships m JOIN orgs o ON o.id = m.org_id\n                    WHERE m.user_id = u.id AND NOT o.is_personal\n                    ORDER BY m.created_at LIMIT 1) AS \"any_org_name?\"\n             FROM users u\n            WHERE u.email ILIKE $1 OR u.display_name ILIKE $1\n            ORDER BY (u.overslash_idp_provider IS NULL), u.email\n            LIMIT $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "email",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "email"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "display_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "display_name"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "overslash_idp_provider",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "overslash_idp_provider"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "is_instance_admin",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "is_instance_admin"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "any_org_name?",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      true,
+      true,
+      false,
+      null
+    ]
+  },
+  "hash": "55ba03314ab78594997a1d28e9ab8020cf428fe1d22734319f31313b7eceef03"
+}

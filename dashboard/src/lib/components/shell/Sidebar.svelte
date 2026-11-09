@@ -7,6 +7,7 @@
 		ADMIN_NAV_ITEMS,
 		LIVE_MAP_NAV_ITEM,
 		SETTINGS_NAV_ITEM,
+		INSTANCE_NAV_ITEM,
 		pickActiveHref
 	} from './nav-items';
 	import Logo from './Logo.svelte';
@@ -14,7 +15,6 @@
 	import NavIcon from './NavIcon.svelte';
 	import OrgSwitcher from './OrgSwitcher.svelte';
 	import PendingInvites from './PendingInvites.svelte';
-	import CreateOrgModal from '#lib/components/CreateOrgModal.svelte';
 	import type { PendingInvitation } from '#lib/api/account.ts';
 	import type { MembershipSummary } from '#lib/session.ts';
 	import type { BuildInfo } from '#lib/types.ts';
@@ -69,12 +69,11 @@
 		...NAV_ITEMS,
 		...(liveMap ? [LIVE_MAP_NAV_ITEM] : []),
 		...(isAdmin ? ADMIN_NAV_ITEMS : []),
-		...(isAdmin ? [SETTINGS_NAV_ITEM] : [])
+		...(isAdmin ? [SETTINGS_NAV_ITEM] : []),
+		...(isInstanceAdmin ? [INSTANCE_NAV_ITEM] : [])
 	]);
 
 	const activeHref = $derived(pickActiveHref(page.url.pathname, allItems));
-
-	let createOrgOpen = $state(false);
 
 	// Build stamp. The collapsed rail shows the version alone — the short SHA
 	// would win the 76px of space without being the thing anyone recognises —
@@ -166,14 +165,13 @@
 			<OrgSwitcher {memberships} {currentOrgId} {collapsed} />
 		{/if}
 		{#if isInstanceAdmin}
-			<button
-				class="create-org-btn"
-				type="button"
-				onclick={() => (createOrgOpen = true)}
-				title="Create org"
-			>
-				{#if collapsed}+{:else}+ Create org{/if}
-			</button>
+			<NavItem
+				href={INSTANCE_NAV_ITEM.href}
+				label={INSTANCE_NAV_ITEM.label}
+				icon={INSTANCE_NAV_ITEM.icon}
+				{collapsed}
+				{activeHref}
+			/>
 		{/if}
 		{#if isAdmin}
 			<NavItem
@@ -203,8 +201,6 @@
 		{/if}
 	</div>
 </aside>
-
-<CreateOrgModal open={createOrgOpen} onClose={() => (createOrgOpen = false)} />
 
 <style>
 	.sidebar {
@@ -307,20 +303,6 @@
 	.collapse-btn:hover {
 		background: color-mix(in srgb, var(--color-text) 6%, transparent);
 		color: var(--color-text);
-	}
-	.create-org-btn {
-		background: transparent;
-		border: 1px dashed var(--color-border);
-		color: var(--color-text);
-		cursor: pointer;
-		padding: 0.4rem 0.6rem;
-		border-radius: 6px;
-		font-size: 0.85rem;
-		text-align: center;
-		margin: 0.25rem 0;
-	}
-	.create-org-btn:hover {
-		background: var(--color-neutral-100, var(--color-border));
 	}
 	.build {
 		background: transparent;

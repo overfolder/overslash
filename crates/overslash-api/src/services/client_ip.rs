@@ -86,6 +86,14 @@ pub struct ProxyStamp<'a> {
 /// of `openssl rand -hex 16`, so a placeholder like `REPLACE_ME` is refused.
 const MIN_SECRET_LEN: usize = 32;
 
+/// What [`TrustedProxies::view`] shows. Holds no secret material.
+pub struct TrustedProxiesSummary {
+    pub hops: u8,
+    pub cidrs: Vec<String>,
+    pub secret_set: bool,
+    pub client_ip_header: Option<String>,
+}
+
 /// The proxy topology this process sits behind. `Default` trusts nothing.
 #[derive(Clone, Default)]
 pub struct TrustedProxies {
@@ -111,6 +119,20 @@ impl fmt::Debug for TrustedProxies {
 }
 
 impl TrustedProxies {
+    /// Read-only view for the Instance Admin configuration page. The secret is
+    /// reported only as present or absent.
+    pub fn view(&self) -> TrustedProxiesSummary {
+        TrustedProxiesSummary {
+            hops: self.hops,
+            cidrs: self.cidrs.iter().map(|c| c.to_string()).collect(),
+            secret_set: self.secret.is_some(),
+            client_ip_header: self
+                .client_ip_header
+                .as_ref()
+                .map(|h| h.as_str().to_string()),
+        }
+    }
+
     /// Read the four variables. An unparseable value is an error, not a
     /// warning: a dropped CIDR silently moves every client behind that proxy
     /// into one rate-limit bucket, which is worse than not starting.

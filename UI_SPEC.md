@@ -341,7 +341,7 @@ Thin full-width bars at the top of the page for connectivity state. Semi-transpa
 - Build stamp drops the short SHA and shows the version alone — the SHA stays available in the hover tooltip, and clicking still copies it.
 - Expand button (chevrons-right icon) to restore.
 
-**Top bar**: 56px tall, white background, neutral-200 bottom border. Page title on left (semi-bold 16px). On the right, in order: notification bell + badge, theme toggle, **user badge** — the user's avatar (32px circle) + name, with the `⚡ Instance` chip appended when the viewer is an instance admin. Clicking the user badge opens the User Profile view.
+**Top bar**: 56px tall, white background, neutral-200 bottom border. Page title on left (semi-bold 16px). On the right, in order: notification bell + badge, theme toggle, **user badge** — the user's avatar (32px circle) + name, with the `⚡ Instance` chip appended when the viewer is an instance admin. The chip links to `/instance` and takes the primary tint while that panel is open. Clicking the user badge opens the User Profile view.
 
 **Notification badge**: Error-red circle (16px) overlapping the bell icon, with white bold count text.
 
@@ -908,6 +908,24 @@ The self-setup default is **disclosed at both points where an agent is created**
 - *`/oauth/consent` enrollment form* — same, between the Inherit Permissions toggle and the Groups picker, gated on the selected parent being the user themselves (a deeper parent yields a depth-2 agent, which is never seeded).
 
 Neither is a control — the org toggle is the only place the policy is set. The seeded rows are revocable individually in the agent detail Permission Rules table.
+
+## Instance Admin panel (`/instance`, instance admins only)
+
+Instance-wide, not org-scoped. Reached from the **Instance** item (zap icon) in the sidebar footer, above Settings, and from the top bar's `⚡ Instance` chip; both render only for instance admins, and the route redirects anyone else to `/`. Layout mirrors Org Settings: the content area goes flush, a strip across the top reads "**Instance scope.** Nothing here belongs to **<current org>**, your current org. · Changes need a recent sign-in.", and a 220px dock titled "Instance" (with the host underneath) lists the sections under uppercase group labels. `/instance` shows Orgs; the rest deep-link as `/instance/<section>`. At ≤900px the dock collapses into wrapping chips.
+
+| Group | Section |
+|---|---|
+| Tenancy | Orgs |
+| Access | Instance admins |
+| Deployment | Configuration · Service registry (disabled, "Later" pill) |
+| Audit | Instance audit |
+
+- **Orgs** — table of every org: Org (name + mono slug), Plan badge (Standard neutral · Trial primary · Free unlimited success), Trial ends (`in 12d` neutral, ≤3 days warning, `ended 2d ago` error; the date on hover), Members, Last activity, Created, and a **Manage Plan** button. Toolbar: text filter, plan select, "Show personal orgs" (off by default). Footer: "N of M orgs". A dashed note under the table says org contents (secrets, connections, approvals, members) are never shown here. **Manage Plan** is a radio list (Standard / Trial or "Trial — extend" / Free unlimited, the current one tagged) plus a days field for trials, defaulting to `TRIAL_DEFAULT_DURATION_DAYS`. **+ Create Org** takes name, slug (derived, live availability check) and plan; the creator becomes the org's first admin and stays in their current org. The button is hidden when `ALLOW_ORG_CREATION` is off.
+- **Instance admins** — table: User (avatar, name, `you` tag, email), Sign-in (root IdP), Granted (date "by <email>", or "Bootstrap"), Last active, **Revoke**. With a single admin, Revoke is disabled and the row says "The last instance admin can’t be revoked." **+ Grant Admin** opens a user search; users without a root-domain sign-in are listed greyed out with the reason and "Not eligible". Revoking yourself returns you to `/`.
+- **Configuration** — read-only cards (Build · Orgs & billing · Security · Rate limits · Sign-in · Template variables) of mono key / value rows. A value from a built-in default is tagged "default"; secrets show a lock and "Set"/"Not set" only.
+- **Instance audit** — Time (relative, ISO on hover), Admin, Action (mono primary chip), Org (mono slug, or "instance"), Detail. Search bar with `admin`, `action` and `org` keys; free text narrows loaded rows. "Load more" pages; Export CSV / JSONL download the filtered trail.
+
+Every dialog carries the step-up note ("Saving asks you to sign in again if your last sign-in is too old … written to the instance audit."). A stale sign-in raises the global *Confirm it's you* prompt and leaves the dialog open to retry.
 
 ## Secrets view
 

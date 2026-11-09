@@ -18,6 +18,7 @@ pub mod groups;
 pub mod health;
 pub mod icons;
 pub mod identities;
+pub mod instance;
 pub mod mcp;
 pub mod oauth;
 pub mod oauth_as;
