@@ -90,7 +90,9 @@ gcloud secrets versions add <prefix>-google-directory-sa-key --data-file=new.jso
 gcloud iam service-accounts keys delete <old-key-id> --iam-account "$SA"
 ```
 
-The client ID does not change on rotation, so customers do nothing.
+The client ID does not change on rotation, so customers do nothing. The period is 90 days
+([policy](../compliance/casa/secrets-access-policy.md#directory-key)). In prod, `keys create`
+is refused until an org policy admin grants a temporary opt-out.
 **Replacing the service account** changes the client ID, and every connected
 Workspace must add the new one — avoid it.
 

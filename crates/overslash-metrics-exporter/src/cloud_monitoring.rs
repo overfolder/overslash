@@ -179,7 +179,7 @@ pub async fn write_time_series(
 }
 
 /// Fetch a workload-identity access token from the GCE metadata server.
-async fn get_access_token(client: &reqwest::Client) -> Result<String> {
+pub async fn get_access_token(client: &reqwest::Client) -> Result<String> {
     #[derive(serde::Deserialize)]
     struct TokenResponse {
         access_token: String,
