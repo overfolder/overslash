@@ -5,7 +5,8 @@ members = ["crates/overslash-env", "crates/overslash-valkey", "crates/overslash-
 [workspace.package]
 edition = "2024"
 rust-version = "1.98"
-license = "Apache-2.0"
+license = "Elastic-2.0"
+publish = false
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
