@@ -221,3 +221,20 @@ fn list_is_empty_for_unset_empty_and_commas_only() {
         "an allow-list must never contain an empty entry"
     );
 }
+
+// ── prefixed ────────────────────────────────────────────────────────────────
+
+#[test]
+fn prefixed_lists_matching_names_sorted_and_drops_empty_values() {
+    set("OVS_TEST_PREFIXED_B", "  two ");
+    set("OVS_TEST_PREFIXED_A", "one");
+    set("OVS_TEST_PREFIXED_EMPTY", "   ");
+    set("OVS_TEST_PREFIXEX_OTHER", "nope");
+    assert_eq!(
+        env::prefixed("OVS_TEST_PREFIXED_"),
+        vec![
+            ("OVS_TEST_PREFIXED_A".to_string(), "one".to_string()),
+            ("OVS_TEST_PREFIXED_B".to_string(), "two".to_string()),
+        ]
+    );
+}

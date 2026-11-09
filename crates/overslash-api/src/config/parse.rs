@@ -76,7 +76,7 @@ pub(super) fn parse_platform_credential(
     })
 }
 
-const PLATFORM_GATEWAY_PREFIX: &str = "OVERSLASH_PLATFORM_GATEWAY_";
+pub(super) const PLATFORM_GATEWAY_PREFIX: &str = "OVERSLASH_PLATFORM_GATEWAY_";
 
 /// Every platform credential this deployment holds, from the environment.
 ///

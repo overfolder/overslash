@@ -189,7 +189,9 @@ impl Config {
                 env::optional("OVERSLASH_GOOGLE_DIRECTORY_SA_KEY"),
                 env::optional("OVERSLASH_GOOGLE_DIRECTORY_SA_KEY_FILE"),
             ),
-            platform_credentials: parse_platform_credentials(std::env::vars()),
+            platform_credentials: parse_platform_credentials(env::prefixed(
+                PLATFORM_GATEWAY_PREFIX,
+            )),
             oversla_sh_base_url: env::optional("OVERSLA_SH_BASE_URL"),
             oversla_sh_api_key: env::optional("OVERSLA_SH_API_KEY"),
             email_provider: env::optional("EMAIL_PROVIDER"),
