@@ -45,30 +45,22 @@ async fn main() -> Result<()> {
         anyhow::bail!("GCP_PROJECT_ID is required unless EXPORTER_DRY_RUN=1");
     }
 
-    // Cloud Run mounts the DB password as a separate env var so it can come
-    // from Secret Manager without baking the password into the URL. Splice
-    // it in at connect time when present; locally the URL itself can carry
-    // user:pass and DATABASE_PASSWORD stays unset.
-    let connect_opts =
-        build_connect_options(&database_url, overslash_env::optional("DATABASE_PASSWORD"))?
-            // A bad plan on a grown table must not hold the job to its
-            // 120s task timeout and lose every other metric with it.
-            .options([("statement_timeout", "30s")]);
-    let db = PgPoolOptions::new()
-        .max_connections(4)
-        .acquire_timeout(std::time::Duration::from_secs(10))
-        .connect_with(connect_opts)
-        .await
-        .context("failed to connect to Postgres")?;
-
-    info!("Collecting business metrics");
-    let mut metrics = queries::collect_all(&db).await?;
-    metrics.integrity_violations = run_integrity_sweep(&db).await;
-    log_collected(&metrics);
-
     let now = chrono::Utc::now().to_rfc3339();
     let resource = business_resource(project_id.as_deref().unwrap_or("dry-run"), &location);
-    let mut series = build_time_series(&metrics, &now, &resource);
+
+    // The business metrics need Postgres; the rotation sweep does not. Dev's
+    // Cloud SQL is stopped overnight, and a run that exited on the connect
+    // would leave the sweep's absence condition firing every night. So a DB
+    // failure is held until the sweep's series are written, then returned.
+    let (mut series, business_err) = match collect_business_series(&database_url, &now, &resource)
+        .await
+    {
+        Ok(s) => (s, None),
+        Err(e) => {
+            error!(error = %format!("{e:#}"), "Business metrics failed; exporting the rotation sweep only");
+            (Vec::new(), Some(e))
+        }
+    };
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
@@ -88,13 +80,45 @@ async fn main() -> Result<()> {
             "timeSeries": series,
         }))?;
         println!("{body}");
-        return Ok(());
+        return business_err.map_or(Ok(()), Err);
     }
 
     let project_id = project_id.expect("checked above");
-    write_time_series(&project_id, series, &client).await?;
-    info!("Metrics exported");
-    Ok(())
+    if !series.is_empty() {
+        write_time_series(&project_id, series, &client).await?;
+        info!("Metrics exported");
+    }
+    business_err.map_or(Ok(()), Err)
+}
+
+/// Connect, run the business queries and the integrity sweep, and build their
+/// time series.
+async fn collect_business_series(
+    database_url: &str,
+    now: &str,
+    resource: &MonitoredResource,
+) -> Result<Vec<TimeSeries>> {
+    // Cloud Run mounts the DB password as a separate env var so it can come
+    // from Secret Manager without baking the password into the URL. Splice
+    // it in at connect time when present; locally the URL itself can carry
+    // user:pass and DATABASE_PASSWORD stays unset.
+    let connect_opts =
+        build_connect_options(database_url, overslash_env::optional("DATABASE_PASSWORD"))?
+            // A bad plan on a grown table must not hold the job to its
+            // 120s task timeout and lose every other metric with it.
+            .options([("statement_timeout", "30s")]);
+    let db = PgPoolOptions::new()
+        .max_connections(4)
+        .acquire_timeout(std::time::Duration::from_secs(10))
+        .connect_with(connect_opts)
+        .await
+        .context("failed to connect to Postgres")?;
+
+    info!("Collecting business metrics");
+    let mut metrics = queries::collect_all(&db).await?;
+    metrics.integrity_violations = run_integrity_sweep(&db).await;
+    log_collected(&metrics);
+    Ok(build_time_series(&metrics, now, resource))
 }
 
 fn init_tracing() {
