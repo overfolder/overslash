@@ -35,3 +35,10 @@ reason = "unsafe-libyaml is unmaintained, not vulnerable; template parsing via s
 id = "GHSA-gcqx-w48m-w2h4"
 ignoreUntil = 2027-01-25
 reason = "deepmerge 4.3.1 prototype poisoning: dev-only, via @sveltejs/vite-plugin-svelte merging our own build config. No attacker-supplied input reaches it and it ships in no bundle. No fixed release."
+
+# OSV-only: cargo-deny walks the resolved build graph and never sees this
+# crate, so there is no matching deny.toml entry.
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0459"
+ignoreUntil = 2027-02-07
+reason = "libsqlite3-sys 0.30.1 (bundled SQLite WAL uninitialized-memory read) is a Cargo.lock phantom: sqlx-macros-core lists sqlx-sqlite as a weak optional dep, so it is locked but never compiled or linked (we enable only the postgres feature; `cargo tree -i libsqlite3-sys` is empty). The fix 0.39.0 is outside sqlx-sqlite 0.9.0's <0.38 range."
