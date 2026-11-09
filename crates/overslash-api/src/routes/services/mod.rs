@@ -546,6 +546,10 @@ async fn delete_service(
                 });
     }
 
+    // A token Overslash minted for this instance alone goes with it.
+    platform_services::release_session_token(&scope, &instance, auth.identity_id, ip.0.as_deref())
+        .await;
+
     // After the cascade, so a subscriber that refetches on this does not race
     // the connection cleanup and re-render a service that is already gone.
     platform_services::fire_service_event(

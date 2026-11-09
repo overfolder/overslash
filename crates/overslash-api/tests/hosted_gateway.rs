@@ -106,6 +106,7 @@ async fn start_stub() -> (SocketAddr, Sink) {
 }
 
 struct Api {
+    pool: sqlx::PgPool,
     base: String,
     client: Client,
     agent_key: String,
@@ -120,16 +121,17 @@ async fn start_hosting(stub: SocketAddr) -> Api {
         "WHATSAPP_MCP_URL",
         format!("https://{HOST}/mcp").as_str(),
     )]);
-    let (base, client) = common::start_api_with_registry_vars(pool, None, vars, move |cfg| {
-        cfg.platform_credentials = vec![overslash_api::config::PlatformCredential {
-            secret_name: "whatsapp_gateway_key".into(),
-            host: HOST.into(),
-            value: PLATFORM_KEY.into(),
-        }];
-        cfg.service_base_overrides
-            .insert(HOST.into(), format!("http://{stub}"));
-    })
-    .await;
+    let (base, client) =
+        common::start_api_with_registry_vars(pool.clone(), None, vars, move |cfg| {
+            cfg.platform_credentials = vec![overslash_api::config::PlatformCredential {
+                secret_name: "whatsapp_gateway_key".into(),
+                host: HOST.into(),
+                value: PLATFORM_KEY.into(),
+            }];
+            cfg.service_base_overrides
+                .insert(HOST.into(), format!("http://{stub}"));
+        })
+        .await;
     let (_org, agent_ident, agent_key, admin_key) =
         common::bootstrap_org_identity(&base, &client).await;
     let resp = client
@@ -145,6 +147,7 @@ async fn start_hosting(stub: SocketAddr) -> Api {
         .unwrap();
     assert!(resp.status().is_success(), "permission: {}", resp.status());
     Api {
+        pool,
         base,
         client,
         agent_key,
@@ -408,4 +411,59 @@ async fn without_the_deployment_variable_the_template_is_self_hosted() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 400, "needs a url: {:?}", resp.text().await);
+}
+
+#[tokio::test]
+async fn deleting_a_hosted_instance_releases_its_minted_token() {
+    let (stub, _sink) = start_stub().await;
+    let api = start_hosting(stub).await;
+
+    let mut tokens = Vec::new();
+    let mut ids = Vec::new();
+    for name in ["whatsapp", "whatsapp_work"] {
+        let resp = api
+            .create(json!({ "name": name, "template_key": "whatsapp" }))
+            .await;
+        assert_eq!(resp.status(), 200, "create {name}: {:?}", resp.text().await);
+        let inst: Value = resp.json().await.unwrap();
+        tokens.push(inst["secret_name"].as_str().unwrap().to_string());
+        ids.push(inst["id"].as_str().unwrap().to_string());
+    }
+
+    // Live (not soft-deleted) secrets of that name, in any vault.
+    let live = |name: String| {
+        let pool = api.pool.clone();
+        async move {
+            // A row count across vaults; no API answers that for an agent.
+            #[allow(clippy::disallowed_methods)]
+            sqlx::query_scalar::<_, i64>(
+                "SELECT count(*) FROM secrets WHERE name = $1 AND deleted_at IS NULL",
+            )
+            .bind(name)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        }
+    };
+    assert_eq!(live(tokens[0].clone()).await, 1);
+
+    let resp = api
+        .client
+        .delete(format!("{}/v1/services/{}", api.base, ids[0]))
+        .header("Authorization", format!("Bearer {}", api.admin_key))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "delete: {:?}", resp.text().await);
+
+    assert_eq!(
+        live(tokens[0].clone()).await,
+        0,
+        "the deleted instance's token goes with it"
+    );
+    assert_eq!(
+        live(tokens[1].clone()).await,
+        1,
+        "the other tenant's token is untouched"
+    );
 }

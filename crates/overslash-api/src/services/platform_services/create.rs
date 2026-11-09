@@ -12,6 +12,7 @@ use super::group_grants::validate_create_group_grants;
 use super::instance_names::{instance_name_conflict, is_instance_name_collision};
 use super::reconcile::*;
 use super::rows::*;
+use super::session_token::mint_session_token;
 use super::status::*;
 use super::templates::*;
 use super::*;
@@ -666,72 +667,4 @@ pub async fn kernel_create_service(
     .await;
 
     Ok(detail)
-}
-
-/// Mint a random bearer for an `auth.generate` MCP instance and store it in
-/// the instance owner's vault (the org vault for an org-level instance), the
-/// same place a pasted token would live — so it rotates, versions and audits
-/// like any other instance secret, and the user never handles it.
-///
-/// The name is `<template>_session_<random>`, never a name the owner chose, so
-/// it cannot overwrite an existing secret; a collision on the random part is
-/// retried rather than reused.
-async fn mint_session_token(
-    ctx: &PlatformCallContext,
-    scope: &OrgScope,
-    owner_identity_id: Option<Uuid>,
-    template_key: &str,
-) -> Result<overslash_core::types::SecretPath, AppError> {
-    use rand::RngExt as _;
-
-    let ns = overslash_core::types::SecretNamespace::from_owner(owner_identity_id);
-    let stem: String = template_key
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() {
-                c.to_ascii_lowercase()
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    for _ in 0..4 {
-        let mut suffix = [0u8; 4];
-        rand::rng().fill(&mut suffix);
-        let name = format!("{stem}_session_{}", hex::encode(suffix));
-        let path = ns.path(name);
-        if scope.get_secret(&path).await?.is_some() {
-            continue;
-        }
-        let mut token = [0u8; 32];
-        rand::rng().fill(&mut token);
-        let token =
-            base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, token);
-        let encrypted = overslash_core::crypto::encrypt(&ctx.config.keyring()?, token.as_bytes())?;
-        let (secret, _) = scope
-            .put_secret(&path, &encrypted, ctx.identity_id, None)
-            .await?;
-        let _ = scope
-            .log_audit(overslash_db::repos::audit::AuditEntry {
-                org_id: ctx.org_id,
-                identity_id: ctx.identity_id,
-                action: "secret.put",
-                resource_type: Some("secret"),
-                resource_id: None,
-                detail: serde_json::json!({
-                    "name": &secret.name,
-                    "version": secret.current_version,
-                    "owner_identity_id": secret.owner_identity_id,
-                    "path": path.to_canonical(),
-                    "generated": true,
-                }),
-                description: None,
-                ip_address: None,
-            })
-            .await;
-        return Ok(path);
-    }
-    Err(AppError::Internal(
-        "could not find a free name for the generated session token".into(),
-    ))
 }

@@ -57,6 +57,13 @@ const ALLOWED: &[(&str, &str, &str)] = &[
         "services/secret_paths/mod.rs",
         "the secret-path policy; readable_slot_binding wraps it with the gate",
     ),
+    (
+        "readable_instance_binding(",
+        "services/platform_services/session_token.rs",
+        "release_session_token: soft-deletes (never reads) the instance's own minted \
+         token after delete_service's owner-or-admin check; the vault rule keeps it \
+         inside the owner's vault, and the org-vault gate governs reads, not this",
+    ),
     // ── Owner- or admin-checked inline, next to the call ──────────────
     (
         ".list_all_connections_any_owner(",
