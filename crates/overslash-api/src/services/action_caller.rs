@@ -522,6 +522,7 @@ pub async fn call_action_request(
             &action_req.method,
             &resolved_url,
             &resolved_headers,
+            &http_caller::credential_headers(action_req, auth_header),
             wire.or(action_req.body.as_deref()),
             ctx.timeout.duration(),
         )
@@ -575,6 +576,7 @@ pub async fn call_action_request(
         &action_req.method,
         &resolved_url,
         &resolved_headers,
+        &http_caller::credential_headers(action_req, auth_header),
         wire.or(action_req.body.as_deref()),
         ctx.state.config.max_response_body_bytes,
         ctx.timeout.duration(),

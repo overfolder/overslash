@@ -360,6 +360,7 @@ pub async fn open_upstream(
         &request.method,
         &url,
         &headers,
+        &http_caller::credential_headers(request, None),
         request.body.as_deref().map(Into::into),
         std::time::Duration::from_millis(state.config.call_timeout_ms),
     )
