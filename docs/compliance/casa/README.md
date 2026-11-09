@@ -8,6 +8,7 @@ request restricted OAuth scopes.
 | [gap-assessment.md](gap-assessment.md) | All 55 CASA requirements, verdict + evidence per requirement |
 | [evidence-index.md](evidence-index.md) | What the lab will ask for, and where each artifact comes from |
 | [dast-readiness.md](dast-readiness.md) | The authenticated-scan problem, and how to answer it |
+| [ssrf-scoping-memo.md](ssrf-scoping-memo.md) | 5.1.5: the memo handed to the lab during scoping — why outbound HTTP on user input is the product, the deny-list + permission-chain controls with code paths, and the pending default-grant question |
 | [dependency-vulnerability-policy.md](dependency-vulnerability-policy.md) | 6.1.1: what is scanned and when, severity SLAs, who triages, and the time-boxed exception register |
 | [secrets-access-policy.md](secrets-access-policy.md) | 6.7.1: who may read server-side secrets and through which path, how every read is logged (400-day, locked in prod) and alerted on |
 | [subdomain-inventory.md](subdomain-inventory.md) | 6.4.1: every DNS record in both zones, its owner and claim model — the table `scripts/check-subdomains.sh` checks daily |

@@ -114,6 +114,36 @@ makes exactly the same request it always did.
 
 ---
 
+## Custom-OIDC login endpoints are not SSRF-checked before they are stored or dialed
+
+`oidc_discovery::discover` runs every hop of the *discovery-document fetch* through
+`ssrf_guard`, but it does not re-check the endpoint URLs the document hands back.
+`routes/org_idp_configs.rs::create_idp_config` stores `authorization_endpoint`,
+`token_endpoint` and `userinfo_endpoint` verbatim via `oauth_provider::create_custom`,
+and the login flow later dials `token_endpoint` (`services/oauth.rs::exchange_code`) and
+`userinfo_endpoint` (`routes/auth/userinfo.rs::fetch_oidc_userinfo`,
+`services/oauth.rs::fetch_account_profile`) on the shared `state.http_client` — which has
+reqwest's default redirect policy, no IP pin and no guard. So an **org admin** (the
+endpoint is behind `AdminAcl`) can configure an IdP whose discovery document names an
+internal host, and Overslash will dial it during that org's logins.
+
+Severity is bounded by who can reach it: a privileged, authenticated, same-org actor
+configuring their own org's sign-in, not an anonymous caller or a cross-tenant one, and
+the deny-list the *guarded* paths enforce does not apply here. It is a genuine residual
+all the same, and it is called out in the CASA SSRF scoping memo
+([docs/compliance/casa/ssrf-scoping-memo.md](docs/compliance/casa/ssrf-scoping-memo.md))
+as the one path the memo's controls do not cover.
+
+The fix is the shape the MCP OAuth upstream path already uses: `routes/oauth_upstream.rs`
+string-checks each advertised endpoint with `outbound_tls::check_url_resolving` before it
+registers a client or mints a flow, and dials on a pinned client. The login-IdP path
+should do the same — validate the three extracted endpoints in `create_idp_config` before
+persisting, and route the token/userinfo dials through an SSRF-safe client — closing it
+the way discovery itself was closed. Tracked here rather than fixed in the docs PR that
+surfaced it.
+
+---
+
 ## Streamed responses bypass the D127 credential scrub
 
 D127 replaces every injected credential with `[REDACTED]` in *buffered*
