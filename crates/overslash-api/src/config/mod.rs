@@ -318,12 +318,13 @@ pub struct Config {
     /// deploy can leave the var defined harmlessly — and a stray entry can
     /// never redirect traffic to a host the deployment would not have dialed.
     pub service_base_overrides: HashMap<String, String>,
-    /// Credential this deployment supplies on an org's behalf, for a service
-    /// it hosts itself. `None` on a deployment that hosts no such service —
-    /// every self-host, and any env where the three vars aren't all set.
+    /// Credentials this deployment supplies on an org's behalf, one per
+    /// service it hosts itself (overfwd, the WhatsApp and Telegram gateways).
+    /// Empty on a deployment that hosts none — every self-host, and any env
+    /// where no complete set of vars is present.
     ///
-    /// See [`PlatformCredential`] for why it is one entry and not a map.
-    pub platform_credential: Option<PlatformCredential>,
+    /// See [`PlatformCredential`] for what keeps each one contained.
+    pub platform_credentials: Vec<PlatformCredential>,
     /// Base URL for the `oversla.sh` short-link service, e.g.
     /// `https://oversla.sh`. When set together with `oversla_sh_api_key`,
     /// the nested-OAuth `initiate` handler creates a short URL alongside
@@ -389,11 +390,13 @@ pub struct Config {
 /// that a *different* org can point its instances at its own deployment — that
 /// deployment must never receive our key.
 ///
-/// Deliberately one entry rather than a map keyed by secret name: there is
-/// exactly one platform-hosted upstream, and a map would invite filling
-/// third-party credentials from platform env, which is what
-/// `OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS` (OAuth clients, tier 4)
-/// already exists to gate loudly. Generalise when a second one appears.
+/// One entry per platform-hosted upstream. D39 kept this to a single entry
+/// until a second hosted service appeared; the platform-hosted WhatsApp and
+/// Telegram gateways (hosted-runtimes.md, Phase 0) are that second and third.
+/// Each entry is still bound to one secret name *and* one host, so the list
+/// does not become a way to fill arbitrary third-party credentials from
+/// platform env, which `OVERSLASH_DANGER_READ_AUTH_SECRET_FROM_ENVVARS`
+/// (OAuth clients, tier 4) exists to gate loudly.
 #[derive(Debug, Clone)]
 pub struct PlatformCredential {
     /// Vault secret name this fills — `overfwd_gateway_key`. Matched against a
@@ -489,10 +492,10 @@ impl Config {
     /// carries no host, resolves to `None`: a URL we can't reason about is not
     /// one we hand a credential to.
     pub fn platform_credential_for(&self, secret_name: &str, url: &str) -> Option<&str> {
-        let cred = self.platform_credential.as_ref()?;
-        if cred.secret_name != secret_name {
-            return None;
-        }
+        let cred = self
+            .platform_credentials
+            .iter()
+            .find(|c| c.secret_name == secret_name)?;
         let host = url::Url::parse(url).ok()?.host_str()?.to_ascii_lowercase();
         (host == cred.host).then_some(cred.value.as_str())
     }
@@ -568,7 +571,7 @@ impl Config {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use super::parse::parse_platform_credential;
+    use super::parse::{parse_platform_credential, parse_platform_credentials};
     use super::*;
     use std::env;
     use std::sync::Mutex;
@@ -581,12 +584,131 @@ pub(crate) mod tests {
 
     fn platform_config() -> Config {
         let mut cfg = empty_test_config();
-        cfg.platform_credential = Some(PlatformCredential {
-            secret_name: "overfwd_gateway_key".into(),
-            host: "mailbox.overslash.com".into(),
-            value: "platform-key".into(),
-        });
+        cfg.platform_credentials = vec![
+            PlatformCredential {
+                secret_name: "overfwd_gateway_key".into(),
+                host: "mailbox.overslash.com".into(),
+                value: "platform-key".into(),
+            },
+            PlatformCredential {
+                secret_name: "whatsapp_gateway_key".into(),
+                host: "whatsapp-mcp.overslash.com".into(),
+                value: "whatsapp-key".into(),
+            },
+        ];
         cfg
+    }
+
+    #[test]
+    fn each_platform_credential_stays_on_its_own_host() {
+        let cfg = platform_config();
+        assert_eq!(
+            cfg.platform_credential_for(
+                "whatsapp_gateway_key",
+                "https://whatsapp-mcp.overslash.com/mcp"
+            ),
+            Some("whatsapp-key")
+        );
+        // Two platform-hosted services never receive each other's key.
+        assert_eq!(
+            cfg.platform_credential_for(
+                "whatsapp_gateway_key",
+                "https://mailbox.overslash.com/email/search"
+            ),
+            None
+        );
+        assert_eq!(
+            cfg.platform_credential_for(
+                "overfwd_gateway_key",
+                "https://whatsapp-mcp.overslash.com/mcp"
+            ),
+            None
+        );
+    }
+
+    fn vars(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn platform_credentials_read_the_legacy_triple_and_suffixed_sets() {
+        let creds = parse_platform_credentials(vars(&[
+            (
+                "OVERSLASH_PLATFORM_GATEWAY_SECRET_NAME",
+                "overfwd_gateway_key",
+            ),
+            ("OVERSLASH_PLATFORM_GATEWAY_HOST", "mailbox.overslash.com"),
+            ("OVERSLASH_PLATFORM_GATEWAY_KEY", "k0"),
+            (
+                "OVERSLASH_PLATFORM_GATEWAY_WHATSAPP_SECRET_NAME",
+                "whatsapp_gateway_key",
+            ),
+            (
+                "OVERSLASH_PLATFORM_GATEWAY_WHATSAPP_HOST",
+                "WhatsApp-MCP.overslash.com",
+            ),
+            ("OVERSLASH_PLATFORM_GATEWAY_WHATSAPP_KEY", "k1"),
+            (
+                "OVERSLASH_PLATFORM_GATEWAY_TELEGRAM_SECRET_NAME",
+                "telegram_gateway_key",
+            ),
+            (
+                "OVERSLASH_PLATFORM_GATEWAY_TELEGRAM_HOST",
+                "telegram-mcp.overslash.com",
+            ),
+            ("OVERSLASH_PLATFORM_GATEWAY_TELEGRAM_KEY", "k2"),
+            ("UNRELATED", "x"),
+        ]));
+        let got: Vec<(&str, &str, &str)> = creds
+            .iter()
+            .map(|c| (c.secret_name.as_str(), c.host.as_str(), c.value.as_str()))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("overfwd_gateway_key", "mailbox.overslash.com", "k0"),
+                ("telegram_gateway_key", "telegram-mcp.overslash.com", "k2"),
+                ("whatsapp_gateway_key", "whatsapp-mcp.overslash.com", "k1"),
+            ]
+        );
+    }
+
+    #[test]
+    fn platform_credentials_skip_an_incomplete_set() {
+        let creds = parse_platform_credentials(vars(&[
+            (
+                "OVERSLASH_PLATFORM_GATEWAY_WHATSAPP_SECRET_NAME",
+                "whatsapp_gateway_key",
+            ),
+            (
+                "OVERSLASH_PLATFORM_GATEWAY_WHATSAPP_HOST",
+                "whatsapp-mcp.overslash.com",
+            ),
+            ("OVERSLASH_PLATFORM_GATEWAY_WHATSAPP_KEY", "   "),
+        ]));
+        assert!(creds.is_empty());
+    }
+
+    #[test]
+    #[should_panic(expected = "whatsapp_gateway_key")]
+    fn platform_credentials_refuse_one_name_on_two_hosts() {
+        parse_platform_credentials(vars(&[
+            (
+                "OVERSLASH_PLATFORM_GATEWAY_A_SECRET_NAME",
+                "whatsapp_gateway_key",
+            ),
+            ("OVERSLASH_PLATFORM_GATEWAY_A_HOST", "a.example"),
+            ("OVERSLASH_PLATFORM_GATEWAY_A_KEY", "k"),
+            (
+                "OVERSLASH_PLATFORM_GATEWAY_B_SECRET_NAME",
+                "whatsapp_gateway_key",
+            ),
+            ("OVERSLASH_PLATFORM_GATEWAY_B_HOST", "b.example"),
+            ("OVERSLASH_PLATFORM_GATEWAY_B_KEY", "k"),
+        ]));
     }
 
     #[test]
@@ -930,7 +1052,7 @@ pub(crate) mod tests {
             api_host_suffix: None,
             session_cookie_domain: None,
             service_base_overrides: HashMap::new(),
-            platform_credential: None,
+            platform_credentials: Vec::new(),
             oversla_sh_base_url: None,
             oversla_sh_api_key: None,
             email_provider: None,

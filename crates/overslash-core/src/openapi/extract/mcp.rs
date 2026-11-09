@@ -6,8 +6,8 @@ use serde_json::{Map, Value};
 
 use crate::template_validation::ValidationIssue;
 use crate::types::{
-    ActionParam, DeclaredRisk, McpAuth, McpSpec, NextStyle, ParamLocation, ServiceAction,
-    ServiceDefinition,
+    ActionParam, DeclaredRisk, McpAuth, McpGateway, McpSpec, NextStyle, ParamLocation,
+    ServiceAction, ServiceDefinition,
 };
 
 use super::super::ext::{self, Ext, Pos};
@@ -62,7 +62,33 @@ pub(crate) fn extract_mcp_spec(root: &Map<String, Value>) -> Result<McpSpec, Vec
                     .and_then(Value::as_str)
                     .filter(|s| !s.is_empty())
                     .map(str::to_string);
-                McpAuth::Bearer { secret_name }
+                let generate = match a.get("generate") {
+                    None => false,
+                    Some(Value::Bool(b)) => *b,
+                    Some(_) => {
+                        errors.push(ValidationIssue::new(
+                            "mcp_invalid",
+                            "x-overslash-mcp.auth.generate must be a boolean",
+                            "x-overslash-mcp.auth.generate",
+                        ));
+                        return Err(errors);
+                    }
+                };
+                let gateway = match a.get("gateway") {
+                    None => None,
+                    Some(g) => match parse_gateway(g) {
+                        Ok(g) => Some(g),
+                        Err(issue) => {
+                            errors.push(issue);
+                            return Err(errors);
+                        }
+                    },
+                };
+                McpAuth::Bearer {
+                    secret_name,
+                    generate,
+                    gateway,
+                }
             }
             Some("oauth") => {
                 let provider = a
@@ -139,6 +165,77 @@ pub(crate) fn extract_mcp_spec(root: &Map<String, Value>) -> Result<McpSpec, Vec
         url,
         auth,
         autodiscover,
+    })
+}
+
+/// Headers a gateway key may not ride in: the bearer's own, and the ones the
+/// transport owns. Compared lowercased.
+const RESERVED_GATEWAY_HEADERS: &[&str] = &[
+    "authorization",
+    "content-type",
+    "content-length",
+    "host",
+    "accept",
+    "connection",
+    "transfer-encoding",
+    "mcp-session-id",
+    "mcp-protocol-version",
+];
+
+/// `x-overslash-mcp.auth.gateway` → [`McpGateway`].
+fn parse_gateway(v: &Value) -> Result<McpGateway, ValidationIssue> {
+    let path = "x-overslash-mcp.auth.gateway";
+    let invalid = |msg: String, at: String| ValidationIssue::new("mcp_invalid", msg, at);
+    let Value::Object(g) = v else {
+        return Err(invalid(format!("{path} must be an object"), path.into()));
+    };
+    let header = g
+        .get("header")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default();
+    let is_token = !header.is_empty()
+        && header
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b));
+    if !is_token {
+        return Err(invalid(
+            format!("{path}.header must be a valid HTTP header name"),
+            format!("{path}.header"),
+        ));
+    }
+    if RESERVED_GATEWAY_HEADERS.contains(&header.to_ascii_lowercase().as_str()) {
+        return Err(invalid(
+            format!("{path}.header `{header}` is reserved; the bearer or the transport owns it"),
+            format!("{path}.header"),
+        ));
+    }
+    let default_secret_name = g
+        .get("default_secret_name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default();
+    if default_secret_name.is_empty() {
+        return Err(invalid(
+            format!("{path}.default_secret_name is required"),
+            format!("{path}.default_secret_name"),
+        ));
+    }
+    let optional = match g.get("optional") {
+        None => false,
+        Some(Value::Bool(b)) => *b,
+        Some(_) => {
+            return Err(invalid(
+                format!("{path}.optional must be a boolean"),
+                format!("{path}.optional"),
+            ));
+        }
+    };
+    Ok(McpGateway {
+        header: header.to_string(),
+        default_secret_name: default_secret_name.to_string(),
+        optional,
+        platform_only: false,
     })
 }
 
@@ -675,5 +772,96 @@ mod download_tests {
         let (action, errors) = lower(json!({ "name": "download_media" }));
         assert!(errors.is_empty());
         assert!(action.unwrap().download.is_none());
+    }
+}
+
+#[cfg(test)]
+mod auth_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn spec(auth: Value) -> Result<McpSpec, Vec<ValidationIssue>> {
+        let root = json!({ "x-overslash-mcp": { "url": "https://gw.example/mcp", "auth": auth } });
+        extract_mcp_spec(root.as_object().unwrap())
+    }
+
+    #[test]
+    fn bearer_with_generate_and_gateway() {
+        let s = spec(json!({
+            "kind": "bearer",
+            "generate": true,
+            "gateway": {
+                "header": "X-Gateway-Key",
+                "default_secret_name": "whatsapp_gateway_key",
+                "optional": true
+            }
+        }))
+        .unwrap();
+        assert_eq!(
+            s.auth,
+            McpAuth::Bearer {
+                secret_name: None,
+                generate: true,
+                gateway: Some(McpGateway {
+                    header: "X-Gateway-Key".into(),
+                    default_secret_name: "whatsapp_gateway_key".into(),
+                    optional: true,
+                    platform_only: false,
+                }),
+            }
+        );
+    }
+
+    #[test]
+    fn plain_bearer_is_unchanged() {
+        let s = spec(json!({ "kind": "bearer", "secret_name": "t" })).unwrap();
+        assert_eq!(s.auth, McpAuth::bearer(Some("t".into())));
+    }
+
+    #[test]
+    fn gateway_may_not_take_the_bearers_header() {
+        let errs = spec(json!({
+            "kind": "bearer",
+            "gateway": { "header": "authorization", "default_secret_name": "k" }
+        }))
+        .unwrap_err();
+        assert!(errs[0].message.contains("reserved"), "{errs:?}");
+    }
+
+    #[test]
+    fn gateway_needs_a_header_and_a_name() {
+        for gw in [
+            json!({ "default_secret_name": "k" }),
+            json!({ "header": "X Bad", "default_secret_name": "k" }),
+            json!({ "header": "X-Key" }),
+            json!({ "header": "X-Key", "default_secret_name": "k", "optional": "yes" }),
+            json!("X-Key"),
+        ] {
+            assert!(
+                spec(json!({ "kind": "bearer", "gateway": gw.clone() })).is_err(),
+                "accepted {gw}"
+            );
+        }
+    }
+
+    #[test]
+    fn generate_must_be_a_boolean() {
+        assert!(spec(json!({ "kind": "bearer", "generate": "true" })).is_err());
+    }
+
+    #[test]
+    fn authored_platform_only_is_ignored() {
+        let s = spec(json!({
+            "kind": "bearer",
+            "gateway": { "header": "X-Key", "default_secret_name": "k", "platform_only": true }
+        }))
+        .unwrap();
+        let McpAuth::Bearer {
+            gateway: Some(g), ..
+        } = s.auth
+        else {
+            panic!("expected a gateway")
+        };
+        assert!(!g.platform_only, "only the resolver may set platform_only");
     }
 }

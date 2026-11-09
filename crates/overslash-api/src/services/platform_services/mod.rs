@@ -102,9 +102,7 @@ mod test_fixtures {
             runtime: Runtime::Mcp,
             mcp: Some(McpSpec {
                 url: Some("https://example.com".into()),
-                auth: McpAuth::Bearer {
-                    secret_name: default_secret.map(|s| s.to_string()),
-                },
+                auth: McpAuth::bearer(default_secret.map(|s| s.to_string())),
                 autodiscover: false,
             }),
             instance_defaults: None,

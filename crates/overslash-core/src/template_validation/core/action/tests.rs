@@ -192,9 +192,7 @@ fn absent_description_does_not_suppress_summary_grammar_checks() {
 /// return must not start reporting anything here.
 #[test]
 fn absent_description_and_summary_report_nothing_extra() {
-    let mut d = minimal_mcp(McpAuth::Bearer {
-        secret_name: Some("tok".into()),
-    });
+    let mut d = minimal_mcp(McpAuth::bearer(Some("tok".into())));
     for a in d.actions.values_mut() {
         a.description = String::new();
         a.summary = None;

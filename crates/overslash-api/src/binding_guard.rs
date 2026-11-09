@@ -106,13 +106,18 @@ const ALLOWED: &[(&str, &str, &str)] = &[
     ),
     (
         ".get_current_secret_value(",
+        "routes/actions/mcp_resolve.rs",
+        "MCP gateway key: org-default candidates, gated by OrgVaultGate",
+    ),
+    (
+        ".get_current_secret_value(",
         "services/action_caller.rs",
         "send time: paths the server qualified under the read rule",
     ),
     (
         ".get_current_secret_value(",
         "services/mcp_auth.rs",
-        "MCP bearer: path qualified by resolve_effective_mcp under the read rule",
+        "MCP bearer and gateway key: paths qualified by resolve_effective_mcp under the read rule",
     ),
     (
         ".get_current_secret_value(",

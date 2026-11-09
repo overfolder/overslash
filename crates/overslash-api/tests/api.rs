@@ -82,6 +82,7 @@ mod headless_oauth;
 mod health;
 mod holded;
 mod holded_attachments;
+mod hosted_gateway;
 mod hubspot;
 mod hubspot_subactions;
 mod hybrid_call;

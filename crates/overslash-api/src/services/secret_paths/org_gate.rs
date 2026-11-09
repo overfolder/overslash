@@ -17,11 +17,16 @@
 use std::collections::BTreeMap;
 
 use overslash_core::registry::ServiceRegistry;
-use overslash_core::types::{SecretSource, ServiceDefinition};
+use overslash_core::types::{McpAuth, SecretSource, ServiceDefinition};
 use overslash_db::repos::service_instance::ServiceInstanceRow;
 use sqlx::PgPool;
 
 use crate::error::AppError;
+
+/// The slot key an MCP template's gateway key (`x-overslash-mcp.auth.gateway`)
+/// is gated under. Not a legal `x-overslash-secrets` key (those are the
+/// template's own identifiers), so it cannot collide with a declared slot.
+pub const MCP_GATEWAY_SLOT: &str = "@mcp_gateway";
 
 /// Which org-vault reads a request through one instance may make.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,12 +75,23 @@ impl OrgVaultGate {
         if lands.is_none() || lands != base_of(None, &trusted).as_deref() {
             return Ok(Self::Closed);
         }
+        // An MCP gateway key is an org-source credential in all but name
+        // (`McpGateway`), so it joins the slots under its own fixed key, with
+        // the *trusted* tier's name — a user layer renaming it cannot steer
+        // the org vault read to a different secret.
+        let mcp_gateway = match trusted.mcp.as_ref().map(|m| &m.auth) {
+            Some(McpAuth::Bearer {
+                gateway: Some(g), ..
+            }) => Some((MCP_GATEWAY_SLOT.to_string(), g.default_secret_name.clone())),
+            _ => None,
+        };
         Ok(Self::Slots(
             trusted
                 .secrets
                 .iter()
                 .filter(|s| s.source == SecretSource::Org)
                 .map(|s| (s.key.clone(), s.default_secret_name.clone()))
+                .chain(mcp_gateway)
                 .collect(),
         ))
     }

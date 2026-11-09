@@ -107,9 +107,11 @@ pub(crate) async fn intercept_mint(
     // Same credential rules as a deferred download, deliberately reusing its
     // vocabulary: an OAuth bearer is minted live from the caller's connection
     // and is not persistable, so a redemption could not re-present it.
-    let secret_name = match (m.mcp_auth, spec.auth) {
+    let bearer = match (m.mcp_auth, spec.auth) {
         (_, DownloadAuth::None) => None,
-        (McpAuth::Bearer { secret_name }, DownloadAuth::Inherit) => secret_name.as_deref(),
+        (auth @ McpAuth::Bearer { .. }, DownloadAuth::Inherit) => {
+            crate::services::deferred_download::McpBearerRef::from_auth(auth)?
+        }
         (McpAuth::None, DownloadAuth::Inherit) => None,
         (McpAuth::OAuth { .. }, DownloadAuth::Inherit) => {
             return Err(AppError::BadRequest(
@@ -136,7 +138,7 @@ pub(crate) async fn intercept_mint(
         )));
     }
 
-    let request = deferred_download::bearer_request(spec.method.as_str(), url, secret_name);
+    let request = deferred_download::bearer_request(spec.method.as_str(), url, bearer);
     deferred_download::reject_inline_credentials(&request)?;
 
     let (raw_token, token_hash) = deferred_download::new_token();

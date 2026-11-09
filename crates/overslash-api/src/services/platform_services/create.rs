@@ -151,7 +151,8 @@ pub async fn kernel_create_service(
     let mcp_bearer_has_default_secret = matches!(
         mcp_auth,
         Some(McpAuth::Bearer {
-            secret_name: Some(_)
+            secret_name: Some(_),
+            ..
         })
     );
     // An org layer's `instance_defaults.url` counts as a default here, exactly
@@ -247,7 +248,22 @@ pub async fn kernel_create_service(
         }
     }
 
-    if is_mcp && is_mcp_bearer && !mcp_bearer_has_default_secret {
+    // `auth.generate`: an instance that sends to the template's own `url` (a
+    // shared multi-tenant gateway the platform hosts) and binds no secret gets
+    // a fresh token minted below. Any endpoint of the instance's or its org
+    // layer's choosing is somebody's own server, whose token we cannot invent.
+    let generate_session_token = is_mcp
+        && matches!(mcp_auth, Some(McpAuth::Bearer { generate: true, .. }))
+        && template_def.mcp.as_ref().is_some_and(|m| m.url.is_some())
+        && input.url.as_deref().is_none_or(str::is_empty)
+        && template_def
+            .instance_defaults
+            .as_ref()
+            .is_none_or(|d| d.url.is_none())
+        && input.secret_name.as_deref().is_none_or(str::is_empty)
+        && stored_secret_name.is_none();
+
+    if is_mcp && is_mcp_bearer && !mcp_bearer_has_default_secret && !generate_session_token {
         let provided = input.secret_name.as_deref().is_some_and(|s| !s.is_empty());
         if !provided {
             return Err(AppError::BadRequest(format!(
@@ -334,6 +350,18 @@ pub async fn kernel_create_service(
         owner_identity_id,
     )?;
 
+    // Mint the session token last, once nothing above can still refuse the
+    // create, so a refusal never leaves a stray secret behind.
+    let minted_session_secret = if generate_session_token {
+        Some(mint_session_token(&ctx, &scope, owner_identity_id, &input.template_key).await?)
+    } else {
+        None
+    };
+    let stored_secret_name = minted_session_secret
+        .as_ref()
+        .map(|p| p.to_canonical())
+        .or(stored_secret_name);
+
     let create_input = CreateServiceInstance {
         org_id: ctx.org_id,
         owner_identity_id,
@@ -353,10 +381,15 @@ pub async fn kernel_create_service(
 
     let row = match scope.create_service_instance(create_input).await {
         Ok(row) => row,
-        Err(e) if is_instance_name_collision(&e) => {
-            return Err(instance_name_conflict(&scope, owner_identity_id, name).await);
+        Err(e) => {
+            if let Some(path) = &minted_session_secret {
+                let _ = scope.soft_delete_secret(path).await;
+            }
+            if is_instance_name_collision(&e) {
+                return Err(instance_name_conflict(&scope, owner_identity_id, name).await);
+            }
+            return Err(AppError::Database(e));
         }
-        Err(e) => return Err(AppError::Database(e)),
     };
 
     // Auto-grant to the owner's Myself group with admin access and
@@ -628,4 +661,72 @@ pub async fn kernel_create_service(
     .await;
 
     Ok(detail)
+}
+
+/// Mint a random bearer for an `auth.generate` MCP instance and store it in
+/// the instance owner's vault (the org vault for an org-level instance), the
+/// same place a pasted token would live — so it rotates, versions and audits
+/// like any other instance secret, and the user never handles it.
+///
+/// The name is `<template>_session_<random>`, never a name the owner chose, so
+/// it cannot overwrite an existing secret; a collision on the random part is
+/// retried rather than reused.
+async fn mint_session_token(
+    ctx: &PlatformCallContext,
+    scope: &OrgScope,
+    owner_identity_id: Option<Uuid>,
+    template_key: &str,
+) -> Result<overslash_core::types::SecretPath, AppError> {
+    use rand::RngExt as _;
+
+    let ns = overslash_core::types::SecretNamespace::from_owner(owner_identity_id);
+    let stem: String = template_key
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    for _ in 0..4 {
+        let mut suffix = [0u8; 4];
+        rand::rng().fill(&mut suffix);
+        let name = format!("{stem}_session_{}", hex::encode(suffix));
+        let path = ns.path(name);
+        if scope.get_secret(&path).await?.is_some() {
+            continue;
+        }
+        let mut token = [0u8; 32];
+        rand::rng().fill(&mut token);
+        let token =
+            base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, token);
+        let encrypted = overslash_core::crypto::encrypt(&ctx.config.keyring()?, token.as_bytes())?;
+        let (secret, _) = scope
+            .put_secret(&path, &encrypted, ctx.identity_id, None)
+            .await?;
+        let _ = scope
+            .log_audit(overslash_db::repos::audit::AuditEntry {
+                org_id: ctx.org_id,
+                identity_id: ctx.identity_id,
+                action: "secret.put",
+                resource_type: Some("secret"),
+                resource_id: None,
+                detail: serde_json::json!({
+                    "name": &secret.name,
+                    "version": secret.current_version,
+                    "owner_identity_id": secret.owner_identity_id,
+                    "path": path.to_canonical(),
+                    "generated": true,
+                }),
+                description: None,
+                ip_address: None,
+            })
+            .await;
+        return Ok(path);
+    }
+    Err(AppError::Internal(
+        "could not find a free name for the generated session token".into(),
+    ))
 }

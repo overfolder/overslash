@@ -83,6 +83,7 @@ module "iam" {
 
   enable_shortener = var.enable_shortener
   enable_overfwd   = var.enable_overfwd
+  hosted_gateways  = toset(keys(var.hosted_mcp_gateways))
 
   depends_on = [google_project_service.apis]
 }
@@ -118,7 +119,10 @@ module "artifact_registry" {
   # overfwd and the OTel sidecar are the images we deploy but do not build. The
   # mirror keeps their pull off Docker Hub's availability and rate limits, and
   # puts them where Container Scanning can see them.
-  enable_docker_hub_remote = var.enable_overfwd || var.enable_metrics_sidecar
+  enable_docker_hub_remote = (
+    var.enable_overfwd || var.enable_metrics_sidecar
+    || anytrue([for g in values(var.hosted_mcp_gateways) : g.image_from_docker_hub])
+  )
 
   # Scanning is on before anything is pulled through the mirror: the API's
   # revision depends on this module, and an image cached first may never be scanned.
@@ -156,6 +160,8 @@ module "secret_manager" {
 
   pagerduty_enabled = var.pagerduty_enabled
   pubsub_api        = google_project_service.pubsub.service
+
+  hosted_gateways = toset(keys(var.hosted_mcp_gateways))
 
   depends_on = [google_project_service.apis]
 }
@@ -342,8 +348,20 @@ module "cloud_run" {
   # (D44). Derived from the SAME `overfwd_domain` that feeds
   # `platform_gateway_host` above, so the two can no longer drift — that drift
   # is exactly what made dev target the prod gateway and lose the platform key.
+  # One more platform credential per hosted MCP gateway, each pinned to that
+  # gateway's own domain — the same domain its template URL is derived from
+  # just below, so the two cannot drift (the D44 lesson).
+  platform_gateways = {
+    for k, g in var.hosted_mcp_gateways : k => {
+      secret_name   = "${k}_gateway_key"
+      host          = g.domain
+      key_secret_id = module.secret_manager.hosted_gateway_key_secret_ids[k]
+    }
+  }
+
   template_vars = merge(
     var.enable_overfwd && var.overfwd_domain != "" ? { MAILBOX_HOST = var.overfwd_domain } : {},
+    { for k, g in var.hosted_mcp_gateways : "${upper(k)}_MCP_URL" => "https://${g.domain}/mcp" },
     var.template_vars,
   )
 
@@ -406,12 +424,12 @@ module "audit_logging" {
   # One SA per secret consumer: the API, the metrics-exporter job, and the
   # shortener and overfwd where they run. Each reads only what modules/iam
   # describes; any other principal reading a secret alerts.
-  expected_secret_accessors = compact([
+  expected_secret_accessors = concat(compact([
     module.iam.cloud_run_sa_email,
     module.iam.metrics_exporter_sa_email,
     module.iam.shortener_sa_email,
     module.iam.overfwd_sa_email,
-  ])
+  ]), values(module.iam.hosted_gateway_sa_emails))
   terraform_operators = var.terraform_operators
 
   alerts_enabled        = var.alert_email != ""
@@ -669,6 +687,43 @@ module "cloud_run_overfwd" {
   api_key_secret_id = module.secret_manager.overfwd_gateway_key_secret_id
 
   domain = var.overfwd_domain
+
+  depends_on = [
+    module.secret_manager,
+    module.artifact_registry,
+  ]
+}
+
+# --- Platform-hosted MCP gateways (optional) ---
+#
+# The shared WhatsApp / Telegram servers (hosted-runtimes.md, Phase 0). Like
+# overfwd: images we deploy but do not build here, digest-pinned, not attached
+# to the VPC, each with its own role-less identity.
+module "cloud_run_mcp_gateway" {
+  for_each = var.hosted_mcp_gateways
+
+  source      = "./modules/cloud-run-mcp-gateway"
+  project_id  = var.project_id
+  region      = var.region
+  base_prefix = local.base_prefix
+  name        = each.key
+
+  service_account_email = module.iam.hosted_gateway_sa_emails[each.key]
+
+  image = each.value.image_from_docker_hub ? "${module.artifact_registry.docker_hub_repository_url}/${each.value.image}" : each.value.image
+
+  port          = each.value.port
+  probe_path    = each.value.probe_path
+  key_env       = each.value.key_env
+  key_secret_id = module.secret_manager.hosted_gateway_key_secret_ids[each.key]
+  env           = each.value.env
+  env_secrets   = each.value.env_secrets
+  cpu           = each.value.cpu
+  memory        = each.value.memory
+  min_instances = each.value.min_instances
+  max_instances = each.value.max_instances
+  concurrency   = each.value.concurrency
+  domain        = each.value.domain
 
   depends_on = [
     module.secret_manager,

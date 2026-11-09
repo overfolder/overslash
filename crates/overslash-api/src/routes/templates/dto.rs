@@ -167,6 +167,12 @@ pub(super) struct McpDetail {
     /// `true` when the template has a hard-coded `secret_name`; `false` when
     /// the operator must supply one at instance creation time.
     pub(super) has_default_secret_name: bool,
+    /// `true` when Overslash mints the bearer for an instance that uses the
+    /// template's own `url` (`auth.generate`) — the platform-hosted gateways.
+    /// The create form then needs no secret unless the user names their own
+    /// endpoint.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub(super) generates_session_token: bool,
     /// The OAuth provider key when `auth_kind == "oauth"`; the dashboard
     /// renders a "connect <provider>" affordance. `None` otherwise.
     #[serde(skip_serializing_if = "Option::is_none")]
