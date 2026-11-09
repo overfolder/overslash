@@ -1,0 +1,93 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT u.id AS user_id, u.email, u.display_name, u.overslash_idp_provider,\n                  u.instance_admin_granted_at AS granted_at,\n                  g.email AS \"granted_by_email?\",\n                  (SELECT MAX(s.last_seen_at) FROM user_sessions s WHERE s.user_id = u.id) AS last_seen_at\n             FROM users u\n             LEFT JOIN users g ON g.id = u.instance_admin_granted_by\n            WHERE u.is_instance_admin\n            ORDER BY u.instance_admin_granted_at NULLS FIRST, u.created_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "user_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "email",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "email"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "display_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "display_name"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "overslash_idp_provider",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "overslash_idp_provider"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "granted_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "instance_admin_granted_at"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "granted_by_email?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "email"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "last_seen_at",
+        "type_info": "Timestamptz",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      null
+    ]
+  },
+  "hash": "721a4788a83733ece1153e7f4bb8e749992e4f923a8e439b9c6bf08e3da237df"
+}

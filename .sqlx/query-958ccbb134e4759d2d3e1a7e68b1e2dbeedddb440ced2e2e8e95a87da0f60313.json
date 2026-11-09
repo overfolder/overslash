@@ -1,0 +1,129 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id, actor_user_id, actor_email, action, org_id, org_slug, detail, ip_address, created_at\n           FROM instance_audit_log\n          WHERE ($1::text IS NULL OR lower(actor_email) = lower($1))\n            AND ($2::text IS NULL OR action = $2)\n            AND ($3::text IS NULL OR org_slug = $3)\n            AND ($4::timestamptz IS NULL OR (created_at, id) < ($4, $5::uuid))\n          ORDER BY created_at DESC, id DESC\n          LIMIT $6",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "instance_audit_log",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "actor_user_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "instance_audit_log",
+            "name": "actor_user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "actor_email",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "instance_audit_log",
+            "name": "actor_email"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "action",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "instance_audit_log",
+            "name": "action"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "org_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "instance_audit_log",
+            "name": "org_id"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "org_slug",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "instance_audit_log",
+            "name": "org_slug"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "detail",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "instance_audit_log",
+            "name": "detail"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "ip_address",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "instance_audit_log",
+            "name": "ip_address"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "instance_audit_log",
+            "name": "created_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Timestamptz",
+        "Uuid",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      false,
+      false,
+      true,
+      true,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "958ccbb134e4759d2d3e1a7e68b1e2dbeedddb440ced2e2e8e95a87da0f60313"
+}

@@ -591,6 +591,7 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
 
     let rate_limited_routes = Router::new()
         .merge(routes::orgs::router())
+        .merge(routes::instance::router())
         .merge(routes::identities::router())
         .merge(routes::api_keys::router())
         .merge(routes::secrets::router())

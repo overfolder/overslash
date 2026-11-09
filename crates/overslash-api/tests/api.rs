@@ -98,6 +98,7 @@ mod ingress_rate_limits;
 mod inherit_permissions;
 mod instance_admin;
 mod instance_credentials_envelope;
+mod instance_panel;
 mod instance_visibility_consistency;
 mod integration;
 mod integrity_invariants;

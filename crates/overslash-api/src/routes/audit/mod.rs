@@ -14,6 +14,7 @@ use overslash_db::repos::audit::{AuditFilter, AuditRow};
 use crate::{AppState, error::Result};
 
 mod export;
+pub(crate) use export::write_csv_cell;
 
 pub fn router() -> Router<AppState> {
     Router::new()

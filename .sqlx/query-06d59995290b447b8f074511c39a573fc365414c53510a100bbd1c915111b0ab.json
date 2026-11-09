@@ -1,0 +1,114 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT o.id, o.name, o.slug, o.plan, o.trial_ends_at, o.is_personal, o.created_at,\n                  (SELECT COUNT(*) FROM user_org_memberships m WHERE m.org_id = o.id) AS \"member_count!\",\n                  GREATEST(\n                      (SELECT MAX(s.last_seen_at) FROM user_sessions s WHERE s.org_id = o.id),\n                      (SELECT MAX(k.last_used_at) FROM api_keys k WHERE k.org_id = o.id)\n                  ) AS last_activity_at\n             FROM orgs o\n            WHERE $1 OR NOT o.is_personal\n            ORDER BY o.created_at DESC, o.id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "orgs",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "orgs",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "slug",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "orgs",
+            "name": "slug"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "plan",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "orgs",
+            "name": "plan"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "trial_ends_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "orgs",
+            "name": "trial_ends_at"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "is_personal",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "orgs",
+            "name": "is_personal"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "orgs",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "member_count!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 8,
+        "name": "last_activity_at",
+        "type_info": "Timestamptz",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bool"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      null,
+      null
+    ]
+  },
+  "hash": "06d59995290b447b8f074511c39a573fc365414c53510a100bbd1c915111b0ab"
+}

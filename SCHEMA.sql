@@ -654,6 +654,23 @@ CREATE TABLE public.identities (
 
 
 --
+-- Name: instance_audit_log; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.instance_audit_log (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    actor_user_id uuid,
+    actor_email text DEFAULT ''::text NOT NULL,
+    action text NOT NULL,
+    org_id uuid,
+    org_slug text,
+    detail jsonb DEFAULT '{}'::jsonb NOT NULL,
+    ip_address text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
 -- Name: magic_link_tokens; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -1553,6 +1570,8 @@ CREATE TABLE public.users (
     welcome_email_sent_at timestamp with time zone,
     welcome_emails_unsubscribed_at timestamp with time zone,
     webhook_digest_unsubscribed_at timestamp with time zone,
+    instance_admin_granted_at timestamp with time zone,
+    instance_admin_granted_by uuid,
     CONSTRAINT users_instance_admin_requires_overslash_idp CHECK (((NOT is_instance_admin) OR (overslash_idp_provider IS NOT NULL)))
 );
 
@@ -1881,6 +1900,14 @@ ALTER TABLE ONLY public.identity_directory_groups
 
 ALTER TABLE ONLY public.identity_groups
     ADD CONSTRAINT identity_groups_pkey PRIMARY KEY (identity_id, group_id);
+
+
+--
+-- Name: instance_audit_log instance_audit_log_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.instance_audit_log
+    ADD CONSTRAINT instance_audit_log_pkey PRIMARY KEY (id);
 
 
 --
@@ -2600,6 +2627,27 @@ CREATE INDEX idx_identity_groups_group ON public.identity_groups USING btree (gr
 --
 
 CREATE INDEX idx_identity_groups_identity ON public.identity_groups USING btree (identity_id);
+
+
+--
+-- Name: idx_instance_audit_log_actor; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_instance_audit_log_actor ON public.instance_audit_log USING btree (actor_user_id, created_at DESC);
+
+
+--
+-- Name: idx_instance_audit_log_created; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_instance_audit_log_created ON public.instance_audit_log USING btree (created_at DESC, id DESC);
+
+
+--
+-- Name: idx_instance_audit_log_org; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_instance_audit_log_org ON public.instance_audit_log USING btree (org_id, created_at DESC);
 
 
 --
@@ -3500,6 +3548,14 @@ ALTER TABLE ONLY public.identity_groups
 
 
 --
+-- Name: instance_audit_log instance_audit_log_actor_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.instance_audit_log
+    ADD CONSTRAINT instance_audit_log_actor_user_id_fkey FOREIGN KEY (actor_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
+
+
+--
 -- Name: mcp_client_agent_bindings mcp_client_agent_bindings_agent_identity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -4017,6 +4073,14 @@ ALTER TABLE ONLY public.user_sessions
 
 ALTER TABLE ONLY public.user_sessions
     ADD CONSTRAINT user_sessions_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+
+--
+-- Name: users users_instance_admin_granted_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.users
+    ADD CONSTRAINT users_instance_admin_granted_by_fkey FOREIGN KEY (instance_admin_granted_by) REFERENCES public.users(id) ON DELETE SET NULL;
 
 
 --

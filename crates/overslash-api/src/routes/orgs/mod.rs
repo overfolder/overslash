@@ -40,7 +40,9 @@ use settings::{
 
 // Re-exported at the historical `crate::routes::orgs::*` paths — the
 // billing route imports these.
-pub(crate) use create::{provision_new_org_contents, redirect_for_org};
+pub(crate) use create::{
+    NewOrgSpec, create_for_instance_admin, provision_new_org_contents, redirect_for_org,
+};
 pub(crate) use slug::validate_slug_format_pub;
 
 pub fn router() -> Router<AppState> {

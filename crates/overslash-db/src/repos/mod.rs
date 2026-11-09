@@ -32,6 +32,7 @@ pub mod execution;
 pub mod google_directory_config;
 pub mod group;
 pub mod identity;
+pub mod instance_admin;
 pub mod magic_link_token;
 pub mod mcp_client_agent_binding;
 pub mod mcp_elicitation;

@@ -225,8 +225,14 @@
 - Stripe customer portal — `POST /v1/billing/portal` returns a hosted self-service link; surfaced from `/billing/portal`.
 - Automatic tax wired (`customer_update=auto`) for cross-border compliance.
 - `free_unlimited` org tier + instance-admin self-service create (PR #217) for design partners + self-hosted accounts.
+- **Instance Admin panel** (D-NEXT) — `/instance` in the dashboard, `/v1/instance/*` in the API, all behind `InstanceAdminAuth` (step-up on mutations):
+  - *Orgs*: every org as a tenancy/billing unit (plan, trial end, members, last activity); Manage Plan drives D25's plan/trial routes; Create Org with any plan, creator becomes bootstrap admin, session stays put.
+  - *Instance admins*: list, grant (root-domain sign-in only), revoke with a last-admin guard; provenance in `users.instance_admin_granted_at/_by`.
+  - *Configuration*: read-only effective config, secrets as set/unset only.
+  - *Instance audit*: `instance_audit_log` (migration 140), filter by admin/action/org, keyset paging, CSV/JSONL export. Plan/trial/create also still land in the org's own audit.
+  - Tests: `tests/instance_panel.rs`; screenshots: `dashboard/scripts/screenshot-instance-admin.mjs`.
 - E2E coverage — `crates/overslash-fakes/src/stripe.rs` ships a full Stripe fake driven by a Playwright Checkout flow (PR #231); `tests/billing.rs` + `tests/free_unlimited.rs` exercise the REST surface.
-- Dashboard — `/billing/new-team` (Checkout entry), `/billing/portal`, `/billing/success`, `CreateOrgModal` deferring to checkout when `cloud_billing=true`.
+- Dashboard — `/billing/new-team` (Checkout entry), `/billing/portal`, `/billing/success`, Create Org lives in the Instance Admin panel.
 
 ### Monitoring & Observability
 
