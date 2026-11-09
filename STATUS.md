@@ -225,7 +225,7 @@
 - Stripe customer portal — `POST /v1/billing/portal` returns a hosted self-service link; surfaced from `/billing/portal`.
 - Automatic tax wired (`customer_update=auto`) for cross-border compliance.
 - `free_unlimited` org tier + instance-admin self-service create (PR #217) for design partners + self-hosted accounts.
-- **Instance Admin panel** (D-NEXT) — `/instance` in the dashboard, `/v1/instance/*` in the API, all behind `InstanceAdminAuth` (step-up on mutations):
+- **Instance Admin panel** (D148) — `/instance` in the dashboard, `/v1/instance/*` in the API, all behind `InstanceAdminAuth` (step-up on mutations):
   - *Orgs*: every org as a tenancy/billing unit (plan, trial end, members, last activity); Manage Plan drives D25's plan/trial routes; Create Org with any plan, creator becomes bootstrap admin, session stays put.
   - *Instance admins*: list, grant (root-domain sign-in only), revoke with a last-admin guard; provenance in `users.instance_admin_granted_at/_by`.
   - *Configuration*: read-only effective config, secrets as set/unset only.
