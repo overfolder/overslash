@@ -117,6 +117,29 @@ struct Creator {
 /// available without refactoring `bootstrap_org`. The compensating rollback
 /// (DELETE FROM orgs) cascades to identities / memberships / groups /
 /// service_instances / group_grants on failure.
+/// Compensate for a create that failed after the org row was inserted:
+/// delete it (cascading to whatever was provisioned) so the slug is free
+/// again. Best-effort. If this also fails we leave a dangling org row, which
+/// is still better than a half-bootstrapped one; admins can sweep manually.
+async fn discard_new_org(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    org_id: Uuid,
+    cause: &AppError,
+) {
+    if let Err(cleanup_err) = sqlx::query!("DELETE FROM orgs WHERE id = $1", org_id)
+        .execute(state.db(ext))
+        .await
+    {
+        tracing::error!(
+            org_id = %org_id,
+            bootstrap_error = %cause,
+            cleanup_error = %cleanup_err,
+            "create_org rollback failed; manual cleanup required"
+        );
+    }
+}
+
 async fn finalize_new_org(
     state: &AppState,
     ext: &axum::http::Extensions,
@@ -131,20 +154,7 @@ async fn finalize_new_org(
     let contents = match provision_new_org_contents(state, ext, org.id, bootstrap_user_id).await {
         Ok(c) => c,
         Err(e) => {
-            // Best-effort cleanup. If this also fails we leave a dangling
-            // org row, but that's strictly better than the half-bootstrapped
-            // state; admins can sweep manually.
-            if let Err(cleanup_err) = sqlx::query!("DELETE FROM orgs WHERE id = $1", org.id)
-                .execute(state.db(ext))
-                .await
-            {
-                tracing::error!(
-                    org_id = %org.id,
-                    bootstrap_error = %e,
-                    cleanup_error = %cleanup_err,
-                    "create_org rollback failed; manual cleanup required"
-                );
-            }
+            discard_new_org(state, ext, org.id, &e).await;
             return Err(e);
         }
     };
@@ -349,10 +359,24 @@ pub(crate) async fn create_for_instance_admin(
         }
         Err(e) => return Err(e.into()),
     };
-    if let Some(ends_at) = trial_ends_at {
-        overslash_db::repos::org::set_trial(state.db(ext), org.id, ends_at).await?;
+    // The row exists from here on: a failure before `finalize_new_org` (which
+    // compensates for its own failures) must delete it, or the slug stays
+    // taken by a half-made org.
+    let org_id = org.id;
+    let prepared = async {
+        if let Some(ends_at) = trial_ends_at {
+            overslash_db::repos::org::set_trial(state.db(ext), org.id, ends_at).await?;
+        }
+        flip_managed_signin_on_new_org(state, ext, org).await
     }
-    let org = flip_managed_signin_on_new_org(state, ext, org).await?;
+    .await;
+    let org = match prepared {
+        Ok(org) => org,
+        Err(e) => {
+            discard_new_org(state, ext, org_id, &e).await;
+            return Err(e);
+        }
+    };
 
     let audit_detail = serde_json::json!({
         "name": &org.name,
@@ -361,7 +385,6 @@ pub(crate) async fn create_for_instance_admin(
         "trial_ends_at": trial_ends_at.map(|t| t.unix_timestamp()),
         "created_by_instance_admin": admin_user_id.to_string(),
     });
-    let org_id = org.id;
     let resp = finalize_new_org(
         state,
         ext,
