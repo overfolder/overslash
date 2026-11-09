@@ -435,6 +435,11 @@ pub async fn kernel_create_service(
             Err(e) => {
                 // Cascades the grants written so far (FK ON DELETE CASCADE).
                 let _ = scope.delete_service_instance(row.id).await;
+                // The token minted for this instance would otherwise outlive
+                // it as an unreferenced secret in the owner's vault.
+                if let Some(path) = &minted_session_secret {
+                    let _ = scope.soft_delete_secret(path).await;
+                }
                 return Err(e);
             }
         };
