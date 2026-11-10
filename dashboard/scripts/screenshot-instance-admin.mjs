@@ -2,7 +2,7 @@
 //   - Orgs (light + dark), with the Manage Plan and Create Org dialogs
 //   - Instance admins, with the Grant dialog and the sole-admin revoke guard
 //   - Configuration
-//   - Instance audit
+//   - Instance audit (plus the Export dropdown and the "All" window)
 //   - Phone width (orgs, admins, audit)
 //
 // Prereq: `make e2e-up`, and DATABASE_URL pointing at the e2e Postgres. SQL is
@@ -202,6 +202,26 @@ try {
 			theme,
 			waitFor: ready('.action')
 		});
+		await ctx.close();
+	}
+
+	// The header controls: Export dropdown open, then the "All" window.
+	{
+		const { page, ctx } = await snap.navigateAndSnap('instance-audit-base', '/instance/audit', {
+			viewport: desktop,
+			waitFor: ready('.action')
+		});
+		await page.locator('[data-test="instance-audit-export"] summary').click();
+		await page.waitForTimeout(200);
+		await page.screenshot({ path: 'screenshots/instance-audit-export.png' });
+		console.log('[instance] wrote screenshots/instance-audit-export.png');
+		await page.keyboard.press('Escape');
+		await page.locator('[data-test="instance-audit-export"] summary').click();
+		await page.getByRole('button', { name: 'All', exact: true }).click();
+		await page.locator('.action').first().waitFor({ timeout: 10_000 });
+		await page.waitForTimeout(300);
+		await page.screenshot({ path: 'screenshots/instance-audit-all.png' });
+		console.log('[instance] wrote screenshots/instance-audit-all.png');
 		await ctx.close();
 	}
 

@@ -539,3 +539,110 @@ async fn plan_and_trial_changes_write_instance_audit_with_filters_and_paging() {
     assert_eq!(r.status(), 200);
     assert_eq!(r.text().await.unwrap().lines().count(), 3);
 }
+
+#[tokio::test]
+async fn instance_audit_list_and_export_honour_the_time_window() {
+    let pool = common::test_pool().await;
+    let admin = person(&pool, "root@example.com", true).await;
+    let org = overslash_db::repos::org::create(&pool, "Osprey", "osprey-test", "standard")
+        .await
+        .unwrap();
+    let (addr, client) = common::start_api(pool.clone()).await;
+    let base = format!("http://{addr}");
+    let c = &admin.cookie;
+
+    ok(
+        client
+            .post(format!("{base}/v1/orgs/{}/trial", org.id))
+            .json(&json!({ "duration_days": 30 })),
+        c,
+    )
+    .await;
+    // Age the trial start out of a one-day window.
+    sqlx::query(
+        "UPDATE instance_audit_log SET created_at = now() - interval '10 days'
+          WHERE action = 'org.trial_started'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    ok(
+        client
+            .patch(format!("{base}/v1/orgs/{}/trial", org.id))
+            .json(&json!({ "extend_days": 7 })),
+        c,
+    )
+    .await;
+
+    let rfc = |t: OffsetDateTime| {
+        t.format(&time::format_description::well_known::Rfc3339)
+            .unwrap()
+    };
+    let now = OffsetDateTime::now_utc();
+    let since = rfc(now - time::Duration::days(1));
+    let until = rfc(now + time::Duration::minutes(5));
+
+    let actions = |page: &Value| -> Vec<String> {
+        page["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["action"].as_str().unwrap().to_string())
+            .collect()
+    };
+
+    let page: Value = get(
+        &client,
+        format!("{base}/v1/instance/audit?org=osprey-test&since={since}&until={until}"),
+        c,
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(actions(&page), ["org.trial_extended"]);
+
+    // An upper bound before the extension leaves only the aged row.
+    let early = rfc(now - time::Duration::days(1));
+    let page: Value = get(
+        &client,
+        format!("{base}/v1/instance/audit?org=osprey-test&until={early}"),
+        c,
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(actions(&page), ["org.trial_started"]);
+
+    let r = get(
+        &client,
+        format!("{base}/v1/instance/audit/export?format=jsonl&org=osprey-test&since={since}"),
+        c,
+    )
+    .await;
+    assert_eq!(r.status(), 200);
+    let disposition = r
+        .headers()
+        .get("content-disposition")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        disposition.starts_with("attachment; filename=\"instance-audit-2")
+            && disposition.ends_with(".jsonl\""),
+        "{disposition}"
+    );
+    let body = r.text().await.unwrap();
+    assert_eq!(body.lines().count(), 1);
+    assert!(body.contains("org.trial_extended"));
+
+    let r = get(
+        &client,
+        format!("{base}/v1/instance/audit?since=yesterday"),
+        c,
+    )
+    .await;
+    assert_eq!(r.status(), 400);
+}

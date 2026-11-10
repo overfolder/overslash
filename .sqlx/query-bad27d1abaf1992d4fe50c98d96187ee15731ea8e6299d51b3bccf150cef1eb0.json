@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, actor_user_id, actor_email, action, org_id, org_slug, detail, ip_address, created_at\n           FROM instance_audit_log\n          WHERE ($1::text IS NULL OR lower(actor_email) = lower($1))\n            AND ($2::text IS NULL OR action = $2)\n            AND ($3::text IS NULL OR org_slug = $3)\n            AND ($4::timestamptz IS NULL OR (created_at, id) < ($4, $5::uuid))\n          ORDER BY created_at DESC, id DESC\n          LIMIT $6",
+  "query": "SELECT id, actor_user_id, actor_email, action, org_id, org_slug, detail, ip_address, created_at\n           FROM instance_audit_log\n          WHERE ($1::text IS NULL OR lower(actor_email) = lower($1))\n            AND ($2::text IS NULL OR action = $2)\n            AND ($3::text IS NULL OR org_slug = $3)\n            AND ($4::timestamptz IS NULL OR (created_at, id) < ($4, $5::uuid))\n            AND ($6::timestamptz IS NULL OR created_at >= $6)\n            AND ($7::timestamptz IS NULL OR created_at < $7)\n          ORDER BY created_at DESC, id DESC\n          LIMIT $8",
   "describe": {
     "columns": [
       {
@@ -110,6 +110,8 @@
         "Text",
         "Timestamptz",
         "Uuid",
+        "Timestamptz",
+        "Timestamptz",
         "Int8"
       ]
     },
@@ -125,5 +127,5 @@
       false
     ]
   },
-  "hash": "958ccbb134e4759d2d3e1a7e68b1e2dbeedddb440ced2e2e8e95a87da0f60313"
+  "hash": "bad27d1abaf1992d4fe50c98d96187ee15731ea8e6299d51b3bccf150cef1eb0"
 }

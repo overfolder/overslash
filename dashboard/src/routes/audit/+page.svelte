@@ -4,7 +4,7 @@
 	import { session, ApiError } from '#lib/session.ts';
 	import SearchBar, { addTerm, type SearchValue, type Term } from '#lib/components/SearchBar.svelte';
 	import AuditRow from './AuditRow.svelte';
-	import TimeRangePicker from './TimeRangePicker.svelte';
+	import TimeRangePicker from '#lib/components/audit/TimeRangePicker.svelte';
 	import { buildAuditSearchKeys, filtersToSearch, searchToFilters } from './searchMapping';
 	import { makeIdentityFormatter } from '#lib/identityDisplay.ts';
 	import {
@@ -26,7 +26,7 @@
 		widerPreset,
 		type ResolvedRange,
 		type TimeRange
-	} from './timeRange';
+	} from '#lib/components/audit/timeRange.ts';
 
 	let { data } = $props();
 
