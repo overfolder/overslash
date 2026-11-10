@@ -83,7 +83,8 @@
 
 	async function load(append: boolean) {
 		ctrl?.abort();
-		ctrl = new AbortController();
+		const mine = new AbortController();
+		ctrl = mine;
 		loading = true;
 		// A reset re-resolves the window, so Refresh on "7d" means the last
 		// week as of now, not as of page load.
@@ -92,7 +93,7 @@
 			const page = await listInstanceAudit(
 				{ ...filters, ...resolved },
 				append ? (cursor ?? undefined) : undefined,
-				ctrl.signal
+				mine.signal
 			);
 			entries = append ? [...entries, ...page.entries] : page.entries;
 			cursor = page.next_cursor;
@@ -102,7 +103,9 @@
 			if ((e as Error)?.name !== 'AbortError')
 				loadError = apiErrorReason(e) ?? 'Could not load the instance audit.';
 		} finally {
-			loading = false;
+			// Only the newest request owns `loading`: one aborted by a later
+			// load must not re-enable Refresh / Load more under it.
+			if (ctrl === mine) loading = false;
 		}
 	}
 
