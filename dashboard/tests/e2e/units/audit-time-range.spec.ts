@@ -13,7 +13,7 @@ import {
 	resolveRange,
 	toLocalInput,
 	widerPreset
-} from '../../../src/routes/audit/timeRange';
+} from '../../../src/lib/components/audit/timeRange';
 import { exportQuery } from '../../../src/routes/audit/types';
 
 const NOW = new Date('2026-10-23T12:00:00.000Z');

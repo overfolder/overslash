@@ -80,6 +80,10 @@ export interface InstanceAuditFilters {
 	admin?: string;
 	action?: string;
 	org?: string;
+	/** Inclusive lower bound, ISO 8601 UTC. */
+	since?: string;
+	/** Exclusive upper bound, ISO 8601 UTC. */
+	until?: string;
 }
 
 function query(params: Record<string, string | undefined>): string {

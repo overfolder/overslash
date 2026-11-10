@@ -131,7 +131,7 @@ fn export_stream(
 }
 
 /// `20261023T140000Z`, or `start` for an open lower bound.
-fn filename_stamp(t: Option<OffsetDateTime>) -> String {
+pub(crate) fn filename_stamp(t: Option<OffsetDateTime>) -> String {
     match t {
         None => "start".into(),
         Some(t) => {

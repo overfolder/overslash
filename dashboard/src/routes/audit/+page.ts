@@ -7,7 +7,7 @@ import {
 	type AuditEntry,
 	type AuditFilters
 } from './types';
-import { rangeFromSearchParams, resolveRange } from './timeRange';
+import { rangeFromSearchParams, resolveRange } from '#lib/components/audit/timeRange.ts';
 
 export const ssr = false;
 export const prerender = false;

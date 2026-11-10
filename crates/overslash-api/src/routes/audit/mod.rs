@@ -14,7 +14,7 @@ use overslash_db::repos::audit::{AuditFilter, AuditRow};
 use crate::{AppState, error::Result};
 
 mod export;
-pub(crate) use export::write_csv_cell;
+pub(crate) use export::{filename_stamp, write_csv_cell};
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -140,7 +140,7 @@ fn default_limit() -> i64 {
     50
 }
 
-fn deserialize_optional_datetime<'de, D>(
+pub(crate) fn deserialize_optional_datetime<'de, D>(
     deserializer: D,
 ) -> std::result::Result<Option<OffsetDateTime>, D::Error>
 where

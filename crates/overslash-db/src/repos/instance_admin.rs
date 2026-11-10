@@ -259,6 +259,10 @@ pub struct InstanceAuditFilter {
     pub org: Option<String>,
     /// Keyset cursor: rows strictly older than `(created_at, id)`.
     pub before: Option<(OffsetDateTime, Uuid)>,
+    /// Inclusive lower bound on `created_at`.
+    pub since: Option<OffsetDateTime>,
+    /// Exclusive upper bound on `created_at`.
+    pub until: Option<OffsetDateTime>,
 }
 
 pub async fn list_audit(
@@ -275,13 +279,17 @@ pub async fn list_audit(
             AND ($2::text IS NULL OR action = $2)
             AND ($3::text IS NULL OR org_slug = $3)
             AND ($4::timestamptz IS NULL OR (created_at, id) < ($4, $5::uuid))
+            AND ($6::timestamptz IS NULL OR created_at >= $6)
+            AND ($7::timestamptz IS NULL OR created_at < $7)
           ORDER BY created_at DESC, id DESC
-          LIMIT $6",
+          LIMIT $8",
         filter.admin.as_deref(),
         filter.action.as_deref(),
         filter.org.as_deref(),
         before_at,
         before_id,
+        filter.since,
+        filter.until,
         limit,
     )
     .fetch_all(pool)

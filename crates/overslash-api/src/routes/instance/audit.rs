@@ -17,7 +17,7 @@ use crate::{
     AppState,
     error::{AppError, Result},
     extractors::{InstanceAdminAuth, ReqExt},
-    routes::audit::write_csv_cell,
+    routes::audit::{deserialize_optional_datetime, filename_stamp, write_csv_cell},
 };
 
 const DEFAULT_LIMIT: i64 = 50;
@@ -31,6 +31,12 @@ pub(super) struct ListQuery {
     admin: Option<String>,
     action: Option<String>,
     org: Option<String>,
+    /// Inclusive lower bound, RFC 3339.
+    #[serde(default, deserialize_with = "deserialize_optional_datetime")]
+    since: Option<OffsetDateTime>,
+    /// Exclusive upper bound, RFC 3339.
+    #[serde(default, deserialize_with = "deserialize_optional_datetime")]
+    until: Option<OffsetDateTime>,
     /// Opaque cursor from a previous page's `next_cursor`.
     cursor: Option<String>,
     limit: Option<i64>,
@@ -50,6 +56,8 @@ impl ListQuery {
             action: nonempty(&self.action),
             org: nonempty(&self.org),
             before: self.cursor.as_deref().map(parse_cursor).transpose()?,
+            since: self.since,
+            until: self.until,
         })
     }
 }
@@ -138,6 +146,10 @@ pub(super) struct ExportQuery {
     admin: Option<String>,
     action: Option<String>,
     org: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_datetime")]
+    since: Option<OffsetDateTime>,
+    #[serde(default, deserialize_with = "deserialize_optional_datetime")]
+    until: Option<OffsetDateTime>,
     format: Option<String>,
 }
 
@@ -156,11 +168,16 @@ pub(super) async fn export(
             ));
         }
     };
+    // Pin the upper bound, so the file covers exactly the window it is
+    // named after even when no `until` was sent.
+    let until = q.until.unwrap_or_else(OffsetDateTime::now_utc);
     let filter = InstanceAuditFilter {
         admin: nonempty(&q.admin),
         action: nonempty(&q.action),
         org: nonempty(&q.org),
         before: None,
+        since: q.since,
+        until: Some(until),
     };
     let rows = instance_admin::list_audit(state.db(&ext), &filter, EXPORT_CAP).await?;
 
@@ -202,7 +219,11 @@ pub(super) async fn export(
             (header::CONTENT_TYPE, ctype.to_string()),
             (
                 header::CONTENT_DISPOSITION,
-                format!("attachment; filename=\"instance-audit.{ext_name}\""),
+                format!(
+                    "attachment; filename=\"instance-audit-{}_{}.{ext_name}\"",
+                    filename_stamp(q.since),
+                    filename_stamp(Some(until)),
+                ),
             ),
         ],
         buf,
