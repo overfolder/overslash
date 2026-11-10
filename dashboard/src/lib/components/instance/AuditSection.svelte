@@ -130,6 +130,11 @@
 		range = next;
 	}
 
+	// Free text is matched in the browser against the rendered detail, so the
+	// export (server-side) can't apply it; the menu says so rather than
+	// promising a file that matches the table.
+	const hasFreeText = $derived(textTerms(search).length > 0);
+
 	const exportHref = (format: 'csv' | 'jsonl') =>
 		instanceAuditExportUrl({ ...filters, ...resolved }, format);
 
@@ -167,7 +172,8 @@
 			</summary>
 			<div class="export-menu">
 				<p class="export-note">
-					Every event in the {rangeLabel(range)} matching the current search
+					Every event in the {rangeLabel(range)} matching the current filters{#if hasFreeText}.
+						Free-text terms only narrow the table and are not applied to the file{/if}
 				</p>
 				<a href={exportHref('csv')} download>CSV <span>spreadsheet</span></a>
 				<a href={exportHref('jsonl')} download>JSONL <span>one event per line, full detail</span></a>
