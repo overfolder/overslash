@@ -136,10 +136,22 @@
 	// leaving the field blank inherits it, so the URL is not "required".
 	const layerDefaults = $derived(selectedDetail?.instance_defaults);
 	const inheritedUrl = $derived(layerDefaults?.url);
+	// The platform-hosted gateways mint each instance's token themselves, as
+	// long as the instance keeps the template's own endpoint. Naming another
+	// one — or inheriting an org layer's — means it's somebody's own server,
+	// whose token only its operator has. Mirrors `kernel_create_service`.
+	const mcpGeneratesToken = $derived(
+		isMcp &&
+			selectedDetail?.mcp?.auth_kind === 'bearer' &&
+			selectedDetail?.mcp?.generates_session_token === true &&
+			!urlInput.trim() &&
+			!inheritedUrl
+	);
 	const mcpNeedsSecret = $derived(
 		isMcp &&
 		selectedDetail?.mcp?.auth_kind === 'bearer' &&
-		!selectedDetail?.mcp?.has_default_secret_name
+		!selectedDetail?.mcp?.has_default_secret_name &&
+		!mcpGeneratesToken
 	);
 
 	// Every template's endpoint and config pins are overridable per instance.
@@ -1407,6 +1419,11 @@
 						<small>Pick an existing secret from your vault, or type a new name to use later.</small>
 					{/if}
 				</div>
+			{:else if mcpGeneratesToken}
+				<p class="hosted-hint" data-testid="new-service-hosted-hint">
+					Hosted by Overslash. A private session token is created for this service and kept in
+					your vault. To use your own server instead, set its URL under “Show more options”.
+				</p>
 			{/if}
 
 			{#if moreOptionsCount > 0}
@@ -1691,6 +1708,11 @@
 	.field small {
 		color: var(--color-text-muted);
 		font-size: 0.75rem;
+	}
+	.hosted-hint {
+		margin: 0;
+		font-size: 0.8rem;
+		color: var(--color-text-muted);
 	}
 	.cred-source {
 		margin: 0;

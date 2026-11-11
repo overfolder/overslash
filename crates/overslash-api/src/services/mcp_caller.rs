@@ -77,7 +77,7 @@ pub async fn build_client(
     auth: &McpAuth,
     oauth_header: Option<&overslash_core::types::AuthHeader>,
 ) -> Result<(McpClient, reqwest::header::HeaderMap), AppError> {
-    let mut headers = mcp_auth::resolve_headers(state, scope, auth).await?;
+    let mut headers = mcp_auth::resolve_headers(state, scope, auth, url).await?;
 
     if let Some(h) = oauth_header {
         let name = reqwest::header::HeaderName::from_bytes(h.name.as_bytes()).map_err(|_| {

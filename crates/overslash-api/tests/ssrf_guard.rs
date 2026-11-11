@@ -224,6 +224,59 @@ async fn a_cross_host_redirect_drops_the_injected_credential() {
     );
 }
 
+/// The same rule for a vault secret injected under a header of the template's
+/// choosing (`X-API-Key`, a gateway's `X-Gateway-Key`). Stripping only the
+/// standard names would let any custom-header credential follow the redirect.
+#[tokio::test]
+async fn a_cross_host_redirect_drops_a_custom_header_secret() {
+    let (pool, _fx) = common::test_pool_bootstrapped().await;
+    let (base, key, _org, _mock) = boot(pool).await;
+
+    let resp = reqwest::Client::new()
+        .put(format!("{base}/v1/secrets/custom_header_token"))
+        .header("Authorization", format!("Bearer {key}"))
+        .json(&json!({ "value": "custom-header-secret-value" }))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success(), "secret put: {}", resp.status());
+
+    let sink = start_header_sink().await;
+    let redirector = start_redirector(format!("http://[::1]:{}/sink", sink.port())).await;
+
+    let resp = raw_http_body(
+        &base,
+        &key,
+        json!({
+            "service": "http",
+            "method": "GET",
+            "url": format!("http://{redirector}/bounce"),
+            "secrets": [{
+                "name": "custom_header_token",
+                "inject_as": "header",
+                "header_name": "X-Gateway-Key",
+            }],
+        }),
+    )
+    .await;
+    let status = resp.status();
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(
+        status, 200,
+        "the second hop should have been reached: {body}"
+    );
+
+    let echoed = body["result"]["body"].as_str().unwrap_or_default();
+    assert!(
+        echoed.contains("\"reached\":true"),
+        "the sink was not reached: {body}"
+    );
+    assert!(
+        !echoed.contains("custom-header-secret-value"),
+        "a custom-header credential crossed a host boundary: {echoed}"
+    );
+}
+
 /// A loopback server on the IPv6 side that reports the headers it was sent.
 async fn start_header_sink() -> std::net::SocketAddr {
     let app = axum::Router::new().route(

@@ -253,28 +253,84 @@ pub fn reject_inline_credentials(request: &ActionRequest) -> Result<(), AppError
 /// in both directions: a download is a GET, an upload a POST or PUT at the same
 /// origin behind the same bearer. `body` stays `None` either way — an upload's
 /// bytes are not in the row, they arrive when the capability is redeemed.
-pub fn bearer_request(method: &str, url: String, secret_name: Option<&str>) -> ActionRequest {
+pub fn bearer_request(method: &str, url: String, auth: Option<McpBearerRef<'_>>) -> ActionRequest {
+    let header_ref = |name: &str, header: &str, prefix: Option<&str>| SecretRef {
+        name: name.to_string(),
+        inject_as: InjectAs::Header,
+        header_name: Some(header.into()),
+        query_param: None,
+        prefix: prefix.map(str::to_string),
+        template: None,
+        bindings: Default::default(),
+        config: Default::default(),
+        // Legacy field, accepted and ignored; never set on new refs.
+        encode: None,
+    };
+    let mut secrets = Vec::new();
+    if let Some(auth) = auth {
+        secrets.push(header_ref(
+            auth.secret_name,
+            "Authorization",
+            Some("Bearer "),
+        ));
+        // The gateway key re-resolves at redemption like the bearer: its
+        // qualified path from the vault, else — an org path only — the
+        // platform credential, host-checked again against this URL.
+        if let Some((path, header)) = auth.gateway {
+            secrets.push(header_ref(path, header, None));
+        }
+    }
     ActionRequest {
         method: method.into(),
         url,
         headers: HashMap::new(),
         body: None,
-        secrets: secret_name
-            .map(|name| SecretRef {
-                name: name.to_string(),
-                inject_as: InjectAs::Header,
-                header_name: Some("Authorization".into()),
-                query_param: None,
-                prefix: Some("Bearer ".into()),
-                template: None,
-                bindings: Default::default(),
-                config: Default::default(),
-                // Legacy field, accepted and ignored; never set on new refs.
-                encode: None,
-            })
-            .into_iter()
-            .collect(),
+        secrets,
         staged_uploads: Vec::new(),
+    }
+}
+
+/// The credentials a deferred MCP transfer (`download_media`'s fetch,
+/// `upload_media`'s push) re-presents: the bearer's secret path, and the
+/// gateway key's path and header when the server takes one.
+#[derive(Clone, Copy)]
+pub struct McpBearerRef<'a> {
+    pub secret_name: &'a str,
+    pub gateway: Option<(&'a str, &'a str)>,
+}
+
+impl<'a> McpBearerRef<'a> {
+    /// From a *resolved* MCP auth, for a transfer that inherits it.
+    /// `Ok(None)` for no auth. OAuth is refused by the callers before this.
+    pub fn from_auth(auth: &'a overslash_core::types::McpAuth) -> Result<Option<Self>, AppError> {
+        use overslash_core::types::McpAuth;
+        let McpAuth::Bearer {
+            secret_name: Some(secret_name),
+            gateway,
+            ..
+        } = auth
+        else {
+            return Ok(None);
+        };
+        let gateway = match gateway {
+            // A stored transfer re-resolves through the vault, which cannot
+            // express "platform rung only" — and that case only arises when
+            // the org vault was refused for this destination. Rather than
+            // risk reading it at redemption, refuse the transfer.
+            Some(g) if g.platform_only => {
+                return Err(AppError::BadRequest(
+                    "media transfers are not supported for this instance's endpoint; \
+                     its gateway key can only come from the platform"
+                        .into(),
+                ));
+            }
+            Some(g) => Some((g.default_secret_name.as_str(), g.header.as_str())),
+            None => None,
+        };
+        Ok(Some(Self {
+            secret_name,
+            gateway,
+        }))
     }
 }
 
@@ -304,6 +360,7 @@ pub async fn open_upstream(
         &request.method,
         &url,
         &headers,
+        &http_caller::credential_headers(request, None),
         request.body.as_deref().map(Into::into),
         std::time::Duration::from_millis(state.config.call_timeout_ms),
     )

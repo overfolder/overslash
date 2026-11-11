@@ -544,9 +544,11 @@ fn runtime_string(def: &ServiceDefinition) -> String {
 fn mcp_detail_from(def: &ServiceDefinition, openapi: &serde_json::Value) -> Option<McpDetail> {
     use overslash_core::types::McpAuth;
     let spec = def.mcp.as_ref()?;
+    let generates_session_token =
+        matches!(&spec.auth, McpAuth::Bearer { generate: true, .. }) && spec.url.is_some();
     let (auth_kind, has_default_secret_name, provider, scopes) = match &spec.auth {
         McpAuth::None => ("none".to_string(), false, None, Vec::new()),
-        McpAuth::Bearer { secret_name } => (
+        McpAuth::Bearer { secret_name, .. } => (
             "bearer".to_string(),
             secret_name.is_some(),
             None,
@@ -570,6 +572,7 @@ fn mcp_detail_from(def: &ServiceDefinition, openapi: &serde_json::Value) -> Opti
         url: spec.url.clone(),
         auth_kind,
         has_default_secret_name,
+        generates_session_token,
         provider,
         scopes,
         autodiscover: spec.autodiscover,

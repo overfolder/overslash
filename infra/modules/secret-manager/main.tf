@@ -46,6 +46,12 @@ variable "pagerduty_enabled" {
   description = "Whether the monitoring module reads the PagerDuty key. Where it does not, the secret holds only REPLACE_ME, so it is exempt from rotation instead of alerting on the placeholder's age."
 }
 
+variable "hosted_gateways" {
+  type        = set(string)
+  default     = []
+  description = "Hosted runtime keys (`whatsapp`, `telegram`) whose platform-hosted gateway needs a generated key."
+}
+
 # --- Database password ---
 
 resource "google_secret_manager_secret" "db_password" {
@@ -511,6 +517,53 @@ resource "google_secret_manager_secret_version" "overfwd_gateway_key" {
   }
 }
 
+# --- Hosted MCP gateway keys (hosted-runtimes.md, Phase 0). One per
+#     platform-hosted WhatsApp/Telegram gateway: the gateway requires it as
+#     `X-Gateway-Key`, and the API injects it for every org through the
+#     platform-credential rung, pinned to that gateway's host. Generated and
+#     rotated exactly like the overfwd key above.
+
+resource "google_secret_manager_secret" "hosted_gateway_key" {
+  for_each  = var.hosted_gateways
+  secret_id = "${var.base_prefix}-${each.key}-gateway-key"
+  project   = var.project_id
+  labels    = local.rotation["internal-key"].labels
+  topics {
+    name = local.rotation["internal-key"].topic
+  }
+  rotation {
+    rotation_period    = local.rotation["internal-key"].period
+    next_rotation_time = local.rotation["internal-key"].next_rotation_time
+  }
+  replication {
+    auto {}
+  }
+
+  lifecycle {
+    ignore_changes = [rotation[0].next_rotation_time]
+  }
+}
+
+resource "random_password" "hosted_gateway_key" {
+  for_each = var.hosted_gateways
+  length   = 48
+  special  = false
+}
+
+resource "google_secret_manager_secret_version" "hosted_gateway_key" {
+  for_each    = var.hosted_gateways
+  secret      = google_secret_manager_secret.hosted_gateway_key[each.key].id
+  secret_data = random_password.hosted_gateway_key[each.key].result
+
+  # As for the overfwd key: a rotation is `gcloud secrets versions add`
+  # out-of-band, which terraform must neither revert nor re-enable.
+  deletion_policy = "DISABLE"
+
+  lifecycle {
+    ignore_changes = [secret_data, enabled]
+  }
+}
+
 # --- Stripe billing secrets (only populated when cloud_billing=true).
 #     Values populated manually via `gcloud secrets versions add` after apply.
 
@@ -745,6 +798,10 @@ output "google_directory_sa_key_secret_id" {
 
 output "shortener_api_key_secret_id" {
   value = google_secret_manager_secret.shortener_api_key.secret_id
+}
+
+output "hosted_gateway_key_secret_ids" {
+  value = { for k, sec in google_secret_manager_secret.hosted_gateway_key : k => sec.secret_id }
 }
 
 output "overfwd_gateway_key_secret_id" {

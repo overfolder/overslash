@@ -127,9 +127,11 @@ async fn mint_mcp_download(
     let url =
         crate::services::deferred_download::resolve_same_origin(&mcp_target.url, raw_url.trim())?;
 
-    let secret_name = match (&mcp_target.auth, spec.auth) {
+    let bearer = match (&mcp_target.auth, spec.auth) {
         (_, DownloadAuth::None) => None,
-        (McpAuth::Bearer { secret_name }, DownloadAuth::Inherit) => secret_name.as_deref(),
+        (auth @ McpAuth::Bearer { .. }, DownloadAuth::Inherit) => {
+            crate::services::deferred_download::McpBearerRef::from_auth(auth)?
+        }
         (McpAuth::None, DownloadAuth::Inherit) => None,
         (McpAuth::OAuth { .. }, DownloadAuth::Inherit) => {
             // An OAuth bearer is minted live from the caller's connection and
@@ -159,9 +161,7 @@ async fn mint_mcp_download(
             service_key,
             action_key,
             request: Some(crate::services::deferred_download::bearer_request(
-                "GET",
-                url,
-                secret_name,
+                "GET", url, bearer,
             )),
             call_result_id: None,
             mime: pick("mime"),

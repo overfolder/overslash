@@ -16,6 +16,12 @@ variable "enable_overfwd" {
   default = false
 }
 
+variable "hosted_gateways" {
+  type        = set(string)
+  default     = []
+  description = "Hosted runtime keys (`whatsapp`, `telegram`) that run a platform-hosted MCP gateway; each gets its own role-less identity."
+}
+
 # --- Runtime service accounts (CASA 3.1.1, 6.7.1) ---
 #
 # One identity per workload, so each reads only its own secrets. None holds a
@@ -49,6 +55,13 @@ resource "google_service_account" "overfwd" {
   count        = var.enable_overfwd ? 1 : 0
   account_id   = "${var.base_prefix}-overfwd"
   display_name = "${var.base_prefix} overfwd Mailbox Gateway"
+  project      = var.project_id
+}
+
+resource "google_service_account" "hosted_gateway" {
+  for_each     = var.hosted_gateways
+  account_id   = "${var.base_prefix}-gw-${each.key}"
+  display_name = "${var.base_prefix} ${each.key} hosted gateway"
   project      = var.project_id
 }
 
@@ -180,6 +193,10 @@ output "shortener_sa_email" {
 
 output "overfwd_sa_email" {
   value = try(google_service_account.overfwd[0].email, "")
+}
+
+output "hosted_gateway_sa_emails" {
+  value = { for k, sa in google_service_account.hosted_gateway : k => sa.email }
 }
 
 output "scheduler_sa_email" {

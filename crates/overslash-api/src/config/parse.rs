@@ -76,6 +76,88 @@ pub(super) fn parse_platform_credential(
     })
 }
 
+pub(super) const PLATFORM_GATEWAY_PREFIX: &str = "OVERSLASH_PLATFORM_GATEWAY_";
+
+/// Every platform credential this deployment holds, from the environment.
+///
+/// Two spellings, both a complete triple of `SECRET_NAME` / `HOST` / `KEY`:
+/// - the original unsuffixed `OVERSLASH_PLATFORM_GATEWAY_{SECRET_NAME,HOST,KEY}`
+///   (D39's overfwd key — existing deployments keep working untouched), and
+/// - `OVERSLASH_PLATFORM_GATEWAY_<ID>_{SECRET_NAME,HOST,KEY}` for each further
+///   hosted service, `<ID>` being any `[A-Z0-9_]+` label (`WHATSAPP`).
+///
+/// An incomplete set is skipped with a warning, as the single triple always
+/// was. One secret name on two hosts is a boot failure: the lookup is by name,
+/// so the second entry would be silently unreachable — or, worse, a reader
+/// would assume it is reachable. The result is sorted by secret name so the
+/// order never depends on the environment's iteration order.
+pub(super) fn parse_platform_credentials(
+    vars: impl IntoIterator<Item = (String, String)>,
+) -> Vec<PlatformCredential> {
+    use std::collections::BTreeMap;
+    // id ("" for the unsuffixed triple) → (secret_name, host, key)
+    let mut sets: BTreeMap<String, [Option<String>; 3]> = BTreeMap::new();
+    for (name, value) in vars {
+        let Some(rest) = name.strip_prefix(PLATFORM_GATEWAY_PREFIX) else {
+            continue;
+        };
+        let (id, field) = if let Some(id) = rest.strip_suffix("SECRET_NAME") {
+            (id, 0)
+        } else if let Some(id) = rest.strip_suffix("HOST") {
+            (id, 1)
+        } else if let Some(id) = rest.strip_suffix("KEY") {
+            (id, 2)
+        } else {
+            continue;
+        };
+        // "" is the unsuffixed triple; anything else must end in the `_`
+        // that separates it from the field (`WHATSAPP_` + `HOST`).
+        let id = match id {
+            "" => "",
+            _ => match id.strip_suffix('_') {
+                Some(id)
+                    if !id.is_empty()
+                        && id
+                            .bytes()
+                            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_') =>
+                {
+                    id
+                }
+                _ => continue,
+            },
+        };
+        sets.entry(id.to_string()).or_default()[field] = Some(value);
+    }
+
+    let mut out: Vec<PlatformCredential> = Vec::new();
+    for (id, [secret_name, host, key]) in sets {
+        let Some(cred) =
+            parse_platform_credential(secret_name.as_deref(), host.as_deref(), key.as_deref())
+        else {
+            let label = if id.is_empty() {
+                "OVERSLASH_PLATFORM_GATEWAY_*".to_string()
+            } else {
+                format!("OVERSLASH_PLATFORM_GATEWAY_{id}_*")
+            };
+            tracing::warn!(
+                "{label} is incomplete (SECRET_NAME, HOST and KEY are all required); \
+                 that platform credential is disabled"
+            );
+            continue;
+        };
+        if let Some(dup) = out.iter().find(|c| c.secret_name == cred.secret_name) {
+            panic!(
+                "platform credential `{}` is configured twice (hosts `{}` and `{}`); \
+                 each secret name may be pinned to one host only",
+                cred.secret_name, dup.host, cred.host
+            );
+        }
+        out.push(cred);
+    }
+    out.sort_by(|a, b| a.secret_name.cmp(&b.secret_name));
+    out
+}
+
 /// The instance's Google Directory service account, from exactly one of an
 /// inline JSON key or a path to one. Panics — the boot-time failure — on both
 /// set, an unreadable file, or a key that does not parse; the message never

@@ -46,6 +46,7 @@ metadata is not a payload read and is not restricted beyond project IAM.
 | `overslash-<env>-run@` — **the API** | `roles/secretmanager.secretAccessor` on the project, under the IAM condition **every secret named `overslash-<env>-*` except the operator-only list** (today: `overslash-<env>-pagerduty-integration-key`) | Cloud Run resolves `secret_key_ref` env vars and secret volumes as the revision's identity when an instance starts. No payload is ever placed in a plaintext env var or in the service spec | The API reads nearly every platform secret, including ones other modules create (BI password, cache CA, OTel config), so its grant is a naming rule rather than a list. `infra/modules/secret-manager` (`api_secret_accessor`) |
 | `overslash-<env>-shortener@` — oversla.sh | `secretAccessor` on `overslash-<env>-shortener-api-key` and `<cache instance>-server-ca`, nothing else | Same | `infra/modules/cloud-run-shortener` (one grant per `env_secrets` entry). Prod only |
 | `overslash-<env>-overfwd@` — Mailbox Gateway | `secretAccessor` on `overslash-<env>-overfwd-gateway-key`, nothing else | Same | `infra/modules/cloud-run-overfwd` |
+| `overslash-<env>-gw-<runtime>@` — hosted MCP gateway (`whatsapp`, `telegram`), one per entry in `hosted_mcp_gateways` | `secretAccessor` on `overslash-<env>-<runtime>-gateway-key` and that gateway's own `env_secrets`, nothing else | Same | `infra/modules/cloud-run-mcp-gateway`. Only where the gateway is deployed |
 | `overslash-<env>-exporter@` — metrics-exporter job | `secretAccessor` on `overslash-<env>-db-password`, nothing else. Also `roles/secretmanager.viewer` on the project, which is metadata only and reads no payload | Same. The viewer role backs the hourly [rotation age sweep](#how-age-is-watched) | `infra/modules/metrics-exporter-job`, `infra/modules/iam` |
 | Project Owners (humans) | Implicit via `roles/owner` | `tofu plan`/`apply` — the provider refreshes each `google_secret_manager_secret_version` by reading it, and reads the PagerDuty key as a data source. `bin/db-shell.sh` reads the database password. `gcloud secrets versions access` for break-glass | Operating the platform. **Every such read notifies** (below), except Terraform reads by a listed `terraform_operators` principal |
 | Everyone else | **None** | — | `roles/viewer` excludes `secretmanager.versions.access`. No payload-reading role is project-wide without a condition. The Cloud Build and Scheduler service accounts hold no Secret Manager role. The BigQuery connection stores its own copy of the `bi` credential and never reads the secret |
@@ -205,6 +206,7 @@ CASA 6.7.1 sets no period, so these are ours to set and defend.
 | `db-password` | `database` | [Database passwords](#database-passwords) | API, metrics exporter, `bin/db-shell.sh` |
 | `bi-db-password` (prod) | `database` | [Database passwords](#database-passwords) | API at boot, BigQuery connection |
 | `overfwd-gateway-key` | `internal-key` | [Shared internal keys](#shared-internal-keys) | API, overfwd |
+| `<runtime>-gateway-key` (`whatsapp`, `telegram`; where deployed) | `internal-key` | [Shared internal keys](#shared-internal-keys) | API, that hosted MCP gateway |
 | `shortener-api-key` | `internal-key` | [Shared internal keys](#shared-internal-keys) | API, oversla.sh (prod only; dev's API uses a copy of prod's key) |
 | `trusted-proxy-secret` | `internal-key` | [Trusted-proxy secret](#trusted-proxy-secret) | API, Vercel middleware |
 | `oauth-client-secret`, `github-auth-client-secret` | `third-party` | [Issued keys](#issued-keys) | API (login) |
@@ -394,6 +396,8 @@ destroyed (`deletion_policy = "DISABLE"`). These two values stay in Terraform st
 The two services hold one value, so roll them back to back. Calls between them fail with 401
 until both are up. For `overfwd-gateway-key`, the steps are in
 [mailbox-gateway.md](../../runbooks/mailbox-gateway.md#rotation).
+A hosted MCP gateway's `<runtime>-gateway-key` rolls the same way: add the version, then
+roll the API and that gateway's service back to back.
 
 `shortener-api-key` crosses projects: prod runs the only oversla.sh, and dev's API calls it
 with a copy of prod's key. So there is one value, in two secrets. Rotate prod, then copy it.

@@ -37,6 +37,7 @@ mod instance_names;
 mod kernels;
 mod reconcile;
 mod rows;
+mod session_token;
 mod status;
 mod templates;
 mod types;
@@ -50,6 +51,7 @@ pub(crate) use kernels::require_owned_by_ceiling_or_admin;
 pub use kernels::{kernel_get_service, kernel_list_services, kernel_update_service};
 pub(crate) use kernels::{require_readable_by_caller, resolve_readable_instance};
 pub use rows::{row_to_detail, row_to_summary};
+pub use session_token::release_session_token;
 pub use status::{
     ScopeCoverage, ScopeKnowledge, TemplateView, action_scope_coverage, compute_credentials_status,
     derive_credentials_status, template_view,
@@ -102,9 +104,7 @@ mod test_fixtures {
             runtime: Runtime::Mcp,
             mcp: Some(McpSpec {
                 url: Some("https://example.com".into()),
-                auth: McpAuth::Bearer {
-                    secret_name: default_secret.map(|s| s.to_string()),
-                },
+                auth: McpAuth::bearer(default_secret.map(|s| s.to_string())),
                 autodiscover: false,
             }),
             instance_defaults: None,
