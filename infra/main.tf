@@ -474,6 +474,9 @@ module "cloud_build" {
   cloud_build_sa_id = module.iam.cloud_build_sa_id
   cloud_run_service = module.cloud_run.service_name
 
+  # Night shutdown pauses the DB; the deploy wakes it first.
+  wake_sql_instance = var.enable_infra_scheduler ? module.cloud_sql.instance_name : ""
+
   github_owner  = var.github_owner
   github_repo   = var.github_repo
   github_branch = var.github_branch
@@ -562,7 +565,8 @@ module "infra_scheduler" {
   stop_cron               = var.infra_scheduler_stop_cron
   start_cron              = var.infra_scheduler_start_cron
 
-  scheduler_sa_email = module.iam.scheduler_sa_email
+  scheduler_sa_email   = module.iam.scheduler_sa_email
+  cloud_build_sa_email = module.iam.cloud_build_sa_email
 
   depends_on = [google_project_service.apis]
 }
