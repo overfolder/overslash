@@ -639,8 +639,10 @@ variable "enable_metrics_sidecar" {
 variable "otel_collector_image" {
   description = "OTel collector image path *relative to the Docker Hub mirror*, digest-pinned."
   type        = string
-  # 0.120.0, multi-arch index digest.
-  default = "otel/opentelemetry-collector-contrib@sha256:85ac41c2db88d0df9bd6145e608a3cb023f5d8443868adbfbbf66efb51087917"
+  # 0.165.0, multi-arch index digest. Bumping: take the index digest (not a
+  # per-arch one), run `otelcol-contrib validate` against the rendered
+  # otel-collector-config.yaml.tftpl, and watch GMP after the dev apply.
+  default = "otel/opentelemetry-collector-contrib@sha256:e40d61f10c9a617cca1ffd1be4d7e2b3a4b0f0001798ff07e58cabe82e618cea"
 
   validation {
     condition     = can(regex("@sha256:[0-9a-f]{64}$", var.otel_collector_image))

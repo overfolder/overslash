@@ -263,7 +263,7 @@ until Debian refreshes `trixie-slim`**. If a rebuild leaves the finding in place
 | `overslash-api` | Every push to the deploy branch | Any merge |
 | `overslash-metrics-exporter`, `oversla-sh` | Only when their paths change | Run the Cloud Build trigger |
 | `overfwd` | Never here | New upstream image, then a new `overfwd_image` digest ([mailbox-gateway.md](mailbox-gateway.md)) |
-| `otel-collector` sidecar | Never here | A newer upstream release, then a new `otel_collector_image` digest. Pinned at 0.120.0 today, an old release, so expect findings in it on the first run |
+| `otel-collector` sidecar | Never here | A newer upstream release, then a new `otel_collector_image` digest. Moved from 0.120.0 to 0.165.0 on 2026-11-15 after the first scans found ~95 HIGH/CRITICAL in the old release. Upstream ships every two weeks or so; bump when a scan fails on it |
 
 Rust crates are the dependency audit's job. The scanner's Cargo support may report them too,
 but `cargo-deny` and OSV remain the gate for `Cargo.lock`.
