@@ -440,7 +440,7 @@ variable "template_vars" {
 
 variable "metrics_sidecar_image" {
   type        = string
-  default     = "otel/opentelemetry-collector-contrib:0.120.0"
+  default     = "otel/opentelemetry-collector-contrib:0.165.0"
   description = "OTel collector image. Pinned to a specific tag to avoid silent breakage on `:latest`."
 }
 
