@@ -105,7 +105,7 @@ mod integrity_invariants;
 mod invite_adoption;
 mod key_rotation;
 mod langfuse;
-mod langfuse_self_hosted;
+mod langfuse_legacy;
 mod large_file;
 mod layered_templates;
 mod linkedin;

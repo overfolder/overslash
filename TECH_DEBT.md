@@ -7,35 +7,36 @@ Known workarounds and deferred improvements.
 ## Langfuse carries two API generations in one template
 
 `services/langfuse.yaml` models both Langfuse read surfaces side by side: the
-Cloud v4 one (`list_observations`, `get_metrics`, `list_scores`,
-`list_experiments`) and the older one that self-hosted v3.x actually serves
-(`list_traces`, `list_observations_self_hosted`, `get_metrics_self_hosted`,
-`list_scores_self_hosted`, `list_dataset_runs`, …). Self-hosted Langfuse ships
-the v4 handlers but gates them behind a v4 write mode, so they answer 501/404;
-Cloud sunsets the old surface on 2026-11-16. Neither half works everywhere.
+v4 one that Langfuse Cloud and self-hosted v4 serve (`list_observations`,
+`get_metrics`, `list_scores`, `list_experiments`), and the v3 (legacy) one that
+self-hosted v3.x serves (`list_traces_legacy`, `list_observations_legacy`,
+`get_metrics_legacy`, `list_scores_legacy`, `list_dataset_runs_legacy`, …).
+A v3 server gates the v4 reads, so they answer 501/404 there. A v4 server in
+its default `events_only` write mode 404s the legacy reads, and Cloud removed
+them on 2026-11-16. Neither half works everywhere.
 
-The workaround is description routing: each action names its counterpart on
-the other deployment, and the self-hosted ones open with a fixed marker that
-`tests/langfuse_self_hosted.rs` enforces. It works, but an agent on either
-deployment sees roughly a third of the actions as dead weight, discovery ranks
-both halves for the same query, and nothing stops it trying the wrong one first
-— it learns from the 501.
+The workaround is description routing plus a key suffix: each action names its
+counterpart on the other generation, and the legacy ones carry `_legacy` and a
+fixed marker that `tests/langfuse_legacy.rs` enforces. It works, but an agent
+on either generation sees roughly a third of the actions as dead weight,
+discovery ranks both halves for the same query, and nothing stops it trying
+the wrong one first. It learns from the 501 or the `events_only` 404.
 
 **A more principled approach: template families with versions.** Let a
-template declare a family and a version — `langfuse:v1` (self-hosted surface),
-`langfuse:v4` (Cloud), with `langfuse:latest` an alias — and let an instance
-pin one. Shared actions (prompts, datasets, the score writes, the credential
+template declare a family and a version — `langfuse:v3` (legacy surface),
+`langfuse:v4`, with `langfuse:latest` an alias — and let an instance pin one.
+Shared actions (prompts, datasets, the score and trace writes, the credential
 probe) would live once in the family and be inherited per version, so the
-duplication that ruled out a separate `langfuse_self_hosted` template goes
-away. An instance's pin would decide which actions it exposes; a version bump
-becomes an explicit instance edit instead of an agent discovering a 404. Open
-questions: how pins interact with the layered org/user templates
-(`service_layer`), whether `latest` may move under a live instance, and how a
-probe could suggest the right version at create time (e.g. try
-`/api/public/v2/observations`, fall back on 501).
+duplication that ruled out a separate template goes away. An instance's pin
+would decide which actions it exposes, and a version bump becomes an explicit
+instance edit instead of an agent discovering a 404. Open questions: how pins
+interact with the layered org/user templates (`service_layer`), whether
+`latest` may move under a live instance, and how a probe could suggest the
+right version at create time (for example, try `/api/public/v2/observations`
+and fall back on 501).
 
 When that exists, split this template along the seam already drawn in its
-header comment and delete the self-hosted marker test.
+header comment and delete the legacy marker test.
 
 ---
 

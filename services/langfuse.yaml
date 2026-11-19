@@ -1,4 +1,5 @@
-# Langfuse (langfuse.com) over its public API v4 — LLM observability.
+# Langfuse (langfuse.com) over its public API v4, with the v3 (legacy) reads
+# kept for self-hosted v3 servers — LLM observability.
 #
 # ## Auth
 #
@@ -15,37 +16,47 @@
 # an instance points at. It lives in the instance's `config` map; only the
 # secret key costs a vault entry, and it rotates on its own.
 #
-# ## Cloud (v4) and self-hosted, in one template
+# ## v4 and v3 (legacy), in one template
 #
-# Langfuse runs two read surfaces at once, and which one works depends on the
-# deployment rather than on anything the caller chooses:
+# Langfuse has two read surfaces, and which one works depends on the server's
+# API generation rather than on anything the caller chooses — and not on who
+# hosts it:
 #
-#   • Langfuse Cloud serves the v4 surface (v2 observations, v2 metrics, v3
-#     scores, experiments) and sunsets the older one on 2026-11-16.
-#   • Self-hosted Langfuse — every v3.x release, checked against v3.225.11 —
-#     ships the v4 handlers but gates them: v2 observations, v2 metrics and
-#     experiments answer 404 or 501 ("v2 APIs are currently in beta and only
-#     available on Langfuse Cloud") unless the instance opted into a v4 write
-#     mode, and v3 scores 404 on releases that predate it. What a self-hosted
-#     instance actually reads is the older surface.
+#   • v4 — Langfuse Cloud, and self-hosted Langfuse v4 in its default
+#     `events_only` write mode (or `dual`). It serves v2 observations, v2
+#     metrics, v3 scores and experiments. Every legacy read below answers 404
+#     there ("This endpoint is not available on deployments running in
+#     Langfuse v4 events_only mode"); Cloud removed them on 2026-11-16.
+#   • v3 (legacy) — self-hosted Langfuse v3.x (checked against v3.225.11), or a
+#     v4 server pinned to `LANGFUSE_MIGRATION_V4_WRITE_MODE=legacy`. It ships the
+#     v4 handlers but gates them: v2 observations, v2 metrics and experiments
+#     answer 404 or 501 ("v2 APIs are currently in beta and only available on
+#     Langfuse Cloud"), and v3 scores 404 on releases that predate it. What it
+#     reads is the older surface: traces, sessions, v1 observations, v1
+#     metrics, v2 scores and dataset runs.
 #
-# So both are modelled. The Cloud actions keep the plain names; the
-# self-hosted counterparts are:
+# So both are modelled. The v4 actions keep the plain names and are the
+# default; the legacy counterparts carry a `_legacy` suffix, so the action key
+# an agent sees in search already says which surface it reaches:
 #
-#   list_observations → list_traces, get_trace, list_observations_self_hosted,
-#                       get_observation, list_sessions, get_session
-#   get_metrics       → get_metrics_self_hosted   (GET /api/public/metrics)
-#   list_scores       → list_scores_self_hosted, get_score   (/v2/scores)
-#   list_experiments  → list_dataset_runs, get_dataset_run
-#   list_experiment_items → list_dataset_run_items
+#   list_observations → list_traces_legacy, get_trace_legacy,
+#                       list_observations_legacy, get_observation_legacy,
+#                       list_sessions_legacy, get_session_legacy
+#   get_metrics       → get_metrics_legacy   (GET /api/public/metrics)
+#   list_scores       → list_scores_legacy, get_score_legacy   (/v2/scores)
+#   list_experiments  → list_dataset_runs_legacy, get_dataset_run_legacy
+#   list_experiment_items → list_dataset_run_items_legacy
 #
+# Not `_v3`: that would read as /api/public/v3/scores, which is v4 surface.
 # Each side's description names the other, so an agent that gets a 501 or 404
-# knows where to go next. Every self-hosted description opens with
-# "Self-hosted Langfuse read API", and `tests/langfuse_self_hosted.rs` holds
-# every action on an old path to that marker and to GET: the old surface is
+# knows where to go next. Every legacy description opens with "Langfuse v3
+# (legacy) read API", and `tests/langfuse_legacy.rs` holds every action on an
+# old path to that marker, to the suffix and to GET: the old surface is
 # read-only here. Its writes (`POST /api/public/ingestion`, dataset-run-item
 # creation) stay out — ingestion belongs in the application's SDK, not behind
-# an approval gate. One template for both is a stopgap; TECH_DEBT.md records
+# an approval gate, and v4 rejects most of it anyway. Trace and score deletes
+# are NOT legacy: DELETE /traces, /traces/{traceId} and /scores/{scoreId} are
+# in the current v4 spec. One template for both is a stopgap; TECH_DEBT.md records
 # the versioned template-family idea that would replace it.
 #
 # Also excluded, for reasons that are not deprecation:
@@ -100,10 +111,10 @@ info:
     query DSL; read and write evaluation scores; manage versioned prompts and
     the deployment labels that decide which version live SDKs serve; and curate
     datasets, dataset items and experiment runs. Works against Langfuse Cloud
-    and self-hosted Langfuse: on a self-hosted instance read traces, sessions,
-    observations, scores and metrics through the actions marked "Self-hosted
-    Langfuse read API". Auth is a Langfuse project key pair sent as HTTP
-    Basic.
+    and self-hosted Langfuse v4; on a self-hosted Langfuse v3 read traces,
+    sessions, observations, scores and metrics through the `_legacy` actions
+    marked "Langfuse v3 (legacy) read API". Auth is a Langfuse project key
+    pair sent as HTTP Basic.
 servers:
   - url: ${LANGFUSE_URL:https://cloud.langfuse.com}
     x-overslash-promoted: true
@@ -215,9 +226,12 @@ paths:
         rows use get_metrics instead — it aggregates upstream and returns a
         small table rather than the rows themselves.
 
-        On a self-hosted Langfuse this endpoint answers 501 or 404 — it is
-        Cloud-only there. Use list_traces, get_trace and
-        list_observations_self_hosted instead.
+        This is the read path on Langfuse Cloud and on self-hosted Langfuse v4.
+        On a self-hosted Langfuse v3 it answers 501 or 404 ("v2 APIs are
+        currently in beta and only available on Langfuse Cloud") — use
+        list_traces_legacy, get_trace_legacy and list_observations_legacy
+        there. A 404 from a `_legacy` action whose body names `events_only`
+        means the instance is v4: come back here.
       parameters:
         - name: fields
           in: query
@@ -398,8 +412,8 @@ paths:
         may be filtered on but NOT grouped by — a grouping dimension naming one
         returns 400.
 
-        On a self-hosted Langfuse this endpoint answers 501 or 404 — use
-        get_metrics_self_hosted instead.
+        Works on Langfuse Cloud and self-hosted v4. On a self-hosted Langfuse
+        v3 it answers 501 or 404 — use get_metrics_legacy there.
       parameters:
         - name: query
           in: query
@@ -535,8 +549,9 @@ paths:
         `annotation` (authorUserId, queueId). The subject filters are mutually
         exclusive: traceId, sessionId and experimentId cannot be combined, and
         observationId requires traceId because observation ids are scoped to a
-        trace. On a self-hosted Langfuse that predates this endpoint it
-        answers 404 — use list_scores_self_hosted instead.
+        trace. Works on Langfuse Cloud and self-hosted v4; a self-hosted v3
+        release that predates this endpoint answers 404 — use
+        list_scores_legacy there.
       parameters:
         - name: limit
           in: query
@@ -808,25 +823,25 @@ paths:
             type: string
   /api/public/traces/{traceId}:
     get:
-      operationId: get_trace
+      operationId: get_trace_legacy
       summary: "Get trace {traceId}"
       risk: read
       description: >-
-        Self-hosted Langfuse read API. One trace with its observations, scores
-        and cost/latency metrics. Use this on a self-hosted Langfuse, where the
-        Cloud-only list_observations answers 501 or 404; on Langfuse Cloud
-        filter list_observations by `traceId` instead (Cloud retires this
-        endpoint on 2026-11-16). With no `fields` every group comes back, and
-        each nested observation carries its whole input and output, so a long
-        agent run can be past the response cap. Ask for
+        Langfuse v3 (legacy) read API. One trace with its observations, scores
+        and cost/latency metrics. Use it only on a self-hosted Langfuse v3, or
+        on a v4 server pinned to the `legacy` write mode; Langfuse Cloud and
+        self-hosted v4 answer 404 here. There, filter list_observations by
+        `traceId` and list_scores by `traceId` instead. With no `fields` every
+        group comes back, and each nested observation carries its whole input
+        and output, so a long agent run can be past the response cap. Ask for
         `fields=core,scores,metrics` first, then read individual steps with
-        get_observation.
+        get_observation_legacy.
       parameters:
         - name: traceId
           in: path
           required: true
           x-overslash-aliases: [trace_id, id]
-          description: Trace id, from list_traces.
+          description: Trace id, from list_traces_legacy.
           schema:
             type: string
         - name: fields
@@ -845,8 +860,9 @@ paths:
       description: >-
         Permanently delete one trace and every observation and score beneath
         it. Asynchronous — the response acknowledges the request and the rows
-        disappear shortly after. There is no undo and nothing is archived. Read
-        the trace with list_observations before deleting it.
+        disappear shortly after. There is no undo and nothing is archived.
+        Works on Langfuse v4 and v3 alike. Read the trace with
+        list_observations (get_trace_legacy on a v3 server) before deleting it.
       disclose:
         - label: Trace
           primary: true
@@ -861,7 +877,7 @@ paths:
             type: string
   /api/public/traces:
     get:
-      operationId: list_traces
+      operationId: list_traces_legacy
       summary: "List traces[ named {name}][ in session {sessionId}][ for user {userId}]"
       risk: read
       pagination:
@@ -874,15 +890,15 @@ paths:
           param: page
         items: data
       description: >-
-        Self-hosted Langfuse read API. One page of traces — one row per agent
-        run or request — newest first, with name, user, session, tags, cost
-        and latency. Use this on a self-hosted Langfuse, where the Cloud-only
-        list_observations answers 501 or 404; on Langfuse Cloud use
-        list_observations with `isRootObservation=true` instead (Cloud retires
-        this endpoint on 2026-11-16). `fields` defaults here to
-        `core,metrics`; adding `io` or `observations` returns whole prompts
-        and completions for every row, so lower `limit` when you ask for them,
-        or open one trace with get_trace.
+        Langfuse v3 (legacy) read API. One page of traces — one row per agent
+        run or request — newest first, with name, user, session, tags, cost and
+        latency. Use it only on a self-hosted Langfuse v3, or on a v4 server
+        pinned to the `legacy` write mode; Langfuse Cloud and self-hosted v4
+        answer 404 here. There, use list_observations with
+        `isRootObservation=true` instead. `fields` defaults here to
+        `core,metrics`; adding `io` or `observations` returns whole prompts and
+        completions for every row, so lower `limit` when you ask for them, or
+        open one trace with get_trace_legacy.
       parameters:
         - name: page
           in: query
@@ -1603,8 +1619,9 @@ paths:
         The v4 replacement for /api/public/datasets/{name}/runs.
         `fromStartTime` is **required** — Langfuse demands a lower bound so the
         query stays fast on large projects, and omitting it is a 400, not an
-        unbounded query. `fields=scores` adds each run's aggregate scores. On
-        a self-hosted Langfuse this answers 404 — use list_dataset_runs.
+        unbounded query. `fields=scores` adds each run's aggregate scores.
+        Works on Langfuse Cloud and self-hosted v4; a self-hosted v3 answers
+        404 — use list_dataset_runs_legacy there.
       parameters:
         - name: fromStartTime
           in: query
@@ -1709,8 +1726,9 @@ paths:
         is how you export an eval run. The v4 replacement for
         /api/public/dataset-run-items. `fromStartTime` is **required**.
         `fields` defaults to `core,dataset`; adding `io` returns whole inputs
-        and outputs, so lower `limit` when you ask for it. On a
-        self-hosted Langfuse this answers 404 — use list_dataset_run_items.
+        and outputs, so lower `limit` when you ask for it. Works on Langfuse
+        Cloud and self-hosted v4; a self-hosted v3 answers 404 — use
+        list_dataset_run_items_legacy there.
       parameters:
         - name: fromStartTime
           in: query
@@ -1799,16 +1817,16 @@ paths:
                   operator:
                     type: string
                   value: {}
-  # ── Self-hosted read API ──────────────────────────────────────────────────
+  # ── v3 (legacy) read API ──────────────────────────────────────────────────
   #
   # Everything below (plus the GETs on /traces and /traces/{traceId} above) is
-  # the read surface a self-hosted Langfuse actually serves. See the header
-  # comment. Every description opens with "Self-hosted Langfuse read API", and
-  # `tests/langfuse_self_hosted.rs` holds every action on these paths to that
-  # marker and to GET.
+  # the read surface a Langfuse v3 server serves and a v4 server 404s. See the
+  # header comment. Every description opens with "Langfuse v3 (legacy) read
+  # API", every key ends in `_legacy`, and `tests/langfuse_legacy.rs` holds
+  # every action on these paths to that marker, that suffix and to GET.
   /api/public/sessions:
     get:
-      operationId: list_sessions
+      operationId: list_sessions_legacy
       summary: List sessions
       risk: read
       pagination:
@@ -1820,11 +1838,12 @@ paths:
           param: page
         items: data
       description: >-
-        Self-hosted Langfuse read API. One page of sessions — groups of traces
-        that share a `sessionId`, such as one chat conversation. Use this on a
-        self-hosted Langfuse; on Langfuse Cloud filter list_observations by
-        `sessionId` instead (Cloud retires this endpoint on 2026-11-16). Read
-        one session's traces with get_session.
+        Langfuse v3 (legacy) read API. One page of sessions — groups of traces
+        that share a `sessionId`, such as one chat conversation. Use it only on
+        a self-hosted Langfuse v3, or on a v4 server pinned to the `legacy`
+        write mode; Langfuse Cloud and self-hosted v4 answer 404 here. v4 has
+        no session endpoint: filter list_observations by `sessionId` instead.
+        Read one session's traces with get_session_legacy.
       parameters:
         - name: page
           in: query
@@ -1860,26 +1879,28 @@ paths:
               type: string
   /api/public/sessions/{sessionId}:
     get:
-      operationId: get_session
+      operationId: get_session_legacy
       summary: "Get session {sessionId}"
       risk: read
       description: >-
-        Self-hosted Langfuse read API. One session and every trace in it. The
+        Langfuse v3 (legacy) read API. One session and every trace in it. The
         traces are not paginated, so a very long session can be past the
-        response cap; list_traces filtered by `sessionId` pages through the same
-        rows. Use this on a self-hosted Langfuse; on Langfuse Cloud filter
-        list_observations by `sessionId` instead.
+        response cap; list_traces_legacy filtered by `sessionId` pages through
+        the same rows. Use it only on a self-hosted Langfuse v3, or on a v4
+        server pinned to the `legacy` write mode; Langfuse Cloud and
+        self-hosted v4 answer 404 here. There, filter list_observations by
+        `sessionId` instead.
       parameters:
         - name: sessionId
           in: path
           required: true
           x-overslash-aliases: [session_id, id]
-          description: Session id, from list_sessions or a trace's `sessionId`.
+          description: Session id, from list_sessions_legacy or a trace's `sessionId`.
           schema:
             type: string
   /api/public/observations:
     get:
-      operationId: list_observations_self_hosted
+      operationId: list_observations_legacy
       summary: "List observations[ of type {type}][ on trace {traceId}]"
       risk: read
       pagination:
@@ -1894,15 +1915,14 @@ paths:
           param: page
         items: data
       description: >-
-        Self-hosted Langfuse read API. One page of observations — spans,
-        generations, events, tool and agent calls — with their inputs,
-        outputs, model, token usage and cost. Use this on a self-hosted
-        Langfuse, where list_observations answers 501 or 404 because its v2
-        endpoint is Cloud-only; on Langfuse Cloud use list_observations
-        (Cloud retires this endpoint on 2026-11-16). There are no field groups
-        here: every row carries its whole input and output, so narrow to one
-        `traceId` and keep `limit` small. For counts, costs and latencies
-        across many rows use get_metrics_self_hosted.
+        Langfuse v3 (legacy) read API. One page of observations — spans,
+        generations, events, tool and agent calls — with their inputs, outputs,
+        model, token usage and cost. Use it only on a self-hosted Langfuse v3,
+        or on a v4 server pinned to the `legacy` write mode; Langfuse Cloud and
+        self-hosted v4 answer 404 here. There, use list_observations. There are
+        no field groups here: every row carries its whole input and output, so
+        narrow to one `traceId` and keep `limit` small. For counts, costs and
+        latencies across many rows use get_metrics_legacy.
       parameters:
         - name: page
           in: query
@@ -2010,25 +2030,27 @@ paths:
                     type: string
   /api/public/observations/{observationId}:
     get:
-      operationId: get_observation
+      operationId: get_observation_legacy
       summary: "Get observation {observationId}"
       risk: read
       description: >-
-        Self-hosted Langfuse read API. One observation — a span, generation or
-        event — with its whole input, output, model, usage and cost. Use this
-        on a self-hosted Langfuse; on Langfuse Cloud use list_observations
-        with `fields=core,io` and a `filter` on `id`.
+        Langfuse v3 (legacy) read API. One observation — a span, generation or
+        event — with its whole input, output, model, usage and cost. Use it
+        only on a self-hosted Langfuse v3, or on a v4 server pinned to the
+        `legacy` write mode; Langfuse Cloud and self-hosted v4 answer 404 here.
+        There, use list_observations with `fields=core,io` and a `filter` on
+        `id`.
       parameters:
         - name: observationId
           in: path
           required: true
           x-overslash-aliases: [observation_id, id]
-          description: Observation id, from list_observations_self_hosted or get_trace.
+          description: Observation id, from list_observations_legacy or get_trace_legacy.
           schema:
             type: string
   /api/public/v2/scores:
     get:
-      operationId: list_scores_self_hosted
+      operationId: list_scores_legacy
       summary: "List scores[ named {name}]"
       risk: read
       pagination:
@@ -2041,13 +2063,12 @@ paths:
           param: page
         items: data
       description: >-
-        Self-hosted Langfuse read API. One page of evaluation scores on
-        traces, observations, sessions and dataset runs. Use this on a
-        self-hosted Langfuse, where list_scores answers 404 on releases that
-        predate its v3 endpoint; on Langfuse Cloud use list_scores (Cloud
-        retires this endpoint on 2026-11-16). `value` follows `dataType`: a
-        number for NUMERIC and BOOLEAN, a string for CATEGORICAL, TEXT and
-        CORRECTION.
+        Langfuse v3 (legacy) read API. One page of evaluation scores on traces,
+        observations, sessions and dataset runs. Use it only on a self-hosted
+        Langfuse v3, or on a v4 server pinned to the `legacy` write mode;
+        Langfuse Cloud and self-hosted v4 answer 404 here. There, use
+        list_scores. `value` follows `dataType`: a number for NUMERIC and
+        BOOLEAN, a string for CATEGORICAL, TEXT and CORRECTION.
       parameters:
         - name: page
           in: query
@@ -2177,36 +2198,37 @@ paths:
             type: string
   /api/public/v2/scores/{scoreId}:
     get:
-      operationId: get_score
+      operationId: get_score_legacy
       summary: "Get score {scoreId}"
       risk: read
       description: >-
-        Self-hosted Langfuse read API. One score by id. Use this on a
-        self-hosted Langfuse; on Langfuse Cloud use list_scores with an `id`
-        filter.
+        Langfuse v3 (legacy) read API. One score by id. Use it only on a
+        self-hosted Langfuse v3, or on a v4 server pinned to the `legacy` write
+        mode; Langfuse Cloud and self-hosted v4 answer 404 here. There, use
+        list_scores with an `id` filter.
       parameters:
         - name: scoreId
           in: path
           required: true
           x-overslash-aliases: [score_id, id]
-          description: Score id, from list_scores_self_hosted.
+          description: Score id, from list_scores_legacy.
           schema:
             type: string
   /api/public/metrics:
     get:
-      operationId: get_metrics_self_hosted
+      operationId: get_metrics_legacy
       summary: Run an aggregate metrics query
       risk: read
       # No `pagination:` block, for the same reason as get_metrics: one
       # aggregate table bounded by `config.row_limit`.
       description: >-
-        Self-hosted Langfuse read API. Aggregate cost, latency, token usage and
+        Langfuse v3 (legacy) read API. Aggregate cost, latency, token usage and
         score statistics over a time window, grouped by dimensions you choose.
-        Use this on a self-hosted Langfuse, where get_metrics answers 501 or
-        404 because its v2 endpoint is Cloud-only; on Langfuse Cloud use
-        get_metrics (Cloud retires this endpoint on 2026-11-16). Unlike
-        get_metrics this has a `traces` view, so per-trace questions — cost
-        per run, runs per user — can be answered directly.
+        Use it only on a self-hosted Langfuse v3, or on a v4 server pinned to
+        the `legacy` write mode; Langfuse Cloud and self-hosted v4 answer 404
+        here. There, use get_metrics. Unlike get_metrics this has a `traces`
+        view, so per-trace questions — cost per run, runs per user — can be
+        answered directly.
       parameters:
         - name: query
           in: query
@@ -2306,7 +2328,7 @@ paths:
                       description: Maximum rows returned, 1-1000.
   /api/public/datasets/{datasetName}/runs:
     get:
-      operationId: list_dataset_runs
+      operationId: list_dataset_runs_legacy
       summary: "List runs of dataset '{datasetName}'"
       risk: read
       pagination:
@@ -2318,11 +2340,11 @@ paths:
           param: page
         items: data
       description: >-
-        Self-hosted Langfuse read API. One page of a dataset's runs — each run
-        is one experiment over the dataset's items. Use this on a self-hosted
-        Langfuse, where list_experiments answers 404 because its endpoint
-        needs Langfuse v4; on Langfuse Cloud use list_experiments (Cloud
-        retires this endpoint on 2026-11-16).
+        Langfuse v3 (legacy) read API. One page of a dataset's runs — each run
+        is one experiment over the dataset's items. Use it only on a
+        self-hosted Langfuse v3, or on a v4 server pinned to the `legacy` write
+        mode; Langfuse Cloud and self-hosted v4 answer 404 here. There, use
+        list_experiments.
       parameters:
         - name: datasetName
           in: path
@@ -2344,14 +2366,15 @@ paths:
             type: integer
   /api/public/datasets/{datasetName}/runs/{runName}:
     get:
-      operationId: get_dataset_run
+      operationId: get_dataset_run_legacy
       summary: "Get run '{runName}' of dataset '{datasetName}'"
       risk: read
       description: >-
-        Self-hosted Langfuse read API. One dataset run with its run items —
-        which dataset item ran against which trace. Use this on a self-hosted
-        Langfuse; on Langfuse Cloud use list_experiments and
-        list_experiment_items.
+        Langfuse v3 (legacy) read API. One dataset run with its run items —
+        which dataset item ran against which trace. Use it only on a
+        self-hosted Langfuse v3, or on a v4 server pinned to the `legacy` write
+        mode; Langfuse Cloud and self-hosted v4 answer 404 here. There, use
+        list_experiments and list_experiment_items.
       parameters:
         - name: datasetName
           in: path
@@ -2364,12 +2387,12 @@ paths:
           in: path
           required: true
           x-overslash-aliases: [run_name, name]
-          description: Run name, from list_dataset_runs.
+          description: Run name, from list_dataset_runs_legacy.
           schema:
             type: string
   /api/public/dataset-run-items:
     get:
-      operationId: list_dataset_run_items
+      operationId: list_dataset_run_items_legacy
       summary: "List items of run '{runName}'"
       risk: read
       pagination:
@@ -2381,12 +2404,11 @@ paths:
           param: page
         items: data
       description: >-
-        Self-hosted Langfuse read API. One page of a dataset run's items — each
+        Langfuse v3 (legacy) read API. One page of a dataset run's items — each
         links one dataset item to the trace it produced; read the trace with
-        get_trace for its output. Use this on a self-hosted Langfuse, where
-        list_experiment_items answers 404 because its endpoint needs Langfuse
-        v4; on Langfuse Cloud use list_experiment_items (Cloud retires this
-        endpoint on 2026-11-16).
+        get_trace_legacy for its output. Use it only on a self-hosted Langfuse
+        v3, or on a v4 server pinned to the `legacy` write mode; Langfuse Cloud
+        and self-hosted v4 answer 404 here. There, use list_experiment_items.
       parameters:
         - name: datasetId
           in: query
@@ -2399,7 +2421,7 @@ paths:
           in: query
           required: true
           x-overslash-aliases: [run_name]
-          description: Run name, from list_dataset_runs.
+          description: Run name, from list_dataset_runs_legacy.
           schema:
             type: string
         - name: page
