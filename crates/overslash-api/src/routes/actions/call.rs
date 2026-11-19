@@ -725,6 +725,7 @@ pub(super) async fn call_action_impl(
         let s = super::call_stream::InlineStream {
             url: &resolved_url,
             headers: &resolved_headers,
+            credential_headers: &http_caller::credential_headers(&action_req, auth_header.as_ref()),
             body: wire.or(action_req.body.as_deref()),
             timeout: call_timeout,
             offer_prefer_stream: transport.offers_prefer_stream(),
@@ -741,6 +742,7 @@ pub(super) async fn call_action_impl(
         &action_req.method,
         &resolved_url,
         &resolved_headers,
+        &http_caller::credential_headers(&action_req, auth_header.as_ref()),
         wire.or(action_req.body.as_deref()),
         state.config.max_response_body_bytes,
         call_timeout.duration(),

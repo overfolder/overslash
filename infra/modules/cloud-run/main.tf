@@ -424,6 +424,20 @@ variable "platform_gateway_key_secret_id" {
   description = "GSM secret ID holding the gateway key — the same secret the overfwd service reads as OVERFWD_API_KEY. Feeds OVERSLASH_PLATFORM_GATEWAY_KEY."
 }
 
+# Further platform credentials, one per platform-hosted MCP gateway
+# (hosted-runtimes.md, Phase 0), keyed by hosted runtime. Each becomes the
+# `OVERSLASH_PLATFORM_GATEWAY_<KEY>_{SECRET_NAME,HOST,KEY}` triple and, like
+# the overfwd one above, is only ever sent to its own `host`.
+variable "platform_gateways" {
+  type = map(object({
+    secret_name   = string
+    host          = string
+    key_secret_id = string
+  }))
+  default     = {}
+  description = "Hosted runtime key → platform credential (vault secret name it fills, the one host it may go to, GSM secret ID of the value)."
+}
+
 # Deployment-supplied service-template variables (D44). Each entry becomes
 # `OVERSLASH_TEMPLATE_VAR_<KEY>`, which a shipped or org-authored template
 # references as `${<KEY>}`. The prefix is the security boundary: a template can
@@ -531,6 +545,8 @@ locals {
       OVERSLASH_PLATFORM_GATEWAY_SECRET_NAME = var.platform_gateway_secret_name
       OVERSLASH_PLATFORM_GATEWAY_HOST        = var.platform_gateway_host
     } : {},
+    { for k, g in var.platform_gateways : "OVERSLASH_PLATFORM_GATEWAY_${upper(k)}_SECRET_NAME" => g.secret_name },
+    { for k, g in var.platform_gateways : "OVERSLASH_PLATFORM_GATEWAY_${upper(k)}_HOST" => g.host },
     { for k, v in var.template_vars : "OVERSLASH_TEMPLATE_VAR_${k}" => v if v != "" },
     var.trusted_proxy_hops > 0 ? { OVERSLASH_TRUSTED_PROXY_HOPS = tostring(var.trusted_proxy_hops) } : {},
     var.trusted_proxy_cidrs != "" ? { OVERSLASH_TRUSTED_PROXIES = var.trusted_proxy_cidrs } : {},
@@ -570,6 +586,7 @@ locals {
     var.platform_gateway_secret_name != "" && var.platform_gateway_host != "" && var.platform_gateway_key_secret_id != "" ? {
       OVERSLASH_PLATFORM_GATEWAY_KEY = var.platform_gateway_key_secret_id
     } : {},
+    { for k, g in var.platform_gateways : "OVERSLASH_PLATFORM_GATEWAY_${upper(k)}_KEY" => g.key_secret_id },
     var.enable_trusted_proxy_secret && var.trusted_proxy_secret_secret_id != "" ? {
       OVERSLASH_TRUSTED_PROXY_SECRET = var.trusted_proxy_secret_secret_id
     } : {},

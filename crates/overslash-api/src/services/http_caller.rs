@@ -46,7 +46,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use overslash_core::types::ActionResult;
+use overslash_core::types::{ActionRequest, ActionResult, AuthHeader, InjectAs};
 
 use crate::error::AppError;
 
@@ -229,11 +229,33 @@ const MAX_REDIRECTS: usize = 5;
 /// benign case and to whoever the upstream names in the other one. `reqwest`'s
 /// own default policy strips exactly these; following redirects by hand means
 /// re-implementing that rather than inheriting it.
-fn is_credential_header(name: &str) -> bool {
-    name.eq_ignore_ascii_case("authorization")
+///
+/// The fixed names alone are not enough here: a vault secret can be injected
+/// under any header a template names (`X-API-Key`, a gateway's
+/// `X-Gateway-Key`), so the caller also passes the names it injected — see
+/// [`credential_headers`].
+fn is_credential_header(name: &str, injected: &[&str]) -> bool {
+    injected.iter().any(|h| h.eq_ignore_ascii_case(name))
+        || name.eq_ignore_ascii_case("authorization")
         || name.eq_ignore_ascii_case("cookie")
         || name.eq_ignore_ascii_case("proxy-authorization")
         || name.eq_ignore_ascii_case("www-authenticate")
+}
+
+/// The headers a request carries a credential in beyond the standard ones:
+/// every header a vault secret is injected into, and the live OAuth header's.
+/// What [`call`] and [`call_streaming`] strip on a cross-host redirect.
+pub fn credential_headers<'a>(
+    request: &'a ActionRequest,
+    auth_header: Option<&'a AuthHeader>,
+) -> Vec<&'a str> {
+    request
+        .secrets
+        .iter()
+        .filter(|s| matches!(s.inject_as, InjectAs::Header))
+        .filter_map(|s| s.header_name.as_deref())
+        .chain(auth_header.map(|a| a.name.as_str()))
+        .collect()
 }
 
 /// Whether a credential may follow this hop.
@@ -266,6 +288,7 @@ async fn send_following_redirects(
     method: &str,
     url: &str,
     headers: &HashMap<String, String>,
+    credential_headers: &[&str],
     mut body: Option<Payload<'_>>,
     total_timeout: Option<Duration>,
     timeout_ms: u64,
@@ -304,7 +327,7 @@ async fn send_following_redirects(
             CallError::Blocked(format!("upstream redirect is not a usable URL: {e}"))
         })?;
         if !credential_may_follow(&current, &next) {
-            headers.retain(|name, _| !is_credential_header(name));
+            headers.retain(|name, _| !is_credential_header(name, credential_headers));
         }
         if status == 303
             || (matches!(status.as_u16(), 301 | 302) && method.eq_ignore_ascii_case("POST"))
@@ -327,6 +350,7 @@ pub async fn call(
     method: &str,
     url: &str,
     headers: &HashMap<String, String>,
+    credential_headers: &[&str],
     body: Option<Payload<'_>>,
     max_body_bytes: usize,
     timeout: Duration,
@@ -345,6 +369,7 @@ pub async fn call(
             method,
             url,
             headers,
+            credential_headers,
             body,
             max_body_bytes,
             timeout,
@@ -365,14 +390,23 @@ async fn call_inner(
     method: &str,
     url: &str,
     headers: &HashMap<String, String>,
+    credential_headers: &[&str],
     body: Option<Payload<'_>>,
     max_body_bytes: usize,
     timeout: Duration,
     timeout_ms: u64,
 ) -> Result<ActionResult, CallError> {
     let start = Instant::now();
-    let response =
-        send_following_redirects(method, url, headers, body, Some(timeout), timeout_ms).await?;
+    let response = send_following_redirects(
+        method,
+        url,
+        headers,
+        credential_headers,
+        body,
+        Some(timeout),
+        timeout_ms,
+    )
+    .await?;
     let status_code = response.status().as_u16();
 
     // Fold rather than collect: a `HashMap` built straight from the iterator
@@ -455,6 +489,7 @@ pub async fn call_streaming(
     method: &str,
     url: &str,
     headers: &HashMap<String, String>,
+    credential_headers: &[&str],
     body: Option<Payload<'_>>,
     timeout: Duration,
 ) -> Result<reqwest::Response, CallError> {
@@ -463,7 +498,15 @@ pub async fn call_streaming(
     // exactly as good a way to hang the header phase as a hostile upstream.
     match tokio::time::timeout(
         timeout,
-        send_following_redirects(method, url, headers, body, None, timeout_ms),
+        send_following_redirects(
+            method,
+            url,
+            headers,
+            credential_headers,
+            body,
+            None,
+            timeout_ms,
+        ),
     )
     .await
     {

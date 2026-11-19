@@ -9,7 +9,9 @@
 
 use uuid::Uuid;
 
-use overslash_core::types::{AuthHeader, McpAuth, McpSpec, ServiceDefinition};
+use overslash_core::types::{
+    AuthHeader, McpAuth, McpGateway, McpSpec, SecretNamespace, ServiceDefinition,
+};
 use overslash_db::repos::connection::ConnectionRow;
 use overslash_db::repos::service_instance::ServiceInstanceRow;
 use overslash_db::scopes::{OrgScope, UserScope};
@@ -165,6 +167,8 @@ pub(crate) async fn resolve_effective_mcp(
         McpAuth::None => McpAuth::None,
         McpAuth::Bearer {
             secret_name: tpl_sn,
+            gateway: tpl_gw,
+            ..
         } => {
             // The instance's binding is a secret path under the read rule; a
             // template default is a bare name, read in the instance's own
@@ -172,24 +176,30 @@ pub(crate) async fn resolve_effective_mcp(
             //
             // An org-vault binding rides only to the URL the org/global tier
             // of the template points at (`OrgVaultGate`) — never to one the
-            // owner of a user-level instance chose.
-            let path = match (instance.secret_name.as_deref(), tpl_sn.as_deref()) {
-                (Some(bound), _) => {
-                    let gate = crate::services::secret_paths::OrgVaultGate::for_instance(
+            // owner of a user-level instance chose. The gateway key below is
+            // gated the same way, so the gate is built once for both.
+            let gate = if instance.secret_name.is_some() || tpl_gw.is_some() {
+                Some(
+                    crate::services::secret_paths::OrgVaultGate::for_instance(
                         state.db(ext),
                         &state.registry,
                         instance,
                         Some(url.trim_end_matches('/')),
                         mcp_base,
                     )
-                    .await?;
-                    crate::services::secret_paths::readable_slot_binding(
-                        instance.owner_identity_id,
-                        bound,
-                        &gate,
-                        None,
-                    )
-                }
+                    .await?,
+                )
+            } else {
+                None
+            };
+            let path = match (instance.secret_name.as_deref(), tpl_sn.as_deref()) {
+                (Some(bound), _) => crate::services::secret_paths::readable_slot_binding(
+                    instance.owner_identity_id,
+                    bound,
+                    gate.as_ref()
+                        .expect("gate is built whenever a binding exists"),
+                    None,
+                ),
                 (None, Some(default)) => Some(
                     overslash_core::types::SecretNamespace::from_owner(instance.owner_identity_id)
                         .path(default),
@@ -210,8 +220,16 @@ pub(crate) async fn resolve_effective_mcp(
                     .await);
                 }
             };
+            let gateway = match (tpl_gw, gate.as_ref()) {
+                (Some(g), Some(gate)) => {
+                    resolve_mcp_gateway(state, scope, instance, g, &url, gate).await?
+                }
+                _ => None,
+            };
             McpAuth::Bearer {
                 secret_name: Some(sn),
+                generate: false,
+                gateway,
             }
         }
         McpAuth::OAuth { provider, scopes } => {
@@ -274,4 +292,71 @@ pub(crate) async fn resolve_effective_mcp(
         connection_id,
         principal,
     })
+}
+
+/// Where an MCP gateway key (`McpGateway`) comes from for one call, as the
+/// resolved copy the executor reads at send time: `default_secret_name` then
+/// holds a qualified secret path, and `platform_only` says the org vault was
+/// not admitted — only the platform rung may fill it.
+///
+/// The cascade is the one an org-source credential slot uses
+/// (`auth_resolve`, D39): the owner's own copy of the name, then the org
+/// vault where [`OrgVaultGate`](crate::services::secret_paths::OrgVaultGate)
+/// admits it, then the platform credential for that name — pinned to its own
+/// host and re-checked against the URL at send time. `None` when nothing can
+/// supply an *optional* key: the header is simply not sent, which is what a
+/// self-hosted single-tenant server expects.
+async fn resolve_mcp_gateway(
+    state: &AppState,
+    scope: &OrgScope,
+    instance: &ServiceInstanceRow,
+    gw: &McpGateway,
+    url: &str,
+    gate: &crate::services::secret_paths::OrgVaultGate,
+) -> Result<Option<McpGateway>, AppError> {
+    use crate::services::secret_paths::{MCP_GATEWAY_SLOT, org_default_candidates};
+
+    let resolved = |path: overslash_core::types::SecretPath, platform_only: bool| McpGateway {
+        header: gw.header.clone(),
+        default_secret_name: path.to_canonical(),
+        optional: gw.optional,
+        platform_only,
+    };
+
+    let candidates = org_default_candidates(
+        instance.owner_identity_id,
+        MCP_GATEWAY_SLOT,
+        &gw.default_secret_name,
+        gate,
+    );
+    for path in &candidates {
+        if scope.get_current_secret_value(path).await?.is_some() {
+            return Ok(Some(resolved(path.clone(), false)));
+        }
+    }
+
+    // Nothing in the vault: does the platform hold this key for this host?
+    // The org tier's name when the gate admits one — a user layer cannot
+    // rename its way onto a different platform key.
+    let org_name = gate.org_default(MCP_GATEWAY_SLOT, &gw.default_secret_name);
+    let platform_name = org_name.unwrap_or(&gw.default_secret_name);
+    if state
+        .config
+        .platform_credential_for(platform_name, url)
+        .is_some()
+    {
+        return Ok(Some(resolved(
+            SecretNamespace::Org.path(platform_name),
+            org_name.is_none(),
+        )));
+    }
+    if gw.optional {
+        return Ok(None);
+    }
+    // Required and absent everywhere: bind where the operator should put it,
+    // so the send-time error names a vault they can actually write to.
+    let fallback = candidates.last().cloned().unwrap_or_else(|| {
+        SecretNamespace::from_owner(instance.owner_identity_id).path(&*gw.default_secret_name)
+    });
+    Ok(Some(resolved(fallback, false)))
 }

@@ -161,6 +161,7 @@ fn child_node(pos: Pos, key: &str) -> Option<Node> {
         (Pos::Components, "securitySchemes") => Node::SecuritySchemes,
 
         (Pos::McpBlock, "auth") => Node::At(Pos::McpAuth),
+        (Pos::McpAuth, "gateway") => Node::At(Pos::McpGateway),
         (Pos::McpBlock, "tools") => Node::At(Pos::McpTool),
         (Pos::McpBlock, "discovered_tools") => Node::At(Pos::McpToolDiscovered),
 

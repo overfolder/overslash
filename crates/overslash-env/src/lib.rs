@@ -205,6 +205,27 @@ pub fn parse_bool(raw: &str) -> Option<bool> {
     }
 }
 
+/// Every variable whose name starts with `prefix`, as `(name, value)` pairs
+/// sorted by name, under the same rule as [`optional`]: values are trimmed,
+/// and a variable set to an empty value is left out as unset.
+///
+/// For a family of variables whose names are discovered rather than known in
+/// advance — one set of `OVERSLASH_PLATFORM_GATEWAY_<ID>_*` per hosted
+/// gateway — which no named accessor can read. A name or value that is not
+/// valid Unicode is skipped, like an unset one.
+pub fn prefixed(prefix: &str) -> Vec<(String, String)> {
+    let mut found: Vec<(String, String)> = std::env::vars_os()
+        .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)))
+        .filter(|(k, _)| k.starts_with(prefix))
+        .filter_map(|(k, v)| {
+            let trimmed = v.trim();
+            (!trimmed.is_empty()).then(|| (k, trimmed.to_string()))
+        })
+        .collect();
+    found.sort();
+    found
+}
+
 /// A comma-separated list, trimmed, with empty entries dropped.
 ///
 /// Operators write these by hand, so a trailing or doubled comma is a typo to

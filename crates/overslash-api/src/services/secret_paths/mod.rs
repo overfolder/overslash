@@ -38,7 +38,7 @@ use uuid::Uuid;
 use crate::error::AppError;
 
 mod org_gate;
-pub use org_gate::OrgVaultGate;
+pub use org_gate::{MCP_GATEWAY_SLOT, OrgVaultGate};
 
 /// The read rule. `None` when a user-level instance's binding points outside
 /// its owner's vault (or is otherwise unusable) — the caller reports the slot
