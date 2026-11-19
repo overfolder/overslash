@@ -4,8 +4,8 @@
 //! Five things are worth proving here that a unit test cannot:
 //!
 //!   1. the shipped YAML compiles into the actions and risk classes it claims;
-//!   2. (in `langfuse_self_hosted.rs`) every action on an endpoint Langfuse
-//!      Cloud sunsets on 2026-11-16 is a marked, read-only self-hosted action;
+//!   2. (in `langfuse_legacy.rs`) every action on an endpoint Langfuse v4
+//!      answers 404 is a marked, `_legacy`-suffixed, read-only v3 action;
 //!   3. the key pair reaches the upstream as `Authorization: Basic
 //!      base64(pk:sk)` and nowhere else. The two halves are joined by a jq
 //!      template, so a mistake here is a credential that is subtly wrong
@@ -95,19 +95,19 @@ fn langfuse_yaml_parses() {
         "delete_dataset_item",
         "list_experiments",
         "list_experiment_items",
-        // The self-hosted read surface — see langfuse_self_hosted.rs.
-        "list_traces",
-        "get_trace",
-        "list_sessions",
-        "get_session",
-        "list_observations_self_hosted",
-        "get_observation",
-        "list_scores_self_hosted",
-        "get_score",
-        "get_metrics_self_hosted",
-        "list_dataset_runs",
-        "get_dataset_run",
-        "list_dataset_run_items",
+        // The v3 (legacy) read surface — see langfuse_legacy.rs.
+        "list_traces_legacy",
+        "get_trace_legacy",
+        "list_sessions_legacy",
+        "get_session_legacy",
+        "list_observations_legacy",
+        "get_observation_legacy",
+        "list_scores_legacy",
+        "get_score_legacy",
+        "get_metrics_legacy",
+        "list_dataset_runs_legacy",
+        "get_dataset_run_legacy",
+        "list_dataset_run_items_legacy",
     ] {
         assert!(svc.actions.contains_key(action), "missing action: {action}");
     }
