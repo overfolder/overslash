@@ -57,7 +57,7 @@
     "playwright": "^1.65.0",
     "tsup": "^9.0.0",
     "typescript": "^6.0.3",
-    "vite": "^8.3.6",
+    "vite": "^8.3.8",
     "vitest": "^5.1.0"
   },
   "overrides": {
