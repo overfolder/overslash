@@ -15,8 +15,8 @@
 use std::future::Future;
 
 use anyhow::{Context, Result, bail};
-use chrono::{DateTime, Timelike, Utc};
 use serde::Deserialize;
+use time::OffsetDateTime;
 use tracing::warn;
 
 use crate::cloud_monitoring::{MonitoredResource, TimeSeries, make_gauge, make_gauge_int};
@@ -28,7 +28,7 @@ const EXEMPT_CLASS: &str = "exempt";
 const SECONDS_PER_DAY: f64 = 86_400.0;
 
 /// The scheduler ticks every 5 minutes, so exactly one tick an hour lands here.
-const SWEEP_MINUTES: u32 = 5;
+const SWEEP_MINUTES: u8 = 5;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -64,7 +64,8 @@ struct Rotation {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Version {
-    create_time: DateTime<Utc>,
+    #[serde(with = "time::serde::rfc3339")]
+    create_time: OffsetDateTime,
 }
 
 impl Secret {
@@ -104,7 +105,7 @@ pub struct Report {
 }
 
 /// Whether this tick is the hourly one.
-pub fn is_due(now: DateTime<Utc>) -> bool {
+pub fn is_due(now: OffsetDateTime) -> bool {
     now.minute() < SWEEP_MINUTES
 }
 
@@ -113,7 +114,7 @@ pub async fn sweep(
     project_id: &str,
     token: &str,
     client: &reqwest::Client,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<Report> {
     let secrets_url = format!("{API_BASE}/projects/{project_id}/secrets");
     let secrets = collect_pages(|page_token| {
@@ -204,7 +205,7 @@ fn parse_period_secs(period: &str) -> Result<f64> {
         .with_context(|| format!("unparseable rotationPeriod {period:?}"))
 }
 
-fn evaluate(secrets: &[(Secret, Option<DateTime<Utc>>)], now: DateTime<Utc>) -> Result<Report> {
+fn evaluate(secrets: &[(Secret, Option<OffsetDateTime>)], now: OffsetDateTime) -> Result<Report> {
     let mut report = Report::default();
     for (secret, newest) in secrets {
         let period = secret
@@ -228,7 +229,7 @@ fn evaluate(secrets: &[(Secret, Option<DateTime<Utc>>)], now: DateTime<Utc>) -> 
         };
         let period_secs =
             parse_period_secs(period).with_context(|| format!("failed to read {}", secret.id()))?;
-        let age_secs = (now - *newest).num_seconds() as f64;
+        let age_secs = (now - *newest).whole_seconds() as f64;
         report.ages.push(SecretAge {
             secret: secret.id().to_string(),
             class: class.to_string(),
@@ -290,10 +291,13 @@ impl Report {
 mod tests {
     use super::*;
     use crate::cloud_monitoring::business_resource;
-    use chrono::TimeZone;
+    use time::{Date, Month};
 
-    fn at(day: u32) -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 3, day, 0, 0, 0).unwrap()
+    fn at(day: u8) -> OffsetDateTime {
+        Date::from_calendar_date(2026, Month::March, day)
+            .unwrap()
+            .midnight()
+            .assume_utc()
     }
 
     fn secret(json: serde_json::Value) -> Secret {
@@ -414,7 +418,13 @@ mod tests {
 
     #[test]
     fn only_the_first_tick_of_the_hour_sweeps() {
-        let at_minute = |m| Utc.with_ymd_and_hms(2026, 3, 1, 7, m, 12).unwrap();
+        let at_minute = |m| {
+            Date::from_calendar_date(2026, Month::March, 1)
+                .unwrap()
+                .with_hms(7, m, 12)
+                .unwrap()
+                .assume_utc()
+        };
         assert!(is_due(at_minute(0)));
         assert!(is_due(at_minute(4)));
         assert!(!is_due(at_minute(5)));
