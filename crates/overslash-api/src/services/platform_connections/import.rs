@@ -173,7 +173,7 @@ pub async fn kernel_import_connection(
         .filter(|s| !s.is_empty());
     let fetched = match caller_label {
         Some(_) => oauth::AccountProfile::default(),
-        None => oauth::fetch_account_profile(&ctx.http_client, &provider, &input.access_token)
+        None => oauth::fetch_account_profile(&provider, &input.access_token)
             .await
             .unwrap_or_default(),
     };

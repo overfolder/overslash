@@ -201,10 +201,8 @@ async fn test_oauth_x_token_refresh() {
         .unwrap();
 
     // Resolve should trigger a refresh
-    let http_client = reqwest::Client::new();
     let new_token = overslash_api::services::oauth::resolve_access_token(
         &scope,
-        &http_client,
         &enc_key,
         &conn,
         "dummy_client_id",

@@ -57,6 +57,22 @@ pub fn check_resolved(url: &Url, ip: &IpAddr) -> Result<(), AppError> {
     check_resolved_with(url, ip, ssrf_guard::operator_allowed_ranges())
 }
 
+/// A client for one request to `raw` whose target is caller-influenced — a
+/// template host, a URL out of an org's IdP discovery document. The SSRF guard
+/// resolves, validates and pins the address, and this module's TLS rule is
+/// enforced against that pinned address. The client follows no redirects, so a
+/// 3xx comes back as the response rather than walking the request somewhere
+/// the guard never saw.
+///
+/// The shared `state.http_client` is for fixed, operator-configured targets
+/// only (Stripe, the short-link service, the API's own loopback). Anything a
+/// tenant can point goes through here.
+pub async fn guarded_client(raw: &str) -> Result<reqwest::Client, AppError> {
+    let (client, parsed, ip) = ssrf_guard::outbound_client_validated(raw).await?;
+    check_resolved(&parsed, &ip)?;
+    Ok(client)
+}
+
 /// The rule on a URL string, before resolution. See the module docs for what it
 /// can and cannot decide.
 pub fn check_url(raw: &str) -> Result<(), AppError> {

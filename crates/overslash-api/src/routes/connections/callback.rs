@@ -383,7 +383,6 @@ async fn oauth_callback_inner(
     // row), so it byte-matches what the provider saw. Recomputing it here would
     // break white-label flows whose authorize `redirect_uri` is partner-hosted.
     let tokens = oauth::exchange_code(
-        &state.http_client,
         &provider,
         &creds.client_id,
         &creds.client_secret,
@@ -397,7 +396,7 @@ async fn oauth_callback_inner(
     // Fetch the account's identity (email / login) and avatar from the
     // provider — best-effort; a failure leaves both blank but still lands the
     // connection.
-    let account = oauth::fetch_account_profile(&state.http_client, &provider, &tokens.access_token)
+    let account = oauth::fetch_account_profile(&provider, &tokens.access_token)
         .await
         .unwrap_or_default();
     // When the token response omits `scope` entirely (HubSpot always does),

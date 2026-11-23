@@ -409,7 +409,6 @@ pub(super) async fn provider_callback(
     let redirect_uri = format!("{}/auth/callback/{}", state.config.public_url, provider_key);
 
     let tokens = oauth::exchange_code(
-        &state.http_client,
         &provider,
         &client_id,
         &client_secret,
@@ -425,7 +424,6 @@ pub(super) async fn provider_callback(
     // land in one or the other depending on the IdP. `state_nonce_expected` is
     // the nonce this login minted — it binds the ID token to this exchange.
     let userinfo = fetch_userinfo(
-        &state.http_client,
         &provider,
         &provider_key,
         &tokens.access_token,

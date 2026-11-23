@@ -888,7 +888,6 @@ pub(super) async fn resolve_request(
                 headers.clone()
             };
         let resolved = crate::services::param_resolver::resolve_display_params(
-            &state.http_client,
             &state.config,
             &resolver_base,
             &resolver_headers,

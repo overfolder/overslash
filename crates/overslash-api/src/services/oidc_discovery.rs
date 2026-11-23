@@ -116,6 +116,31 @@ pub async fn discover(issuer_url: &str) -> Result<OidcDiscoveryDocument, OidcDis
         return Err(OidcDiscoveryError::Failed);
     }
 
+    // The document is the issuer's to write, and two of its URLs are ones the
+    // API itself later dials: the token endpoint (code exchange and refresh)
+    // and the userinfo endpoint (sign-in, connection callback). Fetching the
+    // document through the guard says nothing about where *those* point, so
+    // each is held to the same rule now — before the provider row is stored —
+    // and pinned again on every call (`services::oauth`, `routes::auth::userinfo`),
+    // since what a hostname resolves to can change after this check.
+    //
+    // `authorization_endpoint` is only ever visited by the user's browser, and
+    // `jwks_uri` / `revocation_endpoint` are stored but never dialed.
+    let dialed = [
+        ("token_endpoint", Some(doc.token_endpoint.as_str())),
+        ("userinfo_endpoint", doc.userinfo_endpoint.as_deref()),
+    ];
+    for (field, url) in dialed {
+        let Some(url) = url else { continue };
+        if let Err(e) = crate::services::outbound_tls::guarded_client(url).await {
+            tracing::warn!(
+                issuer_url,
+                "OIDC discovery document names an unusable {field}: {e}"
+            );
+            return Err(OidcDiscoveryError::Failed);
+        }
+    }
+
     Ok(doc)
 }
 
