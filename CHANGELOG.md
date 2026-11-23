@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.28.0](https://github.com/overfolder/overslash/compare/v0.27.0...v0.28.0) (2026-11-23)
+
+
+### Features
+
+* **infra:** declare secret rotation and alert on version age (CASA 6.7.1) ([#858](https://github.com/overfolder/overslash/issues/858)) ([fd8d37f](https://github.com/overfolder/overslash/commit/fd8d37f1f6928d81cfd9d2f202551a809ac6a558))
+* **infra:** wake the dev Cloud SQL instance from the deploy trigger ([#883](https://github.com/overfolder/overslash/issues/883)) ([0f97572](https://github.com/overfolder/overslash/commit/0f975725a43d78b3d0c3af6592c4463c67a38123))
+* **instance:** Instance Admin panel at /instance ([#881](https://github.com/overfolder/overslash/issues/881)) ([4b0ab1d](https://github.com/overfolder/overslash/commit/4b0ab1db82230f29b791e3c507d010bc6a602805))
+* **instance:** match the instance audit controls to the org audit log ([#882](https://github.com/overfolder/overslash/issues/882)) ([0a0a89c](https://github.com/overfolder/overslash/commit/0a0a89c24a529e304e2ae3bed6acda0d9d3417b4))
+* **services:** Langfuse reads split by API generation — v4 default, v3 legacy fallback ([#893](https://github.com/overfolder/overslash/issues/893)) ([52239c2](https://github.com/overfolder/overslash/commit/52239c2c0d92a1baa29c360f8b95412a3bb6cceb))
+
+
+### Bug Fixes
+
+* **api:** route the display resolver and IdP endpoints through the SSRF guard ([#898](https://github.com/overfolder/overslash/issues/898)) ([a342abb](https://github.com/overfolder/overslash/commit/a342abb2bc57dd1375265c3ddf516af04011fa31))
+* **deps:** bump quinn, rustix and SvelteKit to clear OSV advisories ([#889](https://github.com/overfolder/overslash/issues/889)) ([ca3fab7](https://github.com/overfolder/overslash/commit/ca3fab71b52994126c6d38a867bd03e831f06ca3))
+* **deps:** clear the dependency audit and container image scan ([#899](https://github.com/overfolder/overslash/issues/899)) ([ce02682](https://github.com/overfolder/overslash/commit/ce026820421b29427a3afd033ee42679ac48f2ca))
+* **deps:** except RUSTSEC-2026-0459 lockfile phantom from OSV scan ([#878](https://github.com/overfolder/overslash/issues/878)) ([9def346](https://github.com/overfolder/overslash/commit/9def346bb330d5bed5f079278cd0f4ff114e5680))
+* **infra:** bump the OTel collector sidecar to 0.165.0 ([#890](https://github.com/overfolder/overslash/issues/890)) ([415a36c](https://github.com/overfolder/overslash/commit/415a36cc8825d34540920f4f495a10923df62bb4))
+
 ## [0.27.0](https://github.com/overfolder/overslash/compare/v0.26.0...v0.27.0) (2026-11-07)
 
 
