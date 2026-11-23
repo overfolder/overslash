@@ -281,10 +281,8 @@ async fn refresh_self_heals_recorded_scopes() {
         .unwrap();
     assert!(conn.scopes.is_none(), "precondition: scopes start NULL");
 
-    let http = reqwest::Client::new();
     let token = overslash_api::services::oauth::resolve_access_token(
         &scope,
-        &http,
         &enc,
         &conn,
         "client-id",

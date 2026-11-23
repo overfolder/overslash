@@ -2314,10 +2314,8 @@ async fn test_oauth_resolve_access_token_refreshes_when_expired() {
         .unwrap();
 
     // resolve_access_token should detect expiry and refresh
-    let http_client = reqwest::Client::new();
     let new_token = overslash_api::services::oauth::resolve_access_token(
         &scope,
-        &http_client,
         &enc_key,
         &conn,
         "fake_client_id",
@@ -2383,14 +2381,8 @@ async fn test_oauth_resolve_access_token_returns_valid_without_refresh() {
         .unwrap();
 
     // Should return the existing token without refreshing
-    let http_client = reqwest::Client::new();
     let token = overslash_api::services::oauth::resolve_access_token(
-        &scope,
-        &http_client,
-        &enc_key,
-        &conn,
-        "unused",
-        "unused",
+        &scope, &enc_key, &conn, "unused", "unused",
     )
     .await
     .unwrap();

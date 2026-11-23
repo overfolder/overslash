@@ -181,12 +181,18 @@ pub async fn resolve_ledger_params(
 /// authenticated headers. Failures are silently skipped (the caller falls
 /// back to raw param values).
 ///
+/// The host is the instance's or template's base URL, which a template author
+/// controls, so every GET goes through [`outbound_tls::guarded_client`]: the
+/// SSRF guard pins it to a validated address and nothing follows a redirect.
+/// A refused target is just another miss — the raw argument is shown.
+///
+/// [`outbound_tls::guarded_client`]: crate::services::outbound_tls::guarded_client
+///
 /// Resolver URLs honor `service_base_overrides` the same way the executor
 /// does — an e2e stack that rewrites a service's host to a local fake needs
 /// the resolver GETs to land there too, not on the real provider.
 #[allow(clippy::too_many_arguments)]
 pub async fn resolve_display_params(
-    client: &reqwest::Client,
     config: &crate::config::Config,
     base_url: &str,
     headers: &HashMap<String, String>,
@@ -226,7 +232,6 @@ pub async fn resolve_display_params(
     let futures: Vec<_> = resolvers
         .into_iter()
         .map(|(name, resolver, get)| {
-            let client = client.clone();
             let headers = headers.clone();
             // Shared with the key builder so the cache key and the outgoing
             // request cannot disagree about what was asked.
@@ -234,6 +239,36 @@ pub async fn resolve_display_params(
 
             async move {
                 let fetched = async {
+                    // The guard's host lookup is a blocking `to_socket_addrs`
+                    // with no deadline of its own, and this runs while an
+                    // approval is minted — so it shares the request's budget.
+                    let guarded = tokio::time::timeout(
+                        RESOLVE_TIMEOUT,
+                        crate::services::outbound_tls::guarded_client(&url),
+                    )
+                    .await;
+                    let client = match guarded {
+                        Ok(Ok(client)) => client,
+                        Ok(Err(e)) => {
+                            // The guard's message names the host, never the
+                            // URL, so the caller's argument stays out of it.
+                            tracing::warn!(
+                                get = %get,
+                                param = %name,
+                                error = %e,
+                                "display-param resolver target refused; using the raw argument"
+                            );
+                            return None;
+                        }
+                        Err(_) => {
+                            tracing::warn!(
+                                get = %get,
+                                param = %name,
+                                "display-param resolver target did not resolve in time; using the raw argument"
+                            );
+                            return None;
+                        }
+                    };
                     let mut req = client.get(&url).timeout(RESOLVE_TIMEOUT);
                     for (key, value) in &headers {
                         req = req.header(key, value);

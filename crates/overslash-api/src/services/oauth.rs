@@ -102,6 +102,19 @@ pub fn build_auth_url(
     format!("{}?{}", provider.authorization_endpoint, query)
 }
 
+/// A client for one call to a provider endpoint.
+///
+/// Provider endpoints are not all ours to vouch for: a custom OIDC provider's
+/// token and userinfo URLs come out of the discovery document an org admin's
+/// issuer serves. So every call goes through the SSRF guard, pinned and with
+/// redirects off — a provider is checked like any other tenant-pointed target,
+/// not trusted because it sits in the `oauth_providers` table.
+async fn provider_client(url: &str) -> Result<reqwest::Client, OAuthError> {
+    crate::services::outbound_tls::guarded_client(url)
+        .await
+        .map_err(|e| OAuthError::HttpError(format!("provider endpoint refused: {e}")))
+}
+
 /// Build a token request with the correct auth method for the provider.
 /// `client_secret_basic` sends credentials as HTTP Basic Auth header.
 /// `client_secret_post` (default) sends them as form body fields.
@@ -134,7 +147,6 @@ fn token_request(
 /// When the provider uses PKCE, `code_verifier` must be the verifier that was
 /// generated alongside the code challenge during `build_auth_url`.
 pub async fn exchange_code(
-    http_client: &reqwest::Client,
     provider: &oauth_provider::OAuthProviderRow,
     client_id: &str,
     client_secret: &str,
@@ -151,7 +163,7 @@ pub async fn exchange_code(
         form.push(("code_verifier", verifier));
     }
     let resp = token_request(
-        http_client,
+        &provider_client(&provider.token_endpoint).await?,
         provider,
         &provider.token_endpoint,
         client_id,
@@ -187,7 +199,6 @@ fn refresh_endpoint(provider: &oauth_provider::OAuthProviderRow) -> &str {
 
 /// Refresh an access token using a refresh token.
 pub async fn refresh_token(
-    http_client: &reqwest::Client,
     provider: &oauth_provider::OAuthProviderRow,
     client_id: &str,
     client_secret: &str,
@@ -201,7 +212,7 @@ pub async fn refresh_token(
         ("refresh_token", refresh_token),
     ];
     let resp = token_request(
-        http_client,
+        &provider_client(refresh_endpoint(provider)).await?,
         provider,
         refresh_endpoint(provider),
         client_id,
@@ -231,7 +242,6 @@ pub async fn refresh_token(
 /// a cross-tenant write.)
 pub async fn resolve_access_token(
     scope: &OrgScope,
-    http_client: &reqwest::Client,
     enc_key: &crypto::Keyring,
     conn: &connection::ConnectionRow,
     client_id: &str,
@@ -281,14 +291,7 @@ pub async fn resolve_access_token(
         .map_err(|e| OAuthError::DbError(e.to_string()))?
         .ok_or_else(|| OAuthError::ProviderNotFound(conn.provider_key.clone()))?;
 
-    let tokens = refresh_token(
-        http_client,
-        &provider,
-        client_id,
-        client_secret,
-        &refresh_tok,
-    )
-    .await?;
+    let tokens = refresh_token(&provider, client_id, client_secret, &refresh_tok).await?;
 
     // Encrypt and store new tokens
     let new_access = crypto::encrypt(enc_key, tokens.access_token.as_bytes())
@@ -477,7 +480,6 @@ pub struct AccountProfile {
 ///   a stable label.
 /// - Slack (users.identity): `{"user": {"email": "...", "image_192": "…"}}`
 pub async fn fetch_account_profile(
-    http_client: &reqwest::Client,
     provider: &oauth_provider::OAuthProviderRow,
     access_token: &str,
 ) -> Result<AccountProfile, OAuthError> {
@@ -485,7 +487,8 @@ pub async fn fetch_account_profile(
         return Ok(AccountProfile::default());
     };
 
-    let resp = http_client
+    let resp = provider_client(url)
+        .await?
         .get(url)
         .bearer_auth(access_token)
         .header("Accept", "application/json")

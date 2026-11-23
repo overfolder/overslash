@@ -201,7 +201,6 @@ async fn prove_and_connect(
     let (client_id, client_secret) = resolve_auth_credentials(state, ext, "google", None).await?;
     let redirect_uri = format!("{}/auth/callback/google", state.config.public_url);
     let tokens = match oauth::exchange_code(
-        &state.http_client,
         &provider,
         &client_id,
         &client_secret,
@@ -219,16 +218,7 @@ async fn prove_and_connect(
     };
     // `/userinfo`, fetched directly with the access token we were just
     // issued — the source of `hd` and `email_verified`.
-    let info = match fetch_userinfo(
-        &state.http_client,
-        &provider,
-        "google",
-        &tokens.access_token,
-        None,
-        None,
-    )
-    .await
-    {
+    let info = match fetch_userinfo(&provider, "google", &tokens.access_token, None, None).await {
         Ok(info) => info,
         // Google-side trouble, like a failed exchange: the admin gets sent
         // back with a reason to retry, not a bare error page.

@@ -1,6 +1,7 @@
 //! IdP credential resolution and provider userinfo fetching.
 
 use super::*;
+use crate::services::outbound_tls::guarded_client;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -88,7 +89,6 @@ pub(super) fn scopes_for_provider(provider_key: &str) -> Vec<String> {
 
 /// Fetch user info from the IdP, normalizing across providers.
 pub(super) async fn fetch_userinfo(
-    http_client: &reqwest::Client,
     provider: &oauth_provider::OAuthProviderRow,
     provider_key: &str,
     access_token: &str,
@@ -96,8 +96,8 @@ pub(super) async fn fetch_userinfo(
     expected_nonce: Option<&str>,
 ) -> Result<NormalizedUserInfo, AppError> {
     let mut info = match provider_key {
-        "github" => fetch_github_userinfo(http_client, provider_key, access_token).await?,
-        _ => fetch_oidc_userinfo(http_client, provider, provider_key, access_token).await?,
+        "github" => fetch_github_userinfo(provider_key, access_token).await?,
+        _ => fetch_oidc_userinfo(provider, provider_key, access_token).await?,
     };
 
     // Merge in the ID token's claims. Needed because release policy differs by
@@ -168,13 +168,17 @@ fn base64_url_decode(segment: &str) -> Result<Vec<u8>, base64::DecodeError> {
 
 /// Fetch user info from GitHub's API (non-OIDC).
 async fn fetch_github_userinfo(
-    http_client: &reqwest::Client,
     provider_key: &str,
     access_token: &str,
 ) -> Result<NormalizedUserInfo, AppError> {
     // GET /user for profile
-    let user: GitHubUser = http_client
-        .get("https://api.github.com/user")
+    // Fixed public URLs, but through the guard all the same: one rule for
+    // every IdP call is easier to keep than a list of which ones are trusted.
+    const USER_URL: &str = "https://api.github.com/user";
+    const EMAILS_URL: &str = "https://api.github.com/user/emails";
+    let user: GitHubUser = guarded_client(USER_URL)
+        .await?
+        .get(USER_URL)
         .bearer_auth(access_token)
         .header("Accept", "application/vnd.github+json")
         .send()
@@ -184,8 +188,9 @@ async fn fetch_github_userinfo(
         .map_err(|e| AppError::Internal(format!("github user fetch failed: {e}")))?;
 
     // GET /user/emails for primary verified email
-    let emails: Vec<GitHubEmail> = http_client
-        .get("https://api.github.com/user/emails")
+    let emails: Vec<GitHubEmail> = guarded_client(EMAILS_URL)
+        .await?
+        .get(EMAILS_URL)
         .bearer_auth(access_token)
         .header("Accept", "application/vnd.github+json")
         .send()
@@ -214,7 +219,6 @@ async fn fetch_github_userinfo(
 
 /// Fetch user info from a standard OIDC userinfo endpoint.
 async fn fetch_oidc_userinfo(
-    http_client: &reqwest::Client,
     provider: &oauth_provider::OAuthProviderRow,
     provider_key: &str,
     access_token: &str,
@@ -223,7 +227,11 @@ async fn fetch_oidc_userinfo(
         AppError::Internal(format!("{provider_key} provider missing userinfo endpoint"))
     })?;
 
-    let info: OidcUserInfo = http_client
+    // `userinfo_url` came out of the discovery document an org admin's issuer
+    // served — checked when it was stored, and pinned again here, because what
+    // a hostname resolves to can change after the check.
+    let info: OidcUserInfo = guarded_client(userinfo_url)
+        .await?
         .get(userinfo_url)
         .bearer_auth(access_token)
         .send()
