@@ -2226,20 +2226,14 @@ async fn dialog_allow_after_dashboard_allow_still_runs_the_call() {
 async fn dialog_allow_after_execution_ran_returns_it_without_rerunning() {
     use std::sync::atomic::Ordering;
     let fx = bootstrap_mcp(true).await;
-    let (approval_id, agent_key, hits) = gated_counting_approval(&fx).await;
+    let (approval_id, _, hits) = gated_counting_approval(&fx).await;
     let elicit_id = open_dialog(&fx, approval_id).await;
 
     resolve_elsewhere(&fx, approval_id, "allow").await;
-    let call = fx
-        .client
-        .post(format!("{}/v1/approvals/{approval_id}/call", fx.base))
-        .header("Authorization", format!("Bearer {agent_key}"))
-        .json(&json!({}))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(call.status(), 200, "{}", call.text().await.unwrap());
+    run_as_resolver(&fx, approval_id).await;
     assert_eq!(hits.load(Ordering::SeqCst), 1);
+    // A resolver-triggered run leaves the result unread for the agent.
+    assert!(!result_viewed(&fx, approval_id).await);
 
     answer_dialog(&fx, &elicit_id, "allow").await;
 
@@ -2258,6 +2252,64 @@ async fn dialog_allow_after_execution_ran_returns_it_without_rerunning() {
         "final_response: {final_response}"
     );
     assert_eq!(hits.load(Ordering::SeqCst), 1, "action ran twice");
+    // The result reached the agent in the tool result, so it is read.
+    assert!(result_viewed(&fx, approval_id).await);
+}
+
+/// `POST /call` as the resolver (the dashboard's "run" button), not the agent.
+async fn run_as_resolver(fx: &McpFixture, approval_id: Uuid) {
+    let call = fx
+        .client
+        .post(format!("{}/v1/approvals/{approval_id}/call", fx.base))
+        .header("Authorization", format!("Bearer {}", fx.org_admin_key))
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(call.status(), 200, "{}", call.text().await.unwrap());
+}
+
+async fn result_viewed(fx: &McpFixture, approval_id: Uuid) -> bool {
+    sqlx::query("SELECT result_viewed_at IS NOT NULL AS v FROM executions WHERE approval_id = $1")
+        .bind(approval_id)
+        .fetch_one(&fx.pool)
+        .await
+        .unwrap()
+        .get("v")
+}
+
+/// An execution that already ran and *failed* is an error to the model, not
+/// a completed tool call — whoever ran it.
+#[tokio::test]
+async fn dialog_allow_after_failed_execution_fails_the_dialog() {
+    let fx = bootstrap_mcp(true).await;
+    let (approval_id, _, _) = gated_counting_approval(&fx).await;
+    let elicit_id = open_dialog(&fx, approval_id).await;
+
+    resolve_elsewhere(&fx, approval_id, "allow").await;
+    run_as_resolver(&fx, approval_id).await;
+    sqlx::query("UPDATE executions SET status = 'failed', error = 'boom' WHERE approval_id = $1")
+        .bind(approval_id)
+        .execute(&fx.pool)
+        .await
+        .unwrap();
+
+    answer_dialog(&fx, &elicit_id, "allow").await;
+
+    let row = db::mcp_elicitation::get(&fx.pool, &elicit_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        row.status,
+        db::mcp_elicitation::STATUS_FAILED,
+        "row: {row:?}"
+    );
+    let final_response = row.final_response.expect("final_response set");
+    assert_eq!(
+        final_response["execution"]["status"], "failed",
+        "final_response: {final_response}"
+    );
 }
 
 /// Denied on the dashboard, then "Allow" in the dialog: the dialog fails and

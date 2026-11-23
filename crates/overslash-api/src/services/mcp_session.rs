@@ -569,10 +569,36 @@ async fn drive_call(
             .as_ref()
             .is_some_and(|e| e.expires_at > time::OffsetDateTime::now_utc());
         match status {
-            Some("executed" | "failed") => {
+            Some(done @ ("executed" | "failed")) => {
+                // This result rides back to the requesting agent in the tool
+                // result, so stamp it read — as `/call` and
+                // `GET …/execution` do for the requester. Otherwise it would
+                // linger as an unread `result_unread` event. Stamped before
+                // the read so the embedded execution reflects it.
+                if let Some(e) = exec.as_ref()
+                    && let Err(err) = scope.mark_execution_viewed(e.id).await
+                {
+                    tracing::warn!(elicit_id, "mark execution viewed failed: {err}");
+                }
                 let approval = fetch_approval(state, &target).await?;
                 return match approval {
-                    Some(body) => complete_with(state, ext, elicit_id, body, note).await,
+                    Some(body) if done == "executed" => {
+                        complete_with(state, ext, elicit_id, body, note).await
+                    }
+                    // A failed run is an error to the model whoever ran it —
+                    // including a claim `/call` itself took and then refused
+                    // (e.g. a legacy approval with nothing to replay), whose
+                    // reason is in `call_body`.
+                    Some(mut body) => {
+                        if let Some(obj) = body.as_object_mut() {
+                            obj.insert("call_error".into(), call_body);
+                            if let Some(note) = note {
+                                obj.insert("note".into(), json!(note));
+                            }
+                        }
+                        repo::fail(state.db(ext), elicit_id, &body).await?;
+                        Ok(())
+                    }
                     None => {
                         let err = json!({
                             "error": "execution already ran, but its result could not be read",
