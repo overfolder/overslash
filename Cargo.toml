@@ -40,7 +40,6 @@ ipnet = "2"
 subtle = "2"
 metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.18", default-features = false }
-chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 regex = "1"
 async-trait = "0.1"
 

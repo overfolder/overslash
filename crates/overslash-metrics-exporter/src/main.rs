@@ -45,7 +45,8 @@ async fn main() -> Result<()> {
         anyhow::bail!("GCP_PROJECT_ID is required unless EXPORTER_DRY_RUN=1");
     }
 
-    let now = chrono::Utc::now().to_rfc3339();
+    let now =
+        time::OffsetDateTime::now_utc().format(&time::format_description::well_known::Rfc3339)?;
     let resource = business_resource(project_id.as_deref().unwrap_or("dry-run"), &location);
 
     // The business metrics need Postgres; the rotation sweep does not. Dev's
@@ -172,7 +173,7 @@ async fn run_secret_rotation_sweep(
     project_id: &str,
     client: &reqwest::Client,
 ) -> Option<secret_rotation::Report> {
-    let now = chrono::Utc::now();
+    let now = time::OffsetDateTime::now_utc();
     if !secret_rotation::is_due(now) {
         return None;
     }
