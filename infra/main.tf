@@ -56,6 +56,13 @@ resource "google_project_service" "image_scanning" {
   disable_on_destroy = false
 }
 
+# Kept out of `apis` for the same reason. Only the rotation topic needs it, so
+# module.secret_manager takes it as a variable and not through depends_on.
+resource "google_project_service" "pubsub" {
+  service            = "pubsub.googleapis.com"
+  disable_on_destroy = false
+}
+
 # --- Networking (only when using private VPC) ---
 module "networking" {
   count = var.use_private_vpc ? 1 : 0
@@ -147,6 +154,9 @@ module "secret_manager" {
 
   enable_google_directory_sync = var.enable_google_directory_sync
 
+  pagerduty_enabled = var.pagerduty_enabled
+  pubsub_api        = google_project_service.pubsub.service
+
   depends_on = [google_project_service.apis]
 }
 
@@ -215,6 +225,8 @@ module "bi" {
   bi_viewers          = var.bi_viewers
   publish_views       = var.bi_publish_views
 
+  rotation = module.secret_manager.rotation["database"]
+
   depends_on = [google_project_service.apis]
 }
 
@@ -242,6 +254,9 @@ module "cloud_run" {
   # Secret references
   db_password_secret_id               = module.secret_manager.db_password_secret_id
   encryption_key_secret_id            = module.secret_manager.encryption_key_secret_id
+  encryption_key_version              = var.encryption_key_version
+  encryption_key_active_id            = var.encryption_key_active_id
+  encryption_key_previous_version     = var.encryption_key_previous_version
   signing_key_secret_id               = module.secret_manager.signing_key_secret_id
   oauth_client_id_secret_id           = module.secret_manager.oauth_client_id_secret_id
   oauth_client_secret_secret_id       = module.secret_manager.oauth_client_secret_secret_id
@@ -352,6 +367,10 @@ module "monitoring" {
   upstream_error_alert_enabled = var.upstream_error_alert_enabled
   api_latency_alert_enabled    = var.api_latency_alert_enabled
   integrity_alert_enabled      = var.integrity_alert_enabled
+
+  secret_rotation_alert_enabled   = var.secret_rotation_alert_enabled
+  secret_rotation_subscription_id = module.secret_manager.rotation_subscription_id
+
   # The host the uptime check probes. Prod leaves `domain` empty (the GCLB
   # serves `api_host_suffix` and its wildcard instead of a Cloud Run domain
   # mapping), which used to leave this empty too and silently drop both the
@@ -455,6 +474,9 @@ module "cloud_build" {
   cloud_build_sa_id = module.iam.cloud_build_sa_id
   cloud_run_service = module.cloud_run.service_name
 
+  # Night shutdown pauses the DB; the deploy wakes it first.
+  wake_sql_instance = var.enable_infra_scheduler ? module.cloud_sql.instance_name : ""
+
   github_owner  = var.github_owner
   github_repo   = var.github_repo
   github_branch = var.github_branch
@@ -543,7 +565,8 @@ module "infra_scheduler" {
   stop_cron               = var.infra_scheduler_stop_cron
   start_cron              = var.infra_scheduler_start_cron
 
-  scheduler_sa_email = module.iam.scheduler_sa_email
+  scheduler_sa_email   = module.iam.scheduler_sa_email
+  cloud_build_sa_email = module.iam.cloud_build_sa_email
 
   depends_on = [google_project_service.apis]
 }

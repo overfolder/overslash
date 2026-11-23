@@ -5,6 +5,9 @@
 	// elements. `bot`, `blocks`, `user` and `group` are the design's own
 	// drawings; the rest follow the matching Lucide icon.
 	const ICONS = {
+		zap: [
+			'M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z'
+		],
 		bot: [
 			'M12 8V4H8',
 			'M6 8h12a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2z',

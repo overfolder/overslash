@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import { pageTitleFromPath } from './nav-items';
+	import { isActive, pageTitleFromPath } from './nav-items';
 	import NotificationBell from './NotificationBell.svelte';
 	import ThemeToggle from './ThemeToggle.svelte';
 	import ProfileAvatar from './ProfileAvatar.svelte';
@@ -16,6 +16,7 @@
 	} = $props();
 
 	const title = $derived(pageTitleFromPath(page.url.pathname));
+	const onInstance = $derived(isActive(page.url.pathname, '/instance'));
 </script>
 
 <header class="topbar">
@@ -42,7 +43,13 @@
 					showName
 				/>
 				{#if isInstanceAdmin}
-					<span class="instance-badge" title="Instance admin">⚡ Instance</span>
+					<a
+						class="instance-badge"
+						class:active={onInstance}
+						href="/instance"
+						title="Instance admin: open the Instance panel"
+						aria-current={onInstance ? 'page' : undefined}>⚡ Instance</a
+					>
 				{/if}
 			</div>
 		{/if}
@@ -97,10 +104,20 @@
 		letter-spacing: 0.04em;
 		padding: 2px 6px;
 		border-radius: 999px;
+		border: 1px solid transparent;
 		background: var(--color-neutral-100, var(--color-border));
 		color: var(--color-text-muted);
 		white-space: nowrap;
 		flex-shrink: 0;
+		text-decoration: none;
+	}
+	.instance-badge:hover {
+		color: var(--color-text);
+		border-color: var(--color-border);
+	}
+	.instance-badge.active {
+		background: var(--color-primary-bg);
+		color: var(--color-primary);
 	}
 	.hamburger {
 		display: none;

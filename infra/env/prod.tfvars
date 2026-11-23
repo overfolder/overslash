@@ -170,6 +170,12 @@ upstream_error_alert_enabled = true
 # Runbook: docs/runbooks/data-integrity.md.
 integrity_alert_enabled = true
 
+# `[P2] Secret Rotation Overdue` / `Due` (CASA 6.7.1). Same gate: flip to true
+# once the exporter's hourly sweep has written
+# `custom.googleapis.com/overslash/business/secret_rotation_overdue_days`.
+# Runbook: docs/runbooks/secret-rotation.md.
+secret_rotation_alert_enabled = false
+
 # Instance-wide services OAuth clients, one GSM secret pair per provider
 # (`<prefix>-<provider>-services-client-{id,secret}`). Populate a new
 # provider's secrets before the apply that injects them — see infra/README.md.
@@ -207,3 +213,10 @@ audit_log_bucket_locked  = true
 
 enable_google_directory_sync = true
 
+# --- Vault master key ---------------------------------------------------------
+# Changed only by the rotation procedure in
+# docs/compliance/casa/secrets-access-policy.md, never on its own. These three
+# move together, and the active id never goes down.
+encryption_key_version          = "1"
+encryption_key_active_id        = 1
+encryption_key_previous_version = ""

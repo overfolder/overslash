@@ -1,19 +1,22 @@
-//! Langfuse's self-hosted read surface.
+//! Langfuse's v3 (legacy) read surface.
 //!
-//! Self-hosted Langfuse (every v3.x release) ships the v4 read handlers but
-//! gates them: `GET /api/public/v2/observations` and `/v2/metrics` answer 501
-//! or 404, and `/v3/scores` 404s on older releases. What such an instance
-//! actually serves is the older surface — `/traces`, `/observations`,
-//! `/sessions`, `/metrics`, `/v2/scores`, dataset runs — which Langfuse Cloud
-//! sunsets on 2026-11-16. `services/langfuse.yaml` models both; this file
-//! covers the self-hosted half.
+//! Langfuse has two read surfaces, split by API generation rather than by who
+//! hosts the server. Langfuse Cloud and self-hosted v4 (default write mode
+//! `events_only`) serve v2 observations, v2 metrics, v3 scores and
+//! experiments, and answer 404 on every legacy read. Self-hosted v3.x — or a
+//! v4 server pinned to `LANGFUSE_MIGRATION_V4_WRITE_MODE=legacy` — gates those
+//! v4 reads (501 or 404) and serves the older surface: `/traces`,
+//! `/observations`, `/sessions`, `/metrics`, `/v2/scores`, dataset runs.
+//! `services/langfuse.yaml` models both; this file covers the legacy half.
 //!
-//! Two things are worth pinning:
+//! Three things are worth pinning:
 //!
-//!   1. every action on an old path is a read and opens with the self-hosted
-//!      marker, so an agent on Cloud is told to go elsewhere and nobody adds a
-//!      write (ingestion, say) to a surface that disappears on a date;
-//!   2. the page-number lists walk, and `list_traces` sends its narrow
+//!   1. every action on an old path is a read, ends in `_legacy` and opens
+//!      with the legacy marker, so an agent on v4 is told to go elsewhere and
+//!      nobody adds a write (ingestion, say) to a surface v4 has removed;
+//!   2. the two sides name each other, in both directions, and no v4 action
+//!      calls itself Cloud-only any more — self-hosted v4 serves it too;
+//!   3. the page-number lists walk, and `list_traces_legacy` sends its narrow
 //!      `fields` default — Langfuse returns every field group when it is
 //!      absent, whole prompts and completions included.
 
@@ -26,12 +29,16 @@ use serde_json::{Value, json};
 use crate::common;
 use crate::langfuse::{call, expected_basic, setup, shipped_registry, url_param};
 
-/// The phrase every self-hosted action's description opens with. Agents read
-/// it; the test below keys on it.
-const MARKER: &str = "Self-hosted Langfuse read API.";
+/// The phrase every legacy action's description opens with. Agents read it;
+/// the test below keys on it.
+const MARKER: &str = "Langfuse v3 (legacy) read API.";
 
-/// Paths only the self-hosted surface serves. Langfuse Cloud sunsets every one
-/// of them on 2026-11-16.
+/// The suffix every legacy action key carries, so the key an agent sees in
+/// search already says which surface it reaches.
+const SUFFIX: &str = "_legacy";
+
+/// Paths only the legacy surface serves. Langfuse Cloud removed every read on
+/// them on 2026-11-16, and self-hosted v4 in `events_only` mode 404s them.
 const OLD_PATHS: &[&str] = &[
     "/api/public/traces",
     "/api/public/traces/{traceId}",
@@ -52,43 +59,54 @@ const OLD_PATHS: &[&str] = &[
 // Shape
 // ============================================================================
 
-/// The old surface is read-only and marked, and the marker means exactly that.
+/// The old surface is read-only, marked and suffixed, and the marker and the
+/// suffix mean exactly that.
 ///
-/// This is what the template's original "no sunset path" guard became once
-/// self-hosted support needed those paths back. The date still matters: an
-/// unmarked action on one of them would read to an agent on Cloud as a normal
-/// endpoint until 2026-11-16 turns it into a 404 nobody is looking at.
+/// An unmarked action on one of these paths would read to an agent on v4 —
+/// Cloud or self-hosted — as a normal endpoint, and its first call would be a
+/// 404 naming `events_only`.
 #[test]
-fn every_action_on_an_old_path_is_a_marked_self_hosted_read() {
+fn every_action_on_an_old_path_is_a_marked_legacy_read() {
     let reg = shipped_registry();
     let svc = reg.get("langfuse").unwrap();
 
     let mut marked: Vec<&str> = Vec::new();
     for (key, action) in &svc.actions {
         let on_old_path = OLD_PATHS.contains(&action.path.as_str());
-        // `DELETE /traces` and `/traces/{traceId}` are not part of the sunset:
-        // Cloud v4 still serves them, so they stay ordinary actions.
+        // `DELETE /traces` and `/traces/{traceId}` are not legacy: the v4
+        // spec still serves them, so they stay ordinary actions.
         let surviving_delete =
             action.method == "DELETE" && action.path.starts_with("/api/public/traces");
         let is_marked = action.description.starts_with(MARKER);
+        let is_suffixed = key.ends_with(SUFFIX);
 
         if on_old_path && !surviving_delete {
             assert_eq!(
                 action.method, "GET",
-                "{key}: the self-hosted surface is read-only here ({} {})",
+                "{key}: the legacy surface is read-only here ({} {})",
                 action.method, action.path
             );
             assert!(
                 is_marked,
-                "{key} reads {}, which Langfuse Cloud sunsets on 2026-11-16 — \
+                "{key} reads {}, which Langfuse v4 answers with a 404 — \
                  its description must open with {MARKER:?}",
+                action.path
+            );
+            assert!(
+                is_suffixed,
+                "{key} reads legacy path {}; its key must end in {SUFFIX:?}",
                 action.path
             );
         } else {
             assert!(
                 !is_marked,
-                "{key} is marked self-hosted but {} is a Cloud path",
+                "{key} is marked legacy but {} is a v4 path",
                 action.path
+            );
+            assert!(
+                !is_suffixed,
+                "{key} ends in {SUFFIX:?} but {} {} is a v4 endpoint",
+                action.method, action.path
             );
         }
         if is_marked {
@@ -100,59 +118,109 @@ fn every_action_on_an_old_path_is_a_marked_self_hosted_read() {
     assert_eq!(
         marked,
         [
-            "get_dataset_run",
-            "get_metrics_self_hosted",
-            "get_observation",
-            "get_score",
-            "get_session",
-            "get_trace",
-            "list_dataset_run_items",
-            "list_dataset_runs",
-            "list_observations_self_hosted",
-            "list_scores_self_hosted",
-            "list_sessions",
-            "list_traces",
+            "get_dataset_run_legacy",
+            "get_metrics_legacy",
+            "get_observation_legacy",
+            "get_score_legacy",
+            "get_session_legacy",
+            "get_trace_legacy",
+            "list_dataset_run_items_legacy",
+            "list_dataset_runs_legacy",
+            "list_observations_legacy",
+            "list_scores_legacy",
+            "list_sessions_legacy",
+            "list_traces_legacy",
         ]
     );
 }
 
-/// Each Cloud action an agent will try first on a self-hosted instance names
-/// its way out. Without the pointer the 501 is a dead end.
+/// The two sides point at each other. A v4 action an agent tries first on a
+/// v3 server names its way out (without it the 501 is a dead end), and a
+/// legacy action names the v4 action to use instead (without it the
+/// `events_only` 404 is one).
 #[test]
-fn every_cloud_read_names_its_self_hosted_counterpart() {
+fn v4_and_legacy_reads_name_each_other() {
     let reg = shipped_registry();
     let svc = reg.get("langfuse").unwrap();
 
-    for (cloud, self_hosted) in [
-        ("list_observations", "list_traces"),
-        ("list_observations", "list_observations_self_hosted"),
-        ("get_metrics", "get_metrics_self_hosted"),
-        ("list_scores", "list_scores_self_hosted"),
-        ("list_experiments", "list_dataset_runs"),
-        ("list_experiment_items", "list_dataset_run_items"),
+    for (v4, legacy) in [
+        ("list_observations", "list_traces_legacy"),
+        ("list_observations", "list_observations_legacy"),
+        ("get_metrics", "get_metrics_legacy"),
+        ("list_scores", "list_scores_legacy"),
+        ("list_experiments", "list_dataset_runs_legacy"),
+        ("list_experiment_items", "list_dataset_run_items_legacy"),
     ] {
         assert!(
-            svc.actions[cloud].description.contains(self_hosted),
-            "{cloud} must point a self-hosted caller at {self_hosted}"
+            svc.actions[v4].description.contains(legacy),
+            "{v4} must point a v3 caller at {legacy}"
         );
     }
+
+    for (legacy, v4) in [
+        ("list_traces_legacy", "list_observations"),
+        ("get_trace_legacy", "list_observations"),
+        ("list_sessions_legacy", "list_observations"),
+        ("get_session_legacy", "list_observations"),
+        ("list_observations_legacy", "list_observations"),
+        ("get_observation_legacy", "list_observations"),
+        ("list_scores_legacy", "list_scores"),
+        ("get_score_legacy", "list_scores"),
+        ("get_metrics_legacy", "get_metrics"),
+        ("list_dataset_runs_legacy", "list_experiments"),
+        ("get_dataset_run_legacy", "list_experiments"),
+        ("list_dataset_run_items_legacy", "list_experiment_items"),
+    ] {
+        // Word-bounded, so `list_observations_legacy` does not count as
+        // naming `list_observations`.
+        let desc = &svc.actions[legacy].description;
+        let names_it = desc.match_indices(v4).any(|(i, _)| {
+            !desc[i + v4.len()..].starts_with(|c: char| c == '_' || c.is_alphanumeric())
+        });
+        assert!(names_it, "{legacy} must point a v4 caller at {v4}");
+    }
+}
+
+/// The v4 surface is not Cloud-only: self-hosted v4 serves it too, and is the
+/// default for every new self-hosted install. Telling an agent otherwise sends
+/// it to the legacy reads, which 404 there.
+#[test]
+fn no_v4_action_calls_itself_cloud_only() {
+    let reg = shipped_registry();
+    let svc = reg.get("langfuse").unwrap();
+
+    for (key, action) in &svc.actions {
+        assert!(
+            !action.description.contains("Cloud-only"),
+            "{key}: v4 endpoints are served by self-hosted v4 as well"
+        );
+    }
+    let service_desc = svc.description.as_deref().unwrap_or_default();
+    assert!(
+        service_desc.contains(MARKER.trim_end_matches('.')),
+        "the service description must name the legacy marker"
+    );
+    assert!(
+        !service_desc.contains("Self-hosted Langfuse read API"),
+        "the service description still routes self-hosted callers to the legacy reads"
+    );
 }
 
 /// Langfuse's old lists all answer `{data, meta: {page, limit, totalItems,
 /// totalPages}}`, and `page` must declare `default: 1` or validation cannot
 /// tell whether pages count from zero.
 #[test]
-fn every_self_hosted_list_pages_by_number() {
+fn every_legacy_list_pages_by_number() {
     let reg = shipped_registry();
     let svc = reg.get("langfuse").unwrap();
 
     for key in [
-        "list_traces",
-        "list_sessions",
-        "list_observations_self_hosted",
-        "list_scores_self_hosted",
-        "list_dataset_runs",
-        "list_dataset_run_items",
+        "list_traces_legacy",
+        "list_sessions_legacy",
+        "list_observations_legacy",
+        "list_scores_legacy",
+        "list_dataset_runs_legacy",
+        "list_dataset_run_items_legacy",
     ] {
         let p = svc.actions[key]
             .pagination
@@ -168,7 +236,7 @@ fn every_self_hosted_list_pages_by_number() {
 
     // The io-bearing lists stay below Langfuse's own 50, for the same reason
     // list_observations does.
-    for key in ["list_traces", "list_observations_self_hosted"] {
+    for key in ["list_traces_legacy", "list_observations_legacy"] {
         let size = svc.actions[key]
             .pagination
             .as_ref()
@@ -181,7 +249,7 @@ fn every_self_hosted_list_pages_by_number() {
 }
 
 // ============================================================================
-// Mock self-hosted Langfuse
+// Mock Langfuse v3
 // ============================================================================
 
 #[derive(Clone, Debug)]
@@ -193,9 +261,9 @@ struct Seen {
 
 type SeenLog = Arc<Mutex<Vec<Seen>>>;
 
-/// A self-hosted Langfuse: the old surface answers, and the Cloud-only v2
-/// endpoints refuse exactly as a real v3 instance does.
-async fn start_mock_self_hosted() -> (SocketAddr, SeenLog) {
+/// A self-hosted Langfuse v3: the old surface answers, and the v2 endpoints
+/// refuse exactly as a real v3 instance does.
+async fn start_mock_legacy() -> (SocketAddr, SeenLog) {
     let seen: SeenLog = Arc::new(Mutex::new(Vec::new()));
 
     async fn handler(
@@ -277,10 +345,10 @@ fn last(seen: &SeenLog) -> Seen {
 #[tokio::test]
 async fn traces_walk_the_page_number_with_narrow_fields() {
     let pool = common::test_pool().await;
-    let (mock, seen) = start_mock_self_hosted().await;
+    let (mock, seen) = start_mock_legacy().await;
     let (base, client, agent_key, _admin) = setup(pool, mock, "read").await;
 
-    let page_one = call(&base, &client, &agent_key, "list_traces", json!({})).await;
+    let page_one = call(&base, &client, &agent_key, "list_traces_legacy", json!({})).await;
     assert_eq!(page_one["status"], json!("called"), "{page_one}");
 
     let req = last(&seen);
@@ -309,7 +377,7 @@ async fn traces_walk_the_page_number_with_narrow_fields() {
         &base,
         &client,
         &agent_key,
-        "list_traces",
+        "list_traces_legacy",
         json!({ "page": 2 }),
     )
     .await;
@@ -320,15 +388,15 @@ async fn traces_walk_the_page_number_with_narrow_fields() {
     );
 }
 
-/// The reads a self-hosted user hit 501/404 on now land on paths the instance
+/// The reads a v3 user hit 501/404 on via the v4 actions land on paths the instance
 /// serves, with the key pair attached.
 #[tokio::test]
-async fn observations_and_scores_reach_the_paths_self_hosted_serves() {
+async fn observations_and_scores_reach_the_paths_legacy_serves() {
     let pool = common::test_pool().await;
-    let (mock, seen) = start_mock_self_hosted().await;
+    let (mock, seen) = start_mock_legacy().await;
     let (base, client, agent_key, _admin) = setup(pool, mock, "read").await;
 
-    // The Cloud action against this instance fails the way the user saw.
+    // The v4 action against this instance fails the way the user saw.
     // Asserted on the upstream status rather than the envelope, which may
     // report the call as made either way.
     let cloud = call(&base, &client, &agent_key, "list_observations", json!({})).await;
@@ -339,12 +407,12 @@ async fn observations_and_scores_reach_the_paths_self_hosted_serves() {
 
     for (action, params, path) in [
         (
-            "list_observations_self_hosted",
+            "list_observations_legacy",
             json!({ "trace_id": "tr-1" }),
             "/api/public/observations",
         ),
         (
-            "list_scores_self_hosted",
+            "list_scores_legacy",
             json!({ "name": "helpfulness" }),
             "/api/public/v2/scores",
         ),
@@ -369,9 +437,9 @@ async fn observations_and_scores_reach_the_paths_self_hosted_serves() {
 /// The v1 metrics query rides the same JSON-in-a-query-param mechanism as
 /// get_metrics: an object is encoded once, a string passes through untouched.
 #[tokio::test]
-async fn a_self_hosted_metrics_query_is_serialized_once() {
+async fn a_legacy_metrics_query_is_serialized_once() {
     let pool = common::test_pool().await;
-    let (mock, seen) = start_mock_self_hosted().await;
+    let (mock, seen) = start_mock_legacy().await;
     let (base, client, agent_key, _admin) = setup(pool, mock, "read").await;
 
     let query = json!({
@@ -385,7 +453,7 @@ async fn a_self_hosted_metrics_query_is_serialized_once() {
         &base,
         &client,
         &agent_key,
-        "get_metrics_self_hosted",
+        "get_metrics_legacy",
         json!({ "query": query }),
     )
     .await;
@@ -403,7 +471,7 @@ async fn a_self_hosted_metrics_query_is_serialized_once() {
         &base,
         &client,
         &agent_key,
-        "get_metrics_self_hosted",
+        "get_metrics_legacy",
         json!({ "query": literal }),
     )
     .await;

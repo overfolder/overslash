@@ -61,7 +61,7 @@ jobs:
       - name: Advisory-ignore review dates (deny.toml)
         run: bash scripts/check-deny-reviews.sh
       # Prebuilt binary; never `cargo install` (a from-source build is minutes).
-      - uses: taiki-e/install-action@68a389c788b2cd04016ce8c80ee23b80d2ab3d68 # v2.88.1
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
           tool: cargo-deny@0.20.2
       # advisories (RustSec), licenses, bans, sources — config in deny.toml.
@@ -180,7 +180,7 @@ jobs:
       # GHSA-9rgm-9g3h-6x36). services/ holds only YAML templates — no
       # lockfile, nothing to scan. Listed explicitly rather than --recursive
       # so a stray node_modules or fixture lockfile never joins the scan.
-      - uses: google/osv-scanner-action/osv-scanner-action@b1d267aea5211fa648d9d442fa64b90dbdcbdd36 # v2.7.0
+      - uses: google/osv-scanner-action/osv-scanner-action@32d3cd482bdadfb38b186c0ad1b031902d55d932 # v2.7.1
         with:
           scan-args: |-
             --config=osv-scanner.toml

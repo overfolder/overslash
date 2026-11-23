@@ -28,6 +28,13 @@ export const ADMIN_NAV_ITEMS: NavItemDef[] = [
  */
 export const LIVE_MAP_NAV_ITEM: NavItemDef = { href: '/map', label: 'Live Map', icon: 'map' };
 
+/**
+ * Instance Admin panel (`/instance`), shown at the bottom of the sidebar to
+ * instance admins only. Instance-wide, so it sits apart from the org's own
+ * ADMIN section.
+ */
+export const INSTANCE_NAV_ITEM: NavItemDef = { href: '/instance', label: 'Instance', icon: 'zap' };
+
 /** Settings item shown at the bottom of the sidebar (admin only). */
 export const SETTINGS_NAV_ITEM: NavItemDef = { href: '/org', label: 'Settings', icon: 'settings' };
 
@@ -50,7 +57,13 @@ export function pickActiveHref(pathname: string, items: { href: string }[]): str
 }
 
 export function pageTitleFromPath(pathname: string): string {
-	for (const item of [...NAV_ITEMS, ...ADMIN_NAV_ITEMS, LIVE_MAP_NAV_ITEM, SETTINGS_NAV_ITEM]) {
+	for (const item of [
+		...NAV_ITEMS,
+		...ADMIN_NAV_ITEMS,
+		LIVE_MAP_NAV_ITEM,
+		INSTANCE_NAV_ITEM,
+		SETTINGS_NAV_ITEM
+	]) {
 		if (isActive(pathname, item.href)) return item.label;
 	}
 	if (pathname.startsWith('/profile')) return 'Profile';

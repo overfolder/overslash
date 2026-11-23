@@ -207,6 +207,24 @@ variable "allow_service_account_key_creation" {
   default     = false
 }
 
+variable "encryption_key_version" {
+  description = "Secret version mounted as SECRETS_ENCRYPTION_KEY. Keep it a number: see the rotation procedure in docs/compliance/casa/secrets-access-policy.md."
+  type        = string
+  default     = "latest"
+}
+
+variable "encryption_key_active_id" {
+  description = "Key id stamped on new ciphertext (SECRETS_ENCRYPTION_KEY_ACTIVE_ID). Goes up by one on every rotation and never comes back down."
+  type        = number
+  default     = 1
+}
+
+variable "encryption_key_previous_version" {
+  description = "Secret version mounted as SECRETS_ENCRYPTION_KEY_PREVIOUS while `overslash admin reencrypt` runs. Empty outside a rotation."
+  type        = string
+  default     = ""
+}
+
 variable "enable_bi" {
   description = "Provision the BI surface: a BigQuery connection + overslash_bi dataset over the Postgres `bi` schema (docs/runbooks/bi.md)."
   type        = bool
@@ -568,6 +586,12 @@ variable "upstream_error_alert_enabled" {
   default     = false
 }
 
+variable "secret_rotation_alert_enabled" {
+  description = "Enable the [P2] Secret Rotation Overdue and Secret Rotation Due alerts. Leave false until the metrics exporter has written custom.googleapis.com/overslash/business/secret_rotation_overdue_days at least once (Cloud Monitoring rejects the policy if the metric descriptor does not exist). See docs/runbooks/secret-rotation.md."
+  type        = bool
+  default     = false
+}
+
 variable "integrity_alert_enabled" {
   description = "Enable the [P1] Data Integrity Violation alert. Leave false until the metrics exporter has written custom.googleapis.com/overslash/business/integrity_violations at least once (Cloud Monitoring rejects the policy if the metric descriptor does not exist). See docs/runbooks/data-integrity.md."
   type        = bool
@@ -615,8 +639,10 @@ variable "enable_metrics_sidecar" {
 variable "otel_collector_image" {
   description = "OTel collector image path *relative to the Docker Hub mirror*, digest-pinned."
   type        = string
-  # 0.120.0, multi-arch index digest.
-  default = "otel/opentelemetry-collector-contrib@sha256:85ac41c2db88d0df9bd6145e608a3cb023f5d8443868adbfbbf66efb51087917"
+  # 0.165.0, multi-arch index digest. Bumping: take the index digest (not a
+  # per-arch one), run `otelcol-contrib validate` against the rendered
+  # otel-collector-config.yaml.tftpl, and watch GMP after the dev apply.
+  default = "otel/opentelemetry-collector-contrib@sha256:e40d61f10c9a617cca1ffd1be4d7e2b3a4b0f0001798ff07e58cabe82e618cea"
 
   validation {
     condition     = can(regex("@sha256:[0-9a-f]{64}$", var.otel_collector_image))

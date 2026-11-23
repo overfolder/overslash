@@ -194,7 +194,7 @@ pub fn evaluate(
 
 /// The deployment's root IdPs — what a member of an org with no providers of
 /// its own signs in with.
-fn root_idps(state: &AppState) -> Vec<String> {
+pub(crate) fn root_idps(state: &AppState) -> Vec<String> {
     org_signin::MANAGED_PROVIDER_KEYS
         .iter()
         .filter(|k| state.config.env_auth_credentials(k).is_some())

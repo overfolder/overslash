@@ -116,7 +116,6 @@ pub(crate) async fn resolve_service_auth(
 
             match crate::services::oauth::resolve_access_token(
                 scope,
-                &state.http_client,
                 &enc_key,
                 &conn,
                 &creds.client_id,
@@ -255,7 +254,6 @@ pub(crate) async fn resolve_mcp_oauth_bearer(
 
     match crate::services::oauth::resolve_access_token(
         scope,
-        &state.http_client,
         &enc_key,
         &conn,
         &creds.client_id,
@@ -472,7 +470,6 @@ pub(crate) async fn resolve_instance_auth(
 
             match crate::services::oauth::resolve_access_token(
                 scope,
-                &state.http_client,
                 &enc_key,
                 &conn,
                 &creds.client_id,

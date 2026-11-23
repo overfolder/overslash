@@ -809,12 +809,12 @@ impl FromRequestParts<AppState> for AdminAcl {
 ///
 /// Session-cookie only — bearer API keys can't carry instance-admin
 /// privilege because the role is bound to the human, not to an identity
-/// inside an org. The single elevated capability today is creating
-/// `free_unlimited` orgs through `POST /v1/orgs/free-unlimited`.
+/// inside an org. Gates the Instance Admin panel (`/v1/instance/*`), org
+/// plan and trial changes, and `POST /v1/orgs/free-unlimited`.
 ///
 /// **No cache.** A `SELECT is_instance_admin FROM users WHERE id = $1`
-/// runs on every request. The flag flips infrequently (operator psql) and
-/// removing the cache means revocation is immediate.
+/// runs on every request. The flag flips rarely (the panel's grant/revoke)
+/// and removing the cache means revocation is immediate.
 #[derive(Debug, Clone)]
 pub struct InstanceAdminAuth {
     pub user_id: Uuid,

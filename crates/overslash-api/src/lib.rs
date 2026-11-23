@@ -203,8 +203,15 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
     // hears about it before it wonders why nothing happened.
     services::ssrf_guard::log_egress_configuration();
 
+    // For fixed, operator-configured targets only — see
+    // `outbound_tls::guarded_client` for anything a tenant can point. It still
+    // follows no redirects: none of its targets need one, and reqwest's default
+    // (10 hops, https→http allowed, custom headers and a 307's body carried
+    // across hosts) turns any URL-layer check into a suggestion. A target that
+    // turns out to need a redirect gets it handled explicitly at its call site.
     let http_client = reqwest::Client::builder()
         .user_agent(services::ssrf_guard::default_user_agent())
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .expect("default reqwest client builds");
     let mailer = services::email::build_mailer(&config, http_client.clone());
@@ -591,6 +598,7 @@ pub async fn create_app(mut config: Config) -> anyhow::Result<Router> {
 
     let rate_limited_routes = Router::new()
         .merge(routes::orgs::router())
+        .merge(routes::instance::router())
         .merge(routes::identities::router())
         .merge(routes::api_keys::router())
         .merge(routes::secrets::router())

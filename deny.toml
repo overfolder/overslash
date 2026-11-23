@@ -92,7 +92,7 @@ allow = [
 confidence-threshold = 0.8
 
 [licenses.private]
-# Skip crates marked `publish = false` (tests/mock-target). Our own crates
+# Skip crates marked `publish = false` (every workspace crate). Our own crates
 # are licensed by LICENSE / LICENSING.md, not by this allow list.
 ignore = true
 

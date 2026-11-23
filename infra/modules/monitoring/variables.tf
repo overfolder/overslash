@@ -71,6 +71,18 @@ variable "integrity_alert_enabled" {
   description = "Enable the [P1] Data Integrity Violation alert on custom.googleapis.com/overslash/business/integrity_violations. Cloud Monitoring rejects the policy until the metrics exporter has written that metric once (no descriptor yet). Set true after the first exporter run carrying the integrity sweep."
 }
 
+variable "secret_rotation_alert_enabled" {
+  type        = bool
+  default     = false
+  description = "Enable the [P2] Secret Rotation alerts. Cloud Monitoring rejects the overdue policy until the metrics exporter has written its metrics once (no descriptor yet). Set true after the first hourly sweep; docs/runbooks/secret-rotation.md."
+}
+
+variable "secret_rotation_subscription_id" {
+  type        = string
+  default     = ""
+  description = "Pub/Sub subscription holding SECRET_ROTATE events (modules/secret-manager)."
+}
+
 variable "api_latency_alert_enabled" {
   type        = bool
   default     = false

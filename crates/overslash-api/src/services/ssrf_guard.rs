@@ -561,9 +561,11 @@ fn cached_client_count() -> usize {
 ///
 /// # Why not one shared client
 ///
-/// `state.http_client` is a bare `reqwest::Client`: reqwest's default redirect
-/// policy (follow up to 10) and no pin, so a 302 or a rebind defeats any check
-/// made at the URL layer. That is exactly the hole this closes.
+/// `state.http_client` follows no redirects (D150) but is not pinned, so a
+/// rebind between a URL-layer check and the dial defeats the check. That is
+/// exactly the hole this closes; it is for operator-fixed targets only, and
+/// anything a tenant can point goes through here (or
+/// `outbound_tls::guarded_client`).
 pub async fn outbound_client(url_str: &str) -> Result<(reqwest::Client, Url), AppError> {
     let (client, url, _ip) = outbound_client_validated(url_str).await?;
     Ok((client, url))

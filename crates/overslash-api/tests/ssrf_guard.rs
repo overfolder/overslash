@@ -516,3 +516,214 @@ async fn oidc_discovery_does_not_echo_the_upstream_body() {
     )
     .await;
 }
+
+/// An issuer the guard allows (loopback) whose discovery document points the
+/// token and userinfo endpoints somewhere else. Serves a well-formed document
+/// whose `issuer` matches, so discovery itself succeeds — only the endpoints
+/// inside it are wrong.
+async fn start_issuer_naming(
+    token_endpoint: &'static str,
+    userinfo_endpoint: &'static str,
+) -> std::net::SocketAddr {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let issuer = format!("http://{addr}");
+    let app = axum::Router::new().fallback(move || {
+        let issuer = issuer.clone();
+        async move {
+            axum::Json(json!({
+                "issuer": issuer,
+                "authorization_endpoint": format!("{issuer}/authorize"),
+                "token_endpoint": token_endpoint,
+                "userinfo_endpoint": userinfo_endpoint,
+                "jwks_uri": format!("{issuer}/jwks"),
+            }))
+        }
+    });
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    addr
+}
+
+/// The second finding: discovery fetched the document through the guard but
+/// stored its `token_endpoint` / `userinfo_endpoint` unchecked, and sign-in,
+/// the connection callback and token refresh then POSTed / GETed them with the
+/// shared client. An org admin who controls the issuer controls those URLs.
+#[tokio::test]
+async fn oidc_discovery_refuses_a_document_naming_internal_endpoints() {
+    let (pool, _fx) = common::test_pool_bootstrapped().await;
+    let (base, key, _org, _mock) = boot(pool).await;
+
+    let token_inward = start_issuer_naming(METADATA_TLS, "https://idp.example.com/userinfo").await;
+    assert_generic_refusal(&base, &key, &format!("http://{token_inward}"), &["169.254"]).await;
+
+    let userinfo_inward =
+        start_issuer_naming("https://idp.example.com/token", "https://10.0.0.1/userinfo").await;
+    assert_generic_refusal(
+        &base,
+        &key,
+        &format!("http://{userinfo_inward}"),
+        &["10.0.0.1"],
+    )
+    .await;
+}
+
+// ── Display-param resolver ──────────────────────────────────────────
+//
+// A template's `resolve.get` is fetched while the call is resolved, before the
+// permission gate, and the picked value is written into the approval title and
+// the audit row — so whatever the GET reads comes back to the caller. The
+// target is the template's host, which any template author picks.
+
+/// The reported attack, reproduced on loopback: a template host the guard
+/// allows answers the resolver GET with a 302 to an "instance metadata" stub,
+/// and the template pins a `Metadata-Flavor: Google` header param, which is
+/// copied onto the resolver GET and survives a cross-host redirect.
+///
+/// The metadata stand-in is a second loopback port rather than
+/// 169.254.169.254 (nothing in a test can bind that). It is reachable on its
+/// own, so what this pins is the *redirect* — the hop the guard never saw —
+/// not the address; `oidc_discovery_refuses_a_private_ip_issuer` and the Mode A
+/// tests cover the address check itself.
+#[tokio::test]
+async fn display_resolver_does_not_follow_a_redirect_to_the_metadata_server() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    const STOLEN: &str = "ya29.stolen-service-account-token";
+
+    let pool = common::test_pool().await;
+    common::allow_loopback_ssrf();
+
+    // The "metadata server": hands out a token only to a request carrying
+    // `Metadata-Flavor: Google`, exactly like GCE / Cloud Run.
+    let metadata_hits = Arc::new(AtomicUsize::new(0));
+    let hits = metadata_hits.clone();
+    let metadata = axum::Router::new().fallback(move |headers: axum::http::HeaderMap| {
+        let hits = hits.clone();
+        async move {
+            hits.fetch_add(1, Ordering::SeqCst);
+            if headers.get("metadata-flavor").and_then(|v| v.to_str().ok()) == Some("Google") {
+                axum::Json(json!({ "name": STOLEN })).into_response()
+            } else {
+                axum::http::StatusCode::FORBIDDEN.into_response()
+            }
+        }
+    });
+    let md_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let md_addr = md_listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(md_listener, metadata).await.unwrap() });
+    let md_url: &'static str = Box::leak(
+        format!("http://{md_addr}/computeMetadata/v1/instance/service-accounts/default/token")
+            .into_boxed_str(),
+    );
+
+    // The template host: every resolver GET is bounced to the metadata stub.
+    let host_hits = Arc::new(AtomicUsize::new(0));
+    let hh = host_hits.clone();
+    let host = axum::Router::new().fallback(move || {
+        let hh = hh.clone();
+        async move {
+            hh.fetch_add(1, Ordering::SeqCst);
+            Redirect::temporary(md_url).into_response()
+        }
+    });
+    let host_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let host_addr = host_listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(host_listener, host).await.unwrap() });
+
+    let host_base = format!("http://{host_addr}");
+    let (base, client) =
+        common::start_api_with_registry_customized(pool.clone(), None, move |cfg| {
+            cfg.service_base_overrides
+                .insert("127.0.0.1".to_string(), host_base);
+        })
+        .await;
+    let (_org, _ident, agent_key, admin_key) = common::bootstrap_org_identity(&base, &client).await;
+
+    let yaml = format!(
+        r#"openapi: "3.1.0"
+info:
+  title: "Resolver SSRF"
+  key: "ssrfsvc"
+servers:
+  - url: "http://{host_addr}"
+paths:
+  /things/{{thing_id}}/archive:
+    parameters:
+      - name: thing_id
+        in: path
+        required: true
+        schema: {{type: string}}
+        resolve:
+          get: /things/{{thing_id}}
+          pick: name
+      - name: Metadata-Flavor
+        in: header
+        required: false
+        schema: {{type: string, default: Google}}
+    post:
+      operationId: archive_thing
+      summary: "Archive {{thing_id}}"
+      risk: write
+      scope_param: thing_id
+"#
+    );
+    let created: Value = client
+        .post(format!("{base}/v1/templates"))
+        .header("Authorization", format!("Bearer {admin_key}"))
+        .json(&json!({ "openapi": yaml, "user_level": false }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(created["key"].as_str(), Some("ssrfsvc"), "{created:?}");
+    common::grant_service_to_everyone(&base, &client, &admin_key, "ssrfsvc").await;
+
+    // No rule covers the call, so it gaps into an approval — whose title is
+    // the interpolated summary, i.e. where a resolved value surfaces.
+    let resp = client
+        .post(format!("{base}/v1/actions/call"))
+        .header("Authorization", format!("Bearer {agent_key}"))
+        .json(&json!({
+            "service": "ssrfsvc",
+            "action": "archive_thing",
+            "params": { "thing_id": "t-1" },
+            "secrets": [
+                { "name": "nonexistent", "inject_as": "header", "header_name": "X-Gap" }
+            ]
+        }))
+        .send()
+        .await
+        .unwrap();
+    let body = resp.text().await.unwrap();
+    let exec: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        exec["status"].as_str(),
+        Some("pending_approval"),
+        "expected an approval, got {body}"
+    );
+
+    // The resolver did run: it reached the template host…
+    assert!(
+        host_hits.load(Ordering::SeqCst) >= 1,
+        "the resolver GET never reached the template host — the test proves nothing"
+    );
+    // …but the token never came back to the caller…
+    assert!(
+        !body.contains(STOLEN),
+        "the metadata token came back to the caller: {body}"
+    );
+    // …because the 302 was not followed: nothing it pointed at was asked…
+    assert_eq!(
+        metadata_hits.load(Ordering::SeqCst),
+        0,
+        "the resolver followed the redirect to the metadata stand-in"
+    );
+    // …and the title falls back to the raw argument.
+    assert!(
+        body.contains("Archive t-1"),
+        "the title should fall back to the raw argument: {body}"
+    );
+}

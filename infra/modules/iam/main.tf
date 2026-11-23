@@ -92,6 +92,16 @@ resource "google_project_iam_member" "metrics_exporter_metric_writer" {
   member  = "serviceAccount:${google_service_account.metrics_exporter.email}"
 }
 
+# Metadata only, for the rotation-age sweep: list secrets and read each
+# version's create time. It carries no secretmanager.versions.access, so it
+# reads no payload. Listing is a project-level permission, which is why this
+# cannot be conditioned to a secret name.
+resource "google_project_iam_member" "metrics_exporter_secret_viewer" {
+  project = var.project_id
+  role    = "roles/secretmanager.viewer"
+  member  = "serviceAccount:${google_service_account.metrics_exporter.email}"
+}
+
 # --- Cloud Build service account ---
 
 resource "google_service_account" "cloud_build" {

@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO instance_audit_log (actor_user_id, actor_email, action, org_id, org_slug, detail, ip_address)\n         SELECT $1,\n                COALESCE((SELECT email FROM users WHERE id = $1), ''),\n                $2, $3,\n                (SELECT slug FROM orgs WHERE id = $3),\n                $4, $5",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Uuid",
+        "Jsonb",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "357a10a721769684cb334ab35edf65e61afe91797e58712d583080c4614b5dbc"
+}

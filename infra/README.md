@@ -336,6 +336,19 @@ alert policy is one condition (~$0.10/month); the log-based metric is near-empty
 **under $1/month per project**. Step 3 exists to replace this estimate with a measurement
 before the prod bucket is locked.
 
+### Secret rotation (CASA 6.7.1)
+
+Every secret has a `rotation-class` label, and every credential has a period and a reminder on
+`overslash-<env>-secret-rotation`. `modules/secret-manager/rotation.tf` holds the classes. A new
+secret needs a class, or the metrics exporter's hourly sweep reports it as unmeasured. Secret
+Manager only sends reminders: rotating is an operator job, per class, in
+[secrets-access-policy.md](../docs/compliance/casa/secrets-access-policy.md#rotation). Apply and
+verify with [secret-rotation.md](../docs/runbooks/secret-rotation.md).
+
+The vault master key is pinned by `encryption_key_version`, `encryption_key_active_id` and
+`encryption_key_previous_version` in `env/*.tfvars`. Change them only by following that
+procedure.
+
 ## Connectivity Modes
 
 - **Auth Proxy (default, `use_private_vpc = false`)**: Cloud SQL has public IP but only accepts Auth Proxy connections (IAM-authenticated). No VPC connector needed. Saves ~$7/month.

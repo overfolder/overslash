@@ -135,6 +135,9 @@ locals {
 resource "google_secret_manager_secret" "server_ca" {
   secret_id = "${var.instance_name}-server-ca"
   project   = var.project_id
+  # Public material that Memorystore issues and rotates; there is no credential
+  # here to rotate (docs/compliance/casa/secrets-access-policy.md).
+  labels = { rotation-class = "exempt" }
   replication {
     auto {}
   }

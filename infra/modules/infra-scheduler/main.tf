@@ -30,6 +30,11 @@ variable "scheduler_sa_email" {
   type = string
 }
 
+variable "cloud_build_sa_email" {
+  description = "Cloud Build SA; gets the same start/stop role so a deploy can wake the paused DB."
+  type        = string
+}
+
 # Both jobs are one `settings.activationPolicy` PATCH on one instance, so the
 # scheduler gets exactly that (CASA 3.1.1) instead of roles/cloudsql.admin: a
 # two-permission custom role, conditioned on this instance. Lives here, not in
@@ -50,6 +55,18 @@ resource "google_project_iam_member" "scheduler_sql_start_stop" {
   project = var.project_id
   role    = google_project_iam_custom_role.sql_start_stop.name
   member  = "serviceAccount:${var.scheduler_sa_email}"
+
+  condition {
+    title      = "${var.cloud_sql_instance_name} only"
+    expression = "resource.type == \"sqladmin.googleapis.com/Instance\" && resource.name == \"projects/${var.project_id}/instances/${var.cloud_sql_instance_name}\""
+  }
+}
+
+# The deploy trigger wakes the DB before rolling out (modules/cloud-build).
+resource "google_project_iam_member" "cloud_build_sql_start_stop" {
+  project = var.project_id
+  role    = google_project_iam_custom_role.sql_start_stop.name
+  member  = "serviceAccount:${var.cloud_build_sa_email}"
 
   condition {
     title      = "${var.cloud_sql_instance_name} only"

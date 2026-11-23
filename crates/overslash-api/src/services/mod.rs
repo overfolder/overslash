@@ -32,6 +32,7 @@ pub mod icon_url;
 pub mod identity_path;
 pub mod identity_ref;
 pub mod inbox;
+pub mod instance_audit;
 pub mod invite_adoption;
 pub mod invite_email;
 pub mod jwt;

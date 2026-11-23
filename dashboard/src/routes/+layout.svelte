@@ -24,6 +24,7 @@
 	import Toaster from '#lib/components/Toaster.svelte';
 	import StepUpModal from '#lib/components/StepUpModal.svelte';
 	import { isSettingsPath } from '#lib/components/settings/sections.ts';
+	import { isActive } from '#lib/components/shell/nav-items.ts';
 
 	let { children, data }: { children: Snippet; data: { user: MeIdentity | null } } = $props();
 
@@ -100,9 +101,12 @@
 	// full-bleed canvas, and its `overflow-y: auto` would let the graph push
 	// the page taller instead of being clipped to it.
 	const fullBleed = $derived(page.url.pathname.startsWith('/map'));
-	// Org Settings docks its own sub-nav against the sidebar rail, so its
+	// Org Settings and the Instance panel dock their own sub-nav against the
+	// sidebar rail, so their
 	// routes take the content area edge to edge (but still scroll normally).
-	const flush = $derived(isSettingsPath(page.url.pathname));
+	const flush = $derived(
+		isSettingsPath(page.url.pathname) || isActive(page.url.pathname, '/instance')
+	);
 
 	// Build identity of the API, shown in the sidebar footer. Fetched once per
 	// session rather than per navigation — it cannot change without a reload of

@@ -87,11 +87,22 @@ pub(super) async fn create_org(
         &ext,
         &headers,
         org,
-        session_user_id,
+        session_user_id.map(|user_id| Creator {
+            user_id,
+            remint_session: true,
+        }),
         audit_detail,
         ip,
     )
     .await
+}
+
+/// The signed-in human a new org is created for: they become its bootstrap
+/// admin, and with `remint_session` their session moves into the new org.
+#[derive(Clone, Copy)]
+struct Creator {
+    user_id: Uuid,
+    remint_session: bool,
 }
 
 /// Shared tail for org-creation handlers: provisions contents (with
@@ -106,32 +117,44 @@ pub(super) async fn create_org(
 /// available without refactoring `bootstrap_org`. The compensating rollback
 /// (DELETE FROM orgs) cascades to identities / memberships / groups /
 /// service_instances / group_grants on failure.
+/// Compensate for a create that failed after the org row was inserted:
+/// delete it (cascading to whatever was provisioned) so the slug is free
+/// again. Best-effort. If this also fails we leave a dangling org row, which
+/// is still better than a half-bootstrapped one; admins can sweep manually.
+async fn discard_new_org(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    org_id: Uuid,
+    cause: &AppError,
+) {
+    if let Err(cleanup_err) = sqlx::query!("DELETE FROM orgs WHERE id = $1", org_id)
+        .execute(state.db(ext))
+        .await
+    {
+        tracing::error!(
+            org_id = %org_id,
+            bootstrap_error = %cause,
+            cleanup_error = %cleanup_err,
+            "create_org rollback failed; manual cleanup required"
+        );
+    }
+}
+
 async fn finalize_new_org(
     state: &AppState,
     ext: &axum::http::Extensions,
     headers: &axum::http::HeaderMap,
     org: overslash_db::repos::org::OrgRow,
-    bootstrap_user_id: Option<Uuid>,
+    creator: Option<Creator>,
     audit_detail: serde_json::Value,
     ip: ClientIp,
 ) -> Result<axum::response::Response> {
+    let bootstrap_user_id = creator.map(|c| c.user_id);
+    let remint_session = creator.is_some_and(|c| c.remint_session);
     let contents = match provision_new_org_contents(state, ext, org.id, bootstrap_user_id).await {
         Ok(c) => c,
         Err(e) => {
-            // Best-effort cleanup. If this also fails we leave a dangling
-            // org row, but that's strictly better than the half-bootstrapped
-            // state; admins can sweep manually.
-            if let Err(cleanup_err) = sqlx::query!("DELETE FROM orgs WHERE id = $1", org.id)
-                .execute(state.db(ext))
-                .await
-            {
-                tracing::error!(
-                    org_id = %org.id,
-                    bootstrap_error = %e,
-                    cleanup_error = %cleanup_err,
-                    "create_org rollback failed; manual cleanup required"
-                );
-            }
+            discard_new_org(state, ext, org.id, &e).await;
             return Err(e);
         }
     };
@@ -187,7 +210,9 @@ async fn finalize_new_org(
     // subdomain↔JWT guard (`org_mismatch` 401), forcing an extra switch-org
     // round-trip. Anonymous creators keep no session.
     let mut response_headers = HeaderMap::new();
-    if let (Some(user_id), Some(identity_id)) = (bootstrap_user_id, bootstrap_identity_id) {
+    if let (true, Some(user_id), Some(identity_id)) =
+        (remint_session, bootstrap_user_id, bootstrap_identity_id)
+    {
         let email = user_repo::get_by_id(state.db(ext), user_id)
             .await?
             .and_then(|u| u.email)
@@ -257,16 +282,137 @@ pub(super) async fn create_free_unlimited_org(
         "created_by_instance_admin": admin.user_id.to_string(),
     });
 
-    finalize_new_org(
+    let org_id = org.id;
+    let instance_detail = serde_json::json!({ "plan": "free_unlimited" });
+    let resp = finalize_new_org(
         &state,
         &ext,
         &headers,
         org,
-        Some(admin.user_id),
+        Some(Creator {
+            user_id: admin.user_id,
+            remint_session: true,
+        }),
         audit_detail,
-        ip,
+        ip.clone(),
     )
-    .await
+    .await?;
+    crate::services::instance_audit::log(
+        &state,
+        &ext,
+        admin.user_id,
+        "org.created",
+        Some(org_id),
+        instance_detail,
+        &ip,
+    )
+    .await;
+    Ok(resp)
+}
+
+/// What the Instance Admin panel asks for when it creates an org.
+pub(crate) struct NewOrgSpec<'a> {
+    pub name: &'a str,
+    pub slug: &'a str,
+    /// `standard`, `trial` or `free_unlimited`; validated by the caller.
+    pub plan: &'a str,
+    /// Set iff `plan = 'trial'`.
+    pub trial_ends_at: Option<OffsetDateTime>,
+}
+
+/// Org creation from the Instance Admin panel (`POST /v1/instance/orgs`).
+///
+/// Same provisioning as [`create_free_unlimited_org`] (the instance admin is
+/// the bootstrap admin, so the org is never orphaned) but with any plan, and
+/// **without** re-minting the session: the admin stays in their current org
+/// and the panel, and reaches the new one through the org switcher. A `trial`
+/// plan starts its window immediately.
+pub(crate) async fn create_for_instance_admin(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    headers: &axum::http::HeaderMap,
+    ip: ClientIp,
+    admin_user_id: Uuid,
+    spec: NewOrgSpec<'_>,
+) -> Result<axum::response::Response> {
+    let NewOrgSpec {
+        name,
+        slug,
+        plan,
+        trial_ends_at,
+    } = spec;
+    if !state.config.allow_org_creation {
+        return Err(AppError::Forbidden("org_creation_disabled".into()));
+    }
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(AppError::BadRequest("name is required".into()));
+    }
+    if let Err(reject) = validate_slug_format(slug) {
+        return Err(AppError::BadRequest(reject.code().into()));
+    }
+
+    let org = match overslash_db::repos::org::create(state.db(ext), name, slug, plan).await {
+        Ok(row) => row,
+        Err(sqlx::Error::Database(e)) if e.is_unique_violation() => {
+            return Err(AppError::Conflict("slug_taken".into()));
+        }
+        Err(e) => return Err(e.into()),
+    };
+    // The row exists from here on: a failure before `finalize_new_org` (which
+    // compensates for its own failures) must delete it, or the slug stays
+    // taken by a half-made org.
+    let org_id = org.id;
+    let prepared = async {
+        if let Some(ends_at) = trial_ends_at {
+            overslash_db::repos::org::set_trial(state.db(ext), org.id, ends_at).await?;
+        }
+        flip_managed_signin_on_new_org(state, ext, org).await
+    }
+    .await;
+    let org = match prepared {
+        Ok(org) => org,
+        Err(e) => {
+            discard_new_org(state, ext, org_id, &e).await;
+            return Err(e);
+        }
+    };
+
+    let audit_detail = serde_json::json!({
+        "name": &org.name,
+        "slug": &org.slug,
+        "plan": plan,
+        "trial_ends_at": trial_ends_at.map(|t| t.unix_timestamp()),
+        "created_by_instance_admin": admin_user_id.to_string(),
+    });
+    let resp = finalize_new_org(
+        state,
+        ext,
+        headers,
+        org,
+        Some(Creator {
+            user_id: admin_user_id,
+            remint_session: false,
+        }),
+        audit_detail,
+        ip.clone(),
+    )
+    .await?;
+    let mut instance_detail = serde_json::json!({ "plan": plan });
+    if let Some(ends_at) = trial_ends_at {
+        instance_detail["trial_ends_at"] = ends_at.unix_timestamp().into();
+    }
+    crate::services::instance_audit::log(
+        state,
+        ext,
+        admin_user_id,
+        "org.created",
+        Some(org_id),
+        instance_detail,
+        &ip,
+    )
+    .await;
+    Ok(resp)
 }
 
 /// Flip `allow_overslash_managed_signin` to `true` for a freshly-created

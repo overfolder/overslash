@@ -286,7 +286,8 @@ step 8 of [memorystore-valkey.md](../../runbooks/memorystore-valkey.md), and it 
 pre-flight of [least-privilege-iam.md](../../runbooks/least-privilege-iam.md).
 **None declares `rotation`, `nextRotationTime` or `expireTime`.** Every consumer pins `version = "latest"`, so a rotation is a revision roll
 rather than a config change — good — but nothing schedules, tracks or alerts on rotation
-age, which is the shape of evidence 6.7.1 asks for.
+age, which is the shape of evidence 6.7.1 asks for. **In code, not applied (2026-11-06):**
+[secret-rotation.md](../../runbooks/secret-rotation.md).
 
 ### Monitoring — the count-gate, confirmed
 

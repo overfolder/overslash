@@ -43,6 +43,12 @@ variable "github_branch" {
   type = string
 }
 
+variable "wake_sql_instance" {
+  description = "Cloud SQL instance to wake (activation policy ALWAYS) before deploying, for envs whose DB is paused at night. Empty = no wake step."
+  type        = string
+  default     = ""
+}
+
 locals {
   image = "${var.region}-docker.pkg.dev/${var.project_id}/${var.repository_name}/overslash-api"
 
@@ -108,6 +114,35 @@ resource "google_cloudbuild_trigger" "deploy" {
           .
       EOT
       ]
+    }
+
+    # The night scheduler (modules/infra-scheduler) pauses the dev DB, and a
+    # revision deployed against a stopped instance fails its startup probe.
+    # wait_for "-" runs this alongside the image build, so the wake (~1-3 min)
+    # costs no wall time; the deploy step below has no wait_for, so it waits
+    # for every earlier step, this one included. Mirrors bin/deploy-cloudrun.sh.
+    dynamic "step" {
+      for_each = var.wake_sql_instance == "" ? [] : [var.wake_sql_instance]
+      content {
+        name       = "gcr.io/google.com/cloudsdktool/cloud-sdk"
+        entrypoint = "bash"
+        wait_for   = ["-"]
+        args = ["-c", <<-EOT
+          set -eu
+          gcloud sql instances patch ${step.value} \
+            --activation-policy=ALWAYS --project=${var.project_id} --quiet || true
+          for i in $$(seq 1 60); do
+            state=$$(gcloud sql instances describe ${step.value} \
+              --project=${var.project_id} --format='value(state)' || echo UNKNOWN)
+            echo "Cloud SQL ${step.value}: $$state"
+            [ "$$state" = "RUNNABLE" ] && exit 0
+            sleep 10
+          done
+          echo "Timed out waiting for ${step.value} to become RUNNABLE" >&2
+          exit 1
+        EOT
+        ]
+      }
     }
 
     # Builds for back-to-back pushes run concurrently and finish in any order, so

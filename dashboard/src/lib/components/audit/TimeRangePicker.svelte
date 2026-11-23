@@ -18,11 +18,21 @@
 
 	let {
 		value,
-		onchange
+		onchange,
+		allowAll = false
 	}: {
 		value: TimeRange;
 		onchange: (next: TimeRange) => void;
+		/** Offer an unbounded "All" segment. For logs sparse enough that the
+		 *  whole history is a cheap read (the instance audit). */
+		allowAll?: boolean;
 	} = $props();
+
+	// Without an "All" segment, an unbounded window (an id lookup) has no
+	// button of its own and shows on the Custom one, as a custom range does.
+	const customActive = $derived(
+		value.kind === 'absolute' || (value.kind === 'all' && !allowAll)
+	);
 
 	let open = $state(false);
 	let draftSince = $state('');
@@ -86,16 +96,28 @@
 				{preset}
 			</button>
 		{/each}
+		{#if allowAll}
+			<button
+				type="button"
+				class="seg"
+				class:active={value.kind === 'all'}
+				aria-pressed={value.kind === 'all'}
+				title="Show the whole history"
+				onclick={() => onchange({ kind: 'all' })}
+			>
+				All
+			</button>
+		{/if}
 		<button
 			type="button"
 			class="seg custom"
-			class:active={value.kind !== 'relative'}
-			aria-pressed={value.kind !== 'relative'}
+			class:active={customActive}
+			aria-pressed={customActive}
 			aria-expanded={open}
 			aria-haspopup="dialog"
 			onclick={openCustom}
 		>
-			{value.kind === 'relative' ? 'Custom' : rangeLabel(value)}
+			{customActive ? rangeLabel(value) : 'Custom'}
 			<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
 				<path d="m6 9 6 6 6-6" fill="none" stroke="currentColor" stroke-width="1.5" />
 			</svg>
