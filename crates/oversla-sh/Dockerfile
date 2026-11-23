@@ -30,7 +30,11 @@ RUN cargo build --release --package oversla-sh
 # --- Runtime stage ---
 FROM debian:trixie-slim AS runtime
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# `upgrade` pulls Debian security fixes the base image has not been re-cut
+# with yet, so a rebuild clears an image-scan finding as soon as Debian ships
+# the fix (docs/runbooks/image-scanning.md).
+RUN apt-get update && apt-get upgrade -y --no-install-recommends \
+    && apt-get install -y --no-install-recommends \
     ca-certificates \
     libssl3 \
     && rm -rf /var/lib/apt/lists/*

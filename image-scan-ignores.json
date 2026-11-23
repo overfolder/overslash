@@ -1,4 +1,113 @@
 {
   "_comment": "Justified, time-boxed exceptions to the container image check. Rules: docs/compliance/casa/dependency-vulnerability-policy.md. Entry shape: {\"id\": \"CVE-...\", \"package\": \"...\", \"reason\": \"...\", \"reviewBy\": \"YYYY-MM-DD\"}.",
-  "ignores": []
+  "ignores": [
+    {
+      "id": "CVE-2026-97033",
+      "package": "go",
+      "reason": "GO-2026-6858: Go toolchain advisory (cmd/go, cmd/compile, cmd/link cgo flag/directive handling), flagged on the OTel collector because its binary embeds Go 1.27.3. The vulnerable code runs only when building Go packages; the shipped otelcol-contrib binary contains none of it and never invokes the toolchain. Fix is Go 1.27.4; 0.165.0 is the newest stable collector release. Re-check: bump otel_collector_image once a release built with Go >= 1.27.4 is out.",
+      "reviewBy": "2026-12-23"
+    },
+    {
+      "id": "CVE-2026-97034",
+      "package": "go",
+      "reason": "GO-2026-6857: Go toolchain advisory (cmd/go, cmd/compile, cmd/link cgo flag/directive handling), flagged on the OTel collector because its binary embeds Go 1.27.3. The vulnerable code runs only when building Go packages; the shipped otelcol-contrib binary contains none of it and never invokes the toolchain. Fix is Go 1.27.4; 0.165.0 is the newest stable collector release. Re-check: bump otel_collector_image once a release built with Go >= 1.27.4 is out.",
+      "reviewBy": "2026-12-23"
+    },
+    {
+      "id": "CVE-2026-97035",
+      "package": "go",
+      "reason": "GO-2026-6856: Go toolchain advisory (cmd/go, cmd/compile, cmd/link cgo flag/directive handling), flagged on the OTel collector because its binary embeds Go 1.27.3. The vulnerable code runs only when building Go packages; the shipped otelcol-contrib binary contains none of it and never invokes the toolchain. Fix is Go 1.27.4; 0.165.0 is the newest stable collector release. Re-check: bump otel_collector_image once a release built with Go >= 1.27.4 is out.",
+      "reviewBy": "2026-12-23"
+    },
+    {
+      "id": "CVE-2026-97036",
+      "package": "go",
+      "reason": "GO-2026-6855: Go toolchain advisory (cmd/go, cmd/compile, cmd/link cgo flag/directive handling), flagged on the OTel collector because its binary embeds Go 1.27.3. The vulnerable code runs only when building Go packages; the shipped otelcol-contrib binary contains none of it and never invokes the toolchain. Fix is Go 1.27.4; 0.165.0 is the newest stable collector release. Re-check: bump otel_collector_image once a release built with Go >= 1.27.4 is out.",
+      "reviewBy": "2026-12-23"
+    },
+    {
+      "id": "CVE-2026-97037",
+      "package": "go",
+      "reason": "GO-2026-6854: Go toolchain advisory (cmd/go, cmd/compile, cmd/link cgo flag/directive handling), flagged on the OTel collector because its binary embeds Go 1.27.3. The vulnerable code runs only when building Go packages; the shipped otelcol-contrib binary contains none of it and never invokes the toolchain. Fix is Go 1.27.4; 0.165.0 is the newest stable collector release. Re-check: bump otel_collector_image once a release built with Go >= 1.27.4 is out.",
+      "reviewBy": "2026-12-23"
+    },
+    {
+      "id": "CVE-2026-97038",
+      "package": "go",
+      "reason": "GO-2026-6853: Go toolchain advisory (cmd/go, cmd/compile, cmd/link cgo flag/directive handling), flagged on the OTel collector because its binary embeds Go 1.27.3. The vulnerable code runs only when building Go packages; the shipped otelcol-contrib binary contains none of it and never invokes the toolchain. Fix is Go 1.27.4; 0.165.0 is the newest stable collector release. Re-check: bump otel_collector_image once a release built with Go >= 1.27.4 is out.",
+      "reviewBy": "2026-12-23"
+    },
+    {
+      "id": "CVE-2026-97039",
+      "package": "go",
+      "reason": "GO-2026-6852: Go toolchain advisory (cmd/go, cmd/compile, cmd/link cgo flag/directive handling), flagged on the OTel collector because its binary embeds Go 1.27.3. The vulnerable code runs only when building Go packages; the shipped otelcol-contrib binary contains none of it and never invokes the toolchain. Fix is Go 1.27.4; 0.165.0 is the newest stable collector release. Re-check: bump otel_collector_image once a release built with Go >= 1.27.4 is out.",
+      "reviewBy": "2026-12-23"
+    },
+    {
+      "id": "CVE-2026-97040",
+      "package": "go",
+      "reason": "GO-2026-6851: Go toolchain advisory (cmd/go, cmd/compile, cmd/link cgo flag/directive handling), flagged on the OTel collector because its binary embeds Go 1.27.3. The vulnerable code runs only when building Go packages; the shipped otelcol-contrib binary contains none of it and never invokes the toolchain. Fix is Go 1.27.4; 0.165.0 is the newest stable collector release. Re-check: bump otel_collector_image once a release built with Go >= 1.27.4 is out.",
+      "reviewBy": "2026-12-23"
+    },
+    {
+      "id": "CVE-2026-97041",
+      "package": "go",
+      "reason": "GO-2026-6850: Go toolchain advisory (cmd/go, cmd/compile, cmd/link cgo flag/directive handling), flagged on the OTel collector because its binary embeds Go 1.27.3. The vulnerable code runs only when building Go packages; the shipped otelcol-contrib binary contains none of it and never invokes the toolchain. Fix is Go 1.27.4; 0.165.0 is the newest stable collector release. Re-check: bump otel_collector_image once a release built with Go >= 1.27.4 is out.",
+      "reviewBy": "2026-12-23"
+    },
+    {
+      "id": "CVE-2026-97042",
+      "package": "go",
+      "reason": "GO-2026-6849: Go toolchain advisory (cmd/go, cmd/compile, cmd/link cgo flag/directive handling), flagged on the OTel collector because its binary embeds Go 1.27.3. The vulnerable code runs only when building Go packages; the shipped otelcol-contrib binary contains none of it and never invokes the toolchain. Fix is Go 1.27.4; 0.165.0 is the newest stable collector release. Re-check: bump otel_collector_image once a release built with Go >= 1.27.4 is out.",
+      "reviewBy": "2026-12-23"
+    },
+    {
+      "id": "CVE-2026-97043",
+      "package": "go",
+      "reason": "GO-2026-6848: Go toolchain advisory (cmd/go, cmd/compile, cmd/link cgo flag/directive handling), flagged on the OTel collector because its binary embeds Go 1.27.3. The vulnerable code runs only when building Go packages; the shipped otelcol-contrib binary contains none of it and never invokes the toolchain. Fix is Go 1.27.4; 0.165.0 is the newest stable collector release. Re-check: bump otel_collector_image once a release built with Go >= 1.27.4 is out.",
+      "reviewBy": "2026-12-23"
+    },
+    {
+      "id": "CVE-2026-107493",
+      "package": "openssl",
+      "reason": "No Debian fix yet. Double free when a caller passes an already-populated stack to PEM_X509_INFO_read_bio_ex() and the read fails. libssl3 is linked only via native-tls (hf-hub model download, hyper-tls), which loads CA files through OpenSSL's own lookup with a fresh stack, and the PEM comes from the image's ca-certificates, not from input. Re-check: rebuild once trixie-security ships the fix.",
+      "reviewBy": "2026-12-23"
+    },
+    {
+      "id": "CVE-2026-107496",
+      "package": "openssl",
+      "reason": "No Debian fix yet. Infinite loop in CMS_encrypt() with a malformed EC recipient certificate. Nothing in our images performs CMS encryption; native-tls uses libssl for TLS only. Re-check: rebuild once trixie-security ships the fix.",
+      "reviewBy": "2026-12-23"
+    },
+    {
+      "id": "CVE-2026-84786",
+      "package": "openssl",
+      "reason": "No Debian fix yet. NULL dereference in a DANE-enabled TLS client. native-tls never enables DANE (no SSL_dane_enable / TLSA records), so the code path is not reached. Re-check: rebuild once trixie-security ships the fix.",
+      "reviewBy": "2026-12-23"
+    },
+    {
+      "id": "CVE-2026-54369",
+      "package": "acl",
+      "reason": "No Debian fix yet. Local symlink traversal in libacl pathname functions (acl_get_file etc.). Part of the Debian base for coreutils; our binaries never call libacl, and the container runs one non-root process with no untrusted local users to plant symlinks. Re-check: rebuild once Debian ships acl 2.4.0.",
+      "reviewBy": "2026-12-23"
+    },
+    {
+      "id": "CVE-2026-54370",
+      "package": "acl",
+      "reason": "No Debian fix yet. Local TOCTOU symlink race in libacl pathname functions. Same exposure as CVE-2026-54369: never called by our binaries, no untrusted local users in the container. Re-check: rebuild once Debian ships acl 2.4.0.",
+      "reviewBy": "2026-12-23"
+    },
+    {
+      "id": "CVE-2026-54371",
+      "package": "attr",
+      "reason": "No Debian fix yet. Local symlink traversal in the getfattr/setfattr utilities. Part of the Debian base; nothing in our images runs them, and there are no untrusted local users. Re-check: rebuild once Debian ships attr 2.6.0.",
+      "reviewBy": "2026-12-23"
+    },
+    {
+      "id": "CVE-2026-9538",
+      "package": "perl",
+      "reason": "No Debian fix yet. Memory exhaustion in Perl's Archive::Tar from a crafted tar header. perl-base is in the Debian base for dpkg maintainer scripts only; our processes never run Perl or read tar input. Re-check: rebuild once Debian ships Archive::Tar 3.10.",
+      "reviewBy": "2026-12-23"
+    }
+  ]
 }
