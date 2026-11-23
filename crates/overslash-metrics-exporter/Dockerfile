@@ -32,8 +32,16 @@ FROM debian:trixie-slim AS runtime
 
 # `upgrade` pulls Debian security fixes the base image has not been re-cut
 # with yet, so a rebuild clears an image-scan finding as soon as Debian ships
-# the fix (docs/runbooks/image-scanning.md).
-RUN apt-get update && apt-get upgrade -y --no-install-recommends \
+# the fix (docs/runbooks/image-scanning.md). Cloud Build reuses layers from a
+# registry cache, which would replay a stale upgrade forever: BuildKit keys a
+# remote ADD on the downloaded content, so these archive indexes bust the
+# cache exactly when Debian publishes something new.
+ADD https://deb.debian.org/debian/dists/trixie/InRelease \
+    https://deb.debian.org/debian/dists/trixie-updates/InRelease \
+    https://deb.debian.org/debian-security/dists/trixie-security/InRelease \
+    /tmp/apt-indexes/
+RUN rm -rf /tmp/apt-indexes \
+    && apt-get update && apt-get upgrade -y --no-install-recommends \
     && apt-get install -y --no-install-recommends \
     ca-certificates \
     libssl3 \
