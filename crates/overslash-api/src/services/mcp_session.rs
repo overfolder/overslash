@@ -12,6 +12,7 @@
 use std::time::Duration;
 
 use overslash_db::repos::mcp_elicitation as repo;
+use overslash_db::scopes::OrgScope;
 use serde_json::{Value, json};
 use tokio::time::sleep;
 use uuid::Uuid;
@@ -402,19 +403,35 @@ pub async fn complete_from_elicitation(
         .send()
         .await?;
 
-    if !resolve_resp.status().is_success() {
+    // A 409 is not necessarily a failure. The usual cause is that the approval
+    // was settled on another surface while this dialog sat open — the human
+    // approved on the dashboard, then came back and answered the dialog too.
+    // That resolve skipped auto-call because this dialog was active (the
+    // dialog owns the `/call`), so failing here would leave an allowed
+    // execution that nobody runs. Re-read the approval and carry on when it
+    // already says what the human chose.
+    let mut note: Option<&'static str> = None;
+    if resolve_resp.status() == reqwest::StatusCode::CONFLICT {
+        let body = resolve_resp.text().await.unwrap_or_default();
+        let scope = OrgScope::new(binding.org_id, state.db_pool(ext));
+        match settled_elsewhere(&scope, row.approval_id, decision, &body).await? {
+            Settled::Proceed(n) => note = n,
+            Settled::Finish(v) => {
+                repo::fail(state.db(ext), elicit_id, &v).await?;
+                return Ok(());
+            }
+        }
+    } else if !resolve_resp.status().is_success() {
         let status = resolve_resp.status();
         let body = resolve_resp.text().await.unwrap_or_default();
         let err = json!({ "error": format!("resolve {status}: {body}") });
         repo::fail(state.db(ext), elicit_id, &err).await?;
         return Ok(());
-    }
-
-    // ── Call (trigger replay) — only on allow / allow_remember. A deny or
-    // bubble_up is a terminal "no" from the user; emit it as `Failed` so the
-    // SSE stream surfaces `isError: true` to the model. Marking COMPLETED
-    // would let a deny look like a successful tool call.
-    if matches!(decision, "deny" | "bubble_up") {
+    } else if matches!(decision, "deny" | "bubble_up") {
+        // ── Call (trigger replay) — only on allow / allow_remember. A deny or
+        // bubble_up is a terminal "no" from the user; emit it as `Failed` so
+        // the SSE stream surfaces `isError: true` to the model. Marking
+        // COMPLETED would let a deny look like a successful tool call.
         let final_resp = json!({
             "resolution": decision,
             "result": resolve_resp.json::<Value>().await.unwrap_or(Value::Null),
@@ -423,13 +440,106 @@ pub async fn complete_from_elicitation(
         return Ok(());
     }
 
+    drive_call(
+        state,
+        ext,
+        elicit_id,
+        CallTarget {
+            org_id: binding.org_id,
+            approval_id: row.approval_id,
+            agent_mcp: &agent_mcp,
+            client_ip,
+        },
+        note,
+    )
+    .await
+}
+
+/// What a `/resolve` 409 turned out to mean, once the approval is re-read.
+enum Settled {
+    /// The approval already says what the human chose: go on to `/call`,
+    /// attaching the note (if any) to the result.
+    Proceed(Option<&'static str>),
+    /// Nothing left to drive; fail the dialog with this payload.
+    Finish(Value),
+}
+
+async fn settled_elsewhere(
+    scope: &OrgScope,
+    approval_id: Uuid,
+    decision: &str,
+    conflict_body: &str,
+) -> anyhow::Result<Settled> {
+    let Some(approval) = scope.get_approval(approval_id).await? else {
+        return Ok(Settled::Finish(
+            json!({ "error": "approval no longer exists" }),
+        ));
+    };
+    Ok(match (approval.status.as_str(), decision) {
+        ("allowed", "allow") => Settled::Proceed(None),
+        // The remember flag rides on the resolve that lost, so no rule is
+        // written. Say so rather than let the model believe one was.
+        ("allowed", "allow_remember") => Settled::Proceed(Some(
+            "approval was already allowed elsewhere; no remember rule was created",
+        )),
+        ("denied", "deny") => Settled::Finish(json!({
+            "resolution": "deny",
+            "note": "approval was already denied by another resolver",
+        })),
+        // Still pending: the resolver moved under us, or (for bubble_up) the
+        // approval is already at its last resolver. The resolver's own message
+        // says which.
+        ("pending", "bubble_up") => Settled::Finish(json!({
+            "resolution": "bubble_up",
+            "error": format!("bubble_up refused: {conflict_body}"),
+        })),
+        ("pending", _) => Settled::Finish(json!({
+            "error": "approval was bubbled to another resolver before your answer \
+                      arrived; it must be resolved there",
+        })),
+        (status, _) => Settled::Finish(json!({
+            "error": format!(
+                "approval was already {status} by another resolver; your {decision} was not applied"
+            ),
+        })),
+    })
+}
+
+/// Who and what the replay call is for.
+struct CallTarget<'a> {
+    org_id: Uuid,
+    approval_id: Uuid,
+    agent_mcp: &'a str,
+    client_ip: Option<&'a str>,
+}
+
+/// How long to wait on an execution someone else is already running before
+/// telling the model to fetch the result itself. Well inside the 60s budget
+/// `complete_elicitation_and_retire` gives the whole answer.
+const IN_FLIGHT_WAIT: Duration = Duration::from_secs(20);
+const IN_FLIGHT_POLL: Duration = Duration::from_millis(250);
+
+/// Run the approved call and write its result into the row.
+///
+/// Idempotent over the execution: `/call` claims it atomically, so if the
+/// claim is lost (auto-call, a manual replay, a dashboard "run") the action
+/// is never run a second time. The result already produced is handed back
+/// instead, so the model has nothing left to call.
+async fn drive_call(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    elicit_id: &str,
+    target: CallTarget<'_>,
+    note: Option<&'static str>,
+) -> anyhow::Result<()> {
+    let loopback = &state.config.loopback;
     let call_url = loopback.url(
         &state.config.public_url,
-        &format!("/v1/approvals/{}/call", row.approval_id),
+        &format!("/v1/approvals/{}/call", target.approval_id),
     );
     let call_resp = loopback
-        .stamp(state.http_client.post(&call_url), client_ip)
-        .bearer_auth(&agent_mcp)
+        .stamp(state.http_client.post(&call_url), target.client_ip)
+        .bearer_auth(target.agent_mcp)
         .json(&json!({}))
         .send()
         .await?;
@@ -438,21 +548,146 @@ pub async fn complete_from_elicitation(
     let call_body: Value = call_resp.json().await.unwrap_or(Value::Null);
 
     if call_status.is_success() {
-        let updated = repo::complete(state.db(ext), elicit_id, &call_body).await?;
-        if updated == 0 {
-            // Row was already terminal (cancelled by originator timeout or
-            // by an admin disconnect) when our /call returned. The action
-            // did execute against the upstream — surface that to ops since
-            // the SSE consumer has already moved on with a cancelled frame.
-            tracing::warn!(
-                elicit_id,
-                "elicitation row was cancelled before /call returned; \
-                 upstream side-effect ran but client saw a cancelled frame",
-            );
-        }
-    } else {
+        return complete_with(state, ext, elicit_id, call_body, note).await;
+    }
+    if !matches!(
+        call_status,
+        reqwest::StatusCode::CONFLICT | reqwest::StatusCode::GONE
+    ) {
         let err = json!({ "error": format!("call {call_status}"), "body": call_body });
         repo::fail(state.db(ext), elicit_id, &err).await?;
+        return Ok(());
+    }
+
+    // The execution is not ours to run. Find out what became of it.
+    let scope = OrgScope::new(target.org_id, state.db_pool(ext));
+    let deadline = tokio::time::Instant::now() + IN_FLIGHT_WAIT;
+    loop {
+        let exec = scope.get_execution_by_approval(target.approval_id).await?;
+        let status = exec.as_ref().map(|e| e.status.as_str());
+        let live = exec
+            .as_ref()
+            .is_some_and(|e| e.expires_at > time::OffsetDateTime::now_utc());
+        match status {
+            Some(done @ ("executed" | "failed")) => {
+                // This result rides back to the requesting agent in the tool
+                // result, so stamp it read — as `/call` and
+                // `GET …/execution` do for the requester. Otherwise it would
+                // linger as an unread `result_unread` event. Stamped before
+                // the read so the embedded execution reflects it.
+                if let Some(e) = exec.as_ref()
+                    && let Err(err) = scope.mark_execution_viewed(e.id).await
+                {
+                    tracing::warn!(elicit_id, "mark execution viewed failed: {err}");
+                }
+                let approval = fetch_approval(state, &target).await?;
+                return match approval {
+                    Some(body) if done == "executed" => {
+                        complete_with(state, ext, elicit_id, body, note).await
+                    }
+                    // A failed run is an error to the model whoever ran it —
+                    // including a claim `/call` itself took and then refused
+                    // (e.g. a legacy approval with nothing to replay), whose
+                    // reason is in `call_body`.
+                    Some(mut body) => {
+                        if let Some(obj) = body.as_object_mut() {
+                            obj.insert("call_error".into(), call_body);
+                            if let Some(note) = note {
+                                obj.insert("note".into(), json!(note));
+                            }
+                        }
+                        repo::fail(state.db(ext), elicit_id, &body).await?;
+                        Ok(())
+                    }
+                    None => {
+                        let err = json!({
+                            "error": "execution already ran, but its result could not be read",
+                            "approval_id": target.approval_id,
+                            "next": GET_RESULT_HINT,
+                        });
+                        repo::fail(state.db(ext), elicit_id, &err).await?;
+                        Ok(())
+                    }
+                };
+            }
+            // Someone else is running it (auto-call, a queued worker).
+            Some("executing" | "pending") if live || status == Some("executing") => {
+                if tokio::time::Instant::now() >= deadline {
+                    let body = json!({
+                        "status": "executing",
+                        "approval_id": target.approval_id,
+                        "message": "the approved call is already running elsewhere",
+                        "next": GET_RESULT_HINT,
+                    });
+                    return complete_with(state, ext, elicit_id, body, note).await;
+                }
+                sleep(IN_FLIGHT_POLL).await;
+            }
+            other => {
+                let err = json!({
+                    "error": format!(
+                        "approval is allowed but its execution cannot run (status={})",
+                        match other {
+                            Some("pending") => "expired",
+                            Some(s) => s,
+                            None => "missing",
+                        }
+                    ),
+                    "body": call_body,
+                });
+                repo::fail(state.db(ext), elicit_id, &err).await?;
+                return Ok(());
+            }
+        }
+    }
+}
+
+const GET_RESULT_HINT: &str = "Do not call the action again. Fetch its result with the \
+                               overslash `get_result` action for this approval_id.";
+
+/// `GET /v1/approvals/{id}` as the agent: the same `ApprovalResponse` shape
+/// `/call` returns, with the execution embedded.
+async fn fetch_approval(
+    state: &AppState,
+    target: &CallTarget<'_>,
+) -> anyhow::Result<Option<Value>> {
+    let loopback = &state.config.loopback;
+    let url = loopback.url(
+        &state.config.public_url,
+        &format!("/v1/approvals/{}", target.approval_id),
+    );
+    let resp = loopback
+        .stamp(state.http_client.get(&url), target.client_ip)
+        .bearer_auth(target.agent_mcp)
+        .send()
+        .await?;
+    if !resp.status().is_success() {
+        return Ok(None);
+    }
+    Ok(resp.json().await.ok())
+}
+
+async fn complete_with(
+    state: &AppState,
+    ext: &axum::http::Extensions,
+    elicit_id: &str,
+    mut body: Value,
+    note: Option<&'static str>,
+) -> anyhow::Result<()> {
+    if let (Some(note), Some(obj)) = (note, body.as_object_mut()) {
+        obj.insert("note".into(), json!(note));
+    }
+    let updated = repo::complete(state.db(ext), elicit_id, &body).await?;
+    if updated == 0 {
+        // Row was already terminal (cancelled by originator timeout or
+        // by an admin disconnect) when our /call returned. The action
+        // did execute against the upstream — surface that to ops since
+        // the SSE consumer has already moved on with a cancelled frame.
+        tracing::warn!(
+            elicit_id,
+            "elicitation row was cancelled before /call returned; \
+             upstream side-effect ran but client saw a cancelled frame",
+        );
     }
     Ok(())
 }

@@ -24,6 +24,12 @@ mutations need a fresh IdP sign-in"*.
   `auth_time_missing` (D136's amendment). Google logins ask for it with
   `claims={"id_token":{"auth_time":{"essential":true}}}`. GitHub, which is not OIDC, is
   the default entry in `ADMIN_STEP_UP_CALLBACK_TIME_PROVIDERS`: its callback time stands in.
+- Per org, `orgs.step_up_accept_callback_time` (migration 141, **default on**) lets the
+  gate read the session's callback time (`created_at`) when the IdP sent no `auth_time`.
+  Org admins switch it under Org Settings → Identity Providers → *Admin step-up*
+  (`PATCH /v1/orgs/{id}/step-up-settings`, audited `org.step_up_settings.updated`). An org
+  that turns it off is back to `auth_time_missing` for such sign-ins. Instance admins
+  always get the strict reading.
 - Account → Sessions shows each session's sign-in method and the `amr` the IdP reported.
 - `/v1/org-idp-configs` create, update, delete and discover now require `AdminAcl`.
   Before this, any credential in the org could call them, including an agent key.

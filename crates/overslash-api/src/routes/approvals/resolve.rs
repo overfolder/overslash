@@ -120,6 +120,18 @@ pub(super) async fn resolve_approval(
         relationship = Some(rel);
     }
 
+    // Settled already — typically on another surface while this caller's
+    // view (an MCP dialog, a stale dashboard tab) was still open. Checked
+    // after authorization so the status is only told to someone who may act
+    // on the approval. The guarded updates below still catch a resolve that
+    // lands between this read and theirs.
+    if approval_pre.status != "pending" {
+        return Err(AppError::Conflict(format!(
+            "approval was already resolved (status={})",
+            approval_pre.status
+        )));
+    }
+
     // ── BubbleUp: advance the resolver instead of resolving.
     if req.resolution == "bubble_up" {
         let perm_keys: Vec<PermissionKey> = approval_pre
@@ -139,14 +151,12 @@ pub(super) async fn resolve_approval(
                 "approval is already at the final resolver".into(),
             ));
         }
-        let updated = scope
+        let Some(updated) = scope
             .update_approval_resolver(id, next, approval_pre.current_resolver_identity_id)
             .await?
-            .ok_or_else(|| {
-                AppError::Conflict(
-                    "approval was concurrently resolved or bubbled by another caller".into(),
-                )
-            })?;
+        else {
+            return Err(lost_update_conflict(&scope, id).await);
+        };
 
         let _ = scope
             .log_audit(AuditEntry {
@@ -356,12 +366,10 @@ pub(super) async fn resolve_approval(
             remember,
             approval_pre.current_resolver_identity_id,
         )
-        .await?
-        .ok_or_else(|| {
-            AppError::Conflict(
-                "approval was concurrently resolved or bubbled by another caller".into(),
-            )
-        })?;
+        .await?;
+    let Some(row) = row else {
+        return Err(lost_update_conflict(&scope, id).await);
+    };
 
     // The approval row is now in its terminal status — record the resolution
     // metric *before* creating the pending execution so a downstream failure
@@ -577,6 +585,23 @@ pub(super) async fn resolve_approval(
     );
     resp.decorate_relationship(&scope, auth.identity_id).await?;
     Ok(Json(resp))
+}
+
+/// The 409 for a guarded resolve/bubble update that matched no row.
+///
+/// Re-reads the approval to say which it was: already settled (the common
+/// case — someone resolved it on another surface first) or a genuine race on
+/// a still-pending row (the resolver moved under us).
+async fn lost_update_conflict(scope: &OrgScope, id: Uuid) -> AppError {
+    match scope.get_approval(id).await {
+        Ok(Some(a)) if a.status != "pending" => AppError::Conflict(format!(
+            "approval was already resolved (status={})",
+            a.status
+        )),
+        _ => AppError::Conflict(
+            "approval was concurrently resolved or bubbled by another caller".into(),
+        ),
+    }
 }
 
 /// Is `key` a `scope_error=` sentinel — the key minted when a `scope_param`

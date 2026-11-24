@@ -35,6 +35,16 @@ export interface OrgInfo {
 }
 
 /**
+ * Shape of GET/PATCH /v1/orgs/{id}/step-up-settings.
+ */
+export interface StepUpSettings {
+  /** When true (default), an IdP sign-in whose ID token carries no
+   * `auth_time` passes the admin step-up on its callback time: a fresh
+   * round-trip through the IdP, not a proven re-check of a credential. */
+  accept_callback_time_without_auth_time: boolean;
+}
+
+/**
  * Shape of GET/PATCH /v1/orgs/{id}/managed-signin.
  */
 export interface ManagedSigninSettings {

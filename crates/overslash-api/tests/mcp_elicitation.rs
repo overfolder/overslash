@@ -2063,3 +2063,303 @@ async fn build_state_for_session(fx: &McpFixture) -> overslash_api::AppState {
         background_db: None,
     }
 }
+
+// ─── Approval resolved on another surface while the dialog was open ────────
+//
+// Regression for the dev incident of 2026-11-23: the decision dialog was
+// open, the user approved on the dashboard instead, then came back and also
+// clicked "Allow" in the dialog. The dashboard's resolve skipped auto-call
+// (an elicitation was active, so the dialog owns the `/call`), and the
+// dialog's own resolve 409'd and failed the row — so nobody ever ran the
+// execution and the model saw `resolve 409 Conflict`.
+
+/// Like `gated_echo_approval`, but the upstream counts its hits so a test can
+/// prove the action ran exactly once. Returns the agent's API key too.
+async fn gated_counting_approval(
+    fx: &McpFixture,
+) -> (Uuid, String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let binding = db::mcp_client_agent_binding::get_by_agent_identity(&fx.pool, fx.agent_id)
+        .await
+        .unwrap()
+        .unwrap();
+    db::mcp_client_agent_binding::set_elicitation_opted_out(&fx.pool, binding.id, false)
+        .await
+        .unwrap();
+
+    let hits = std::sync::Arc::new(AtomicUsize::new(0));
+    let counter = hits.clone();
+    let mock_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mock_addr = mock_listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let app = axum::Router::new().route(
+            "/echo",
+            axum::routing::get(move || {
+                let counter = counter.clone();
+                async move {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    "hi"
+                }
+            }),
+        );
+        axum::serve(mock_listener, app).await.unwrap();
+    });
+
+    let agent_key_resp: Value = fx
+        .client
+        .post(format!("{}/v1/api-keys", fx.base))
+        .header("Authorization", format!("Bearer {}", fx.org_admin_key))
+        .json(&json!({
+            "org_id": fx.org_id,
+            "identity_id": fx.agent_id,
+            "name": "elicit-elsewhere-key",
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let agent_key = agent_key_resp["key"].as_str().unwrap().to_string();
+
+    fx.client
+        .put(format!("{}/v1/secrets/tk", fx.base))
+        .header("Authorization", format!("Bearer {agent_key}"))
+        .json(&json!({"value": "v"}))
+        .send()
+        .await
+        .unwrap();
+    let resp = fx
+        .client
+        .post(format!("{}/v1/actions/call", fx.base))
+        .header("Authorization", format!("Bearer {agent_key}"))
+        .json(&json!({
+            "service": "http",
+            "method": "GET",
+            "url": format!("http://{mock_addr}/echo"),
+            "secrets": [{"name": "tk", "inject_as": "header", "header_name": "X-Auth"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 202);
+    let body: Value = resp.json().await.unwrap();
+    let approval_id = body["approval_id"].as_str().unwrap().parse().unwrap();
+    (approval_id, agent_key, hits)
+}
+
+/// Open the decision dialog's row, as the originator would have.
+async fn open_dialog(fx: &McpFixture, approval_id: Uuid) -> String {
+    let elicit_id = format!("elicit_{}", Uuid::new_v4());
+    db::mcp_elicitation::insert(
+        &fx.pool,
+        &elicit_id,
+        Uuid::new_v4(),
+        fx.agent_id,
+        approval_id,
+    )
+    .await
+    .unwrap();
+    elicit_id
+}
+
+/// Resolve the approval the way the dashboard would, outside the dialog.
+async fn resolve_elsewhere(fx: &McpFixture, approval_id: Uuid, resolution: &str) {
+    let resp = fx
+        .client
+        .post(format!("{}/v1/approvals/{approval_id}/resolve", fx.base))
+        .header("Authorization", format!("Bearer {}", fx.org_admin_key))
+        .json(&json!({ "resolution": resolution }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "{}", resp.text().await.unwrap());
+}
+
+async fn answer_dialog(fx: &McpFixture, elicit_id: &str, decision: &str) {
+    let state = build_state_for_session(fx).await;
+    mcp_session::complete_from_elicitation(
+        &state,
+        &axum::http::Extensions::new(),
+        elicit_id,
+        &json!({ "action": "accept", "content": { "decision": decision } }),
+        None,
+    )
+    .await
+    .expect("complete_from_elicitation succeeds");
+}
+
+#[tokio::test]
+async fn dialog_allow_after_dashboard_allow_still_runs_the_call() {
+    use std::sync::atomic::Ordering;
+    let fx = bootstrap_mcp(true).await;
+    let (approval_id, _, hits) = gated_counting_approval(&fx).await;
+    let elicit_id = open_dialog(&fx, approval_id).await;
+
+    resolve_elsewhere(&fx, approval_id, "allow").await;
+    // Auto-call stood down for the open dialog: the dialog owns the `/call`.
+    assert_eq!(hits.load(Ordering::SeqCst), 0);
+
+    answer_dialog(&fx, &elicit_id, "allow").await;
+
+    let row = db::mcp_elicitation::get(&fx.pool, &elicit_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        row.status,
+        db::mcp_elicitation::STATUS_COMPLETED,
+        "row: {row:?}"
+    );
+    let final_response = row.final_response.expect("final_response set");
+    assert_eq!(
+        final_response["execution"]["status"], "executed",
+        "final_response: {final_response}"
+    );
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+}
+
+/// The execution already ran (the agent replayed it by hand, or auto-call got
+/// there first). Answering the dialog must hand back that result, not run the
+/// action a second time.
+#[tokio::test]
+async fn dialog_allow_after_execution_ran_returns_it_without_rerunning() {
+    use std::sync::atomic::Ordering;
+    let fx = bootstrap_mcp(true).await;
+    let (approval_id, _, hits) = gated_counting_approval(&fx).await;
+    let elicit_id = open_dialog(&fx, approval_id).await;
+
+    resolve_elsewhere(&fx, approval_id, "allow").await;
+    run_as_resolver(&fx, approval_id).await;
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+    // A resolver-triggered run leaves the result unread for the agent.
+    assert!(!result_viewed(&fx, approval_id).await);
+
+    answer_dialog(&fx, &elicit_id, "allow").await;
+
+    let row = db::mcp_elicitation::get(&fx.pool, &elicit_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        row.status,
+        db::mcp_elicitation::STATUS_COMPLETED,
+        "row: {row:?}"
+    );
+    let final_response = row.final_response.expect("final_response set");
+    assert_eq!(
+        final_response["execution"]["status"], "executed",
+        "final_response: {final_response}"
+    );
+    assert_eq!(hits.load(Ordering::SeqCst), 1, "action ran twice");
+    // The result reached the agent in the tool result, so it is read.
+    assert!(result_viewed(&fx, approval_id).await);
+}
+
+/// `POST /call` as the resolver (the dashboard's "run" button), not the agent.
+async fn run_as_resolver(fx: &McpFixture, approval_id: Uuid) {
+    let call = fx
+        .client
+        .post(format!("{}/v1/approvals/{approval_id}/call", fx.base))
+        .header("Authorization", format!("Bearer {}", fx.org_admin_key))
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(call.status(), 200, "{}", call.text().await.unwrap());
+}
+
+async fn result_viewed(fx: &McpFixture, approval_id: Uuid) -> bool {
+    sqlx::query("SELECT result_viewed_at IS NOT NULL AS v FROM executions WHERE approval_id = $1")
+        .bind(approval_id)
+        .fetch_one(&fx.pool)
+        .await
+        .unwrap()
+        .get("v")
+}
+
+/// An execution that already ran and *failed* is an error to the model, not
+/// a completed tool call — whoever ran it.
+#[tokio::test]
+async fn dialog_allow_after_failed_execution_fails_the_dialog() {
+    let fx = bootstrap_mcp(true).await;
+    let (approval_id, _, _) = gated_counting_approval(&fx).await;
+    let elicit_id = open_dialog(&fx, approval_id).await;
+
+    resolve_elsewhere(&fx, approval_id, "allow").await;
+    run_as_resolver(&fx, approval_id).await;
+    sqlx::query("UPDATE executions SET status = 'failed', error = 'boom' WHERE approval_id = $1")
+        .bind(approval_id)
+        .execute(&fx.pool)
+        .await
+        .unwrap();
+
+    answer_dialog(&fx, &elicit_id, "allow").await;
+
+    let row = db::mcp_elicitation::get(&fx.pool, &elicit_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        row.status,
+        db::mcp_elicitation::STATUS_FAILED,
+        "row: {row:?}"
+    );
+    let final_response = row.final_response.expect("final_response set");
+    assert_eq!(
+        final_response["execution"]["status"], "failed",
+        "final_response: {final_response}"
+    );
+}
+
+/// Denied on the dashboard, then "Allow" in the dialog: the dialog fails and
+/// says why, and nothing runs.
+#[tokio::test]
+async fn dialog_allow_after_dashboard_deny_fails_clearly() {
+    use std::sync::atomic::Ordering;
+    let fx = bootstrap_mcp(true).await;
+    let (approval_id, _, hits) = gated_counting_approval(&fx).await;
+    let elicit_id = open_dialog(&fx, approval_id).await;
+
+    resolve_elsewhere(&fx, approval_id, "deny").await;
+    answer_dialog(&fx, &elicit_id, "allow").await;
+
+    let row = db::mcp_elicitation::get(&fx.pool, &elicit_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        row.status,
+        db::mcp_elicitation::STATUS_FAILED,
+        "row: {row:?}"
+    );
+    let err = row.final_response.expect("final_response set")["error"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    assert!(err.contains("already denied"), "error: {err}");
+    assert_eq!(hits.load(Ordering::SeqCst), 0);
+}
+
+/// A second resolve on a settled approval names it as already resolved,
+/// rather than blaming a race that did not happen.
+#[tokio::test]
+async fn resolving_a_settled_approval_says_already_resolved() {
+    let fx = bootstrap_mcp(true).await;
+    let approval_id = seed_pending_approval(&fx).await;
+    resolve_elsewhere(&fx, approval_id, "deny").await;
+
+    let resp = fx
+        .client
+        .post(format!("{}/v1/approvals/{approval_id}/resolve", fx.base))
+        .header("Authorization", format!("Bearer {}", fx.org_admin_key))
+        .json(&json!({ "resolution": "allow" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 409);
+    let body: Value = resp.json().await.unwrap();
+    let err = body["error"].as_str().unwrap_or_default();
+    assert!(err.contains("already resolved"), "body: {body}");
+    assert!(err.contains("denied"), "body: {body}");
+}

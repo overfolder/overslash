@@ -27,6 +27,7 @@ mod billing_admin;
 mod create;
 mod settings;
 mod slug;
+mod step_up;
 
 use billing_admin::{extend_trial, set_org_plan, start_trial};
 use create::{check_slug, create_free_unlimited_org, create_org};
@@ -44,6 +45,7 @@ pub(crate) use create::{
     NewOrgSpec, create_for_instance_admin, provision_new_org_contents, redirect_for_org,
 };
 pub(crate) use slug::validate_slug_format_pub;
+use step_up::{get_step_up_settings, patch_step_up_settings};
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -82,6 +84,10 @@ pub fn router() -> Router<AppState> {
         .route(
             "/v1/orgs/{id}/headless",
             get(get_headless).patch(patch_headless),
+        )
+        .route(
+            "/v1/orgs/{id}/step-up-settings",
+            get(get_step_up_settings).patch(patch_step_up_settings),
         )
         // Instance-admin-only trial controls. Not org-scoped by AdminAcl —
         // an instance admin acts on any org by id.

@@ -14,7 +14,7 @@ use super::util::fmt_time;
 use crate::{
     AppState,
     error::{AppError, Result},
-    extractors::{AuthContext, ClientIp, ReqExt},
+    extractors::{AdminAcl, AuthContext, ClientIp, ReqExt},
 };
 
 pub fn router() -> Router<AppState> {
@@ -118,9 +118,12 @@ fn invalidate_cache_for(
 
 // ── Handlers ────────────────────────────────────────────────────────
 
+/// Rate limits are org configuration: they can throttle any member or lift
+/// the org's own caps, so every route here is admin-only.
 async fn upsert_rate_limit(
     State(state): State<AppState>,
     ReqExt(ext): ReqExt,
+    _: AdminAcl,
     auth: AuthContext,
     scope: OrgScope,
     ip: ClientIp,
@@ -212,7 +215,7 @@ async fn upsert_rate_limit(
     Ok(Json(row.into()))
 }
 
-async fn list_rate_limits(scope: OrgScope) -> Result<Json<Vec<RateLimitResponse>>> {
+async fn list_rate_limits(_: AdminAcl, scope: OrgScope) -> Result<Json<Vec<RateLimitResponse>>> {
     let rows = scope.list_rate_limits().await?;
     Ok(Json(rows.into_iter().map(Into::into).collect()))
 }
@@ -220,6 +223,7 @@ async fn list_rate_limits(scope: OrgScope) -> Result<Json<Vec<RateLimitResponse>
 async fn delete_rate_limit(
     State(state): State<AppState>,
     ReqExt(ext): ReqExt,
+    _: AdminAcl,
     auth: AuthContext,
     scope: OrgScope,
     ip: ClientIp,

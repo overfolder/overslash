@@ -10,10 +10,11 @@ use super::*;
 // for a given agent identity. Used by the Agents detail page to render the
 // "MCP Connection" section, toggle elicitation approvals, and disconnect.
 //
-// Authorization: GET is open to any authenticated org member (OrgAcl) — the
-// Agents detail page is read-only for most users and the empty card otherwise
-// renders for anyone without `overslash:write`. PATCH and disconnect remain
-// gated on WriteAcl since they mutate binding state.
+// Authorization: every endpoint here targets an agent the caller can see
+// (`Visibility`): an org admin sees every agent, anyone else only their own
+// user's. GET needs only OrgAcl, so the card renders for a caller without
+// `overslash:write`; PATCH and disconnect also require WriteAcl since they
+// mutate binding state.
 
 #[derive(Debug, Serialize)]
 pub(super) struct McpConnectionResponse {
@@ -74,11 +75,13 @@ async fn load_mcp_connection(
     }))
 }
 
-async fn ensure_agent(scope: &OrgScope, id: Uuid) -> Result<()> {
-    let ident = scope
-        .get_identity(id)
+/// The target must be an agent in the caller's view: another user's agents
+/// read as missing, for reads and writes alike.
+async fn ensure_agent(scope: &OrgScope, acl: &OrgAcl, id: Uuid) -> Result<()> {
+    let ident = Visibility::for_acl(scope, acl)
         .await?
-        .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
+        .load(scope, id)
+        .await?;
     if ident.kind != "agent" && ident.kind != "sub_agent" {
         return Err(AppError::BadRequest(
             "MCP connections only apply to agent identities".into(),
@@ -90,11 +93,11 @@ async fn ensure_agent(scope: &OrgScope, id: Uuid) -> Result<()> {
 pub(super) async fn get_mcp_connection(
     State(state): State<AppState>,
     ReqExt(ext): ReqExt,
-    _: crate::extractors::OrgAcl,
+    acl: OrgAcl,
     scope: OrgScope,
     Path(id): Path<Uuid>,
 ) -> Result<Json<McpConnectionResponse>> {
-    ensure_agent(&scope, id).await?;
+    ensure_agent(&scope, &acl, id).await?;
     let connection = load_mcp_connection(&state, &ext, id).await?;
     Ok(Json(McpConnectionResponse { connection }))
 }
@@ -114,7 +117,7 @@ pub(super) async fn patch_mcp_connection(
     Path(id): Path<Uuid>,
     Json(req): Json<PatchMcpConnectionRequest>,
 ) -> Result<Json<McpConnectionResponse>> {
-    ensure_agent(&scope, id).await?;
+    ensure_agent(&scope, &acl, id).await?;
 
     if let Some(enabled) = req.elicitation_enabled {
         // Stored as the opt-out; `enabled` is the user-facing sense.
@@ -215,10 +218,10 @@ pub(super) async fn patch_auto_call_on_approve(
     // Only meaningful for agent/sub_agent identities. Reject up front so a
     // mistaken call against a user-kind row gets a clean error instead of
     // silently writing a no-op flag.
-    let target = scope
-        .get_identity(id)
+    let target = Visibility::for_acl(&scope, &acl)
         .await?
-        .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
+        .load(&scope, id)
+        .await?;
     if target.kind != "agent" && target.kind != "sub_agent" {
         return Err(AppError::BadRequest(
             "auto_call_on_approve only applies to agent identities".into(),
@@ -263,7 +266,7 @@ pub(super) async fn disconnect_mcp_connection(
     ip: ClientIp,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode> {
-    ensure_agent(&scope, id).await?;
+    ensure_agent(&scope, &acl, id).await?;
     let removed =
         overslash_db::repos::mcp_client_agent_binding::delete_by_agent_identity(state.db(&ext), id)
             .await?;

@@ -42,6 +42,10 @@ enable_magic_link = true
 # Admin changes in a shared org need an IdP sign-in from the last hour; a
 # magic link never qualifies while Google/GitHub sign-in is configured.
 admin_step_up_max_age_secs = 3600
+# Google omits the ID token's auth_time unless the OAuth client has "Session
+# age claims" enabled; until then its callback time stands in for it (as for
+# GitHub, which is not OIDC), so a step-up proves a fresh round-trip only.
+admin_step_up_callback_time_providers = "github,google"
 # Sign-in with Google (default) + Sign-in with GitHub. Populate the OAuth
 # client secrets post-apply via `gcloud secrets versions add`.
 enable_google_login = true

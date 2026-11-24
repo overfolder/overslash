@@ -17,6 +17,7 @@ import type {
 	OrgInvite,
 	SecretRequestSettings,
 	ServiceKeySummary,
+	StepUpSettings,
 	TemplateSettings,
 	Webhook
 } from '#lib/types.ts';
@@ -50,6 +51,7 @@ export interface OrgPageData {
 	executionSettings: ExecutionSettings | null;
 	auditSettings: AuditSettings | null;
 	managedSigninSettings: ManagedSigninSettings | null;
+	stepUpSettings: StepUpSettings | null;
 	templateSettings: TemplateSettings | null;
 	invites: OrgInvite[];
 	subscription: OrgSubscription | null;
@@ -88,6 +90,7 @@ export const loadOrgSettings = async ({
 				executionSettings: null,
 				auditSettings: null,
 				managedSigninSettings: null,
+				stepUpSettings: null,
 				templateSettings: null,
 				invites: [],
 				subscription: null,
@@ -106,6 +109,7 @@ export const loadOrgSettings = async ({
 			executionSettings,
 			auditSettings,
 			managedSigninSettings,
+			stepUpSettings,
 			templateSettings,
 			invites
 		] = await Promise.all([
@@ -128,6 +132,9 @@ export const loadOrgSettings = async ({
 				: Promise.resolve(null),
 			orgId
 				? session.get<ManagedSigninSettings>(`/v1/orgs/${orgId}/managed-signin`)
+				: Promise.resolve(null),
+			orgId
+				? session.get<StepUpSettings>(`/v1/orgs/${orgId}/step-up-settings`)
 				: Promise.resolve(null),
 			orgId
 				? session.get<TemplateSettings>(`/v1/orgs/${orgId}/template-settings`)
@@ -157,6 +164,7 @@ export const loadOrgSettings = async ({
 			executionSettings,
 			auditSettings,
 			managedSigninSettings,
+			stepUpSettings,
 			templateSettings,
 			invites,
 			subscription,
@@ -178,6 +186,7 @@ export const loadOrgSettings = async ({
 			executionSettings: null,
 			auditSettings: null,
 			managedSigninSettings: null,
+			stepUpSettings: null,
 			templateSettings: null,
 			invites: [],
 			subscription: null,

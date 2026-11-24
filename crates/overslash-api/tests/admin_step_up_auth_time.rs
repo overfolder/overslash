@@ -7,8 +7,11 @@
 //! enabled, or any IdP answering a `max_age=0` step-up from its own session
 //! without saying so — leaves the session with no `authenticated_at`, so it
 //! cannot reach admin mutations: 403 `step_up_required` with reason
-//! `auth_time_missing`. Only `ADMIN_STEP_UP_CALLBACK_TIME_PROVIDERS` (GitHub
-//! by default, which is not OIDC) stand the callback time in for it.
+//! `auth_time_missing` — in an org that turned off
+//! `step_up_accept_callback_time`. An org that leaves it on (the default)
+//! reads the session's callback time instead, and
+//! `ADMIN_STEP_UP_CALLBACK_TIME_PROVIDERS` (GitHub by default, which is not
+//! OIDC) record the callback time as the sign-in time for every org.
 
 use crate::common;
 
@@ -128,6 +131,33 @@ async fn shared_org(base: &str, client: &Client) -> (Uuid, String) {
     (org["id"].as_str().unwrap().parse().unwrap(), corp)
 }
 
+/// `PATCH /v1/orgs/{id}/step-up-settings` as `session`; returns the status.
+async fn set_accept_callback_time(
+    base: &str,
+    client: &Client,
+    session: &str,
+    org_id: Uuid,
+    value: bool,
+) -> StatusCode {
+    client
+        .patch(format!("{base}/v1/orgs/{org_id}/step-up-settings"))
+        .header("cookie", session)
+        .json(&json!({ "accept_callback_time_without_auth_time": value }))
+        .send()
+        .await
+        .unwrap()
+        .status()
+}
+
+/// The strict reading, without needing an admin change to set it.
+async fn strict(pool: &PgPool, org_id: Uuid) {
+    sqlx::query("UPDATE orgs SET step_up_accept_callback_time = false WHERE id = $1")
+        .bind(org_id)
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
 /// A root step-up into `org_id`, replacing the session in `current`.
 async fn step_up(base: &str, client: &Client, org_id: Uuid, current: &str) -> String {
     let resp = google_callback(
@@ -185,6 +215,7 @@ async fn an_idp_without_auth_time_cannot_pass_the_step_up() {
     let (pool, mock, base, client) = start(None).await;
     idp_reports(mock, Value::Null).await;
     let (org_id, corp) = shared_org(&base, &client).await;
+    strict(&pool, org_id).await;
 
     let session = step_up(&base, &client, org_id, &corp).await;
     let r = row(&pool, session.strip_prefix("__Host-oss_session=").unwrap()).await;
@@ -208,6 +239,7 @@ async fn the_idps_auth_time_decides_freshness_in_any_numeric_shape() {
     let now = time::OffsetDateTime::now_utc().unix_timestamp();
     idp_reports(mock, json!(now)).await;
     let (org_id, mut session) = shared_org(&base, &client).await;
+    strict(&pool, org_id).await;
 
     for (auth_time, expect) in [
         (json!(now - 7200), Some("stale")),
@@ -242,6 +274,83 @@ async fn a_callback_time_provider_counts_the_callback() {
     let old = time::OffsetDateTime::now_utc().unix_timestamp() - 7200;
     idp_reports(mock, json!(old)).await;
     let session = step_up(&base, &client, org_id, &session).await;
+    assert_eq!(
+        admin_change(&base, &client, &session).await.as_deref(),
+        Some("stale")
+    );
+}
+
+/// By default an org accepts the callback time: a Google sign-in that reports
+/// no `auth_time` passes the step-up on a fresh round-trip, while its session
+/// still records no sign-in time. An admin who turns that off gets
+/// `auth_time_missing` from the same session, and can turn it back on only
+/// through an IdP that reports the time (or another session that passes).
+#[tokio::test]
+async fn an_org_accepts_the_callback_time_until_its_admin_turns_it_off() {
+    let (pool, mock, base, client) = start(None).await;
+    idp_reports(mock, Value::Null).await;
+    let (org_id, corp) = shared_org(&base, &client).await;
+
+    let resp = client
+        .get(format!("{base}/v1/orgs/{org_id}/step-up-settings"))
+        .header("cookie", &corp)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["accept_callback_time_without_auth_time"], true);
+
+    let session = step_up(&base, &client, org_id, &corp).await;
+    let r = row(&pool, session.strip_prefix("__Host-oss_session=").unwrap()).await;
+    assert_eq!(r.authenticated_at, None, "nothing is recorded as auth_time");
+    assert_eq!(admin_change(&base, &client, &session).await, None);
+
+    assert_eq!(
+        set_accept_callback_time(&base, &client, &session, org_id, false).await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        admin_change(&base, &client, &session).await.as_deref(),
+        Some("auth_time_missing")
+    );
+    // Turning it back on is itself an admin change, so the same session
+    // cannot do it.
+    assert_eq!(
+        set_accept_callback_time(&base, &client, &session, org_id, true).await,
+        StatusCode::FORBIDDEN
+    );
+
+    // An IdP that does report a fresh sign-in can.
+    idp_reports(
+        mock,
+        json!(time::OffsetDateTime::now_utc().unix_timestamp()),
+    )
+    .await;
+    let session = step_up(&base, &client, org_id, &session).await;
+    assert_eq!(
+        set_accept_callback_time(&base, &client, &session, org_id, true).await,
+        StatusCode::OK
+    );
+    let audited: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log WHERE org_id = $1 AND action = 'org.step_up_settings.updated'",
+    )
+    .bind(org_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(audited, 2);
+}
+
+/// Accepting the callback time never overrides an `auth_time` the IdP did
+/// report: an old one is still stale.
+#[tokio::test]
+async fn a_reported_old_auth_time_is_stale_even_when_the_org_accepts_callbacks() {
+    let (_, mock, base, client) = start(None).await;
+    let old = time::OffsetDateTime::now_utc().unix_timestamp() - 7200;
+    idp_reports(mock, json!(old)).await;
+    let (org_id, corp) = shared_org(&base, &client).await;
+    let session = step_up(&base, &client, org_id, &corp).await;
     assert_eq!(
         admin_change(&base, &client, &session).await.as_deref(),
         Some("stale")
