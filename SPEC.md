@@ -567,6 +567,10 @@ If Chief instead bubbles up → resolver = User. If Researcher had called `servi
 
 The three scopes layer naturally for a dashboard inbox: `assigned` is the bell-badge count, `actionable` is the broader queue an org admin or main agent can drain on behalf of subordinates, and `mine` is the "outbox" of things the caller is waiting on.
 
+### Identity and Audit Visibility
+
+Org admins (the `is_org_admin` flag, or an admin-level `overslash` grant) see the whole org. Everyone else, a user or an agent acting for one, sees **one user tree**: the root user and every identity whose `owner_id` is that user. This governs `GET /v1/identities` and its `/{id}/children` and `/{id}/chain` reads, `GET /v1/api-keys`, and `GET /v1/audit` and `/v1/audit/export`, where a non-admin is pinned to `owner_user_id = <their root user>`. Per-identity reads and writes (`/mcp-connection`, `/auto-call-on-approve`, `/archive`, `/restore`, and creating an agent under a parent) return 404 for an identity outside the caller's tree, the same as for an unknown id. Creating a `user` identity is admin-only. The rule lives in `services/visibility.rs`.
+
 ### Trust Model and Approval Resolution
 
 The core trust assumption: **agents are not trusted to approve their own actions.** Overslash exists precisely because prompt-based permission ("please ask before sending") is not real security. The approval system enforces this:

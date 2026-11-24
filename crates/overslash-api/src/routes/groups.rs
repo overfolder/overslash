@@ -13,6 +13,7 @@ use uuid::Uuid;
 use super::util::fmt_time;
 
 use crate::services::group_ceiling;
+use crate::services::visibility::Visibility;
 
 use overslash_db::repos::audit::AuditEntry;
 use overslash_db::repos::group::GroupRow;
@@ -213,13 +214,14 @@ struct ListGroupsQuery {
 }
 
 async fn list_groups(
-    OrgAcl {
-        identity_id: caller_identity,
-        ..
-    }: OrgAcl,
+    acl: OrgAcl,
     scope: OrgScope,
     Query(q): Query<ListGroupsQuery>,
 ) -> Result<Json<Vec<GroupResponse>>> {
+    let caller_identity = acl.identity_id;
+    // Other users' Myself groups are an admin audit view. For anyone else
+    // `include_self` only ever adds their own, which is always listed anyway.
+    let vis = Visibility::for_acl(&scope, &acl).await?;
     let rows = scope.list_groups().await?;
 
     // Membership is what gates create-time group selection on an org-level
@@ -245,7 +247,8 @@ async fn list_groups(
             // caller's own Myself; show others' only when the caller opts in
             // via `?include_self=true` (admin audit view).
             r.system_kind.as_deref() != Some("self")
-                || q.include_self
+                || (q.include_self && vis == Visibility::Org)
+                || (r.owner_identity_id.is_some() && r.owner_identity_id == vis.user_root())
                 || (caller_identity.is_some() && r.owner_identity_id == caller_identity)
         })
         .map(|r| {
@@ -258,11 +261,29 @@ async fn list_groups(
     Ok(Json(filtered))
 }
 
-async fn get_group(scope: OrgScope, Path(id): Path<Uuid>) -> Result<Json<GroupResponse>> {
+/// Load a group the caller may read. Another user's Myself group lists that
+/// user's personal services, so a non-admin reading one gets the same 404 as
+/// a missing group. Shared groups (Everyone, Admins, custom) stay readable.
+async fn readable_group(scope: &OrgScope, acl: &OrgAcl, id: Uuid) -> Result<GroupRow> {
     let row = scope
         .get_group(id)
         .await?
         .ok_or_else(|| AppError::NotFound("group not found".into()))?;
+    if row.system_kind.as_deref() == Some("self") {
+        let vis = Visibility::for_acl(scope, acl).await?;
+        if vis != Visibility::Org && row.owner_identity_id != vis.user_root() {
+            return Err(AppError::NotFound("group not found".into()));
+        }
+    }
+    Ok(row)
+}
+
+async fn get_group(
+    acl: OrgAcl,
+    scope: OrgScope,
+    Path(id): Path<Uuid>,
+) -> Result<Json<GroupResponse>> {
+    let row = readable_group(&scope, &acl, id).await?;
     Ok(Json(GroupResponse::from(row)))
 }
 
@@ -480,14 +501,12 @@ async fn add_grant(
 }
 
 async fn list_grants(
+    acl: OrgAcl,
     scope: OrgScope,
     Path(group_id): Path<Uuid>,
 ) -> Result<Json<Vec<GroupGrantResponse>>> {
-    // Verify group belongs to org (returns None at the SQL boundary otherwise)
-    scope
-        .get_group(group_id)
-        .await?
-        .ok_or_else(|| AppError::NotFound("group not found".into()))?;
+    // In this org, and not another user's Myself group.
+    readable_group(&scope, &acl, group_id).await?;
 
     let rows = scope.list_group_grants(group_id).await?;
     Ok(Json(
@@ -792,12 +811,12 @@ async fn assign_identity(
     }))
 }
 
-async fn list_members(scope: OrgScope, Path(group_id): Path<Uuid>) -> Result<Json<Vec<Uuid>>> {
-    // Verify group belongs to org
-    scope
-        .get_group(group_id)
-        .await?
-        .ok_or_else(|| AppError::NotFound("group not found".into()))?;
+async fn list_members(
+    acl: OrgAcl,
+    scope: OrgScope,
+    Path(group_id): Path<Uuid>,
+) -> Result<Json<Vec<Uuid>>> {
+    readable_group(&scope, &acl, group_id).await?;
 
     let ids = scope.list_identity_ids_in_group(group_id).await?;
     Ok(Json(ids))

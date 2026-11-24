@@ -401,6 +401,8 @@ At the bottom of the sidebar (org-admins only): **Settings** (gear icon) — ope
 
 The default view post-login, unless the user was already trying to go to another route.
 
+**Visibility.** Users see only their own subtree: themselves and their agents. Org admins see every user's tree. The server enforces this (`GET /v1/identities`), so the Live Map, which draws the same identities, follows it too.
+
 ### Layout: Two-panel
 
 Left panel: **Agent tree**. Right panel: **Detail view** for the selected node.
@@ -1292,6 +1294,8 @@ Org-admins see additional capabilities:
 ## Audit Log view
 
 A dedicated nav item. Filterable, searchable event stream — newest first, paginated.
+
+**Visibility.** Users see only events whose actor is in their own subtree (themselves or one of their agents). Org admins see the whole org's log. The server pins the scope, for the table and the export alike; filtering on another user's id returns nothing.
 
 ### Time range
 

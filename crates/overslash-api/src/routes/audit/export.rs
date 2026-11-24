@@ -24,6 +24,7 @@ use overslash_db::repos::audit::{AuditEntry as AuditLogEntry, AuditFilter};
 use super::{AuditEntry, AuditQuery, Enricher, parse_filter};
 use crate::error::Result;
 use crate::extractors::{ClientIp, UserOrKeyAuth};
+use crate::services::visibility::Visibility;
 
 /// Rows per round trip. Large enough that a big export is a few hundred
 /// queries rather than thousands, small enough that one batch of enriched
@@ -70,7 +71,8 @@ pub(super) async fn export_audit(
     Query(params): Query<AuditQuery>,
 ) -> Result<Response> {
     let now = OffsetDateTime::now_utc();
-    let filter = parse_filter(&scope, params).await?.map(|mut f| {
+    let vis = Visibility::for_caller(&scope, auth.identity_id).await?;
+    let filter = parse_filter(&scope, &vis, params).await?.map(|mut f| {
         // Pin the upper bound before the first batch, so rows written while
         // the download runs can't slide into a range the reader asked for at
         // `now`. Paging is the export's job: whatever paging the caller sent

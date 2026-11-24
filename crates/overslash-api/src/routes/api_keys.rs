@@ -10,6 +10,7 @@ use crate::{
     AppState,
     error::{AppError, Result},
     extractors::{AdminAcl, ClientIp, OrgAcl},
+    services::visibility::Visibility,
 };
 
 pub fn router() -> Router<AppState> {
@@ -46,8 +47,22 @@ impl From<overslash_db::repos::api_key::ApiKeyRow> for ApiKeySummary {
     }
 }
 
-async fn list_api_keys(_: OrgAcl, scope: OrgScope) -> Result<Json<Vec<ApiKeySummary>>> {
-    let rows = scope.list_api_keys().await?;
+/// Org admins see every key. Anyone else sees only keys bound to their own
+/// user tree (themselves and their agents), the same view `GET /v1/identities`
+/// gives them, so another member's key names and prefixes stay hidden.
+async fn list_api_keys(acl: OrgAcl, scope: OrgScope) -> Result<Json<Vec<ApiKeySummary>>> {
+    let vis = Visibility::for_acl(&scope, &acl).await?;
+    let mut rows = scope.list_api_keys().await?;
+    if vis != Visibility::Org {
+        let visible: std::collections::HashSet<Uuid> = scope
+            .list_identities()
+            .await?
+            .into_iter()
+            .filter(|i| vis.sees(i))
+            .map(|i| i.id)
+            .collect();
+        rows.retain(|r| visible.contains(&r.identity_id));
+    }
     Ok(Json(rows.into_iter().map(ApiKeySummary::from).collect()))
 }
 

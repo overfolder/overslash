@@ -20,8 +20,8 @@ use super::util::{fmt_time, validate_email};
 use crate::{
     AppState,
     error::{AppError, Result},
-    extractors::{AdminAcl, AuthContext, ClientIp, ReqExt, WriteAcl},
-    services::{agent_icon, user_sessions},
+    extractors::{AdminAcl, AuthContext, ClientIp, OrgAcl, ReqExt, WriteAcl},
+    services::{agent_icon, user_sessions, visibility::Visibility},
 };
 use std::collections::HashMap;
 

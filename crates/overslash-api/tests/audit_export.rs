@@ -53,7 +53,8 @@ async fn test_audit_export_jsonl_streams_every_row_past_one_batch() {
     let pool = common::test_pool().await;
     let (addr, client) = start_api(pool.clone()).await;
     let base = format!("http://{addr}");
-    let (org_a, _ident, key_a, _) = bootstrap_org_identity(&base, &client).await;
+    // The seeded rows carry no actor, so only an org admin's export sees them.
+    let (org_a, _ident, _, key_a) = bootstrap_org_identity(&base, &client).await;
     seed(&pool, org_a, OffsetDateTime::now_utc()).await;
 
     let resp = export(&base, &client, &key_a, "format=jsonl&action=bulk.seeded").await;
@@ -88,7 +89,8 @@ async fn test_audit_export_csv_covers_the_whole_range() {
     let pool = common::test_pool().await;
     let (addr, client) = start_api(pool.clone()).await;
     let base = format!("http://{addr}");
-    let (org_a, _ident, key_a, _) = bootstrap_org_identity(&base, &client).await;
+    // The seeded rows carry no actor, so only an org admin's export sees them.
+    let (org_a, _ident, _, key_a) = bootstrap_org_identity(&base, &client).await;
     seed(&pool, org_a, OffsetDateTime::now_utc()).await;
 
     let resp = export(&base, &client, &key_a, "format=csv&action=bulk.seeded").await;
@@ -113,7 +115,8 @@ async fn test_audit_export_honours_since_until() {
     let pool = common::test_pool().await;
     let (addr, client) = start_api(pool.clone()).await;
     let base = format!("http://{addr}");
-    let (org_a, _ident, key_a, _) = bootstrap_org_identity(&base, &client).await;
+    // The seeded rows carry no actor, so only an org admin's export sees them.
+    let (org_a, _ident, _, key_a) = bootstrap_org_identity(&base, &client).await;
     let newest = OffsetDateTime::now_utc().replace_nanosecond(0).unwrap();
     seed(&pool, org_a, newest).await;
 
@@ -146,7 +149,8 @@ async fn test_audit_export_csv_escapes_quotes_newlines_and_formulas() {
     let pool = common::test_pool().await;
     let (addr, client) = start_api(pool.clone()).await;
     let base = format!("http://{addr}");
-    let (org_a, _ident, key_a, _) = bootstrap_org_identity(&base, &client).await;
+    // The seeded rows carry no actor, so only an org admin's export sees them.
+    let (org_a, _ident, _, key_a) = bootstrap_org_identity(&base, &client).await;
     for (action, description) in [
         ("csv.tricky", "a,\"b\"\nc"),
         ("csv.formula", "=HYPERLINK(\"http://evil\")"),
@@ -222,7 +226,19 @@ async fn test_audit_export_is_itself_audited() {
     let pool = common::test_pool().await;
     let (addr, client) = start_api(pool.clone()).await;
     let base = format!("http://{addr}");
-    let (org_a, ident_a, key_a, _) = bootstrap_org_identity(&base, &client).await;
+    // Exported by the org admin: the seeded rows carry no actor, so only an
+    // admin's export sees them.
+    let (org_a, _ident, _, key_a) = bootstrap_org_identity(&base, &client).await;
+    let ident_a: Value = client
+        .get(format!("{base}/v1/whoami"))
+        .header(auth(&key_a).0, auth(&key_a).1)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let ident_a = ident_a["identity_id"].clone();
     seed(&pool, org_a, OffsetDateTime::now_utc()).await;
 
     // A `HEAD` exports nothing, so it must not add a row of its own.
@@ -259,7 +275,7 @@ async fn test_audit_export_is_itself_audited() {
     }
     assert_eq!(rows.len(), 1, "one audit.exported row");
     let row = &rows[0];
-    assert_eq!(row["identity_id"], json!(ident_a));
+    assert_eq!(row["identity_id"], ident_a);
     assert_eq!(row["detail"]["format"], "csv");
     assert_eq!(row["detail"]["row_count"], json!(SEEDED));
     assert_eq!(row["detail"]["completed"], true);
