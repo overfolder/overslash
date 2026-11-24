@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.29.0](https://github.com/overfolder/overslash/compare/v0.28.0...v0.29.0) (2026-11-24)
+
+
+### Features
+
+* **auth:** per-org opt-in to accept the callback time in the admin step-up ([#908](https://github.com/overfolder/overslash/issues/908)) ([31a4fce](https://github.com/overfolder/overslash/commit/31a4fced33e36395420222ef13224330d1d0a3c0))
+
+
+### Bug Fixes
+
+* **api:** non-admins see and manage only their own user tree ([#909](https://github.com/overfolder/overslash/issues/909)) ([fa58ead](https://github.com/overfolder/overslash/commit/fa58ead5f52981f86e2869f7fb35193d2f2c303b))
+* **mcp:** finish an elicitation whose approval was resolved elsewhere ([#906](https://github.com/overfolder/overslash/issues/906)) ([8322fac](https://github.com/overfolder/overslash/commit/8322facbdd1baf3efde3689c7fdf5b60d9c8a9f6))
+
 ## [0.28.0](https://github.com/overfolder/overslash/compare/v0.27.0...v0.28.0) (2026-11-23)
 
 
