@@ -255,6 +255,8 @@ pub enum Pos {
     SecurityScheme(SchemeKind),
     McpBlock,
     McpAuth,
+    /// `x-overslash-mcp.auth.gateway` — a multi-tenant gateway's outer key.
+    McpGateway,
     /// An authored `x-overslash-mcp.tools[]` entry.
     McpTool,
     /// An `x-overslash-mcp.discovered_tools[]` entry — a pasted `tools/list`
@@ -287,6 +289,7 @@ impl Pos {
             Pos::SecurityScheme(SchemeKind::Unknown) => "a security scheme",
             Pos::McpBlock => "the `x-overslash-mcp` block",
             Pos::McpAuth => "`x-overslash-mcp.auth`",
+            Pos::McpGateway => "`x-overslash-mcp.auth.gateway`",
             Pos::McpTool | Pos::McpToolDiscovered => "an MCP tool",
             Pos::McpToolProperty => "an MCP tool input-schema property",
             Pos::PlatformAction => "a platform action",

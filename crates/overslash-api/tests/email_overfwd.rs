@@ -1619,11 +1619,11 @@ const PLATFORM_KEY: &str = "platform-gw-key";
 fn with_platform_gateway(mock_url: &str) -> impl FnOnce(&mut overslash_api::config::Config) {
     let mock_url = mock_url.to_string();
     move |cfg: &mut overslash_api::config::Config| {
-        cfg.platform_credential = Some(overslash_api::config::PlatformCredential {
+        cfg.platform_credentials = vec![overslash_api::config::PlatformCredential {
             secret_name: "overfwd_gateway_key".into(),
             host: PLATFORM_HOST.into(),
             value: PLATFORM_KEY.into(),
-        });
+        }];
         cfg.service_base_overrides
             .insert(PLATFORM_HOST.into(), mock_url);
     }
@@ -1722,11 +1722,11 @@ async fn email_template_host_and_platform_key_follow_the_deployment_variable() {
         None,
         default_instance_body(),
         move |cfg: &mut overslash_api::config::Config| {
-            cfg.platform_credential = Some(overslash_api::config::PlatformCredential {
+            cfg.platform_credentials = vec![overslash_api::config::PlatformCredential {
                 secret_name: "overfwd_gateway_key".into(),
                 host: DEV_HOST.into(),
                 value: PLATFORM_KEY.into(),
-            });
+            }];
             cfg.service_base_overrides
                 .insert(DEV_HOST.into(), gateway_url);
         },

@@ -127,7 +127,15 @@ pub(super) fn allowed_plain(pos: Pos) -> Option<&'static [&'static str]> {
             // than wrong.
             "discovered_at",
         ],
-        Pos::McpAuth => &["kind", "secret_name", "provider", "scopes"],
+        Pos::McpAuth => &[
+            "kind",
+            "secret_name",
+            "provider",
+            "scopes",
+            "generate",
+            "gateway",
+        ],
+        Pos::McpGateway => &["header", "default_secret_name", "optional"],
         Pos::McpTool => &[
             "name",
             "description",

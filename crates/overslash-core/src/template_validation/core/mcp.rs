@@ -105,9 +105,7 @@ mod tests {
 
     #[test]
     fn mcp_happy_path_valid() {
-        let d = minimal_mcp(McpAuth::Bearer {
-            secret_name: Some("tok".into()),
-        });
+        let d = minimal_mcp(McpAuth::bearer(Some("tok".into())));
         let r = run(&d);
         assert!(r.valid, "errors: {:?}", r.errors);
     }
@@ -115,7 +113,7 @@ mod tests {
     #[test]
     fn mcp_bearer_without_secret_name_is_valid() {
         // secret_name absent means the service instance must supply one.
-        let d = minimal_mcp(McpAuth::Bearer { secret_name: None });
+        let d = minimal_mcp(McpAuth::bearer(None));
         let r = run(&d);
         assert!(r.valid, "errors: {:?}", r.errors);
     }

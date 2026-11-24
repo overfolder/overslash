@@ -105,8 +105,28 @@ pub fn mcp_credential_fingerprint(
     use overslash_core::types::McpAuth;
     match (connection_id, auth) {
         (Some(id), _) => format!("conn:{id}"),
-        (None, McpAuth::Bearer { secret_name }) => {
-            format!("vault:{}", secret_name.as_deref().unwrap_or("-"))
+        (
+            None,
+            McpAuth::Bearer {
+                secret_name,
+                gateway,
+                ..
+            },
+        ) => {
+            // The gateway key is a second credential on the same request; two
+            // instances sharing a bearer but not a gateway key (one org-stored,
+            // one from the platform) must not share an entry either.
+            let gw = gateway.as_ref().map_or_else(
+                || "-".to_string(),
+                |g| {
+                    format!(
+                        "{}{}",
+                        g.default_secret_name,
+                        if g.platform_only { "!" } else { "" }
+                    )
+                },
+            );
+            format!("vault:{}|gw:{gw}", secret_name.as_deref().unwrap_or("-"))
         }
         (None, McpAuth::OAuth { provider, .. }) => format!("oauth:{provider}"),
         (None, McpAuth::None) => "anon".to_string(),
@@ -447,9 +467,7 @@ mod tests {
             mcp_credential_fingerprint(Some(c1), &McpAuth::None)
         );
 
-        let bearer = |n: &str| McpAuth::Bearer {
-            secret_name: Some(n.to_string()),
-        };
+        let bearer = |n: &str| McpAuth::bearer(Some(n.to_string()));
         assert_ne!(
             mcp_credential_fingerprint(None, &bearer("tok_a")),
             mcp_credential_fingerprint(None, &bearer("tok_b")),

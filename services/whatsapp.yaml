@@ -34,12 +34,29 @@ x-overslash-runtime: mcp
 servers: []
 paths: {}
 x-overslash-mcp:
-  # url and secret_name are not set here — operators must provide both when
-  # creating a service instance from this template:
-  #   url        — the hosted whatsapp-mcp-docker endpoint (e.g. https://host/mcp — plain http is refused)
-  #   secret_name — vault key that holds the container's AUTH_TOKEN bearer token
+  # Two ways to run this, picked per instance (hosted-runtimes.md, Phase 0):
+  #
+  # • Platform-hosted. A deployment that runs the shared multi-tenant
+  #   whatsapp gateway sets OVERSLASH_TEMPLATE_VAR_WHATSAPP_MCP_URL and the matching
+  #   platform credential (OVERSLASH_PLATFORM_GATEWAY_WHATSAPP_*). An instance
+  #   that sets no `url` of its own then lands there: Overslash mints the
+  #   instance's session token (`generate`), the gateway creates the session
+  #   on first sight, and `whatsapp_gateway_key` rides in X-Gateway-Key, filled
+  #   from the platform (pinned to that host) unless the org stores its own.
+  #
+  # • Self-hosted. Unset, `url` is null (D44's `?` form) and nothing changes
+  #   from before: the operator supplies both when creating the instance —
+  #     url        — their own whatsapp-mcp-docker endpoint (e.g. https://host/mcp — plain http is refused)
+  #     secret_name — vault key that holds the container's AUTH_TOKEN bearer token
+  #   No gateway key is stored, so no X-Gateway-Key is sent (`optional`).
+  url: ${WHATSAPP_MCP_URL?}
   auth:
     kind: bearer
+    generate: true
+    gateway:
+      header: X-Gateway-Key
+      default_secret_name: whatsapp_gateway_key
+      optional: true
   # Tools are authored inline (globals ship their tool list in-repo).
   # `autodiscover: true` lets `POST /v1/services/{id}/mcp/resync` populate the
   # *instance's* `discovered_tools` from a live tools/list; those are overlaid

@@ -198,6 +198,20 @@ pub enum McpAuth {
     Bearer {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         secret_name: Option<String>,
+        /// Mint the bearer instead of asking for it. An instance created with
+        /// no `secret_name` and no endpoint of its own (it uses the template's
+        /// `url`) gets a fresh random token, written to the owner's vault and
+        /// bound as its secret. Meant for a shared multi-tenant server that
+        /// creates a session the first time it sees a new token — the
+        /// platform-hosted WhatsApp/Telegram gateways (hosted-runtimes.md,
+        /// Phase 0). An instance that names its own `url` is talking to its
+        /// owner's own server and must still bring that server's token.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        generate: bool,
+        /// A second, deployment-level key sent beside the bearer — the outer
+        /// key of a multi-tenant gateway. See [`McpGateway`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        gateway: Option<McpGateway>,
     },
     /// `Authorization: Bearer <token>`, where the token is a live OAuth access
     /// token resolved at call time from the caller's connection for `provider`
@@ -211,6 +225,44 @@ pub enum McpAuth {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         scopes: Vec<String>,
     },
+}
+
+/// The gateway key of a shared multi-tenant MCP server: one key for the whole
+/// deployment, in its own header, next to the per-instance bearer that picks
+/// the tenant. The MCP twin of `email.yaml`'s `gateway` scheme.
+///
+/// Resolved like an org-source credential slot: the owner's own copy of
+/// `default_secret_name`, then the org vault (only where the org tier of the
+/// template points — `OrgVaultGate`), then the platform credential for that
+/// name, which is pinned to its own host (D39). With nothing found the header
+/// is omitted when `optional`, so a self-hosted single-tenant server that
+/// expects only the bearer keeps working unchanged.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpGateway {
+    /// Header the key rides in, sent verbatim (no `Bearer ` prefix).
+    pub header: String,
+    /// Vault name the key is looked up under. On a *resolved* auth (the copy
+    /// `resolve_effective_mcp` hands the executor) this holds the qualified
+    /// secret path instead, exactly as `secret_name` does.
+    pub default_secret_name: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub optional: bool,
+    /// Resolved copies only, never authored (the extractor does not read it):
+    /// the org vault was not admitted for this call, so only the platform
+    /// credential may fill the qualified `default_secret_name`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub platform_only: bool,
+}
+
+impl McpAuth {
+    /// A plain bearer: no minting, no gateway key.
+    pub fn bearer(secret_name: Option<String>) -> Self {
+        Self::Bearer {
+            secret_name,
+            generate: false,
+            gateway: None,
+        }
+    }
 }
 
 impl ServiceDefinition {
@@ -514,9 +566,7 @@ mod tests {
 
     #[test]
     fn mcp_auth_bearer_serde() {
-        let a = McpAuth::Bearer {
-            secret_name: Some("linear_token".into()),
-        };
+        let a = McpAuth::bearer(Some("linear_token".into()));
         let j = serde_json::to_value(&a).unwrap();
         assert_eq!(
             j,
@@ -528,7 +578,7 @@ mod tests {
 
     #[test]
     fn mcp_auth_bearer_without_secret_name_serde() {
-        let a = McpAuth::Bearer { secret_name: None };
+        let a = McpAuth::bearer(None);
         let j = serde_json::to_value(&a).unwrap();
         assert_eq!(j, serde_json::json!({ "kind": "bearer" }));
         let back: McpAuth = serde_json::from_value(j).unwrap();
@@ -678,9 +728,7 @@ mod tests {
             runtime: Runtime::Mcp,
             mcp: Some(McpSpec {
                 url: Some("https://mcp.linear.app/mcp".into()),
-                auth: McpAuth::Bearer {
-                    secret_name: Some("linear_api_token".into()),
-                },
+                auth: McpAuth::bearer(Some("linear_api_token".into())),
                 autodiscover: true,
             }),
             instance_defaults: None,
@@ -693,12 +741,7 @@ mod tests {
         assert_eq!(back.runtime, Runtime::Mcp);
         let mcp = back.mcp.expect("mcp present");
         assert!(mcp.autodiscover);
-        assert_eq!(
-            mcp.auth,
-            McpAuth::Bearer {
-                secret_name: Some("linear_api_token".into())
-            }
-        );
+        assert_eq!(mcp.auth, McpAuth::bearer(Some("linear_api_token".into())));
         let a = &back.actions["search_issues"];
         assert_eq!(a.mcp_tool.as_deref(), Some("search_issues"));
         assert!(!a.disabled);

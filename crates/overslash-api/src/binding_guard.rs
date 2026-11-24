@@ -57,6 +57,13 @@ const ALLOWED: &[(&str, &str, &str)] = &[
         "services/secret_paths/mod.rs",
         "the secret-path policy; readable_slot_binding wraps it with the gate",
     ),
+    (
+        "readable_instance_binding(",
+        "services/platform_services/session_token.rs",
+        "release_session_token: soft-deletes (never reads) the instance's own minted \
+         token after delete_service's owner-or-admin check; the vault rule keeps it \
+         inside the owner's vault, and the org-vault gate governs reads, not this",
+    ),
     // ── Owner- or admin-checked inline, next to the call ──────────────
     (
         ".list_all_connections_any_owner(",
@@ -106,13 +113,18 @@ const ALLOWED: &[(&str, &str, &str)] = &[
     ),
     (
         ".get_current_secret_value(",
+        "routes/actions/mcp_resolve.rs",
+        "MCP gateway key: org-default candidates, gated by OrgVaultGate",
+    ),
+    (
+        ".get_current_secret_value(",
         "services/action_caller.rs",
         "send time: paths the server qualified under the read rule",
     ),
     (
         ".get_current_secret_value(",
         "services/mcp_auth.rs",
-        "MCP bearer: path qualified by resolve_effective_mcp under the read rule",
+        "MCP bearer and gateway key: paths qualified by resolve_effective_mcp under the read rule",
     ),
     (
         ".get_current_secret_value(",

@@ -484,6 +484,45 @@ variable "template_vars" {
   default     = {}
 }
 
+# --- Platform-hosted MCP gateways (docs/design/hosted-runtimes.md, Phase 0) ---
+#
+# The shared multi-tenant WhatsApp / Telegram servers behind
+# `services/whatsapp.yaml` and `services/telegram.yaml`. Each entry deploys one
+# Cloud Run service, generates its gateway key, and wires the API: the
+# platform credential `<key>_gateway_key` pinned to `domain`, and the template
+# variable `<KEY>_MCP_URL = https://<domain>/mcp`. Leave an entry out and that
+# template stays "bring your own server", exactly as before.
+variable "hosted_mcp_gateways" {
+  description = "Hosted runtime key (`whatsapp`, `telegram`) → its platform-hosted gateway. See docs/runbooks/hosted-gateways.md."
+  type = map(object({
+    # Digest-pinned. Relative to the Docker Hub mirror unless `image_from_docker_hub = false`.
+    image                 = string
+    image_from_docker_hub = optional(bool, true)
+    domain                = string
+    port                  = optional(number, 8080)
+    probe_path            = optional(string, "/healthz")
+    key_env               = optional(string, "GATEWAY_KEY")
+    env                   = optional(map(string), {})
+    env_secrets           = optional(map(string), {})
+    cpu                   = optional(string, "1")
+    memory                = optional(string, "512Mi")
+    min_instances         = optional(number, 1)
+    max_instances         = optional(number, 1)
+    concurrency           = optional(number, 40)
+  }))
+  default = {}
+
+  validation {
+    condition     = alltrue([for k in keys(var.hosted_mcp_gateways) : contains(["whatsapp", "telegram"], k)])
+    error_message = "hosted_mcp_gateways keys must be hosted runtimes a shipped template reads: whatsapp, telegram."
+  }
+
+  validation {
+    condition     = alltrue([for g in values(var.hosted_mcp_gateways) : can(regex("@sha256:[0-9a-f]{64}$", g.image))])
+    error_message = "Every hosted_mcp_gateways image must be digest-pinned (…@sha256:<64 hex chars>)."
+  }
+}
+
 variable "overfwd_cpu" {
   description = "Cloud Run CPU for overfwd. Keep at 1: below one vCPU Cloud Run pins concurrency to 1."
   type        = string

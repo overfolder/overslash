@@ -732,6 +732,8 @@ export interface McpDetail {
   auth_kind: 'none' | 'bearer' | 'oauth';
   /** `true` when the template has a hard-coded `secret_name`; `false` means the operator must supply one at instance creation. */
   has_default_secret_name: boolean;
+  /** `true` when Overslash mints the bearer for an instance that keeps the template's own URL — a platform-hosted, multi-tenant gateway. The form then asks for no secret unless the user names their own endpoint. */
+  generates_session_token?: boolean;
   /** OAuth provider key when `auth_kind === 'oauth'` (D24); drives the connect affordance. */
   provider?: string;
   /** Superset OAuth scopes requested at connect time when `auth_kind === 'oauth'`. */
