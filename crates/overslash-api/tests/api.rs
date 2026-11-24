@@ -205,6 +205,7 @@ mod upstream_metrics;
 mod user_agent_forwarding;
 mod user_sessions;
 mod version;
+mod visibility_non_admin;
 mod wait_mode;
 mod webhook_digest;
 mod webhook_https;

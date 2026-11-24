@@ -1,5 +1,7 @@
 use crate::error::AppError;
+use crate::extractors::OrgAcl;
 use crate::services::identity_ref;
+use crate::services::visibility::Visibility;
 use overslash_core::identity_path::IdentityRef;
 use std::collections::{HashMap, HashSet};
 
@@ -204,7 +206,23 @@ fn split_q_terms(raw: &str) -> Vec<String> {
 /// archived user — the lookup matches live users only) is a filter, not an
 /// address, so it yields the same empty result an unknown UUID gets rather
 /// than a 404.
-async fn parse_filter(scope: &OrgScope, params: AuditQuery) -> Result<Option<AuditFilter>> {
+///
+/// Visibility is applied here, so the table and the export cannot disagree
+/// about it. A non-admin is pinned to their own user tree via `owner_user_id`
+/// (the user acting directly, or any of their agents). Every other filter,
+/// `identity_id` and `uuid` included, can then only narrow within that tree.
+/// Asking for another user's tree matches nothing rather than erroring, the
+/// same as any filter that names nobody.
+async fn parse_filter(
+    scope: &OrgScope,
+    vis: &Visibility,
+    params: AuditQuery,
+) -> Result<Option<AuditFilter>> {
+    let owner_user_id = match (vis.user_root(), params.owner_user_id) {
+        (None, requested) => requested,
+        (Some(root), Some(requested)) if requested != root => return Ok(None),
+        (Some(root), _) => Some(root),
+    };
     let empty = |s: String| if s.is_empty() { None } else { Some(s) };
     let identity_kinds = params.identity_kind.and_then(empty).map(|s| {
         s.split(',')
@@ -242,7 +260,7 @@ async fn parse_filter(scope: &OrgScope, params: AuditQuery) -> Result<Option<Aud
         ip_address_contains: params.ip_address_contains.and_then(empty),
         identity_name_contains: params.identity_name_contains.and_then(empty),
         identity_kinds: identity_kinds.filter(|v| !v.is_empty()),
-        owner_user_id: params.owner_user_id,
+        owner_user_id,
         owner_user_contains: params.owner_user_contains.and_then(empty),
         is_error: params.is_error,
         tags: tags.filter(|v| !v.is_empty()),
@@ -255,10 +273,12 @@ async fn parse_filter(scope: &OrgScope, params: AuditQuery) -> Result<Option<Aud
 }
 
 async fn query_audit(
+    acl: OrgAcl,
     scope: OrgScope,
     axum::extract::Query(params): axum::extract::Query<AuditQuery>,
 ) -> Result<Json<Vec<AuditEntry>>> {
-    let Some(filter) = parse_filter(&scope, params).await? else {
+    let vis = Visibility::for_acl(&scope, &acl).await?;
+    let Some(filter) = parse_filter(&scope, &vis, params).await? else {
         return Ok(Json(Vec::new()));
     };
     let rows = scope.query_audit_log(filter).await?;

@@ -204,7 +204,8 @@
 	});
 	// `?user=<id>` (admin-only) scopes the forest to one user's subtree. Set when
 	// an admin drills in from the Users list. Ignored for non-admins or an
-	// unknown id — the page then shows the full org forest as before.
+	// unknown id. A non-admin's forest is already just their own tree: the API
+	// returns no other user's identities.
 	const userFilter = $derived(page.url.searchParams.get('user'));
 	const scopedUser = $derived(
 		userFilter && isAdmin
