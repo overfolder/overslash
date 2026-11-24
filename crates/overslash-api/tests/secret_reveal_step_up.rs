@@ -123,6 +123,12 @@ async fn an_idp_sign_in_with_no_known_time_cannot_reveal() {
     let (org_id, _, key) = shared_org(&base, &client).await;
     let member = member_with_secret(&base, &client, &pool, org_id, &key, "mine").await;
 
+    // An org that accepts the callback time would read `created_at` instead.
+    sqlx::query("UPDATE orgs SET step_up_accept_callback_time = false WHERE id = $1")
+        .bind(org_id)
+        .execute(&pool)
+        .await
+        .unwrap();
     let unknown = session(&pool, org_id, member, Some("idp"), Some("google"), 0).await;
     sqlx::query("UPDATE user_sessions SET authenticated_at = NULL WHERE identity_id = $1")
         .bind(member)

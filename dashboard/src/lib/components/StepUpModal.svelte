@@ -54,8 +54,9 @@
 			{#if challenge.reason === 'auth_time_missing'}
 				<p class="error" role="alert" data-testid="step-up-auth-time-missing">
 					Ask your Overslash operator to enable the sign-in time (<code>auth_time</code>) claim for
-					this provider — for Google, "Session age claims" in Google Auth Platform settings. Until
-					then, use another provider below if one is offered.
+					this provider — for Google, "Session age claims" in Google Auth Platform settings — or an
+					org admin to turn on "Accept sign-ins that don't report a sign-in time" under Org Settings →
+					Identity Providers. Until then, use another provider below if one is offered.
 				</p>
 			{/if}
 			{#if challenge.providers.length > 0}

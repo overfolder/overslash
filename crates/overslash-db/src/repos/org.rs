@@ -802,3 +802,36 @@ pub async fn update_subagent_cleanup_config(
     .fetch_optional(pool)
     .await
 }
+
+/// Whether the org's admin step-up accepts an IdP sign-in's callback time
+/// when the IdP reported no `auth_time` (migration 141). `None` when the org
+/// does not exist.
+pub async fn get_step_up_accept_callback_time(
+    pool: &PgPool,
+    id: Uuid,
+) -> Result<Option<bool>, sqlx::Error> {
+    let row = sqlx::query!(
+        "SELECT step_up_accept_callback_time FROM orgs WHERE id = $1",
+        id
+    )
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|r| r.step_up_accept_callback_time))
+}
+
+/// Set [`get_step_up_accept_callback_time`]. `false` when the org does not
+/// exist.
+pub async fn set_step_up_accept_callback_time(
+    pool: &PgPool,
+    id: Uuid,
+    value: bool,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query!(
+        "UPDATE orgs SET step_up_accept_callback_time = $2, updated_at = now() WHERE id = $1",
+        id,
+        value,
+    )
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}

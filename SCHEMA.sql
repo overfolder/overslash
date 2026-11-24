@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict Ima6egLcgrnJ79TnxwblysVaIC9DjWdCHPDn0FnJXFFtcuWvCqfvYirq9Tx4HXW
+\restrict gqsriMb1WDuey1gyEK8B4YnsNxaaxK5BaJaEICGWaqgFCHtysr4wfeiNILD2kSX
 
 -- Dumped from database version 16.14 (Debian 16.14-1.pgdg12+1)
 -- Dumped by pg_dump version 16.15 (Ubuntu 16.15-0ubuntu0.24.04.1)
@@ -1082,6 +1082,7 @@ CREATE TABLE public.orgs (
     max_call_timeout_ms integer,
     default_agent_self_setup boolean DEFAULT true NOT NULL,
     default_remember_ttl_secs integer DEFAULT 604800,
+    step_up_accept_callback_time boolean DEFAULT true NOT NULL,
     CONSTRAINT orgs_approval_auto_bubble_secs_check CHECK ((approval_auto_bubble_secs >= 0)),
     CONSTRAINT orgs_audit_response_body_mode_check CHECK ((audit_response_body_mode = ANY (ARRAY['off'::text, 'errors_only'::text, 'all'::text]))),
     CONSTRAINT orgs_call_timeout_bounds CHECK ((((call_timeout_ms IS NULL) OR ((call_timeout_ms >= 1000) AND (call_timeout_ms <= 600000))) AND ((max_call_timeout_ms IS NULL) OR ((max_call_timeout_ms >= 1000) AND (max_call_timeout_ms <= 600000))) AND ((call_timeout_ms IS NULL) OR (max_call_timeout_ms IS NULL) OR (call_timeout_ms <= max_call_timeout_ms)))),
@@ -1131,6 +1132,13 @@ COMMENT ON COLUMN public.orgs.default_agent_self_setup IS 'When true (default), 
 --
 
 COMMENT ON COLUMN public.orgs.default_remember_ttl_secs IS 'Default expiry in seconds for rules written by Allow & Remember when the resolver does not pass a ttl. NULL = forever.';
+
+
+--
+-- Name: COLUMN orgs.step_up_accept_callback_time; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.orgs.step_up_accept_callback_time IS 'Admin step-up: an IdP sign-in with no auth_time counts its callback time (the session''s created_at) when true.';
 
 
 --
@@ -4119,5 +4127,5 @@ ALTER TABLE ONLY public.webhook_subscriptions
 -- PostgreSQL database dump complete
 --
 
-\unrestrict Ima6egLcgrnJ79TnxwblysVaIC9DjWdCHPDn0FnJXFFtcuWvCqfvYirq9Tx4HXW
+\unrestrict gqsriMb1WDuey1gyEK8B4YnsNxaaxK5BaJaEICGWaqgFCHtysr4wfeiNILD2kSX
 
