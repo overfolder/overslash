@@ -325,6 +325,7 @@ async fn create_idp_config(
 async fn list_idp_configs(
     State(state): State<AppState>,
     ReqExt(ext): ReqExt,
+    _: AdminAcl,
     scope: OrgScope,
 ) -> Result<Json<Vec<serde_json::Value>>> {
     let mut results: Vec<serde_json::Value> = Vec::new();

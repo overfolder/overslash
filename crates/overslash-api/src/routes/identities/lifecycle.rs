@@ -18,6 +18,7 @@ pub(super) async fn restore_identity(
     ip: ClientIp,
     Path(id): Path<IdentityRef>,
 ) -> Result<Json<RestoreResponse>> {
+    let vis = Visibility::for_acl(&scope, &acl).await?;
     let id = identity_ref::resolve(&scope, &id).await?;
     // Restore mints fresh state (un-archives identity, resurrects API keys),
     // so it requires write-level ACL on the overslash service — read-only
@@ -26,10 +27,8 @@ pub(super) async fn restore_identity(
     // Org-scope and kind checks happen here for clear error messages, but the
     // parent-archived guard runs INSIDE the repo transaction (with FOR UPDATE
     // row locks) to close the TOCTOU race against archive_idle_subagents.
-    let existing = scope
-        .get_identity(id)
-        .await?
-        .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
+    // Out-of-view ids (another user's agents) read as missing.
+    let existing = vis.load(&scope, id).await?;
     if existing.kind != "sub_agent" {
         return Err(AppError::BadRequest(
             "only sub_agent identities can be restored".into(),
@@ -103,12 +102,14 @@ pub(super) async fn archive_identity(
     body: Option<Json<ArchiveRequest>>,
 ) -> Result<Json<ArchiveResponse>> {
     let id = identity_ref::resolve(&scope, &id).await?;
-    // Existence + org-scope check up front for a clean 404 (cross-tenant ids
-    // return None). The repo also returns None for a missing root.
-    let _existing = scope
-        .get_identity(id)
+    // Existence + org-scope + visibility check up front for a clean 404
+    // (cross-tenant and other users' identities both read as missing): a
+    // member must not be able to archive a colleague or their agents. The
+    // repo also returns None for a missing root.
+    Visibility::for_acl(&scope, &acl)
         .await?
-        .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
+        .load(&scope, id)
+        .await?;
 
     let req = body.map(|Json(b)| b).unwrap_or_default();
     let reason = req.reason.as_deref().or(Some(ARCHIVED_REASON_MANUAL));

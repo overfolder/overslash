@@ -170,7 +170,14 @@ pub(super) async fn update_identity(
             IdentityKind::Agent => &[IdentityKind::User],
             IdentityKind::SubAgent => &[IdentityKind::Agent, IdentityKind::SubAgent],
         };
-        let parent = validate_parent(&scope, new_parent_id, allowed, target_kind).await?;
+        let parent = validate_parent(
+            &scope,
+            &Visibility::Org,
+            new_parent_id,
+            allowed,
+            target_kind,
+        )
+        .await?;
 
         let new_owner_id = match target_kind {
             IdentityKind::Agent => parent.id,
@@ -423,6 +430,7 @@ pub(super) struct CreateIdentityRequest {
 /// Fetch and validate a parent identity: must exist, belong to the same org, and be one of the allowed kinds.
 async fn validate_parent(
     scope: &OrgScope,
+    vis: &Visibility,
     parent_id: Uuid,
     allowed_kinds: &[IdentityKind],
     child_kind: IdentityKind,
@@ -430,6 +438,9 @@ async fn validate_parent(
     let parent = scope
         .get_identity(parent_id)
         .await?
+        // A non-admin may only create under their own tree; anyone else's
+        // identity reads as missing rather than forbidden.
+        .filter(|p| vis.sees(p))
         .ok_or_else(|| AppError::NotFound("parent identity not found".into()))?;
     let parent_kind: IdentityKind = parent
         .kind
@@ -460,8 +471,15 @@ pub(super) async fn create_identity(
     ip: ClientIp,
     Json(req): Json<CreateIdentityRequest>,
 ) -> Result<Json<IdentityResponse>> {
+    let vis = Visibility::for_acl(&scope, &acl).await?;
     let auth = acl;
     let kind_str = req.kind.as_str();
+
+    // Adding a member is an org-admin act. Without this, any member (Everyone
+    // holds `write` on `overslash`) could mint user identities.
+    if req.kind == IdentityKind::User && vis != Visibility::Org {
+        return Err(AppError::Forbidden("admin access required".into()));
+    }
 
     if req.email.is_some() && req.kind != IdentityKind::User {
         return Err(AppError::BadRequest(
@@ -501,7 +519,7 @@ pub(super) async fn create_identity(
                 AppError::BadRequest("agent identities require a parent_id".into())
             })?;
             let parent =
-                validate_parent(&scope, parent_id, &[IdentityKind::User], req.kind).await?;
+                validate_parent(&scope, &vis, parent_id, &[IdentityKind::User], req.kind).await?;
             scope
                 .create_identity_with_parent(
                     &req.name,
@@ -520,6 +538,7 @@ pub(super) async fn create_identity(
             })?;
             let parent = validate_parent(
                 &scope,
+                &vis,
                 parent_id,
                 &[IdentityKind::Agent, IdentityKind::SubAgent],
                 req.kind,
@@ -599,14 +618,15 @@ pub(super) struct ListIdentitiesQuery {
 
 pub(super) async fn list_identities(
     State(state): State<AppState>,
-    _: crate::extractors::OrgAcl,
+    acl: crate::extractors::OrgAcl,
     scope: OrgScope,
     Query(q): Query<ListIdentitiesQuery>,
 ) -> Result<Json<Vec<IdentityResponse>>> {
+    // Non-admins see their own user tree only; other users and their
+    // agents are not listed (and so never reach the Agents page or the map).
+    let vis = Visibility::for_acl(&scope, &acl).await?;
     let mut rows = scope.list_identities().await?;
-    if !q.include_archived {
-        rows.retain(|r| r.archived_at.is_none());
-    }
+    rows.retain(|r| vis.sees(r) && (q.include_archived || r.archived_at.is_none()));
     // Built after the archived filter, so the client lookup covers exactly the
     // rows being returned.
     let ctx = IdentityIconCtx::build(&state, &scope, &rows).await?;
@@ -619,20 +639,18 @@ pub(super) async fn list_identities(
 
 pub(super) async fn list_children(
     State(state): State<AppState>,
+    acl: crate::extractors::OrgAcl,
     scope: OrgScope,
     Path(id): Path<IdentityRef>,
     Query(q): Query<ListIdentitiesQuery>,
 ) -> Result<Json<Vec<IdentityResponse>>> {
+    let vis = Visibility::for_acl(&scope, &acl).await?;
     let id = identity_ref::resolve(&scope, &id).await?;
-    // Verify the parent itself lives in this org. Cross-tenant ids return None.
-    let _ident = scope
-        .get_identity(id)
-        .await?
-        .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
+    // Verify the parent lives in this org and in the caller's view.
+    // Cross-tenant and out-of-view ids get the same 404.
+    vis.load(&scope, id).await?;
     let mut rows = scope.list_identity_children(id).await?;
-    if !q.include_archived {
-        rows.retain(|r| r.archived_at.is_none());
-    }
+    rows.retain(|r| vis.sees(r) && (q.include_archived || r.archived_at.is_none()));
     let ctx = IdentityIconCtx::build(&state, &scope, &rows).await?;
     Ok(Json(
         rows.into_iter()
@@ -643,14 +661,14 @@ pub(super) async fn list_children(
 
 pub(super) async fn get_chain(
     State(state): State<AppState>,
+    acl: crate::extractors::OrgAcl,
     scope: OrgScope,
     Path(id): Path<IdentityRef>,
 ) -> Result<Json<Vec<IdentityResponse>>> {
+    let vis = Visibility::for_acl(&scope, &acl).await?;
     let id = identity_ref::resolve(&scope, &id).await?;
-    let _ident = scope
-        .get_identity(id)
-        .await?
-        .ok_or_else(|| AppError::NotFound("identity not found".into()))?;
+    vis.load(&scope, id).await?;
+    // A visible identity's ancestors are all in the same user tree.
     let rows = scope.get_identity_ancestor_chain(id).await?;
     let ctx = IdentityIconCtx::build(&state, &scope, &rows).await?;
     Ok(Json(
