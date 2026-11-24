@@ -1249,7 +1249,7 @@ async fn test_audit_q_term_escaped_comma() {
     let (pool, fx) = common::test_pool_bootstrapped().await;
     let (addr, client) = start_api(pool.clone()).await;
     let base = format!("http://{addr}");
-    let (_user, _ident_id, key) = bootstrap_agent_on_fixtures(&base, &client, &fx).await;
+    let (_user, _ident_id, _key) = bootstrap_agent_on_fixtures(&base, &client, &fx).await;
 
     let scope = overslash_db::OrgScope::new(fx.org_id, pool.clone());
     for description in ["New York, NY", "New York and NY"] {
@@ -1269,12 +1269,12 @@ async fn test_audit_q_term_escaped_comma() {
     }
 
     // Escaped: one term, so only the row carrying the literal phrase matches.
-    let one = fetch_audit_with(&base, &client, &key, "q=New%20York%5C%2C%20NY").await;
+    let one = fetch_audit_with(&base, &client, &fx.org_key, "q=New%20York%5C%2C%20NY").await;
     assert_eq!(one.len(), 1, "escaped comma must stay one term: {one:?}");
     assert_eq!(one[0]["description"], "New York, NY");
 
     // Unescaped: two terms (`New York` AND `NY`), which both rows satisfy.
-    let two = fetch_audit_with(&base, &client, &key, "q=New%20York%2CNY").await;
+    let two = fetch_audit_with(&base, &client, &fx.org_key, "q=New%20York%2CNY").await;
     assert_eq!(two.len(), 2, "unescaped comma must separate terms: {two:?}");
 }
 
@@ -1459,7 +1459,7 @@ async fn test_audit_secret_deleted() {
         .await
         .unwrap();
 
-    let entries = fetch_audit_with(&base, &client, &key, "action=secret.deleted").await;
+    let entries = fetch_audit_with(&base, &client, &fx.org_key, "action=secret.deleted").await;
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0]["resource_type"], "secret");
     assert_eq!(entries[0]["detail"]["name"], "to_delete");
@@ -1474,7 +1474,7 @@ async fn test_audit_permission_rule_created() {
     let (pool, fx) = common::test_pool_bootstrapped().await;
     let (addr, client) = start_api(pool).await;
     let base = format!("http://{addr}");
-    let (_user, ident_id, key) = bootstrap_agent_on_fixtures(&base, &client, &fx).await;
+    let (_user, ident_id, _key) = bootstrap_agent_on_fixtures(&base, &client, &fx).await;
     let admin_key = fx.org_key.clone();
 
     client
@@ -1485,7 +1485,13 @@ async fn test_audit_permission_rule_created() {
         .await
         .unwrap();
 
-    let entries = fetch_audit_with(&base, &client, &key, "action=permission_rule.created").await;
+    let entries = fetch_audit_with(
+        &base,
+        &client,
+        &fx.org_key,
+        "action=permission_rule.created",
+    )
+    .await;
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0]["resource_type"], "permission_rule");
     assert_eq!(entries[0]["detail"]["action_pattern"], "http:**");
@@ -1496,7 +1502,7 @@ async fn test_audit_permission_rule_deleted() {
     let (pool, fx) = common::test_pool_bootstrapped().await;
     let (addr, client) = start_api(pool).await;
     let base = format!("http://{addr}");
-    let (_user, ident_id, key) = bootstrap_agent_on_fixtures(&base, &client, &fx).await;
+    let (_user, ident_id, _key) = bootstrap_agent_on_fixtures(&base, &client, &fx).await;
     let admin_key = fx.org_key.clone();
 
     let resp = client
@@ -1516,7 +1522,13 @@ async fn test_audit_permission_rule_deleted() {
         .await
         .unwrap();
 
-    let entries = fetch_audit_with(&base, &client, &key, "action=permission_rule.deleted").await;
+    let entries = fetch_audit_with(
+        &base,
+        &client,
+        &fx.org_key,
+        "action=permission_rule.deleted",
+    )
+    .await;
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0]["resource_type"], "permission_rule");
     assert_eq!(entries[0]["resource_id"].as_str().unwrap(), perm_id);
@@ -1531,7 +1543,7 @@ async fn test_audit_webhook_created() {
     let (pool, fx) = common::test_pool_bootstrapped().await;
     let (addr, client) = start_api(pool).await;
     let base = format!("http://{addr}");
-    let (_user, _ident_id, key) = bootstrap_agent_on_fixtures(&base, &client, &fx).await;
+    let (_user, _ident_id, _key) = bootstrap_agent_on_fixtures(&base, &client, &fx).await;
     let admin_key = fx.org_key.clone();
 
     client
@@ -1542,7 +1554,7 @@ async fn test_audit_webhook_created() {
         .await
         .unwrap();
 
-    let entries = fetch_audit_with(&base, &client, &key, "action=webhook.created").await;
+    let entries = fetch_audit_with(&base, &client, &fx.org_key, "action=webhook.created").await;
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0]["resource_type"], "webhook");
     assert_eq!(entries[0]["detail"]["url"], "https://127.0.0.1:9/hook");
@@ -1553,7 +1565,7 @@ async fn test_audit_webhook_deleted() {
     let (pool, fx) = common::test_pool_bootstrapped().await;
     let (addr, client) = start_api(pool).await;
     let base = format!("http://{addr}");
-    let (_user, _ident_id, key) = bootstrap_agent_on_fixtures(&base, &client, &fx).await;
+    let (_user, _ident_id, _key) = bootstrap_agent_on_fixtures(&base, &client, &fx).await;
     let admin_key = fx.org_key.clone();
 
     let resp = client
@@ -1573,7 +1585,7 @@ async fn test_audit_webhook_deleted() {
         .await
         .unwrap();
 
-    let entries = fetch_audit_with(&base, &client, &key, "action=webhook.deleted").await;
+    let entries = fetch_audit_with(&base, &client, &fx.org_key, "action=webhook.deleted").await;
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0]["resource_type"], "webhook");
     assert_eq!(entries[0]["resource_id"].as_str().unwrap(), wh_id);
@@ -1588,7 +1600,7 @@ async fn test_audit_byoc_credential_created() {
     let (pool, fx) = common::test_pool_bootstrapped().await;
     let (addr, client) = start_api(pool).await;
     let base = format!("http://{addr}");
-    let (_user, ident_id, key) = bootstrap_agent_on_fixtures(&base, &client, &fx).await;
+    let (_user, ident_id, _key) = bootstrap_agent_on_fixtures(&base, &client, &fx).await;
     let admin_key = fx.org_key.clone();
 
     let resp = client
@@ -1600,7 +1612,13 @@ async fn test_audit_byoc_credential_created() {
         .unwrap();
     let cred: Value = resp.json().await.unwrap();
 
-    let entries = fetch_audit_with(&base, &client, &key, "action=byoc_credential.created").await;
+    let entries = fetch_audit_with(
+        &base,
+        &client,
+        &fx.org_key,
+        "action=byoc_credential.created",
+    )
+    .await;
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0]["resource_type"], "byoc_credential");
     assert_eq!(
@@ -1615,7 +1633,7 @@ async fn test_audit_byoc_credential_deleted() {
     let (pool, fx) = common::test_pool_bootstrapped().await;
     let (addr, client) = start_api(pool).await;
     let base = format!("http://{addr}");
-    let (_user, ident_id, key) = bootstrap_agent_on_fixtures(&base, &client, &fx).await;
+    let (_user, ident_id, _key) = bootstrap_agent_on_fixtures(&base, &client, &fx).await;
     let admin_key = fx.org_key.clone();
 
     let resp = client
@@ -1635,7 +1653,13 @@ async fn test_audit_byoc_credential_deleted() {
         .await
         .unwrap();
 
-    let entries = fetch_audit_with(&base, &client, &key, "action=byoc_credential.deleted").await;
+    let entries = fetch_audit_with(
+        &base,
+        &client,
+        &fx.org_key,
+        "action=byoc_credential.deleted",
+    )
+    .await;
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0]["resource_id"].as_str().unwrap(), cred_id);
 }
@@ -1762,7 +1786,7 @@ async fn test_audit_mixed_events() {
         .await
         .unwrap();
 
-    let entries = fetch_audit(&base, &client, &key).await;
+    let entries = fetch_audit(&base, &client, &fx.org_key).await;
     let actions: Vec<String> = entries
         .iter()
         .map(|e| e["action"].as_str().unwrap().to_string())

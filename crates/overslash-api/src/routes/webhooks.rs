@@ -234,7 +234,8 @@ async fn run_verification(
     Ok(Some(updated))
 }
 
-async fn list_webhooks(scope: OrgScope) -> Result<Json<Vec<WebhookResponse>>> {
+/// Admin-only like every other webhook route: URLs can embed tokens.
+async fn list_webhooks(_: AdminAcl, scope: OrgScope) -> Result<Json<Vec<WebhookResponse>>> {
     let rows = scope.list_webhook_subscriptions().await?;
     Ok(Json(rows.into_iter().map(WebhookResponse::from).collect()))
 }

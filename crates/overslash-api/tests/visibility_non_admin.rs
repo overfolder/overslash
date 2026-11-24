@@ -270,3 +270,84 @@ async fn agent_key_sees_its_owners_tree() {
     assert!(seen.contains(&w.me) && seen.contains(&w.my_agent));
     assert!(!seen.contains(&w.other) && !seen.contains(&w.other_agent));
 }
+
+/// Org configuration a member could abuse against colleagues is admin-only.
+#[tokio::test]
+async fn org_config_reads_and_writes_are_admin_only() {
+    let w = setup().await;
+
+    // Rate limits: no throttling a colleague, no lifting the org's caps.
+    let r = w
+        .client
+        .put(format!("{}/v1/rate-limits", w.base))
+        .header("Authorization", format!("Bearer {}", w.write_key))
+        .json(&json!({ "scope": "user", "identity_id": w.other,
+                       "max_requests": 1, "window_seconds": 3600 }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 403);
+    let r = w
+        .client
+        .put(format!("{}/v1/rate-limits", w.base))
+        .header("Authorization", format!("Bearer {}", w.admin_key))
+        .json(&json!({ "scope": "org", "max_requests": 1000, "window_seconds": 60 }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200, "{}", r.text().await.unwrap());
+    let limit_id = r.json::<Value>().await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let r = w
+        .client
+        .delete(format!("{}/v1/rate-limits/{limit_id}", w.base))
+        .header("Authorization", format!("Bearer {}", w.write_key))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 403);
+
+    for path in ["/v1/rate-limits", "/v1/webhooks", "/v1/org-idp-configs"] {
+        assert_eq!(get(&w, &w.write_key, path).await.status(), 403, "{path}");
+        assert_eq!(get(&w, &w.admin_key, path).await.status(), 200, "{path}");
+    }
+}
+
+/// Another user's Myself group lists their personal services: hidden from
+/// members, visible to admins.
+#[tokio::test]
+async fn other_users_myself_group_is_hidden() {
+    let w = setup().await;
+    let groups: Vec<Value> = get(&w, &w.admin_key, "/v1/groups?include_self=true")
+        .await
+        .json()
+        .await
+        .unwrap();
+    let myself_of = |owner: Uuid| -> String {
+        groups
+            .iter()
+            .find(|g| {
+                g["system_kind"] == "self" && g["owner_identity_id"] == json!(owner.to_string())
+            })
+            .unwrap_or_else(|| panic!("no Myself group for {owner}"))["id"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let theirs = myself_of(w.other);
+    let mine = myself_of(w.me);
+
+    let listed = ids(&w, &w.write_key, "/v1/groups?include_self=true").await;
+    assert!(listed.contains(&mine.parse().unwrap()));
+    assert!(!listed.contains(&theirs.parse().unwrap()));
+
+    for suffix in ["", "/grants", "/members"] {
+        let path = format!("/v1/groups/{theirs}{suffix}");
+        assert_eq!(get(&w, &w.write_key, &path).await.status(), 404, "{path}");
+        assert_eq!(get(&w, &w.admin_key, &path).await.status(), 200, "{path}");
+        let own = format!("/v1/groups/{mine}{suffix}");
+        assert_eq!(get(&w, &w.write_key, &own).await.status(), 200, "{own}");
+    }
+}
