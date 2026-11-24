@@ -7,6 +7,7 @@
 		ExecutionSettings,
 		IdpConfig,
 		ManagedSigninSettings,
+		StepUpSettings,
 		McpClient,
 		OAuthCredential,
 		OAuthProviderInfo,
@@ -63,6 +64,9 @@
 	let managedSigninSettings = $state<ManagedSigninSettings | null>(null);
 	let managedSigninSaving = $state(false);
 	let managedSigninError = $state<string | null>(null);
+	let stepUpSettings = $state<StepUpSettings | null>(null);
+	let stepUpSaving = $state(false);
+	let stepUpError = $state<string | null>(null);
 	// Editable buffer for the allowed-domains list. Synced from the server
 	// value on load and after each save.
 	let allowedDomains = $state<string[]>([]);
@@ -93,6 +97,7 @@
 		executionSettings = data.executionSettings;
 		auditSettings = data.auditSettings;
 		managedSigninSettings = data.managedSigninSettings;
+		stepUpSettings = data.stepUpSettings;
 		allowedDomains = [...(data.managedSigninSettings?.managed_signin_allowed_domains ?? [])];
 		templateSettings = data.templateSettings;
 		invites = data.invites;
@@ -905,6 +910,25 @@
 		if (!managedSigninSettings) return;
 		const next = nextValue ?? !managedSigninSettings.require_invite_admission;
 		return saveManagedSignin({ require_invite_admission: next });
+	}
+
+	// Turning it off is itself an admin change, so it goes through the
+	// step-up like any other; a 403 there opens the Confirm-it's-you prompt.
+	async function toggleAcceptCallbackTime(nextValue?: boolean) {
+		if (!org || !stepUpSettings) return;
+		const next = nextValue ?? !stepUpSettings.accept_callback_time_without_auth_time;
+		stepUpSaving = true;
+		stepUpError = null;
+		try {
+			stepUpSettings = await session.patch<StepUpSettings>(
+				`/v1/orgs/${org.id}/step-up-settings`,
+				{ accept_callback_time_without_auth_time: next }
+			);
+		} catch (err) {
+			stepUpError = asMessage(err);
+		} finally {
+			stepUpSaving = false;
+		}
 	}
 
 	function saveAllowedDomains() {
@@ -1860,6 +1884,39 @@
 				</form>
 			{/if}
 		</section>
+
+		{#if stepUpSettings}
+		<section class="card" data-testid="step-up-settings-card">
+			<h2>Admin step-up</h2>
+			<p class="section-desc">
+				Admin changes need a sign-in through one of the org's identity providers from
+				the last hour. Overslash takes the sign-in time from the provider's
+				<code>auth_time</code> claim. Some providers leave it out; Google does unless
+				"Session age claims" is enabled on its OAuth client.
+			</p>
+			<div class="toggle-row">
+				<div class="toggle-body">
+					<div class="toggle-label">Accept sign-ins that don't report a sign-in time</div>
+					<div class="toggle-help">
+						When on, a provider that leaves out <code>auth_time</code> counts from the
+						moment it sent you back to Overslash. That proves a fresh round-trip
+						through the provider, not that it asked for your password or second
+						factor again. When off, those sign-ins can't make admin changes until the
+						provider reports the time.
+					</div>
+				</div>
+				<ToggleSwitch
+					checked={stepUpSettings.accept_callback_time_without_auth_time}
+					onchange={toggleAcceptCallbackTime}
+					disabled={stepUpSaving}
+					label="Accept sign-ins that don't report a sign-in time"
+				/>
+			</div>
+			{#if stepUpError}
+				<div class="form-error">{stepUpError}</div>
+			{/if}
+		</section>
+		{/if}
 		{/if}
 
 		{#if active === 'google-directory'}

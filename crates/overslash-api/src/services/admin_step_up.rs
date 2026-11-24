@@ -22,8 +22,13 @@
 //!    re-scope keeps the original `authenticated_at`: it is not a sign-in.
 //!    For an IdP sign-in that is the ID token's `auth_time`, never the
 //!    callback time — an IdP that omits it yields `auth_time_missing`. The
-//!    exception is `ADMIN_STEP_UP_CALLBACK_TIME_PROVIDERS` (GitHub, which is
-//!    not OIDC and can neither report nor force a re-authentication).
+//!    exceptions are `ADMIN_STEP_UP_CALLBACK_TIME_PROVIDERS` (GitHub, which
+//!    is not OIDC and can neither report nor force a re-authentication),
+//!    whose callback time is recorded as the sign-in time, and an org with
+//!    `step_up_accept_callback_time` on (the default), whose gate reads the
+//!    session's `created_at` — its callback — in place of the missing time.
+//!    That org's step-up proves a fresh IdP round-trip, not a fresh
+//!    credential check. Instance admins have no org to opt in and stay strict.
 //!
 //! Otherwise the answer is 403 `step_up_required` naming the providers that
 //! would do; the dashboard sends the human through `/auth/login/{key}` with
@@ -118,7 +123,7 @@ pub async fn require_fresh(
     let Some(jti) = session_jti(state, headers) else {
         return Ok(());
     };
-    let (allowed, org_slug, root_for) = match target {
+    let (allowed, org_slug, root_for, accept_callback_time) = match target {
         Target::Org(org_id) => {
             let org = overslash_db::repos::org::get_by_id(state.db(ext), org_id)
                 .await?
@@ -131,13 +136,17 @@ pub async fn require_fresh(
                 .into_iter()
                 .map(|p| p.provider_key)
                 .collect();
+            let accept =
+                overslash_db::repos::org::get_step_up_accept_callback_time(state.db(ext), org_id)
+                    .await?
+                    .unwrap_or(false);
             if keys.is_empty() {
-                (any_idp(state), None, Some(org_id))
+                (any_idp(state), None, Some(org_id), accept)
             } else {
-                (Allowed::Only(keys), Some(org.slug), None)
+                (Allowed::Only(keys), Some(org.slug), None, accept)
             }
         }
-        Target::Instance => (any_idp(state), None, None),
+        Target::Instance => (any_idp(state), None, None, false),
     };
     let row = repo::get(state.db(ext), jti).await?;
     let max_age = state.config.admin_step_up_max_age_secs;
@@ -147,6 +156,7 @@ pub async fn require_fresh(
         OffsetDateTime::now_utc(),
         max_age,
         state.config.dev_auth_enabled,
+        accept_callback_time,
     );
     match verdict {
         Ok(()) => Ok(()),
@@ -159,12 +169,16 @@ pub async fn require_fresh(
 }
 
 /// The rule, without I/O. `Err` carries the `reason` the 403 reports.
+/// `accept_callback_time` is the org's `step_up_accept_callback_time`: an IdP
+/// sign-in with no recorded `auth_time` is then as fresh as its callback (the
+/// row's `created_at`, which a re-scope keeps).
 pub fn evaluate(
     row: Option<&UserSessionRow>,
     allowed: &Allowed,
     now: OffsetDateTime,
     max_age_secs: i64,
     dev_auth_enabled: bool,
+    accept_callback_time: bool,
 ) -> Result<(), &'static str> {
     let Some(row) = row else {
         return Err("idp_required");
@@ -182,12 +196,16 @@ pub fn evaluate(
         Some(auth_method::DEV) if dev_auth_enabled => {}
         _ => return Err("idp_required"),
     }
-    match row.authenticated_at {
+    let is_idp = row.auth_method.as_deref() == Some(auth_method::IDP);
+    let signed_in_at = row
+        .authenticated_at
+        .or_else(|| (is_idp && accept_callback_time).then_some(row.created_at));
+    match signed_in_at {
         Some(at) if (now - at).whole_seconds() <= max_age_secs => Ok(()),
         // An IdP sign-in whose ID token carried no `auth_time`: how recent
         // it is cannot be known, and a fresh step-up through the same IdP
         // will not change that unless the IdP starts reporting it.
-        None if row.auth_method.as_deref() == Some(auth_method::IDP) => Err("auth_time_missing"),
+        None if is_idp => Err("auth_time_missing"),
         _ => Err("stale"),
     }
 }
@@ -311,7 +329,14 @@ mod tests {
     }
 
     fn eval(r: &UserSessionRow, allowed: &Allowed, dev: bool) -> Result<(), &'static str> {
-        evaluate(Some(r), allowed, OffsetDateTime::now_utc(), 3600, dev)
+        evaluate(
+            Some(r),
+            allowed,
+            OffsetDateTime::now_utc(),
+            3600,
+            dev,
+            false,
+        )
     }
 
     #[test]
@@ -337,7 +362,14 @@ mod tests {
             Err("idp_required")
         );
         assert_eq!(
-            evaluate(None, &Allowed::Any, OffsetDateTime::now_utc(), 3600, false),
+            evaluate(
+                None,
+                &Allowed::Any,
+                OffsetDateTime::now_utc(),
+                3600,
+                false,
+                true
+            ),
             Err("idp_required")
         );
     }
@@ -362,6 +394,45 @@ mod tests {
         let mut r = row(Some("idp"), Some("okta-1234"), 0);
         r.authenticated_at = None;
         assert_eq!(eval(&r, &Allowed::Any, false), Err("auth_time_missing"));
+    }
+
+    fn eval_accepting(r: &UserSessionRow) -> Result<(), &'static str> {
+        evaluate(
+            Some(r),
+            &Allowed::Any,
+            OffsetDateTime::now_utc(),
+            3600,
+            false,
+            true,
+        )
+    }
+
+    #[test]
+    fn an_org_that_accepts_the_callback_time_reads_created_at() {
+        let mut r = row(Some("idp"), Some("google"), 0);
+        r.authenticated_at = None;
+        r.created_at = OffsetDateTime::now_utc() - time::Duration::seconds(60);
+        assert_eq!(eval_accepting(&r), Ok(()));
+        r.created_at = OffsetDateTime::now_utc() - time::Duration::seconds(3601);
+        assert_eq!(eval_accepting(&r), Err("stale"));
+    }
+
+    #[test]
+    fn accepting_the_callback_time_never_overrides_a_reported_auth_time() {
+        // The IdP said it last authenticated two hours ago; a fresh callback
+        // does not make that fresh.
+        let r = row(Some("idp"), Some("google"), 7200);
+        assert_eq!(eval_accepting(&r), Err("stale"));
+    }
+
+    #[test]
+    fn accepting_the_callback_time_is_for_idp_sign_ins_only() {
+        let mut r = row(Some("magic_link"), None, 0);
+        r.authenticated_at = None;
+        assert_eq!(eval_accepting(&r), Err("idp_required"));
+        let mut r = row(None, None, 0);
+        r.authenticated_at = None;
+        assert_eq!(eval_accepting(&r), Err("idp_required"));
     }
 
     #[test]
